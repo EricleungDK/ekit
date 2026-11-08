@@ -8,11 +8,11 @@ start() { jq -nc --arg c "$1" --arg s "$2" '{hook_event_name:"SessionStart",sess
 arm()   { jq -nc --arg c "$1" --arg s "$2" --arg p "${3:-/ekit:orchestrate-agent do x}" '{hook_event_name:"UserPromptSubmit",session_id:$s,cwd:$c,prompt:$p}' | python3 -I "$FG" --arm; }
 stop()  { jq -nc --arg c "$1" --arg s "$2" --argjson a "${3:-false}" --arg e "${4:-Stop}" '{hook_event_name:$e,session_id:$s,cwd:$c,stop_hook_active:$a}' | python3 -I "$FG"; }
 
-# session start: pointers + guardrails injected; the finish/taste-it gate is orchestrate-only
+# session start: pointers + guardrails injected; finish/taste-it are orchestrate-only
 out="$(start "$R" s1)"; arm "$R" s1 >/dev/null
 c="$(jq -r .hookSpecificOutput.additionalContext <<<"$out")"
 has "$c" "failure-triage" "start → triage pointer"
-has "$c" "finish report (finish skill)" "start → finish rule always-on"
+lacks "$c" "finish skill" "start → no always-on finish rule"
 lacks "$c" "taste-it" "start → no always-on taste-it rule"
 has "$c" "Same blocker 3×" "start → blocker guardrail"
 has "$c" "exact command" "start → rephrase guardrail"
