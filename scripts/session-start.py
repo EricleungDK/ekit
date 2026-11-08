@@ -1,4 +1,4 @@
-"""SessionStart hook: record tree baseline, inject preflight warnings and the kit's always-on rules (finish/taste-it are orchestrate-only)."""
+"""SessionStart hook: record tree baseline, inject preflight warnings and the kit's always-on rules (the finish/taste-it Stop gate is orchestrate-only)."""
 import json
 import os
 import subprocess
@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 RULES = """[ekit] Working rules:
 - A test or check goes red → classify it with the failure-triage skill before editing code.
+- Before saying work is done → give the finish report (finish skill).
 - Same blocker 3× (missing tool, auth, approval denied, quota) → stop retrying; tell the user exactly what's needed.
 - A denied or blocked command stays blocked: ask the user, keeping the exact command. Usage limit hit → stop."""
 
