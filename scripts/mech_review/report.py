@@ -8,8 +8,12 @@ CHECKS = ("R1", "R2", "R3", "R4")
 
 
 def ekit_version():
-    with open(PLUGIN) as f:
-        return json.load(f)["version"]
+    """The plugin version, or `unknown` when the scripts run without the plugin manifest beside them (a bare copy)."""
+    try:
+        with open(PLUGIN) as f:
+            return json.load(f)["version"]
+    except (OSError, ValueError, KeyError):
+        return "unknown"
 
 
 def entry(check, file, line, key, cls, severity, problem, hint, forbidden):

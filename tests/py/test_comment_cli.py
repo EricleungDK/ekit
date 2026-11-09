@@ -1,19 +1,21 @@
-"""mech-comment.py end to end against a local stand-in for the GitHub API: waivers and the read-only-token fallback."""
+"""mech-comment.py main() against a local stand-in for the GitHub API: waivers and the read-only-token fallback."""
+import contextlib
+import io
 import json
 import os
-import subprocess
-import sys
 import tempfile
 import threading
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 import _kit
-from mech_review import comment
-from mech_review.report import summarize
+from scripts.mech_review import comment
+from scripts.mech_review.report import summarize
 
 SHA = "a" * 40
-POSTER = os.path.join(_kit.SCRIPTS, "mech-comment.py")
+poster = _kit.load("mech-comment")
 
 
 def envelope(entries):
@@ -32,7 +34,7 @@ class Api:
 
     def __init__(self, comments=(), write_status=None):
         api = self
-        self.comments, self.write_status, self.writes = list(comments), write_status, []
+        self.comments, self.write_status, self.writes, self.comments_status = list(comments), write_status, [], None
 
         class H(BaseHTTPRequestHandler):
             def _send(self, code, obj):
@@ -45,6 +47,8 @@ class Api:
             def do_GET(self):
                 if "/pulls/" in self.path:
                     return self._send(200, {"head": {"sha": SHA}})
+                if api.comments_status:
+                    return self._send(api.comments_status, {"message": "boom"})
                 self._send(200, api.comments if "page=1" in self.path else [])
 
             def _write(self):
@@ -81,16 +85,19 @@ class TestPoster(unittest.TestCase):
         self.tmp.cleanup()
 
     def post(self, entries, api):
+        """main() of mech-comment.py against the fake API: a result with returncode, stdout and stderr."""
         path = os.path.join(self.tmp.name, "env.json")
         with open(path, "w") as f:
             json.dump(envelope(entries), f)
-        env = {"PATH": os.environ["PATH"], "GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
+        env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
                "GITHUB_STEP_SUMMARY": self.summary}
+        out, err = io.StringIO(), io.StringIO()
         try:
-            return subprocess.run([sys.executable, "-I", POSTER, "--pr", "5", "--envelope", path], env=env,
-                                  capture_output=True, text=True)
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = poster.main(["--pr", "5", "--envelope", path])
         finally:
             api.close()
+        return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
 
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
@@ -129,6 +136,21 @@ class TestPoster(unittest.TestCase):
         p = self.post([FAIL], Api(write_status=500))
         self.assertEqual(p.returncode, 3, p.stderr)
         self.assertNotIn("::warning::", p.stdout)
+
+    def test_a_read_only_token_warning_says_where_the_result_is(self):
+        p = self.post([FAIL], Api(write_status=403))
+        self.assertEqual(p.stdout.strip(), "::warning::mech-review: this token cannot comment on the PR (a fork or "
+                         "Dependabot PR, or the caller lacks `pull-requests: write`). The result is in the job summary; "
+                         "the check result is unchanged.")
+        self.assertIn("mech-comment: comment not posted: GitHub API 403", p.stderr)
+
+    def test_comments_that_cannot_be_read_apply_no_waiver(self):
+        api = Api([person("/mech-waive R2-deadbeef: moved")])
+        api.comments_status = 500
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 3, p.stderr)  # the publish needs the same listing, so the run ends as an API error
+        self.assertIn("mech-comment: PR comments not read, no waiver applied: GitHub API 500", p.stderr)
+        self.assertEqual(api.writes, [])
 
 
 if __name__ == "__main__":

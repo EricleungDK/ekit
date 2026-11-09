@@ -1,8 +1,8 @@
 import unittest
 
-import _kit  # noqa: F401 - the import puts scripts/ on sys.path
-from mech_review import comment, waiver
-from mech_review.report import summarize
+import _kit  # noqa: F401 - the import puts the repo root on sys.path
+from scripts.mech_review import comment, waiver
+from scripts.mech_review.report import summarize
 
 SHA = "a" * 40
 
