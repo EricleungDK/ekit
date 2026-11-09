@@ -8,7 +8,11 @@ env: GITHUB_TOKEN, GITHUB_REPOSITORY (owner/repo), GITHUB_API_URL (default https
      GITHUB_STEP_SUMMARY (optional: rendered comment is also appended there),
      MECH_COMMENT_AUTHOR (login whose marker comment is edited; default github-actions[bot]).
 superseded: if the PR head is no longer this run's head, the comment is left alone (exit = own rc, 0 on crash).
-exit: 0 no fail entries; 1 any fail entry; 2 usage; 3 GitHub API error;
+waivers: a `/mech-waive <id> <reason>` comment on the PR from a person with write access (OWNER, MEMBER or
+     COLLABORATOR, never a bot) turns that fail entry into `waived`; it no longer fails the check (mech_review/waiver.py).
+read-only token (a fork or Dependabot PR: GitHub answers 403): the comment cannot be posted, so the result goes to the
+     job summary and the log only, and the exit code is still the result's.
+exit: 0 no fail entries; 1 any fail entry; 2 usage; 3 GitHub API error (other than that 403);
       4 no usable result (a crash comment is posted in place of the result).
 """
 import argparse
@@ -19,7 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mech_review import comment as C  # noqa: E402
-from mech_review import merge  # noqa: E402
+from mech_review import merge, waiver  # noqa: E402
 
 
 def load(path):
@@ -74,6 +78,7 @@ def main(argv):
         print("mech-comment: several --envelope need job names: r2=FILE red=FILE", file=sys.stderr)
         return 2
 
+    crash = None  # the reason, when no job gave a usable result
     if jobs and jobs[0][0] is not None:
         parts, reasons = {}, {}
         for job, path in jobs:
@@ -83,17 +88,10 @@ def main(argv):
             else:
                 why = args.reason
             parts[job], reasons[job] = got, why
-        present = [e for e in parts.values() if e is not None]
-        if present:
+        if any(e is not None for e in parts.values()):
             env = merge.merge(parts, reasons)
-            body, rc = C.render(env), C.exit_code(env)
         else:
-            env = None
-            if not args.head:
-                print("mech-comment: no usable envelope and --head not given", file=sys.stderr)
-                return 2
-            body, rc = C.render_crash(args.head, "; ".join(f"{j} job: {r}" for j, r in reasons.items())), 4
-            print(f"mech-comment: no usable result: {reasons}", file=sys.stderr)
+            env, crash = None, "; ".join(f"{j} job: {r}" for j, r in reasons.items())
     else:
         env = load(jobs[0][1] if jobs else None)
         if env is not None and args.head and env["head"] != args.head:
@@ -101,13 +99,21 @@ def main(argv):
             env = None
             args.reason = f"guard result is for an older head, not {args.head}"
         if env is None:
-            if not args.head:
-                print("mech-comment: no usable envelope and --head not given", file=sys.stderr)
-                return 2
-            body, rc = C.render_crash(args.head, args.reason), 4
-            print(f"mech-comment: no usable result: {args.reason}", file=sys.stderr)
-        else:
-            body, rc = C.render(env), C.exit_code(env)
+            crash = args.reason
+
+    call = C.http_call(token)
+    if env is None:
+        if not args.head:
+            print("mech-comment: no usable envelope and --head not given", file=sys.stderr)
+            return 2
+        body, rc = C.render_crash(args.head, crash), 4
+        print(f"mech-comment: no usable result: {crash}", file=sys.stderr)
+    else:
+        try:
+            env = waiver.apply(env, waiver.collect(C.comments(call, api, repo, args.pr)))
+        except C.ApiError as e:  # the result stands as it is: an unread waiver never turns a fail into a pass
+            print(f"mech-comment: PR comments not read, no waiver applied: {e}", file=sys.stderr)
+        body, rc = C.render(env), C.exit_code(env)
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
@@ -116,8 +122,13 @@ def main(argv):
 
     run_head = env["head"] if env is not None else args.head
     try:
-        action, out = C.publish(C.http_call(token), api, repo, args.pr, run_head, body, author)
+        action, out = C.publish(call, api, repo, args.pr, run_head, body, author)
     except C.ApiError as e:
+        if e.status == 403:
+            print("::warning::mech-review: this token cannot comment on the PR (a fork or Dependabot PR, or the caller "
+                  "lacks `pull-requests: write`). The result is in the job summary; the check result is unchanged.")
+            print(f"mech-comment: comment not posted: {e}", file=sys.stderr)
+            return rc
         print(f"mech-comment: {e}", file=sys.stderr)
         return 3
     if action == "superseded":

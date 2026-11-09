@@ -13,7 +13,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 ## Gate
 
 1. Envelope `head` ≠ `git rev-parse HEAD` → **stale** ([stale.md](stale.md): judge only the run for your SHA). Rerun mech-review at HEAD.
-2. `severity: confirm` → not red. Reviewer decides. List under Open (finish).
+2. `severity: confirm` → not red. Reviewer decides. List under Open (finish). `severity: waived` → not red: a person let it through (`waiver.by`, `waiver.reason`). Leave it; list it under Open.
 3. `severity: fail` → classify below.
 
 ## Class map
@@ -23,7 +23,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 | `env` | sandbox/env | No app code or test change. Fix the environment (install the missing tool, or rerun where it failed). Protected CI config → Needs-you. Can't rerun → verification debt. |
 | `agent-fixable`, check `R4` | flaky | Follow [flaky.md](flaky.md). |
 | `agent-fixable`, other | real bug | Fix red→green: the entry's test or rule. |
-| `needs-human` | Needs-you | No edit. Needs-you block (finish shape; `Decide:` in place of `Run:`). |
+| `needs-human` | Needs-you | No edit. Needs-you block (finish shape; `Decide:` in place of `Run:`). If the answer is yes, the user comments `/mech-waive <id> <reason>` on the PR and re-runs the failed `report` job. You never post that comment. |
 
 Each `agent-fixable` fail: open its fix plan with two lines, verbatim: `Fix: <hint>` and `Forbidden: <forbidden>`. Your steps go after them. Never take the forbidden route.
 

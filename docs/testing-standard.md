@@ -72,7 +72,7 @@ If a behaviour can be tested at unit level, test it there. Push e2e to the one p
 
 | Cheat | Caught by | Forbidden | Do instead |
 |---|---|---|---|
-| Delete or rename a failing test | R2 (`fail`, agent-fixable) | deleting or renaming a test to hide a failure | Fix the code; the test is restored. A removal the owner wants is the owner's call, outside the agent loop. The entry stays `fail` until then; the agent never self-waives it. |
+| Delete or rename a failing test | R2 (`fail`, agent-fixable) | deleting or renaming a test to hide a failure | Fix the code; the test is restored. A removal the owner wants is the owner's call, outside the agent loop. The entry stays `fail` until the owner waives it ([waiver](mech-review-ci.md#waivers)); the agent never self-waives it. |
 | Skip or ignore a test: `#[ignore]`, `@pytest.mark.skip`, `@pytest.mark.xfail`, `@unittest.skip`, `self.skipTest()`, `pytest.skip()` in a body, `it.skip`, `it.todo`, `xit`, `test.only`, `it.only`, `fit`, a `describe.skip` or `describe.only` around it, a `cfg` that disables it or its enclosing mod (`cfg(any())`, `cfg(FALSE)`, `cfg(not(test))`), a skipped class | R2 (`fail`) | #[ignore] / skip / xfail / only on a test | Fix the test failure. Can't run here: note verification debt, don't skip in code. |
 | Turn a failing test into a panic-expecting one: `#[should_panic]` added to an existing test | R2 (`confirm`) | adding #[should_panic] to an existing test | Assert the error or the value instead. Intended change: reviewer confirms the `confirm` entry. |
 | Drop or move assertions out of a test | R2 (`fail`) | fewer asserts in test `<name>`; fewer asserts in changed test file `<file>` (outside test fns) | Keep the assert. Add a stronger one if needed. Extracting asserts into a helper that the test itself calls is fine (the helper must gain the asserts); moving them into another test, or into a helper the test does not call, is not. |
@@ -91,7 +91,7 @@ If a behaviour can be tested at unit level, test it there. Push e2e to the one p
 | Check | Enforces | Status |
 |---|---|---|
 | R1 red-first | The tests base..head adds or changes run on the base's production code (a worktree at the merge base with head's test-path files on top). At least one fails there; a test that does not build there is `compile-red` and counts as red (R4 builds and runs it at head in the same job, so only this PR's production change can be what it needs); the rest are guards. R4 runs them at head. Commit order and subjects do not matter, so a later commit fixes an R1 fail. A PR whose only new tests are files of another language under `test-paths` (a python PTY smoke in a rust crate) gets an agent-fixable fail per file with the route in the hint (a stack test; smoke-only logic moved into a testable fn). Agent branches only (`--head-branch` starts with the agent prefix), when production files changed. | implemented (#16; fails-on-base) |
-| R2 test-diff guard | Cheat rows above: removed tests (a rename with the same asserts is not a removal), new skip/ignore/xfail/only, `should_panic` added to an existing test (`confirm`), fewer asserts per surviving test fn, weakened or changed expected values (`confirm`), unreasoned suppressions, mutation skips and mutation config edits (`needs-human`), protected paths. No waiver in the PR body. | implemented (#13, #26, #27, review round 1) |
+| R2 test-diff guard | Cheat rows above: removed tests (a rename with the same asserts is not a removal), new skip/ignore/xfail/only, `should_panic` added to an existing test (`confirm`), fewer asserts per surviving test fn, weakened or changed expected values (`confirm`), unreasoned suppressions, mutation skips and mutation config edits (`needs-human`), protected paths. No waiver in the PR body, commits or files: only a person's `/mech-waive` PR comment waives ([waivers](mech-review-ci.md#waivers)). | implemented (#13, #26, #27, review round 1) |
 
 R2 assert rules:
 
@@ -109,7 +109,8 @@ R2 assert rules:
 Statuses (per check, in the envelope):
 
 - `pass`: ran, no `fail` entries.
-- `fail`: at least one `fail` entry. Blocks. Only a code fix (or a human decision for `needs-human`) clears it.
+- `fail`: at least one `fail` entry. Blocks. Only a code fix, or a person's waiver of each entry, clears it.
+- `waived`: the check ran and every `fail` entry it had was waived by a person (CI report step only). Does not block. Never `all pass`.
 - `partial`: R3 budget hit with no MISSED so far. Reported `R3 partial (tested/total)`. Does not block.
 - `n/a`: tool not installable (`n/a (env)`). Not a pass. Say so in the report.
 - `skipped`: check does not apply, or a subcommand does not run it (`not run by r2`). Reason in the note. R1 is skipped for docs-only PRs and non-agent branches.
@@ -132,7 +133,7 @@ Order:
 
 1. Mech-review runs first. Its JSON (`<!-- mech-review -->` PR comment) goes to the reviewer.
 2. Reviewer does not re-derive facts. It reads `confirm` entries and decides each.
-3. Reviewer cannot waive a `fail` entry. Fix it or report it.
+3. A reviewing agent cannot waive a `fail` entry: fix it or report it. A person can, with a `/mech-waive <id> <reason>` PR comment ([waivers](mech-review-ci.md#waivers)).
 4. Mech green does not mean review passed. Review approve does not excuse a `fail`.
 
 ## 6. Contract
@@ -144,18 +145,19 @@ Entry fields (stable; add fields, never rename):
 | `id` | `<check>-<8 hex of sha1(check + file + key)>`, key = rule and test fn name (`ignore:<fn>`, `assert-count:<fn>`, ...). Same across rounds, survives line moves. A repeat of one key in one file (line order): the 2nd occurrence is keyed `<key>#1`, the 3rd `<key>#2`; the first keeps the plain key. |
 | `check` | `R1`, `R2`, `R3`, `R4`, `CI` (`CI` reserved for CI-level failures outside R1–R4, e.g. mech-review's own infra error) |
 | `class` | `agent-fixable`, `needs-human`, `env` |
-| `severity` | `fail` (blocks), `confirm` (reviewer decides) |
+| `severity` | `fail` (blocks), `confirm` (reviewer decides), `waived` (was `fail`; a person let it through, see `waiver`) |
+| `waiver` | only on a `waived` entry: `{by, reason, url}` of the `/mech-waive` comment |
 | `file`, `line` | location |
 | `problem` | what broke |
 | `hint` | intended fix |
 | `forbidden` | shortcut not allowed |
 
-Envelope: head SHA, base SHA, ekit version, per-check status (`pass|fail|partial|n/a|skipped`) with note, entries, summary.
+Envelope: head SHA, base SHA, ekit version, per-check status (`pass|fail|waived|partial|n/a|skipped`) with note, entries, summary.
 
 Summary:
 
 - `all pass <sha>`: no entries and every check passed. Never while a check is skipped or n/a.
-- Otherwise `<pass|fail> <sha> (<F> fail, <C> confirm; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`. The `; skipped:` part appears only when some check is skipped, `; n/a:` only when some check is n/a, e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`. `fail` when `F` > 0.
+- Otherwise `<pass|fail> <sha> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`. `, <W> waived` appears only when a person waived an entry. The `; skipped:` part appears only when some check is skipped, `; n/a:` only when some check is n/a, e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`. `fail` when `F` > 0.
 - Same format in `--format text` (first line) and in the envelope.
 
 ## Per-app doc

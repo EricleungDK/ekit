@@ -113,12 +113,26 @@ def _not_run_lines(env):
     return ["Did not run: " + "; ".join(na)] if na else []
 
 
+def _waiver_lines(env):
+    """One line per waived entry: who let it through, and why. The login is in code style so nobody is pinged."""
+    return [f"Waived: {_cell(e['id'])} by `{_cell((e.get('waiver') or {}).get('by', '?')).replace('`', chr(39))}`: "
+            f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
+            for e in env["entries"] if e["severity"] == "waived"]
+
+
+WAIVE_HELP = ("A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, "
+              "then re-run this run's failed job (`report`).")
+
+
 def _body(env, shown, json_text):
     entries = env["entries"]
     lines = [MARKER, "## mech-review", "", f"**{headline(env)}**", ""]
     not_run = _not_run_lines(env)
     if not_run:
         lines += not_run + [""]
+    waived = _waiver_lines(env)
+    if waived:
+        lines += waived + [""]
     timing = _timing_lines(env)
     if timing:
         lines += timing + [""]
@@ -129,6 +143,8 @@ def _body(env, shown, json_text):
         lines.append(_table(shown))
         if len(shown) < len(entries):
             lines += ["", f"_showing first {len(shown)} of {len(entries)} entries_"]
+        if any(e["severity"] == "fail" and e.get("check") != "CI" for e in entries):
+            lines += ["", WAIVE_HELP]
     lines.append("")
     if json_text is None:
         lines.append("JSON omitted (comment size limit). Full result: `mech-review-json` artifact of this run.")
@@ -175,17 +191,23 @@ PER_PAGE = 100
 DEFAULT_AUTHOR = "github-actions[bot]"  # login of the GITHUB_TOKEN actor; override with MECH_COMMENT_AUTHOR
 
 
-def find_marker(call, api, repo, pr, author=DEFAULT_AUTHOR):
-    """Id of the first issue comment by `author` whose body starts with MARKER, paging until a short page. None if absent."""
+def comments(call, api, repo, pr):
+    """Every issue comment on the PR, oldest first, paging until a short page."""
     page = 1
     while True:
         items = call("GET", f"{api}/repos/{repo}/issues/{pr}/comments?per_page={PER_PAGE}&page={page}", None)
-        for c in items:
-            if c.get("body", "").startswith(MARKER) and (c.get("user") or {}).get("login") == author:
-                return c["id"]
+        yield from items
         if len(items) < PER_PAGE:
-            return None
+            return
         page += 1
+
+
+def find_marker(call, api, repo, pr, author=DEFAULT_AUTHOR):
+    """Id of the first issue comment by `author` whose body starts with MARKER. None if absent."""
+    for c in comments(call, api, repo, pr):
+        if c.get("body", "").startswith(MARKER) and (c.get("user") or {}).get("login") == author:
+            return c["id"]
+    return None
 
 
 def upsert(call, api, repo, pr, body, author=DEFAULT_AUTHOR):

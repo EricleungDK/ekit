@@ -23,9 +23,14 @@ on:
         default: |
           .github/**
       agent-branch-prefix:
-        description: "R1 red-first runs only on head branches with this prefix"
+        description: "R1 red-first runs only on head branches that start with one of these prefixes, one per line (* = every branch)"
         type: string
-        default: "agent/"
+        default: |
+          agent/
+          claude/
+          codex/
+          copilot/
+          cursor/
       mutation-budget:
         description: "R3 budget in minutes per mutants shard, and for the baseline step (cargo-mutants on the diff); a budget hit is partial, not a failure; a baseline that does not finish in it is n/a"
         type: string
@@ -206,7 +211,10 @@ jobs:
         run: |
           set -uo pipefail
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
-                --head-branch "$HEAD_REF" --agent-prefix "$AGENT_PREFIX" --project-dir "$PROJECT_DIR")
+                --head-branch "$HEAD_REF" --project-dir "$PROJECT_DIR")
+          while IFS= read -r g; do
+            if [ -n "$g" ]; then args+=(--agent-prefix "$g"); fi
+          done <<< "$AGENT_PREFIX"
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"

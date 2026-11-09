@@ -5,7 +5,7 @@ import re
 import signal
 import sys
 
-from . import doctor, engine, gitio, merge
+from . import doctor, engine, gitio, merge, red
 from .stack import ADAPTERS
 
 
@@ -25,8 +25,8 @@ checks (status in envelope: pass | fail | partial | n/a | skipped):
       code (a worktree at the merge base with head's test-path files on top), must catch the change:
       at least one fails there (a build failure there is compile-red: red; R4 builds it at head). Tests that pass there are
       guards. Commit order and subjects do not matter: a later commit can fix an R1 fail. R4 runs
-      the same tests at head. Skipped unless --head-branch starts with --agent-prefix and a
-      production file changed; n/a when the toolchain is absent.
+      the same tests at head. Skipped unless --head-branch starts with an --agent-prefix (default: agent/ claude/
+      codex/ copilot/ cursor/; `*` = every branch) and a production file changed; n/a when the toolchain is absent.
   R4  determinism (red subcommand): each new or changed #[test] runs 5x at head; any failing run
       is a fail. n/a when the toolchain is absent.
   R3  mutation on the diff (`mutants`): cargo-mutants `--in-diff` (rust), mutmut (python), Stryker 10.0.0 (ts: changed
@@ -61,7 +61,8 @@ envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summar
 exit: 0 no fail entries (confirm entries allowed), 1 any fail entry, 2 usage or git error.
 
 Guard exceptions removed (#27): --pr-body is a usage error (exit 2). A fail stays fail until
-  the code is fixed; a protected-path change is needs-human. Owner decides out of band.
+  the code is fixed; a protected-path change is needs-human. The owner decides with a `/mech-waive <id> <reason>`
+  PR comment, which the CI report step applies (mech-comment.py); nothing in the PR's own content can waive.
 
 test paths: a .rs file matching a --test-paths glob is test code; every assert in it (helpers too) counts.
   Other .rs files count asserts inside #[test] fns and #[cfg(test)] mods only, never production code.
@@ -109,7 +110,9 @@ def build_parser():
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text (summary + entries)")
     p.add_argument("--head-branch", metavar="NAME", help="head branch name (R1 needs it: CI passes github.head_ref)")
-    p.add_argument("--agent-prefix", default="agent/", metavar="PREFIX", help="agent branch prefix for R1 (default agent/)")
+    p.add_argument("--agent-prefix", action="append", default=None, metavar="PREFIX",
+                   help="agent branch prefix for R1, repeatable or comma-separated (default: " + " ".join(red.AGENT_PREFIXES)
+                        + "); * matches every branch")
     p.add_argument("--test-cmd", metavar="CMD", help="test command for R1/R4 (default: the stack's: rust cargo test, python "
                                                        "pytest, ts node_modules/.bin/vitest or jest from package.json)")
     p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",

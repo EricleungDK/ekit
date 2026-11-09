@@ -6,6 +6,7 @@ Vocabulary of verdicts: see stack.Adapter.outcome.
 """
 import contextlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -149,6 +150,20 @@ def overlay_tests(rv, wt):
     return out
 
 
+# branch prefixes the supported harnesses give their own branches, plus the kit's `agent/`
+AGENT_PREFIXES = ("agent/", "claude/", "codex/", "copilot/", "cursor/")
+
+
+def agent_prefixes(value):
+    """--agent-prefix as a list: None is the default set; a string or strings split on commas and whitespace.
+    `*` matches every branch."""
+    if value is None:
+        return list(AGENT_PREFIXES)
+    items = [value] if isinstance(value, str) else list(value)
+    out = [p for item in items for p in re.split(r"[,\s]+", item) if p]
+    return out or list(AGENT_PREFIXES)
+
+
 def r1(rv, head_branch, agent_prefix, cmd, runner):
     """R1 red-first: the tests this PR adds or changes, run against the base's production code (a worktree at the merge
     base with head's test-path files on top), must catch the change: at least one fails there. Tests that pass there
@@ -157,8 +172,9 @@ def r1(rv, head_branch, agent_prefix, cmd, runner):
     repo, mb, head, adapter, test_globs, project_dir = rv
     if head_branch is None:
         return check("skipped", "no --head-branch: cannot tell an agent branch"), []
-    if not head_branch.startswith(agent_prefix):
-        return check("skipped", f"branch {head_branch} does not match the agent prefix {agent_prefix}"), []
+    prefixes = agent_prefixes(agent_prefix)
+    if not any(p == "*" or head_branch.startswith(p) for p in prefixes):
+        return check("skipped", f"branch {head_branch} does not match an agent prefix ({' '.join(prefixes)})"), []
     if not prod_changes(rv):
         return check("skipped", "no production file changed"), []
     forbidden = "a production change no test catches"
