@@ -8,11 +8,11 @@ You are the **orchestrator**. Subagents do the legwork; you hold the acceptance 
 
 Input: a task. It may name GitHub issues (link or `#N`), or be free-form with no issue at all; both run the same flow.
 
-## 1. Ask the model
+## 1. Subagent model
 
-First action, before any read, search or plan: ask the user which model the subagents use (AskUserQuestion: Opus, Sonnet, Haiku, Fable). Ask again every time this skill is invoked, never reuse an earlier answer. Pass it as `model` on every Agent call this run.
+The task names a model for the subagents → pass it as `model` on every Agent call this run. It names none → subagents inherit yours: leave `model` unset, say so in one line with the checklist (step 3), and do not stop to ask. A choice made in an earlier run does not carry over.
 
-Done when: the user has picked a model.
+Done when: you know whether `model` is set, and to what.
 
 ## 2. Ground
 
@@ -43,7 +43,7 @@ Show the units (name, files owned, checklist items, depends on) with the checkli
 
 - One agent per unit; units touching disjoint files run in parallel, in one message. Run them in the background.
 - Every brief follows [brief-template.md](brief-template.md). An agent starts with none of your context, so the brief is self-contained.
-- **Subagents cannot spawn subagents.** A subagent whose flow (e.g. `/implement`) reaches a step that fans out, code review above all, hands that step to you through the **review relay** below. Research skills and workflows stay with you from the start.
+- **Subagents cannot spawn subagents.** A subagent whose flow (an implement skill, say) reaches a step that fans out, code review above all, hands that step to you through the **review relay** below. Research skills and workflows stay with you from the start.
 - Fix loop: each failing unit gets at most **3 rounds** (initial fix plus two retries after CI or verification fails). Count rounds per unit and per mech entry `id`; the first to reach 3 escalates. Hand each failing or open entry to the engineer verbatim (id, file, line, problem, hint, forbidden), brief or review relay alike, with the rule: its fix commit carries body line `mech: <id>`. No agent waives a `fail`. After round 3, stop and escalate to the user with evidence.
 
 Done when: every unit has a running agent.
@@ -53,7 +53,7 @@ Done when: every unit has a running agent.
 Review stays inside the subagent's own implement flow; only the dispatch moves to you.
 
 1. At its review step, the subagent commits its work and stops with a **review request** as its report: branch, base and head SHAs, checklist items covered, files changed, what to focus on. It stays alive, context intact.
-2. Run the mech checks first (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`, cloned once from `https://github.com/EricleungDK/ekit`): `python3 -I <kit>/scripts/mech-review.py all --repo <worktree> --base <base> --head <head> --stack <stack> --head-branch <branch>` plus the repo's `--test-paths`/`--protected-paths`/`--agent-prefix` (or its `<!-- mech-review -->` PR comment). Then run `mp-code-review` (or `code-review`) scoped to base..head, reviewers on the model the user picked, with the mech JSON. The review is yours to run, never skip it because the agent's tests are green.
+2. Run the mech checks first (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`, cloned once from `https://github.com/EricleungDK/ekit`): `python3 -I <kit>/scripts/mech-review.py all --repo <worktree> --base <base> --head <head> --stack <stack> --head-branch <branch>` plus the repo's `--test-paths`/`--protected-paths`/`--agent-prefix` (or its `<!-- mech-review -->` PR comment). `<stack>` is `rust`, `python` or `ts`; a repo in any other language has no mech checks: say so once, list `mech-review: unsupported stack` as verification debt, and go on to the review. Then run the code review this harness offers (`/code-review`, or reviewer subagents briefed with the range) scoped to base..head, on the subagent model from step 1, with the mech JSON. The review is yours to run, never skip it because the agent's tests are green.
 3. Send the findings back to that same agent with SendMessage (its ID, not a new agent): each finding with file, line, and failure scenario, plus which ones you judge real. Filter out findings you verified as false, and say why. `fail` entries go back verbatim. Each `confirm` (changed expected value): confirm only if the spec sets the new value, else reject with reason. Legit test removal: `needs-human`, the owner decides (a `/mech-waive` PR comment is theirs to post), never self-declared.
 4. The agent fixes, re-verifies, and either finishes its flow or sends a new review request. Each review-fix cycle counts as one of its 3 rounds.
 
