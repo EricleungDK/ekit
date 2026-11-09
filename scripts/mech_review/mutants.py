@@ -572,10 +572,10 @@ def _find(lines, lo, hi, pattern):
     return next((i for i in range(lo, hi) if rx.match(lines[i])), None)
 
 
-def locate(src, name, removed):
-    """1-based line of the removed text in the function a mutmut name points at, or None when the name cannot be
-    mapped (no such class or function in the file, or a name form this does not read). A method is searched for
-    inside its class, so the same method name in two classes resolves to the right one. Lines are the file's."""
+def scope_span(src, name):
+    """(first, last) 1-based lines of the function a mutmut name points at, or None when the name cannot be mapped
+    (no such class or function in the file, or a name form this does not read). A method is searched for inside its
+    class, so the same method name in two classes resolves to the right one."""
     scope = mutant_scope(name)
     if scope is None:
         return None
@@ -593,10 +593,40 @@ def locate(src, name, removed):
         start = _find(lines, 0, len(lines), rf"(async\s+)?def\s+{re.escape(fn)}\s*\(")  # column 0: a module function
     if start is None:
         return None
-    for j in range(start, _block_end(lines, start)):
+    end = _block_end(lines, start)
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1  # the blank lines between this function and the next are not its own
+    return start + 1, end
+
+
+def locate(src, name, removed):
+    """1-based line of the removed text in the function a mutmut name points at (scope_span), or None when the name
+    cannot be mapped or the text is not in that function. Lines are the file's."""
+    span = scope_span(src, name)
+    if span is None:
+        return None
+    lines = (src or "").splitlines()
+    for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
             return j + 1
     return None
+
+
+def outside_diff(name, sources, changed):
+    """True when the mutant cannot be on a changed line: its function is in the changed files (sources: path -> text)
+    and no copy of it holds a changed line (changed: path -> [(line, text)]). Known from the name alone, so mutmut is
+    not asked for the mutant's diff: it mutates whole files, and a large file a PR touches in one place has thousands
+    of mutants outside the diff. A name this cannot read, or a function found in no changed file, is not settled
+    here (False): the caller looks at the diff."""
+    seen = False
+    for path, src in sources.items():
+        span = scope_span(src, name)
+        if span is None:
+            continue
+        seen = True
+        if any(span[0] <= n <= span[1] for n, _ in changed.get(path, [])):
+            return False
+    return seen
 
 
 def _glob_escape(path):
@@ -726,8 +756,12 @@ class Mutmut:
                 return _check("pass", "0 mutants in the diff", 0, 0), []
             caught = sum(1 for _, k, _ in rows if k == "caught")
             found, outside, unlocated = [], 0, 0
+            sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
             for name, k, status in rows:
                 if k != "missed":
+                    continue
+                if outside_diff(name, sources, changed):
+                    outside += 1  # its whole function is unchanged: no `mutmut show` needed to know
                     continue
                 rc_s, show = runner(shlex.split(cmd) + ["show", name], crate, PROBE_TIMEOUT)
                 parsed = parse_show(show) if rc_s == 0 else None
