@@ -1,6 +1,10 @@
 # Minimal test helpers. Source from tests/*.test.sh.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAILS=0
+# The repos the tests build are throwaway: the machine's git config (commit signing, hooks, templates, default branch)
+# must not reach them, and they need an identity of their own.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 
 # fakebin <dir> <tool...>: dir with symlinks to real tools only, for PATH isolation
 fakebin() {

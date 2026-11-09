@@ -6,6 +6,10 @@ import importlib.util
 import os
 import sys
 
+# The repos these tests build are throwaway: no user or system git config reaches them (signing, hooks, templates).
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = os.path.join(ROOT, "scripts")
 if ROOT not in sys.path:

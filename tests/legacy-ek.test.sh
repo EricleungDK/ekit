@@ -37,6 +37,7 @@ has "$(jq -r .reason <<<"$out")" "scenarios.py" "legacy gate: scenario reason"
 
 # preflight sees .ek/scenarios
 P="$T/pf"; mkdir -p "$P/.ek/scenarios/a"; Bn="$T/bin"; fakebin "$Bn" python3 jq
+echo 'tmux new -d -s t' > "$P/.ek/scenarios/a/run.sh"
 out="$(PATH="$Bn" HOME="$T/home" bash "$ROOT/scripts/preflight.sh" "$P" 2>&1)"
 has "$out" "tmux: missing" "legacy preflight: scenario tools checked"
 
