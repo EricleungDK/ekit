@@ -1,5 +1,5 @@
 source "$(dirname "$0")/lib.sh"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 export EKIT_STATE_DIR="$T/state" XDG_STATE_HOME="$T/state" HOME="$T/home"; mkdir -p "$HOME"
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q
 

@@ -1,6 +1,6 @@
 source "$(dirname "$0")/lib.sh"
 SS="$ROOT/scripts/session-start.py"; FG="$ROOT/scripts/finish-gate.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 export EKIT_STATE="$T/state"
 
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q; git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init

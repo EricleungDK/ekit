@@ -7,6 +7,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 warn() { echo "⚠ $1"; }
 good() { (( quiet )) || echo "ok $1"; }
 in_file() { [[ -f "$dir/$1" ]] && grep -q "$2" "$dir/$1"; }
+# to <secs> <cmd...>: bounded where the host can bound it. macOS ships no `timeout` (coreutils has gtimeout; perl is there).
+to() {
+  local s="$1"; shift
+  if have timeout; then timeout "$s" "$@"
+  elif have gtimeout; then gtimeout "$s" "$@"
+  elif have perl; then perl -e 'alarm shift; exec @ARGV' "$s" "$@"
+  else "$@"; fi
+}
 
 have python && good python || warn "python: missing → use python3"
 have jq && good jq || warn "jq: missing → python3 -c 'import json'"
@@ -33,27 +41,34 @@ fi
 
 if compgen -G "$dir/Dockerfile" >/dev/null || compgen -G "$dir/*compose*.y*ml" >/dev/null; then
   if ! have docker; then warn "docker: missing → container tests → verification debt"
-  elif err="$(timeout 5 docker ps 2>&1 >/dev/null)"; then good docker
+  elif err="$(to 5 docker ps 2>&1 >/dev/null)"; then good docker
   else warn "docker: unusable (${err:0:80}) → container tests → verification debt"
   fi
 fi
 
-scenarios=0; [[ -d $dir/.ekit/scenarios || -d $dir/.ek/scenarios ]] && scenarios=1
+# scenario drivers: only the tools this repo's scenarios name
+sdir=""; for d in .ekit/scenarios .ek/scenarios; do [[ -d $dir/$d ]] && { sdir="$dir/$d"; break; }; done
+uses() { [[ -n $sdir ]] && grep -rqsw -- "$1" "$sdir"; }
 
-if (( scenarios )); then
-  for t in tmux expect curl; do
+for t in tmux expect curl; do
+  if uses "$t"; then
     have "$t" && good "$t" || warn "$t: missing → scenarios needing $t can't run here → human verdict / verification debt"
-  done
-fi
+  fi
+done
 
-if (( scenarios )) || in_file package.json playwright || in_file pyproject.toml playwright || in_file requirements.txt playwright; then
-  if [[ -x ${CHROME_BIN:-} ]] || compgen -G "$HOME/.cache/ms-playwright/chromium-*/chrome-linux*/chrome" >/dev/null; then good playwright
-  else warn "playwright: no chromium in ~/.cache/ms-playwright or \$CHROME_BIN → npx playwright install chromium"
+if uses playwright || in_file package.json playwright || in_file pyproject.toml playwright || in_file requirements.txt playwright; then
+  found=0; [[ -x ${CHROME_BIN:-} ]] && found=1
+  # Playwright's browser cache: Linux, macOS, or wherever PLAYWRIGHT_BROWSERS_PATH points
+  for c in "${PLAYWRIGHT_BROWSERS_PATH:-}" "$HOME/.cache/ms-playwright" "$HOME/Library/Caches/ms-playwright"; do
+    [[ -n $c ]] && compgen -G "$c/chromium*" >/dev/null && found=1
+  done
+  if (( found )); then good playwright
+  else warn "playwright: no chromium in the ms-playwright cache or \$CHROME_BIN → npx playwright install chromium"
   fi
 fi
 
 if have gh; then
-  timeout 5 gh auth status >/dev/null 2>&1 && good gh || warn "gh: not authed → user runs: ! gh auth login"
+  to 5 gh auth status >/dev/null 2>&1 && good gh || warn "gh: not authed → user runs: ! gh auth login"
   (( quiet )) || echo "note gh issue view: always pass --json (plain output errors on Projects classic)"
 fi
 

@@ -14,7 +14,7 @@ A mech-review JSON (PR comment `<!-- mech-review -->` or CLI output) → follow 
 Check them in this order; the first that fits wins.
 
 1. **sandbox/env**: EPERM, EROFS, "Operation not permitted", read-only `.git`, listen EPERM, docker.sock, DNS resolve failure, missing tool.
-   → Leave code and config as is; the next action is the same command rerun once outside the sandbox (Claude Code: Bash with `dangerouslyDisableSandbox: true`, which asks the user; Codex: request escalation). Record "passed only unsandboxed". If the rerun is denied or impossible, log it as **verification debt** (finish skill). Missing tool: use the preflight fallback.
+   → Leave code and config as is; the next action is the same command rerun once outside the sandbox (Claude Code: Bash with `dangerouslyDisableSandbox: true`, which asks the user; Codex: request escalation). Record "passed only unsandboxed". The rerun is the evidence: if it fails the same way outside the sandbox, this class does not fit (the program printed that error itself), so go on down the list. If the rerun is denied or impossible, log it as **verification debt** (finish skill). Missing tool: use the preflight fallback.
 2. **stale**: the test expects old text or an old seam; a stale server holds the port; local main is behind origin; the CI SHA ≠ HEAD; task docs are out of date.
    → Follow [stale.md](stale.md).
 3. **flaky**: passes and fails on the same code.

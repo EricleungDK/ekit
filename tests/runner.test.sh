@@ -1,6 +1,6 @@
 source "$(dirname "$0")/lib.sh"
 SC="$ROOT/scripts/scenarios.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 export EKIT_STATE="$T/state"
 
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q
@@ -45,11 +45,12 @@ rm -rf "$R/.ekit/scenarios/nodoc"
 rm -rf "$R/.ekit"; mk good 'echo out-line; echo err-line >&2'; mk bad 'echo b; exit 4'
 sc run >/dev/null
 TH="$(sc tree-hash)"
-key="$(printf %s "$(realpath "$R")" | sha1sum | cut -c1-12)"
+rp() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }  # no realpath/sha1sum on stock macOS
+key="$(python3 -c 'import hashlib,os,sys; print(hashlib.sha1(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:12])' "$R")"
 RJ="$EKIT_STATE/scenarios/$key/results.json"
 eq "$(jq -r .verdict "$RJ")" "FAIL" "results verdict"
 eq "$(jq -r .tree "$RJ")" "$TH" "results tree == tree-hash"
-eq "$(jq -r .repo "$RJ")" "$(realpath "$R")" "results repo"
+eq "$(jq -r .repo "$RJ")" "$(rp "$R")" "results repo"
 eq "$(jq -r '.scenarios[]|select(.id=="bad").exit' "$RJ")" "4" "results exit"
 eq "$(jq -r '.scenarios[]|select(.id=="good").duration|type' "$RJ")" "number" "results duration"
 eq "$(jq -r '.scenarios[]|select(.id=="bad").reason' "$RJ")" "exit 4" "results reason on fail"
@@ -206,6 +207,6 @@ if command -v bwrap >/dev/null && bwrap --bind / / true 2>/dev/null; then
   h2="$(cd "$D" && bwrap --bind / / --dev /dev --ro-bind /dev/null "$D/.mcp.json" env -u EKIT_STATE python3 -I "$SC" tree-hash)"
   rm -f "$D/.mcp.json"
   eq "$h2" "$h1" "sandbox /dev/null mounts ignored by tree hash"
-else ok "sandbox /dev/null mounts ignored by tree hash (skipped: no bwrap)"; fi
+else skip "sandbox /dev/null mounts ignored by tree hash" "no usable bwrap here"; fi
 
 done_tests

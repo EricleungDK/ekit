@@ -1,6 +1,6 @@
 source "$(dirname "$0")/lib.sh"
 IN="$ROOT/cloud/install.sh"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 R="$T/repo"; mkdir -p "$R/.claude"; git -C "$R" init -q
 echo '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}' > "$R/.claude/settings.json"
 git -C "$R" add .; git -C "$R" -c user.email=t@t -c user.name=t commit -qm init

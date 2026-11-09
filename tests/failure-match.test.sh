@@ -8,6 +8,9 @@ ctx()  { jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$1"; }
 out="$(feed "npx playwright test" $'Exit code 1\nError: listen EPERM: operation not permitted 127.0.0.1:8917')"
 has "$(ctx "$out")" "sandbox/env" "listen EPERM → sandbox/env"
 has "$(ctx "$out")" "rerun once unsandboxed" "sandbox → rerun unsandboxed"
+has "$(ctx "$out")" 'matched `EPERM`' "sandbox → names what matched"
+has "$(ctx "$out")" "Fails the same way there → it is the code or the test" "sandbox → the rerun settles it"
+lacks "$(ctx "$out")" "failure, not a code bug" "sandbox → a lead, not a verdict"
 eq "$(jq -r .hookSpecificOutput.hookEventName <<<"$out")" "PostToolUseFailure" "event name echoed"
 
 out="$(feed "git commit -m x" $'Exit code 128\nfatal: Unable to create \'.git/index.lock\': Read-only file system')"

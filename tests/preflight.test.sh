@@ -1,9 +1,9 @@
 source "$(dirname "$0")/lib.sh"
 PF="$ROOT/scripts/preflight.sh"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 # the host's browser must not reach preflight: GitHub's ubuntu image sets CHROME_BIN, which made the
 # "no chromium" cases see one (the release run for v0.2.5 failed on them)
-unset CHROME_BIN
+unset CHROME_BIN PLAYWRIGHT_BROWSERS_PATH
 
 run() { PATH="$1" HOME="$T/home" bash "$PF" "$2" 2>&1; }
 
@@ -51,16 +51,43 @@ has "$out" "container tests → verification debt" "docker fallback stated"
 # playwright project, no chromium
 P="$T/p7"; mkdir -p "$P"; echo '{"devDependencies":{"@playwright/test":"1.0"}}' > "$P/package.json"
 out="$(run "$T/b2" "$P")"
-has "$out" "playwright: no chromium in ~/.cache/ms-playwright or \$CHROME_BIN → npx playwright install chromium" "playwright no browser"
+has "$out" "playwright: no chromium in the ms-playwright cache or \$CHROME_BIN → npx playwright install chromium" "playwright no browser"
 mkdir -p "$T/home/.cache/ms-playwright/chromium-1/chrome-linux64"; touch "$T/home/.cache/ms-playwright/chromium-1/chrome-linux64/chrome"
 out="$(run "$T/b2" "$P")"
-lacks "$out" "playwright:" "chromium found in cache"
+lacks "$out" "playwright:" "chromium found in the Linux cache"
+rm -rf "$T/home/.cache"; mkdir -p "$T/home/Library/Caches/ms-playwright/chromium-1200/chrome-mac"
+out="$(run "$T/b2" "$P")"
+lacks "$out" "playwright:" "chromium found in the macOS cache"
+rm -rf "$T/home/Library"; mkdir -p "$T/pwb/chromium_headless_shell-1200"
+out="$(PLAYWRIGHT_BROWSERS_PATH="$T/pwb" run "$T/b2" "$P")"
+lacks "$out" "playwright:" "chromium found under PLAYWRIGHT_BROWSERS_PATH"
+out="$(run "$T/b2" "$P")"
+has "$out" "playwright: no chromium" "no cache anywhere → warning again"
+mkdir -p "$T/home/.cache/ms-playwright/chromium-1/chrome-linux64"
 
 # gh present but not authed
 B="$T/b8"; fakebin "$B" python3 jq; stub "$B" gh '[[ $1 == auth ]] && exit 1; exit 0'
 out="$(run "$B" "$T/p1")"
 has "$out" "gh: not authed → user runs: ! gh auth login" "gh unauthed"
 has "$out" "gh issue view: always pass --json" "gh --json gotcha"
+
+# a host with no `timeout` (stock macOS): a working gh and docker are not reported broken
+nt() { local d="$1"; shift; mkdir -p "$d"; for t in bash sh env grep sed head cat "$@"; do ln -sf "$(command -v "$t")" "$d/$t"; done; }
+P="$T/p8"; mkdir -p "$P"; touch "$P/Dockerfile"
+for helper in none perl; do
+  B="$T/nt-$helper"; nt "$B" python3; [[ $helper == perl ]] && nt "$B" perl
+  stub "$B" gh 'exit 0'; stub "$B" docker 'exit 0'
+  out="$(run "$B" "$P")"
+  lacks "$out" "timeout: command not found" "no timeout ($helper): no shell error leaks"
+  has "$out" "ok gh" "no timeout ($helper): authed gh is ok"
+  has "$out" "ok docker" "no timeout ($helper): working docker is ok"
+done
+stub "$T/nt-perl" gh '[[ $1 == auth ]] && exit 1; exit 0'
+has "$(run "$T/nt-perl" "$P")" "gh: not authed" "no timeout: an unauthed gh is still reported"
+stub "$T/nt-perl" docker 'sleep 30'
+t0=$SECONDS; out="$(run "$T/nt-perl" "$P")"
+has "$out" "docker: unusable" "no timeout: a hung docker is unusable"
+(( SECONDS - t0 < 15 )) && ok "no timeout: perl bounds a hung docker" || fail "no timeout: perl bounds a hung docker"
 
 # .git read-only
 P="$T/p9"; mkdir -p "$P/.git"; chmod a-w "$P/.git"
@@ -74,8 +101,9 @@ B="$T/b10"; fakebin "$B" jq; stub "$B" python3 '[[ "$*" == *bind* ]] && { echo "
 out="$(run "$B" "$T/p1")"
 has "$out" "loopback: bind 127.0.0.1 blocked (sandbox) → server/e2e tests need unsandboxed run" "loopback blocked"
 
-# scenarios marker: missing driver tools warn
+# scenarios marker: missing driver tools warn, for the tools the scenarios name
 P="$T/p11"; mkdir -p "$P/.ekit/scenarios/a"
+printf 'tmux new -d -s t\nexpect -c "spawn x"\ncurl -s localhost\n' > "$P/.ekit/scenarios/a/run.sh"
 out="$(run "$T/b2" "$P")"
 for t in tmux expect curl; do
   has "$out" "$t: missing → scenarios needing $t can't run here → human verdict / verification debt" "scenarios + no $t"
@@ -93,11 +121,16 @@ lacks "$out" "ok tmux" "--quiet hides ok driver lines"
 out="$(run "$B" "$P")"
 has "$out" "ok tmux" "driver present → ok line"
 
-# playwright check also applies when scenarios exist (no playwright dep)
-rm -rf "$T/home/.cache"
-P="$T/p12"; mkdir -p "$P/.ekit/scenarios/a"
+# a scenario that drives none of them: no driver warning at all
+P="$T/p11b"; mkdir -p "$P/.ekit/scenarios/a"; echo 'python3 app.py --help' > "$P/.ekit/scenarios/a/run.sh"
 out="$(run "$T/b2" "$P")"
-has "$out" "playwright: no chromium" "scenarios trigger playwright check"
+for t in tmux expect curl playwright; do lacks "$out" "$t:" "scenarios never name $t → no $t warning"; done
+
+# playwright check also applies when a scenario drives playwright (no playwright dep)
+rm -rf "$T/home/.cache"
+P="$T/p12"; mkdir -p "$P/.ekit/scenarios/a"; echo 'npx playwright test' > "$P/.ekit/scenarios/a/run.sh"
+out="$(run "$T/b2" "$P")"
+has "$out" "playwright: no chromium" "a playwright scenario triggers the playwright check"
 P="$T/p13"; mkdir -p "$P"
 out="$(run "$T/b2" "$P")"
 lacks "$out" "playwright:" "no marker → no playwright check"
