@@ -29,6 +29,8 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 - Failure hints for sandbox/network signatures are a lead with the check that settles it, not "not a code bug".
 - `taste-it` and `finish` no longer tell the agent to verify with editable or global installs.
 - The python stack's R2 message for a skipped test said `#[ignore]`.
+- Python R3 looked up every missed mutant of a changed file with `mutmut show`, one call each and unbounded: on a large file with little unit coverage the step ran for tens of minutes after the mutation budget. Mutants in functions the diff does not touch are now counted without a lookup.
+- The test suites no longer run under the machine's git config (commit signing, hooks, default branch), and two tests that failed as root or in a container without an init process now say why they could not run.
 
 ## 0.2.6 and earlier
 
