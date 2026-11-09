@@ -85,6 +85,22 @@ rm -rf "$R/.ekit" "$EKIT_STATE"; out="$(sc check)"; eq "$?" "2" "check no scenar
 mk good true
 out="$(sc check)"; eq "$?" "1" "check no results → 1"; has "$out" "no results" "check reason: no results"
 sc run >/dev/null; out="$(sc check)"; eq "$?" "0" "check fresh PASS → 0"
+# the hash is the tree's content: committing, amending or staging the tested files keeps the PASS fresh
+gc() { git -C "$R" -c user.email=t@t -c user.name=t "$@"; }
+echo w > "$R/work.txt"; sc run >/dev/null
+h="$(sc tree-hash)"; git -C "$R" add -A; eq "$(sc tree-hash)" "$h" "staging keeps the hash"
+gc commit -q -m work; eq "$(sc tree-hash)" "$h" "commit keeps the hash"
+eq "$(sc tree-hash)" "$(git -C "$R" rev-parse 'HEAD^{tree}')" "clean tree: hash is HEAD's tree"
+sc check >/dev/null; eq "$?" "0" "check after commit → still fresh"
+gc commit -q --amend -m reworded; sc check >/dev/null; eq "$?" "0" "check after amend → still fresh"
+before="$(git -C "$R" count-objects -v)"; sc tree-hash >/dev/null; echo n > "$R/untracked.txt"; sc tree-hash >/dev/null; rm "$R/untracked.txt"
+eq "$(git -C "$R" count-objects -v)" "$before" "hashing writes no object into the repo"
+# a file that is not UTF-8, a fifo: hashed or left out, never a crash
+printf 'caf\xe9\n' > "$R/latin.txt"; gc add -A; gc commit -q -m latin; printf 'caf\xe9 two\n' > "$R/latin.txt"; mkfifo "$R/pipe"
+out="$(sc tree-hash 2>&1)"; eq "$?" "0" "non-UTF-8 diff and a fifo → hash, exit 0"
+[[ $out =~ ^[0-9a-f]{40}$ ]] && ok "hash is one 40-hex line" || fail "hash is one 40-hex line: $out"
+printf 'caf\xe9 three\n' > "$R/latin.txt"; [[ "$(sc tree-hash)" != "$out" ]] && ok "non-UTF-8 edit changes hash" || fail "non-UTF-8 edit changes hash"
+rm "$R/pipe"; git -C "$R" checkout -q latin.txt; sc run >/dev/null
 echo q >> "$R/.ekit/scenarios/good/run.sh"
 out="$(sc check)"; eq "$?" "1" "check stale → 1"; has "$out" "stale" "check reason: stale"
 mk bad 'exit 1'; sc run >/dev/null
@@ -143,7 +159,9 @@ mk hang 'sleep 30 & echo $! > "$EKIT_STATE/childpid"; sleep 30'
 t0=$SECONDS; out="$(EKIT_SCENARIO_TIMEOUT=1 sc run)"; rc=$?
 eq "$rc" "1" "timeout → exit 1"; has "$out" "FAIL hang: timeout" "timeout reason"
 (( SECONDS - t0 < 10 )) && ok "timeout is prompt" || fail "timeout is prompt"
-sleep 0.3; kill -0 "$(cat "$EKIT_STATE/childpid")" 2>/dev/null && fail "timeout kills process group" || ok "timeout kills process group"
+# killed = gone, or a zombie nobody has reaped yet (a container with no init)
+sleep 0.3; st="$(ps -o stat= -p "$(cat "$EKIT_STATE/childpid")" 2>/dev/null | tr -d ' ')"
+[[ -z $st || $st == Z* ]] && ok "timeout kills process group" || fail "timeout kills process group (state $st)"
 rm -rf "$R/.ekit"
 
 # can-fail

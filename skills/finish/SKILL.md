@@ -26,7 +26,7 @@ Done when: every criterion has a fresh result or a reason it can't run here.
 
 ## 3. Report
 
-Pick the branch.
+Pick the branch. Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchestrate session the Stop gate reads it from your last message.
 
 ### Done
 

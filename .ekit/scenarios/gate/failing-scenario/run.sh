@@ -7,5 +7,6 @@ python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null; eq "runner rc" $? 1
 out=$(hook Stop s3); has block "$out" '"decision": "block"'; has block "$out" "last run FAIL"
 # plain repo: no scenarios dir
 mk_repo; install_kit; hook SessionStart s4 >/dev/null; arm s4; echo "a=1" >> "$SAMPLE/app.py"
-out=$(hook Stop s4); has plain "$out" "Uncommitted changes since session start"; hasnt plain "$out" "Scenarios not green"
+out=$(hook Stop s4); has plain "$out" "not a finish report"; hasnt plain "$out" "Scenarios not green"
+eq "plain + report -> allow" "$(hook Stop s4 false "$REPORT")" ""
 echo "failing ok"

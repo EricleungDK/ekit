@@ -5,9 +5,9 @@ mk_repo; install_kit; add_scn ok 0; commit_all s
 hook SessionStart s2 >/dev/null; arm s2
 echo "a=1" >> "$SAMPLE/app.py"
 python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "not green"
-eq "fresh -> allow" "$(hook Stop s2)" ""
+eq "fresh -> allow" "$(hook Stop s2 false "$REPORT")" ""
 echo "b=2" >> "$SAMPLE/app.py"
 out=$(hook Stop s2); has block "$out" '"decision": "block"'; has block "$out" stale
 python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null
-eq "re-run -> allow" "$(hook Stop s2)" ""
+eq "re-run -> allow" "$(hook Stop s2 false "$REPORT")" ""
 echo "stale ok"

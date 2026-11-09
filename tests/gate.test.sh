@@ -6,7 +6,11 @@ export EKIT_STATE="$T/state"
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q; git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 start() { jq -nc --arg c "$1" --arg s "$2" '{hook_event_name:"SessionStart",session_id:$s,cwd:$c,source:"startup"}' | python3 -I "$SS"; }
 arm()   { jq -nc --arg c "$1" --arg s "$2" --arg p "${3:-/ekit:orchestrate-agent do x}" '{hook_event_name:"UserPromptSubmit",session_id:$s,cwd:$c,prompt:$p}' | python3 -I "$FG" --arm; }
-stop()  { jq -nc --arg c "$1" --arg s "$2" --argjson a "${3:-false}" --arg e "${4:-Stop}" '{hook_event_name:$e,session_id:$s,cwd:$c,stop_hook_active:$a}' | python3 -I "$FG"; }
+# stop <cwd> <session> [stop_hook_active] [event] [last assistant message]
+stop()  { jq -nc --arg c "$1" --arg s "$2" --argjson a "${3:-false}" --arg e "${4:-Stop}" --arg m "${5:-}" '{hook_event_name:$e,session_id:$s,cwd:$c,stop_hook_active:$a} + (if $m == "" then {} else {last_assistant_message:$m} end)' | python3 -I "$FG"; }
+REPORT=$'Work is in.\n\n## Finish: done\n| Criterion | Status | Evidence |'
+BLOCKED=$'## Finish: blocked\nBlocker: no token'
+commit() { git -C "$1" add -A; git -C "$1" -c user.email=t@t -c user.name=t commit -q -m "${2:-c}"; }
 
 # session start: pointers + guardrails injected; finish/taste-it are orchestrate-only
 out="$(start "$R" s1)"; arm "$R" s1 >/dev/null
@@ -36,15 +40,47 @@ rm -f "$R/n.txt"
 # clean tree → allow stop
 eq "$(stop "$R" s1)" "" "clean tree → allow"
 
-# change after start → block once, then allow same change set
+# work without a finish report → block once per tree, then allow the same tree
 echo x > "$R/a.txt"
 out="$(stop "$R" s1)"
-eq "$(jq -r .decision <<<"$out")" "block" "new change → block"
-has "$(jq -r .reason <<<"$out")" "finish" "block reason points to finish"
-has "$(jq -r .reason <<<"$out")" "a.txt" "block reason lists changed files"
-eq "$(stop "$R" s1)" "" "same change set → allow (no loop)"
+eq "$(jq -r .decision <<<"$out")" "block" "work, no report → block"
+has "$(jq -r .reason <<<"$out")" "## Finish: done" "block reason names the report header"
+lacks "$(jq -r .reason <<<"$out")" "Scenarios not green" "plain repo: no scenario reason"
+eq "$(stop "$R" s1)" "" "same tree → allow (no loop)"
 echo y >> "$R/a.txt"
 eq "$(jq -r .decision <<<"$(stop "$R" s1)")" "block" "further change → block again"
+
+# the finish report in the last message → allow, and the reported tree stays allowed
+echo y2 >> "$R/a.txt"
+eq "$(stop "$R" s1 false Stop "$REPORT")" "" "work + finish report → allow"
+eq "$(stop "$R" s1 false Stop "just answering a question")" "" "reported tree, later turn → allow"
+echo y3 >> "$R/a.txt"
+eq "$(jq -r .decision <<<"$(stop "$R" s1 false Stop "no report here; Finish: done mid-sentence")")" "block" "header must open a line"
+echo y4 >> "$R/a.txt"
+eq "$(stop "$R" s1 false Stop "$BLOCKED")" "" "work + blocked report → allow"
+
+# committed work counts: a commit with no report still blocks; the commit of a reported tree does not
+start "$R" c1 >/dev/null; arm "$R" c1 >/dev/null
+echo c > "$R/c.txt"; commit "$R"
+eq "$(jq -r .decision <<<"$(stop "$R" c1)")" "block" "all work committed, no report → block"
+echo d > "$R/d.txt"
+eq "$(stop "$R" c1 false Stop "$REPORT")" "" "report on the dirty tree → allow"
+commit "$R"
+eq "$(stop "$R" c1)" "" "commit of the reported tree → still allowed"
+
+# the report read from the transcript when the payload has no last_assistant_message
+start "$R" t1 >/dev/null; arm "$R" t1 >/dev/null; echo t > "$R/t.txt"
+TR="$T/transcript.jsonl"
+jq -nc '{type:"user",message:{role:"user",content:"/ekit:orchestrate-agent do x"}}' > "$TR"
+jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:"## Finish: done\nold report"}]}}' >> "$TR"
+jq -nc '{type:"user",message:{role:"user",content:[{type:"tool_result",content:"ok"}]}}' >> "$TR"
+jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:"still working"}]}}' >> "$TR"
+tstop() { jq -nc --arg c "$R" --arg s "$1" --arg t "$TR" '{hook_event_name:"Stop",session_id:$s,cwd:$c,stop_hook_active:false,transcript_path:$t}' | python3 -I "$FG"; }
+eq "$(jq -r .decision <<<"$(tstop t1)")" "block" "transcript: report before the last tool result does not count"
+echo t2 >> "$R/t.txt"
+jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:"Summary first."}]}}' >> "$TR"
+jq -nc '{type:"assistant",message:{role:"assistant",content:[{type:"text",text:"## Finish: blocked\nBlocker: x"}]}}' >> "$TR"
+eq "$(tstop t1)" "" "transcript: report in the final message → allow"
 
 # stop_hook_active → always allow
 echo z >> "$R/a.txt"
@@ -54,9 +90,10 @@ eq "$(stop "$R" s1 true)" "" "stop_hook_active → allow"
 start "$R" s2 >/dev/null; arm "$R" s2 >/dev/null
 eq "$(stop "$R" s2)" "" "dirt present at session start → allow"
 
-# SubagentStop gated the same way
+# a subagent's stop is never gated: the orchestrator owns the report (a stale install may still register the event)
 echo w > "$R/b.txt"
-eq "$(jq -r .decision <<<"$(stop "$R" s2 false SubagentStop)")" "block" "SubagentStop → block"
+eq "$(stop "$R" s2 false SubagentStop)" "" "SubagentStop → allow"
+eq "$(jq -r '.hooks | has("SubagentStop")' "$ROOT/hooks/hooks.json")" "false" "hooks.json: no SubagentStop gate"
 
 # non-git dir → allow
 mkdir -p "$T/plain"; start "$T/plain" s3 >/dev/null
@@ -82,7 +119,12 @@ F="$T/fail"; mkrepo "$F" 1
 
 # PASS current tree -> allow
 start "$P" p1 >/dev/null; arm "$P" p1 >/dev/null; echo a > "$P/a.txt"; runsc "$P"
-eq "$(stop "$P" p1)" "" "scenarios PASS fresh → allow"
+out="$(stop "$P" p1)"; eq "$(dec "$out")" "block" "scenarios PASS fresh, no report → block"
+lacks "$(jq -r .reason <<<"$out")" "Scenarios not green" "green scenarios: the reason is the missing report"
+echo a2 >> "$P/a.txt"; runsc "$P"
+eq "$(stop "$P" p1 false Stop "$REPORT")" "" "scenarios PASS fresh + report → allow"
+commit "$P"
+eq "$(stop "$P" p1)" "" "commit after the PASS and report → still fresh, allow"
 # PASS then edit -> stale block, keeps blocking
 echo b >> "$P/a.txt"
 out="$(stop "$P" p1)"; eq "$(dec "$out")" "block" "PASS then edit → block"
@@ -91,8 +133,10 @@ has "$(jq -r .reason <<<"$out")" "scenarios.py" "block reason points to runner"
 has "$(jq -r .reason <<<"$out")" "ekit:taste-it" "block reason points to taste-it"
 has "$(jq -r .reason <<<"$out")" "finish" "block reason asks finish report"
 eq "$(dec "$(stop "$P" p1)")" "block" "stale keeps blocking (no once-only)"
+eq "$(dec "$(stop "$P" p1 false Stop "$REPORT")")" "block" "a done report does not excuse a stale PASS"
 eq "$(stop "$P" p1 true)" "" "scenarios + stop_hook_active → allow"
-eq "$(dec "$(stop "$P" p1 false SubagentStop)")" "block" "scenarios SubagentStop → block"
+eq "$(stop "$P" p1 false SubagentStop)" "" "scenarios SubagentStop → allow"
+eq "$(stop "$P" p1 false Stop "$BLOCKED")" "" "a blocked report needs no PASS"
 
 # no results -> block; failing results -> block
 start "$F" f1 >/dev/null; arm "$F" f1 >/dev/null; echo a > "$F/a.txt"
@@ -111,7 +155,7 @@ eq "$(stop "$U" u1)" "" "scenario repo untouched → allow"
 echo c > "$U/c.txt"; git -C "$U" add -A; git -C "$U" -c user.email=t@t -c user.name=t commit -q -m c
 eq "$(dec "$(stop "$U" u1)")" "block" "commit after start, no run → block"
 runsc "$U"
-eq "$(stop "$U" u1)" "" "commit then run PASS → allow"
+eq "$(stop "$U" u1 false Stop "$REPORT")" "" "commit then run PASS + report → allow"
 
 # runner broken -> fail closed (stop_hook_active still allows)
 printf 'import sys\nsys.stderr.write("boom\\n")\nsys.exit(3)\n' > "$T/badrunner"

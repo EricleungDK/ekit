@@ -65,7 +65,8 @@ has "$out" "gh issue view: always pass --json" "gh --json gotcha"
 # .git read-only
 P="$T/p9"; mkdir -p "$P/.git"; chmod a-w "$P/.git"
 out="$(run "$T/b2" "$P")"
-has "$out" "git: .git read-only (sandbox) → commits need unsandboxed run" ".git read-only"
+if [[ -w $P/.git ]]; then skip ".git read-only" "this user writes through mode bits (root)"
+else has "$out" "git: .git read-only (sandbox) → commits need unsandboxed run" ".git read-only"; fi
 chmod u+w "$P/.git"
 
 # loopback bind blocked (stub python3 failing bind probe)

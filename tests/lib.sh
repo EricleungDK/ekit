@@ -16,6 +16,7 @@ stub() { printf '#!/bin/bash\n%s\n' "$3" > "$1/$2"; chmod +x "$1/$2"; }
 
 ok()   { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; FAILS=$((FAILS+1)); }
+skip() { printf '  skip %s: %s\n' "$1" "$2"; }  # could not run here; never counted as ok
 
 has()  { grep -qF -- "$2" <<<"$1" && ok "$3" || { fail "$3"; printf '       want: %s\n       got:\n%s\n' "$2" "$1"; }; }
 lacks(){ grep -qF -- "$2" <<<"$1" && { fail "$3"; printf '       unwanted: %s\n' "$2"; } || ok "$3"; }
