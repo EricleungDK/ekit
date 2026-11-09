@@ -21,10 +21,11 @@ class Runner:
     """Stands in for scenarios.py: `tree` is the tree-hash answer, `check` the (rc, text) of `check`."""
 
     def __init__(self):
-        self.tree, self.check, self.calls = (0, "T0"), (0, ""), []
+        self.tree, self.check, self.calls, self.repos = (0, "T0"), (0, ""), [], set()
 
     def __call__(self, repo, cmd):
         self.calls.append(cmd)
+        self.repos.add(repo)
         return self.tree if cmd == "tree-hash" else self.check
 
 
@@ -152,10 +153,25 @@ class TestWork(GateCase):
         self.assertEqual(self.runner.calls, ["tree-hash"])  # the baseline only: the plain dir never reached the runner
 
     def test_a_failed_baseline_hash_is_stored_empty_so_any_tree_counts_as_work(self):
-        self.runner.tree = (3, "boom")
+        self.runner.tree = (3, "T0")  # the runner failed; whatever it printed is not a baseline
         self.start()
         self.runner.tree = (0, "T0")
         self.assertEqual(self.stop()["decision"], "block")
+
+    def test_the_runner_is_asked_about_the_repo_root(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.stop(DONE)
+        self.assertEqual(self.runner.repos, {self.repo})
+
+    def test_the_state_kept_for_a_session_is_these_four_files(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.stop()          # blocked: gated
+        self.stop(DONE)      # reported
+        kinds = sorted(n.split(".", 1)[1].rsplit("-", 1)[0] for n in os.listdir(fg.STATE))
+        self.assertEqual(kinds, ["armed", "gated", "reported", "sbase"])
 
 
 class TestScenarios(GateCase):
@@ -192,6 +208,13 @@ class TestScenarios(GateCase):
         self.runner.tree = (0, "T1")
         self.assertIsNone(self.stop(DONE))
         self.assertIn("check", self.runner.calls)
+
+    def test_an_ekit_dir_without_scenarios_is_a_plain_repo(self):
+        os.makedirs(os.path.join(self.repo, ".ekit"))
+        self.start()
+        self.runner.tree, self.runner.check = (0, "T1"), (1, "no results")
+        self.assertIsNone(self.stop(DONE))
+        self.assertNotIn("check", self.runner.calls)
 
     def test_a_blocked_report_needs_no_pass(self):
         self.scenarios()
@@ -261,6 +284,36 @@ class TestReport(unittest.TestCase):
             f.flush()
             self.assertEqual(fg.last_message(data), "Summary.\n## Finish: blocked\nBlocker: x")
             self.assertEqual(fg.report_kind(data), "blocked")
+
+    def test_text_blocks_are_joined_by_newlines_and_other_content_is_empty(self):
+        self.assertEqual(fg._text([{"type": "text", "text": "a"}, {"type": "tool_use"}, {"type": "text"}, "x",
+                                   {"type": "text", "text": "b"}]), "a\n\nb")
+        self.assertEqual(fg._text("plain"), "plain")
+        self.assertEqual(fg._text(None), "")
+        self.assertEqual(fg._text({"type": "text", "text": "not a list"}), "")
+
+    def test_an_empty_payload_message_falls_back_to_the_transcript(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}) + "\n")
+            f.flush()
+            self.assertEqual(fg.last_message({"last_assistant_message": "", "transcript_path": f.name}), "## Finish: done")
+
+    def test_a_sidechain_entry_between_two_parts_of_the_message_is_skipped_not_the_end(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+            rows = [{"type": "assistant", "message": {"content": "## Finish: blocked"}},
+                    {"type": "assistant", "isSidechain": True, "message": {"content": "subagent chatter"}},
+                    ["not", "a", "dict"],
+                    {"type": "assistant", "message": {"content": "Blocker: x"}}]
+            f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+            f.flush()
+            self.assertEqual(fg.last_message({"transcript_path": f.name}), "## Finish: blocked\nBlocker: x")
+
+    def test_bytes_that_are_not_utf8_in_the_transcript_do_not_crash_the_read(self):
+        with tempfile.NamedTemporaryFile("wb", suffix=".jsonl") as f:
+            f.write(b"\xff\xfe garbage line\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}).encode() + b"\n")
+            f.flush()
+            self.assertEqual(fg.report_kind({"transcript_path": f.name}), "done")
 
     def test_the_payload_message_wins_over_the_transcript(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:

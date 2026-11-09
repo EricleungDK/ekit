@@ -40,6 +40,11 @@ class TestScopeSpan(unittest.TestCase):
         self.assertEqual(mutants.scope_span(SRC, "calc.core.xǁOtherǁadd__mutmut_1"), (22, 23))
         self.assertEqual(mutants.scope_span(SRC, "calc.core.xǁCalcǁneg__mutmut_1"), (17, 18))
 
+    def test_blank_lines_after_a_function_are_not_part_of_it(self):
+        src = "def one(): return 1\n\n\ndef two():\n    return 2\n\n\n"
+        self.assertEqual(mutants.scope_span(src, "m.x_one__mutmut_1"), (1, 1))
+        self.assertEqual(mutants.scope_span(src, "m.x_two__mutmut_1"), (4, 5))
+
     def test_an_unknown_function_class_or_name_form_is_none(self):
         for name in ("calc.core.x_mul__mutmut_1", "calc.core.xǁNopeǁadd__mutmut_1", "calc.core.weird__mutmut_1"):
             self.assertIsNone(mutants.scope_span(SRC, name), name)
@@ -49,6 +54,11 @@ class TestScopeSpan(unittest.TestCase):
         self.assertEqual(mutants.locate(SRC, "calc.core.xǁOtherǁadd__mutmut_1", "return a + b + 0"), 23)
         self.assertIsNone(mutants.locate(SRC, "calc.core.x_add__mutmut_1", "c = a - b"))  # sub's line is not in add
         self.assertIsNone(mutants.locate(SRC, "calc.core.x_mul__mutmut_1", "return a + b"))
+
+    def test_locate_does_not_look_before_the_function(self):
+        self.assertIsNone(mutants.locate(SRC, "calc.core.x_sub__mutmut_1", "return a + b"))  # add's line, above sub
+        src = "x = 1\ndef f():\n    return x\n"
+        self.assertIsNone(mutants.locate(src, "m.x_f__mutmut_1", "x = 1"))  # the line right above the def
 
 
 class TestOutsideDiff(unittest.TestCase):
@@ -73,11 +83,15 @@ class TestOutsideDiff(unittest.TestCase):
         self.assertTrue(self.outside("calc.core.xǁCalcǁadd__mutmut_1", [23]))
 
     def test_a_name_that_cannot_be_read_is_not_settled_here(self):
-        self.assertFalse(self.outside("calc.core.weird__mutmut_1", [9]))
+        self.assertIs(self.outside("calc.core.weird__mutmut_1", [9]), False)
 
     def test_a_function_found_in_no_changed_file_is_not_settled_here(self):
-        self.assertFalse(self.outside("calc.core.x_mul__mutmut_1", [9]))
-        self.assertFalse(mutants.outside_diff("calc.core.x_add__mutmut_1", {}, {}))
+        self.assertIs(self.outside("calc.core.x_mul__mutmut_1", [9]), False)
+        self.assertIs(mutants.outside_diff("calc.core.x_add__mutmut_1", {}, {}), False)
+
+    def test_a_file_without_the_function_does_not_end_the_search(self):
+        sources = {"src/a.py": "def other():\n    return 1\n", "src/calc/core.py": SRC}
+        self.assertIs(mutants.outside_diff("calc.core.x_add__mutmut_1", sources, {"src/calc/core.py": [(9, "")]}), True)
 
     def test_with_several_files_one_touched_copy_keeps_it(self):
         sources = {"src/calc/core.py": SRC, "src/calc/more.py": "def add(a, b):\n    return b + a\n"}

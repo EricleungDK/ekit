@@ -41,6 +41,16 @@ class TestCollect(unittest.TestCase):
     def test_a_bot_cannot_waive_even_as_a_collaborator(self):
         self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef because", kind="Bot", assoc="COLLABORATOR")]), {})
 
+    def test_an_outsiders_comment_does_not_stop_the_owners_later_one(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef: trust me", login="x", assoc="NONE"),
+                              note("/mech-waive R2-deadbeef: moved", login="owner")])
+        self.assertEqual(got["R2-deadbeef"]["by"], "owner")
+
+    def test_missing_login_url_and_body_are_empty_strings_not_a_crash(self):
+        got = waiver.collect([{"user": {}, "author_association": "OWNER", "body": "/mech-waive R2-deadbeef ok"},
+                              {"user": None, "author_association": "OWNER", "body": None}])
+        self.assertEqual(got, {"R2-deadbeef": {"by": "", "reason": "ok", "url": ""}})
+
     def test_a_waiver_without_a_reason_is_ignored(self):
         self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef"), note("/mech-waive R2-deadbeef :  ")]), {})
 
@@ -75,6 +85,11 @@ class TestApply(unittest.TestCase):
         self.assertEqual(out["checks"]["R2"]["status"], "waived")
         self.assertEqual(out["checks"]["R2"]["note"], "1 fail, 0 confirm; 1 waived by a person")
         self.assertEqual(out["summary"], f"pass {SHA} (0 fail, 0 confirm, 1 waived; ran: R2; skipped: R1 R3 R4)")
+
+    def test_a_check_with_no_note_gets_the_waiver_note_alone(self):
+        env = envelope([entry()])
+        del env["checks"]["R2"]["note"]
+        self.assertEqual(waiver.apply(env, self.W)["checks"]["R2"]["note"], "1 waived by a person")
 
     def test_other_fail_entries_of_the_check_keep_it_failing(self):
         out = waiver.apply(envelope([entry(), entry(eid="R2-11111111")]), self.W)

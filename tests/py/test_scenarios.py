@@ -47,6 +47,31 @@ class TestTreeHash(unittest.TestCase):
         self.assertEqual(self.hash(), dirty)
         self.assertEqual(dirty, git(self.repo, "rev-parse", "HEAD^{tree}"))
 
+    def test_unchanged_files_beside_a_changed_one_hash_from_the_repos_own_objects(self):
+        os.makedirs(os.path.join(self.repo, "pkg", "sub"))
+        write(self.repo, "pkg/keep.txt", "keep\n")
+        write(self.repo, "pkg/sub/deep.txt", "deep\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "more")
+        write(self.repo, "pkg/sub/deep.txt", "deeper\n")
+        dirty = self.hash()
+        self.assertRegex(dirty, r"^[0-9a-f]{40}$")
+        git(self.repo, "commit", "-q", "-am", "work")
+        self.assertEqual(dirty, git(self.repo, "rev-parse", "HEAD^{tree}"))
+
+    def test_a_linked_worktree_hashes_its_own_files(self):
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        wt = os.path.join(os.path.realpath(holder.name), "wt")
+        git(self.repo, "worktree", "add", "-q", "--detach", wt, "HEAD")
+        self.assertEqual(scenarios.tree_hash(wt), git(wt, "rev-parse", "HEAD^{tree}"))
+        write(wt, "a.txt", "changed in the worktree\n")
+        changed = scenarios.tree_hash(wt)
+        self.assertNotEqual(changed, self.hash())
+        git(wt, "commit", "-q", "-am", "in worktree")
+        self.assertEqual(changed, git(wt, "rev-parse", "HEAD^{tree}"))
+        self.assertEqual(self.hash(), git(self.repo, "rev-parse", "HEAD^{tree}"))  # the main checkout is untouched
+
     def test_a_tracked_edit_and_an_untracked_file_each_change_the_hash(self):
         clean = self.hash()
         write(self.repo, "a.txt", "two\n")
@@ -124,6 +149,13 @@ class TestPrune(unittest.TestCase):
         cur = self.make("ccc", scenarios.KEEP_DAYS * 3)
         scenarios.prune(self.out, "ccc")
         self.assertTrue(os.path.isdir(cur))
+
+    def test_a_symlink_to_a_dir_is_left_alone(self):
+        target = self.make("real", scenarios.KEEP_DAYS * 3)
+        link = os.path.join(self.out, "link")
+        os.symlink(target, link)
+        scenarios.prune(self.out, "real")
+        self.assertTrue(os.path.islink(link) and os.path.isdir(target))
 
     def test_files_are_never_removed(self):
         results = self.make("results.json", scenarios.KEEP_DAYS * 3, is_dir=False)

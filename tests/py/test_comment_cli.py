@@ -35,6 +35,7 @@ class Api:
     def __init__(self, comments=(), write_status=None):
         api = self
         self.comments, self.write_status, self.writes, self.comments_status = list(comments), write_status, [], None
+        self.calls = []
 
         class H(BaseHTTPRequestHandler):
             def _send(self, code, obj):
@@ -44,7 +45,18 @@ class Api:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def _known(self):
+                """only this PR of this repo, with the workflow's token: anything else is a wrong call"""
+                if self.headers.get("Authorization") != "Bearer t":
+                    self._send(401, {"message": "Bad credentials"})
+                elif not self.path.startswith(("/repos/o/r/pulls/5", "/repos/o/r/issues/5/comments", "/repos/o/r/issues/comments/")):
+                    self._send(404, {"message": "Not Found"})
+                else:
+                    return True
+
             def do_GET(self):
+                if not self._known():
+                    return
                 if "/pulls/" in self.path:
                     return self._send(200, {"head": {"sha": SHA}})
                 if api.comments_status:
@@ -53,9 +65,12 @@ class Api:
 
             def _write(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if not self._known():
+                    return
                 if api.write_status:
                     return self._send(api.write_status, {"message": "Resource not accessible by integration"})
                 api.writes.append(body["body"])
+                api.calls.append((self.command, self.path))
                 self._send(201, {"id": 1})
 
             do_POST = do_PATCH = _write
@@ -84,20 +99,77 @@ class TestPoster(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def post(self, entries, api):
-        """main() of mech-comment.py against the fake API: a result with returncode, stdout and stderr."""
-        path = os.path.join(self.tmp.name, "env.json")
+    def save(self, name, entries, head=SHA):
+        path = os.path.join(self.tmp.name, name)
         with open(path, "w") as f:
-            json.dump(envelope(entries), f)
+            json.dump(dict(envelope(entries), head=head), f)
+        return path
+
+    def call(self, argv, api):
+        """main() of mech-comment.py against the fake API: a result with returncode, stdout and stderr."""
         env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
                "GITHUB_STEP_SUMMARY": self.summary}
         out, err = io.StringIO(), io.StringIO()
         try:
             with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc = poster.main(["--pr", "5", "--envelope", path])
+                rc = poster.main(["--pr", "5", *argv])
         finally:
             api.close()
         return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
+
+    def post(self, entries, api):
+        return self.call(["--envelope", self.save("env.json", entries)], api)
+
+    def test_the_bots_existing_comment_is_edited_in_place(self):
+        api = Api([{"id": 77, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "author_association": "NONE",
+                    "body": comment.MARKER + "\nold"}])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertEqual(api.calls, [("PATCH", "/repos/o/r/issues/comments/77")])
+        self.assertIn("mech-comment: updated comment 77", p.stderr)
+
+    def test_with_no_comment_yet_one_is_created(self):
+        api = Api()
+        self.post([FAIL], api)
+        self.assertEqual(api.calls, [("POST", "/repos/o/r/issues/5/comments")])
+
+    def test_no_result_at_all_posts_a_crash_notice_and_exits_4(self):
+        api = Api()
+        p = self.call(["--envelope", os.path.join(self.tmp.name, "missing.json"), "--head", SHA, "--reason", "guard exited 2"], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn(f"**no result** for head `{SHA}`", api.writes[0])
+        self.assertIn("reason: guard exited 2", api.writes[0])
+        self.assertEqual(p.stderr.splitlines()[0], "mech-comment: no usable result: guard exited 2")
+
+    def test_no_result_and_no_head_is_a_usage_error_that_posts_nothing(self):
+        api = Api()
+        p = self.call(["--envelope", os.path.join(self.tmp.name, "missing.json")], api)
+        self.assertEqual((p.returncode, api.writes), (2, []))
+        self.assertEqual(p.stderr, "mech-comment: no usable envelope and --head not given\n")
+        self.assertEqual(p.stdout, "")
+
+    def test_named_jobs_with_one_missing_keep_the_other_jobs_result(self):
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", [FAIL]),
+                      "--envelope", "red=" + os.path.join(self.tmp.name, "nope.json"), "--head", SHA, "--reason", "no JSON"], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("R2-deadbeef", api.writes[0])
+        self.assertIn("| CI-c9198ac4 | fail | :0 | red job produced no result: no JSON |", api.writes[0])
+
+    def test_named_jobs_all_missing_is_a_crash_notice_naming_each_job(self):
+        api = Api()
+        missing = os.path.join(self.tmp.name, "nope.json")
+        p = self.call(["--envelope", f"r2={missing}", "--envelope", f"red={missing}", "--head", SHA, "--reason", "no JSON"], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn("reason: r2 job: no JSON; red job: no JSON", api.writes[0])
+        self.assertEqual(p.stderr.splitlines()[0], "mech-comment: no usable result: r2 job: no JSON; red job: no JSON")
+
+    def test_a_named_result_for_an_older_head_is_not_used(self):
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("old.json", [FAIL], head="c" * 40), "--head", SHA], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn(f"reason: r2 job: result is for an older head, not {SHA}", api.writes[0])
+        self.assertNotIn("R2-deadbeef", api.writes[0])
 
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
