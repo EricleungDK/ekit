@@ -1,0 +1,4 @@
+# ekit is a plugin, not a Python package: nothing is built or installed from here.
+# This file tells pytest, and so mech-review's python stack (R1, R4, R3), where the python tests are.
+[tool.pytest.ini_options]
+testpaths = ["tests/py"]

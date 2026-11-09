@@ -14,6 +14,7 @@ jobs:
   mech-review:
     uses: ./.github/workflows/mech-review.yml
     with:
-      stack: rust
+      # the engine and the hooks are python; their unit tests are tests/py (the *.test.sh files are smokes R1 cannot run)
+      stack: python
       test-paths: 'tests/**'
       protected-paths: '.github/**'
