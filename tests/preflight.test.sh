@@ -22,9 +22,13 @@ out="$(PATH="$B" HOME="$T/home" bash "$PF" --quiet "$P" 2>&1)"
 eq "$out" "" "--quiet with nothing wrong prints nothing"
 
 # python project without .venv
-P="$T/p3"; mkdir -p "$P"; touch "$P/pyproject.toml"
+P="$T/p3"; mkdir -p "$P"; printf '[project]\nname = "x"\ndependencies = ["requests"]\n' > "$P/pyproject.toml"
 out="$(run "$T/b2" "$P")"
 has "$out" "venv: no .venv → uv sync, then uv run <cmd>" "pyproject without .venv"
+P2="$T/p3b"; mkdir -p "$P2"; printf '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n' > "$P2/pyproject.toml"
+lacks "$(run "$T/b2" "$P2")" "venv:" "a tool-config-only pyproject is not a python project to install"
+touch "$P2/requirements.txt"
+has "$(run "$T/b2" "$P2")" "venv: no .venv" "requirements.txt without .venv"
 mkdir "$P/.venv"; out="$(run "$T/b2" "$P")"
 lacks "$out" "venv:" ".venv present → no warning"
 
@@ -103,7 +107,7 @@ has "$out" "loopback: bind 127.0.0.1 blocked (sandbox) → server/e2e tests need
 
 # scenarios marker: missing driver tools warn, for the tools the scenarios name
 P="$T/p11"; mkdir -p "$P/.ekit/scenarios/a"
-printf 'tmux new -d -s t\nexpect -c "spawn x"\ncurl -s localhost\n' > "$P/.ekit/scenarios/a/run.sh"
+printf 'tmux new -d -s t\nif ! expect -c "spawn x"; then exit 1; fi\nout=$(curl -s localhost)\n' > "$P/.ekit/scenarios/a/run.sh"
 out="$(run "$T/b2" "$P")"
 for t in tmux expect curl; do
   has "$out" "$t: missing → scenarios needing $t can't run here → human verdict / verification debt" "scenarios + no $t"
@@ -123,6 +127,9 @@ has "$out" "ok tmux" "driver present → ok line"
 
 # a scenario that drives none of them: no driver warning at all
 P="$T/p11b"; mkdir -p "$P/.ekit/scenarios/a"; echo 'python3 app.py --help' > "$P/.ekit/scenarios/a/run.sh"
+echo '- expected: we expect curl-like output; tmux not needed' > "$P/.ekit/scenarios/a/SCENARIO.md"
+# the word inside a string or another language's code is not the tool being run
+printf '%s\n' "printf 'import { it, expect } from \"vitest\"; expect(add(1, 2)).toBe(3)' > t.ts" 'echo "no curl here, tmux neither"' >> "$P/.ekit/scenarios/a/run.sh"
 out="$(run "$T/b2" "$P")"
 for t in tmux expect curl playwright; do lacks "$out" "$t:" "scenarios never name $t → no $t warning"; done
 

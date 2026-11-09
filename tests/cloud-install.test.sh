@@ -37,4 +37,22 @@ R3="$T/repo3"; mkdir -p "$R3/.claude/skills/finish"; echo mine > "$R3/.claude/sk
 bash "$IN" "$R3" >/dev/null
 eq "$(cat "$R3/.claude/skills/finish/SKILL.md")" "mine" "repo's own skill wins"
 
+# setup.sh: fetches the kit at EKIT_REF from EKIT_REPO_URL into ~/.ekit, installs it into the repos it finds
+SRC="$T/kitsrc"; mkdir -p "$SRC"; cp -R "$ROOT/cloud" "$ROOT/skills" "$ROOT/hooks" "$ROOT/scripts" "$SRC/"
+git -C "$SRC" init -q -b main; git -C "$SRC" add -A; git -C "$SRC" -c user.email=t@t -c user.name=t commit -qm one
+git -C "$SRC" tag v0
+echo "# later" >> "$SRC/cloud/setup.sh"; git -C "$SRC" -c user.email=t@t -c user.name=t commit -qam two
+H="$T/cloudhome"; W="$H/work"; mkdir -p "$W"; git -C "$W" init -q
+setup() { (cd "$W" && HOME="$H" EKIT_REPO_URL="file://$SRC" "$@" bash "$ROOT/cloud/setup.sh" 2>&1); }
+out="$(setup env)"
+has "$out" "ekit installed into $W" "setup: installs into the repo it runs in"
+eq "$(git -C "$H/.ekit" rev-parse HEAD)" "$(git -C "$SRC" rev-parse main)" "setup: default ref is main"
+has "$(jq -c .hooks.Stop "$W/.claude/settings.json")" "$H/.ekit/scripts/finish-gate.py" "setup: hooks point at the fetched kit"
+out="$(setup env EKIT_REF=v0)"
+eq "$(git -C "$H/.ekit" rev-parse HEAD)" "$(git -C "$SRC" rev-parse v0)" "setup: EKIT_REF pins a tag, also over an existing kit"
+out="$(setup env EKIT_REF=no-such-ref)"; rc=$?
+eq "$rc" "0" "setup: a ref that cannot be fetched does not fail the environment setup"
+has "$out" "cannot fetch no-such-ref" "setup: says which ref could not be fetched"
+eq "$(git -C "$H/.ekit" rev-parse HEAD)" "$(git -C "$SRC" rev-parse v0)" "setup: keeps the kit it had"
+
 done_tests

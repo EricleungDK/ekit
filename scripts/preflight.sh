@@ -20,8 +20,9 @@ have python && good python || warn "python: missing → use python3"
 have jq && good jq || warn "jq: missing → python3 -c 'import json'"
 have rg && good rg || warn "rg: missing → grep -rn / find"
 
-if [[ -f $dir/pyproject.toml || -f $dir/requirements.txt ]]; then
-  [[ -d $dir/.venv ]] && good venv || warn "venv: no .venv → uv sync, then uv run <cmd>"
+# a python project with dependencies to install; a pyproject.toml that only configures tools (pytest, ruff) is not one
+if [[ -f $dir/requirements.txt ]] || in_file pyproject.toml '^\[project\]\|^\[tool\.poetry\|^\[tool\.uv\|^\[build-system\]'; then
+  [[ -d $dir/.venv ]] && good venv || warn "venv: no .venv → uv sync, then uv run <cmd> (or python3 -m venv .venv)"
 fi
 
 if [[ -f $dir/Cargo.toml ]]; then
@@ -46,12 +47,18 @@ if compgen -G "$dir/Dockerfile" >/dev/null || compgen -G "$dir/*compose*.y*ml" >
   fi
 fi
 
-# scenario drivers: only the tools this repo's scenarios name
+# scenario drivers: only the tools this repo's scenarios run (their scripts; SCENARIO.md prose does not count)
 sdir=""; for d in .ekit/scenarios .ek/scenarios; do [[ -d $dir/$d ]] && { sdir="$dir/$d"; break; }; done
-uses() { [[ -n $sdir ]] && grep -rqsw -- "$1" "$sdir"; }
+uses() { [[ -n $sdir ]] && grep -rqsw --exclude='*.md' -- "$1" "$sdir"; }
+# runs <tool>: the tool in command position (line start, after ; | & ( ` or a shell keyword), so the word in a string
+# or in another language's code (`expect(x)` in a JS fixture) is not a use. A miss here only costs the early warning.
+runs() {
+  [[ -n $sdir ]] && grep -rqsE --exclude='*.md' \
+    -e "(^|[;|&(\`]|(^|[[:space:]])(if|while|until|then|do|else|exec|!))[[:space:]]*$1([[:space:]]|\$)" "$sdir"
+}
 
 for t in tmux expect curl; do
-  if uses "$t"; then
+  if runs "$t"; then
     have "$t" && good "$t" || warn "$t: missing → scenarios needing $t can't run here → human verdict / verification debt"
   fi
 done
