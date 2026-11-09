@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 import unittest
 
-import _kit  # noqa: F401
+import _kit  # noqa: F401 - the import puts scripts/ on sys.path
 from mech_review import engine, red
 
 

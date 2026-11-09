@@ -1,6 +1,6 @@
 import unittest
 
-import _kit  # noqa: F401
+import _kit  # noqa: F401 - the import puts scripts/ on sys.path
 from mech_review import comment, waiver
 from mech_review.report import summarize
 

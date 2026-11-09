@@ -23,7 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mech_review import comment as C  # noqa: E402
-from mech_review import merge, waiver  # noqa: E402
+from mech_review import merge, waiver  # noqa: E402 - sys.path is set just above
 
 
 def load(path):
