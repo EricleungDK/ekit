@@ -21,6 +21,7 @@ Verdict (per shard):
   tool not runnable or an unexpected exit -> n/a (env), never pass.
   no mutants in the diff -> pass.
 """
+import itertools
 import json
 import math
 import os
@@ -622,6 +623,119 @@ def locate(src, name, removed):
     return None
 
 
+MUTANT_DEF = re.compile(r"\s*(?:async\s+)?def\s+(x[^\s(]*__mutmut_(?:orig|\d+))\s*\(")
+
+
+def mutant_blocks(text):
+    """{copy name: its lines} for the function copies mutmut writes into a mutated file: `x_add__mutmut_orig` (the
+    function as it is) and one `x_add__mutmut_N` per mutant, each a whole function. Trailing blank lines are dropped."""
+    lines = text.splitlines() if text else []
+    out = {}
+    for i, line in enumerate(lines):
+        m = MUTANT_DEF.match(line)
+        if m:
+            end = _block_end(lines, i)
+            while not lines[end - 1].strip():
+                end -= 1
+            out[m.group(1)] = lines[i:end]
+    return out
+
+
+def mutant_change(blocks, name):
+    """(offset, removed, added) of a mutant, read from its copy against the original's: the first changed line as a
+    0-based offset from the function's def line, and the changed lines' text (stripped, joined: what `mutmut show`
+    prints as - and +). A mutant is one edit, so what differs is what lies between the lines the two copies share at
+    the top and at the bottom. None when either copy is not in `blocks` or nothing differs."""
+    short = name.split(".")[-1]
+    fn = short.rpartition("__mutmut_")[0]
+    orig, mut = blocks.get(f"{fn}__mutmut_orig"), blocks.get(short)
+    if orig is None or mut is None:
+        return None
+    # the def lines differ by the copy's own name: compare them under the function's real name, as the source has it
+    scope = mutant_scope(name)
+    real = scope[1] if scope else fn
+    a = [orig[0].replace(f"{fn}__mutmut_orig", real)] + orig[1:]
+    b = [mut[0].replace(short, real)] + mut[1:]
+    if a == b:
+        return None
+    top = next(i for i in itertools.count() if a[i:i + 1] != b[i:i + 1])
+    tail = next(i for i in itertools.count() if a[top:][::-1][i:i + 1] != b[top:][::-1][i:i + 1])
+    return top, " ".join(ln.strip() for ln in a[top:len(a) - tail]), " ".join(ln.strip() for ln in b[top:len(b) - tail])
+
+
+class MutantFiles:
+    """mutmut's own files under `<crate>/mutants`, read once per changed file: which file a mutant belongs to (the
+    keys of `<file>.meta`) and its function copies. This replaces one `mutmut show` per missed mutant, which re-parses
+    the whole mutated file each time. A mutant these files do not explain reads as None: the caller asks mutmut."""
+
+    def __init__(self, crate, paths):
+        self.crate, self.paths, self._file_of, self._blocks = crate, list(paths), None, {}
+
+    def _owner(self, name):
+        if self._file_of is None:
+            self._file_of = {}
+            for path in self.paths:
+                try:
+                    with open(os.path.join(self.crate, "mutants", path + ".meta")) as f:
+                        self._file_of.update(dict.fromkeys(json.load(f)["exit_code_by_key"], path))
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue  # no such file, not JSON, or not mutmut's shape: this file explains no mutant
+        return self._file_of.get(name)
+
+    def change(self, name):
+        """(crate path of the file, offset, removed, added), or None."""
+        path = self._owner(name)
+        if path is None:
+            return None
+        if path not in self._blocks:
+            self._blocks[path] = mutant_blocks(_read(os.path.join(self.crate, "mutants", path)))
+        got = mutant_change(self._blocks[path], name)
+        return got and (path,) + got
+
+
+RESULTS = ["results", "--all", "True"]  # every mutant with its status, the caught ones included
+LIST_ONLY = "ekit-list-only-*"  # a mutant filter that matches nothing: `mutmut run` then writes its mutants and stops
+NO_MATCH = "Filtered for specific mutants, but nothing matches"  # mutmut's words when a filter matches no mutant
+
+
+def function_glob(name):
+    """the mutmut filter for every mutant of the function a mutant name belongs to:
+    `calc.core.x_add__mutmut_3` -> `calc.core.x_add__mutmut_*`."""
+    return _glob_escape(name.rpartition("__mutmut_")[0]) + "__mutmut_*"
+
+
+EARLY = "Stopping early"  # mutmut's words when no test reaches any mutant: every one is then `no tests`
+
+
+def _run_stopped(rc, text, normal_ends):
+    """(check, entries) when a `mutmut run` ended with nothing to read, else None. normal_ends: the messages an exit 1
+    may carry and still be a result (the LIST_ONLY step ends on mutmut's no-match error)."""
+    if rc == 1 and ("failed to collect stats" in text or "Failed to run clean test" in text):
+        diag_output("mutmut", "fail", text)
+        return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
+            entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
+                  "fix the failing tests first: mutation needs an unmutated tree that passes",
+                  "a mutation check that did not run")])
+    if rc in ("timeout", 0) or (rc == 1 and any(end in text for end in normal_ends)):
+        return None
+    return _check("n/a", f"mutmut exit {rc} (env): {_first_line(text)}; check the test deps "
+                         "(requirements, setup-command)"), []
+
+
+def line_at(src, name, offset, removed):
+    """1-based line of a mutant's change: `offset` lines below the def line of the function its name points at. None
+    when the name maps to no function, the offset leaves the function, or the line there is not the removed text (the
+    file and mutmut's copy disagree: the caller falls back to the text search)."""
+    span = scope_span(src, name)
+    if span is None or span[0] + offset > span[1]:
+        return None
+    line = span[0] + offset
+    at = src.splitlines()[line - 1].strip()
+    if removed and not (at and removed.startswith(at)):
+        return None
+    return line
+
+
 def outside_diff(name, sources, changed):
     """True when the mutant cannot be on a changed line: its function is in the changed files (sources: path -> text)
     and no copy of it holds a changed line (changed: path -> [(line, text)]). Known from the name alone, so mutmut is
@@ -715,8 +829,9 @@ def _files_baseline(rv, shards):
 
 class Mutmut:
     """R3 for python: mutmut 3.8.1 on the changed production files, in the crate dir of a worktree at head. mutmut has no
-    line filter, so the MISSED list is narrowed to the changed lines afterwards (the same `--in-diff` promise as
-    cargo-mutants). Paths in the result are repo-root paths. Timing: wall time only (mutmut keeps no per-phase durations
+    line filter and writes mutants for whole files, so it runs in two steps: list the mutants (LIST_ONLY), then run only
+    those of the functions that hold a changed line. The MISSED list is narrowed to the changed lines afterwards (the
+    same `--in-diff` promise as cargo-mutants). Paths in the result are repo-root paths. Timing: wall time only (mutmut keeps no per-phase durations
     in its output); the per-mutant timeout is mutmut's own (timeout_multiplier), so --mutant-timeout is not applied."""
     default_cmd = "mutmut"
 
@@ -745,43 +860,63 @@ class Mutmut:
                 return _check("n/a", f"mutmut not installed (env): `{cmd}` not runnable; install mutmut 3.8.1 "
                                      "(python toolchain step) or set setup-command"), []
             t0 = time.monotonic()
-            rc, text = runner(shlex.split(cmd) + ["run"], crate, budget)
+            base = shlex.split(cmd)
+            sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
+            # step 1: mutmut writes its mutants and records which tests reach which function; LIST_ONLY names no mutant,
+            # so none runs. mutmut mutates whole files: the names tell which mutants sit in a function the diff touches
+            rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
+            stop = _run_stopped(rc, text, (EARLY, NO_MATCH))
+            if stop:
+                return stop
+            if rc != "timeout":
+                rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
+                if rrc != 0:
+                    return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
+                names = [name for name, _ in parse_results(rtext)]
+                if not names:
+                    return _check("pass", "0 mutants in the diff", 0, 0), []
+                touched = sorted({function_glob(n) for n in names if not outside_diff(n, sources, changed)})
+                if not touched:
+                    return _check("pass", f"0 mutants in the diff ({len(names)} in functions the diff does not touch: "
+                                          "not run)", 0, 0), []
+                # step 2: only the mutants of the touched functions run
+                left = None if budget is None else max(1.0, budget - (time.monotonic() - t0))
+                rc, text = runner(base + ["run"] + touched, crate, left)
+                stop = _run_stopped(rc, text, (EARLY,))
+                if stop:
+                    return stop
             wall = time.monotonic() - t0
-            early = "Stopping early" in text
-            if rc == 1 and ("failed to collect stats" in text or "Failed to run clean test" in text):
-                diag_output("mutmut", "fail", text)
-                return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
-                    entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
-                          "fix the failing tests first: mutation needs an unmutated tree that passes",
-                          "a mutation check that did not run")])
-            if not (rc in ("timeout", 0) or (rc == 1 and early)):
-                return _check("n/a", f"mutmut exit {rc} (env): {_first_line(text)}; check the test deps "
-                                     "(requirements, setup-command)"), []
-            rrc, rtext = runner(shlex.split(cmd) + ["results", "--all", "True"], crate, PROBE_TIMEOUT)
+            early = EARLY in text
+            rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
             if rrc != 0:
                 return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
-            rows = [(name, _kind(status, early), status) for name, status in parse_results(rtext)]
+            listed = parse_results(rtext)
+            rows = [(name, _kind(status, early), status) for name, status in listed
+                    if not outside_diff(name, sources, changed)]
+            unrun = len(listed) - len(rows)
             tested = sum(1 for _, k, _ in rows if k != "untested")
             total = None if rc == "timeout" and not rows else len(rows)
-            if rc != "timeout" and total == 0:
-                return _check("pass", "0 mutants in the diff", 0, 0), []
             caught = sum(1 for _, k, _ in rows if k == "caught")
             found, outside, unlocated = [], 0, 0
-            sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
+            copies = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])
             for name, k, status in rows:
                 if k != "missed":
                     continue
-                if outside_diff(name, sources, changed):
-                    outside += 1  # its whole function is unchanged: no `mutmut show` needed to know
-                    continue
-                rc_s, show = runner(shlex.split(cmd) + ["show", name], crate, PROBE_TIMEOUT)
-                parsed = parse_show(show) if rc_s == 0 else None
-                if parsed is None:
-                    unlocated += 1  # no diff to read: not a fail, not outside either; named by the confirm below
-                    continue
-                removed, after = parsed
-                file = _repo_path(project_dir, show_file(show) or "")
-                line = locate(_read(os.path.join(crate, _crate_path(project_dir, file))), name, removed)
+                line, known = None, copies.change(name)
+                if known:  # mutmut's own copy of the function: the changed line is an offset from its def line
+                    file, removed, after = _repo_path(project_dir, known[0]), known[2], known[3]
+                    line = line_at(sources.get(file), name, known[1], removed)
+                if line is None:  # not readable that way: ask mutmut for the diff and find its text in the function
+                    rc_s, show = runner(base + ["show", name], crate, PROBE_TIMEOUT)
+                    parsed = parse_show(show) if rc_s == 0 else None
+                    if parsed is None:
+                        unlocated += 1  # no diff to read: not a fail, not outside either; named by the confirm below
+                        continue
+                    removed, after = parsed
+                    shown = show_file(show)
+                    if shown:
+                        file = _repo_path(project_dir, shown)
+                        line = locate(_read(os.path.join(crate, shown)), name, removed)
                 if line is None:
                     unlocated += 1  # the name maps to no line in the file: a confirm, never a silent fail
                     continue
@@ -812,7 +947,11 @@ class Mutmut:
             else:
                 note = (f"{shown} tested: {len(fails)} missed in the diff, {outside} missed outside the diff, "
                         f"{unlocated} unlocated, {caught} caught")
-                check = _check("fail" if fails else "pass", note, tested, total)
+                if unrun:
+                    note += f"; {unrun} in functions the diff does not touch: not run"
+                # a mutant of a touched function that mutmut left unrun is not a pass: the run is partial
+                status = "fail" if fails else "partial" if tested < len(rows) else "pass"
+                check = _check(status, note, tested, total)
             check["timing"] = timing
             return check, ents
 
