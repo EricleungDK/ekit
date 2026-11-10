@@ -325,6 +325,16 @@ def default_runner():
 DIAG_LINES = 40  # lines of cargo-mutants' own log printed to stderr on a non-pass R3
 
 
+def diag_output(tool, status, text):
+    """A run that produced no result (python: the tests fail before any mutant runs): the last DIAG_LINES of the tool's
+    output to stderr, so the job log names the failing test. Progress spinner frames are dropped. stdout stays the JSON."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip() and not "\u2800" <= ln[0] <= "\u28ff"]
+    tail = lines[-DIAG_LINES:]
+    print(f"mech-review: R3 {status}: last {len(tail)} lines of {tool} output", file=sys.stderr)
+    for line in tail:
+        print(line, file=sys.stderr)
+
+
 def _diagnose(mo, text, status):
     """A non-pass R3: the last DIAG_LINES of cargo-mutants' log/baseline.log (its output when no log was written) to
     stderr, so the job log shows why. stdout stays the JSON contract."""
@@ -739,6 +749,7 @@ class Mutmut:
             wall = time.monotonic() - t0
             early = "Stopping early" in text
             if rc == 1 and ("failed to collect stats" in text or "Failed to run clean test" in text):
+                diag_output("mutmut", "fail", text)
                 return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
                     entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
                           "fix the failing tests first: mutation needs an unmutated tree that passes",

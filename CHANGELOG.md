@@ -30,6 +30,7 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 - `taste-it` and `finish` no longer tell the agent to verify with editable or global installs.
 - The python stack's R2 message for a skipped test said `#[ignore]`.
 - Python R3 looked up every missed mutant of a changed file with `mutmut show`, one call each and unbounded: on a large file with little unit coverage the step ran for tens of minutes after the mutation budget. Mutants in functions the diff does not touch are now counted without a lookup.
+- Python R3: when the tests fail before any mutant runs, the job log now shows the tail of mutmut's output (the failing test), as it already did for cargo-mutants.
 - The test suites no longer run under the machine's git config (commit signing, hooks, default branch), and two tests that failed as root or in a container without an init process now say why they could not run.
 
 ## 0.2.6 and earlier
