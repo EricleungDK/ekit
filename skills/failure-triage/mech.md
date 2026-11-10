@@ -27,6 +27,18 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 
 Each `agent-fixable` fail: open its fix plan with two lines, verbatim: `Fix: <hint>` and `Forbidden: <forbidden>`. Your steps go after them. Never take the forbidden route.
 
+## R3 MISSED mutants
+
+A MISSED mutant is a change to your code that no test noticed. For each one, in this order:
+
+1. **A caller or user would see the difference** → add the assert on that output, return value, exit code or file. This is the usual case.
+2. **Nothing observable changes** (an equivalent mutant: a default nobody passes, a redundant condition, a second cleanup of the same thing) → simplify the code until the variant is gone. Less code, same behaviour, no mutant.
+3. **Neither is possible** → Needs-you: the owner decides, and may waive it.
+
+Never kill a mutant by asserting an internal call (`mock.assert_called_with(...)` on your own helper), by pinning a message's wording that no user relies on, or by moving or rewriting the line so the check no longer sees it. The entry's `hint` says the same.
+
+`N more caught only by the whole suite` in the R3 note is not a failure: those lines are tested, but only by a test that starts the program or imports it another way. Prefer adding a test that calls the function.
+
 ## Rounds
 
 Fix rounds per id = commits on this branch whose body names it:

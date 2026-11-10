@@ -20,6 +20,11 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 - `cloud/setup.sh` takes `EKIT_REF` (pin a tag or commit) and `EKIT_REPO_URL` (a fork or mirror).
 - Python unit tests in `tests/py`; ekit's own PRs now run mech-review on the python stack.
 
+### Changed
+
+- Python R3 no longer reports a line as untested when the only test that covers it starts the program as a subprocess or imports the file under another name. A mutant mutmut reports missed on a changed line is applied and run once against the whole suite; the note counts those (`N more caught only by the whole suite`).
+- Every R3 MISSED hint now ends with what to do: assert observable behaviour, simplify away an equivalent mutant, or hand it to the owner; never pin internals. `failure-triage` has the same steps, and the CI doc records which mutations each stack's tool makes.
+
 ### Fixed
 
 - A scenario PASS no longer goes stale when you commit: the tree hash is the files' content, not `HEAD` plus a diff.

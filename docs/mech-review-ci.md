@@ -111,6 +111,7 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 - The runner appends a `[tool.mutmut]` table (`source_paths`, `only_mutate` = the changed production files of the shard) to the worktree's `pyproject.toml`. The caller's checkout is never written. A `setup.cfg` `[mutmut]` section is ignored once the table exists.
 - mutmut has no line filter: it writes mutants for every function of the changed files. The runner therefore runs it in two steps. First `mutmut run` with a filter that matches no mutant: mutmut writes the mutants, records which tests reach which function, and runs none. The mutant names say which function each belongs to, and only the mutants of functions that hold a changed line are run in the second step (`mutmut run 'pkg.mod.x_fn__mutmut_*' ...`). A large file touched in one place costs the touched functions, not the file. Both steps share one `mutation-budget`.
 - Of those, only the MISSED mutants on changed lines are reported, the same promise as `--in-diff`. The line comes from mutmut's own files under `mutants/`: each mutant is a whole copy of its function, so its first changed line is an offset from the function's `def` line in the head source. `mutmut show` is asked only for a mutant those files do not explain; its diff text is then searched for in the function. A MISSED mutant on an unchanged line of a touched function is counted in the note (`N missed outside the diff`); the mutants of untouched functions are counted too (`N in functions the diff does not touch: not run`). `tested` and `total` count the mutants of the touched functions.
+- mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under the module name mutmut derives from the file path. A test that starts the program as a subprocess, or imports the file under another name, is not credited: its lines read `no tests`. So each mutant still MISSED on a changed line gets one more try. `mutmut apply` writes it into the worktree, the whole suite runs once (`python3 -B -m pytest -x -q -p no:cacheprovider --ignore=mutants`), and a failing suite has caught it; the file is put back each time. The note counts them (`N more caught only by the whole suite`): a visible nudge towards a test that calls the function, not a blocker. A suite that is red without any mutant is not used (the job log says so). One suite run on a mutant may take 5× the clean run (at least 30 s); one that takes longer is counted as hung, neither caught nor missed. The whole step shares `mutation-budget`: what it cannot reach stays MISSED. A flaky test in the suite can give a false catch here; R4 is the check for flaky tests.
 - A mutant of a touched function that mutmut leaves unrun without a budget hit makes R3 `partial`, never `pass`. A method is located inside its class (mutmut names it `Class` + U+01C1 + `method`), so a method name that two classes share is found in the right one. A missed mutant whose name maps to no line in the file is `unlocated`: one `confirm` entry, not a fail and not a silent pass, counted in the note (`N unlocated`) for a reader to check by hand.
 - `no tests` (no test reaches the line) is a MISSED mutant: the fix is a test that calls it. Survived mutants are MISSED. `timeout`, `suspicious` and similar are neither caught nor missed, as TIMEOUT and UNVIABLE are for cargo-mutants.
 - Timing is wall time only (`checks.R3.timing.wall_s`): mutmut prints no per-phase durations, so the cargo-mutants phase fields are left out, not guessed. `--mutant-timeout` does not apply: mutmut's own timeout (its `timeout_multiplier` times the test time) decides.
@@ -173,6 +174,20 @@ Trust: GitHub attributes a comment to the account that posted it, so an agent th
 - Budget: Stryker writes its report at the end of a run, so a budget hit before that is `partial` with the mutant count from its log (`tested` unknown). A partial is not blocking.
 - Timing is wall time only (`checks.R3.timing.wall_s`): Stryker's JSON has no per-phase durations.
 - `mutant-timeout` sets Stryker's `timeoutMS`; under auto it stays at 120 s, as before.
+
+## What each stack mutates
+
+The three tools do not make the same mutants, so R3 is not equally strict across stacks. This is a property of the tools, written down here so it is not a surprise:
+
+| | cargo-mutants (rust) | Stryker (ts) | mutmut (python) |
+|---|---|---|---|
+| Operators, conditions, return values | yes | yes | yes |
+| String literals | no | replaced by `""` only | wrapped (`"XXtextXX"`) and case-changed |
+| Arguments removed or set to `None` | no | no | yes |
+| Module-level code | n/a | yes | no (functions only) |
+| A repo can switch a mutator off | config (an R2 `needs-human` change) | `excludedMutations` in the repo's Stryker config (same) | no: there is no such option |
+
+In ekit's own code, most python string and argument mutants that survived were real gaps (a dictionary key, a git flag, an environment variable name), so they block like any other. The ones that are not gaps are equivalent mutants: see the R3 row of the [forbidden cheats](testing-standard.md#3-forbidden-cheats) for what to do with one.
 
 ## Limits
 
