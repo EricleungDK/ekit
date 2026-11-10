@@ -1,9 +1,10 @@
 {
   "name": "ekit",
-  "version": "0.2.6",
-  "description": "Agent workflow kit: orchestrate-agent, failure-triage, taste-it, finish, ci-doctor, plus preflight/failure/finish-gate hooks.",
+  "version": "0.3.0",
+  "description": "Make coding agents prove their work: triage before fixing, verify by using it, an evidence-based finish report, and mechanical PR checks (red-first, test-diff guard, mutation testing).",
   "author": { "name": "EricleungDK" },
   "repository": "https://github.com/EricleungDK/ekit",
+  "license": "MIT",
   "keywords": ["agents", "skills", "testing", "ci", "mutation-testing"],
   "skills": [
     "./skills/ci-doctor",

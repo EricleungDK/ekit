@@ -6,7 +6,7 @@ Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each
 - `red-first`: R1 red-first and R4 determinism (`scripts/mech-review.py red`). Compiles and runs the PR's new or changed tests, so it needs the stack toolchain (rust: stable; python: a venv with pytest; ts: node 22 and the repo's installed dependencies).
 - `plan`: decides whether R3 runs (a production file changed). Git only.
 - `baseline`: the R3 baseline, once per PR (`scripts/mech-review.py baseline`). Rust: runs cargo-mutants 27.1.0's unmutated baseline (the tests once) and lists the mutants; sets the shard count (`min(4, mutants)`) and the per-mutant timeout the shards use. Python and ts: the shard count from the changed production files (git only). A baseline that fails or times out is R3's result: the shards do not run. Skipped when `plan` says no production file changed.
-- `mutants`: R3 mutation on the diff (`scripts/mech-review.py mutants`), one job per shard. Runs cargo-mutants 27.1.0 (`--in-diff`, round-robin shards, baseline skipped) on the PR's code (rust), mutmut 3.8.1 on the changed files (python), or Stryker 10.0.0 on the changed lines (ts). Skipped when `baseline` says no shard runs.
+- `mutants`: R3 mutation on the diff (`scripts/mech-review.py mutants`), one job per shard. Runs cargo-mutants 27.1.0 (`--in-diff`, round-robin shards, baseline skipped) on the PR's code (rust), mutmut 3.8.1 on the functions the diff touches in the changed files (python), or Stryker 10.0.0 on the changed lines (ts). Skipped when `baseline` says no shard runs.
 - `report`: merges the results (the baseline's R3, or the shards' R3), edits the comment, sets the check.
 
 Rules: [testing standard](testing-standard.md).
@@ -53,7 +53,7 @@ instead; then upgrading is a bump in that repo again.
 | `stack` | `rust` | language adapter: `rust` (cargo test, cargo-mutants), `python` (pytest, mutmut) or `ts` (vitest or jest, Stryker). Sets up the toolchain for `red-first` and `mutants` |
 | `test-paths` | `tests/**` | test file globs, one per line; `.rs` files here count every assert; a `.rs` file outside them is production code for R1 |
 | `protected-paths` | `.github/**` | globs, one per line; any change under them is a `needs-human` fail |
-| `agent-branch-prefix` | `agent/` | R1 runs only when the PR head branch starts with it (`--agent-prefix`); other branches skip R1 |
+| `agent-branch-prefix` | `agent/`, `claude/`, `codex/`, `copilot/`, `cursor/` | prefixes, one per line: R1 runs only when the PR head branch starts with one of them (`--agent-prefix`, repeatable); other branches skip R1. `*` runs R1 on every branch. A value you set replaces the default list |
 | `mutation-budget` | `10` | R3 budget in minutes, per mutants shard and for the baseline step. A budget hit is `partial` (no MISSED so far) or `fail` (a MISSED found), never a crash; a baseline that does not finish in it is `n/a`. Applies to all stacks |
 | `extra-apt-packages` | `` | apt packages (space-separated) installed before `red-first` runs its tests |
 | `project-dir` | `.` | crate dir under the repo root (`package.json` for ts). R1, R4 and R3 run there; `test-paths` and `protected-paths` stay repo-root globs; a path with `..` or a leading `/` is a usage error |
@@ -63,7 +63,7 @@ instead; then upgrading is a bump in that repo again.
 
 Globs: `**` any depth, `*` one segment.
 
-Subdirectory crate (`project-dir`): `test-paths: alfredo-tui/tests/**`, `project-dir: alfredo-tui`. Tests and cargo-mutants run in that dir; results name files from the repo root (`alfredo-tui/src/x.rs`).
+Subdirectory crate (`project-dir`): `test-paths: crates/app/tests/**`, `project-dir: crates/app`. Tests and cargo-mutants run in that dir; results name files from the repo root (`crates/app/src/x.rs`).
 
 `setup-command` is for host setup a test needs and `extra-apt-packages` cannot do, e.g. an AppArmor sysctl for bubblewrap:
 
@@ -88,7 +88,7 @@ Python toolchain (`stack: python`), set up in `red-first` and `mutants`:
 - Jobs: `guard` (artifact `mech-review-json`), `red-first` (artifact `mech-review-red-json`), `plan`, `baseline` (artifact `mech-review-baseline-json`), `mutants` (artifacts `mech-review-mutants-<shard>`), `report` (`needs` all five, runs even if one fails).
 - `report` merges the results: each job owns its checks (R2 from `guard`; R1 and R4 from `red-first`; R3 from `mutants`). The shard results are combined by `mech-review.py merge` first. It edits the sticky comment, or creates it: a summary line, a table of entries (id, severity, file:line, problem, forbidden) and the full JSON.
 - A job with no usable result (crash, no JSON, or a result for an older head) fails its own checks and adds one `CI` entry naming the job. The other job's entries still show.
-- Check fails on any `fail` entry (`confirm` entries do not fail).
+- Check fails on any `fail` entry (`confirm` and `waived` entries do not fail).
 - A `fail` entry of class `needs-human` reads `needs-human` in the comment (severity cell, and the headline when every fail entry is needs-human). The JSON keeps `severity: fail` and the summary keeps `fail`; the check stays red.
 - R1 on a non-agent branch, or a PR with no production file changed, is `skipped` and named as such. A missing toolchain is `n/a` (not run, not pass). Each `n/a` note names the cause and the input to set (`setup-command` for a toolchain, the install step for cargo-mutants, `project-dir` for no manifest: `Cargo.toml` for rust, `pyproject.toml`, `setup.py` or `setup.cfg` for python), and the comment adds one line under the headline: `Did not run: R3 (no Cargo.toml in .: set project-dir)`. A missing manifest where R1 or R4 runs is a `fail` (cannot run), with `set project-dir` in its hint.
 - Summary: `all pass <sha>` only when every check ran and passed. A run with R3 skipped (no production file changed) reads like `pass <sha> (0 fail, 1 confirm; ran: R1 R2 R4; skipped: R3)`. A budget hit reads `partial: R3 (tested/total)`, and an absent tool reads `n/a: R3`; neither is `all pass`.
@@ -109,7 +109,10 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 ## Python R3 (mutmut)
 
 - The runner appends a `[tool.mutmut]` table (`source_paths`, `only_mutate` = the changed production files of the shard) to the worktree's `pyproject.toml`. The caller's checkout is never written. A `setup.cfg` `[mutmut]` section is ignored once the table exists.
-- mutmut has no line filter: it mutates every line of the changed files. The runner keeps only the MISSED mutants on changed lines (the line is found in the head source by the mutated function's name, `mutmut show`), the same promise as `--in-diff`. Mutants outside the diff are not reported; the note counts them (`N missed outside the diff`). A method is located inside its class (mutmut names it `Class` + U+01C1 + `method`), so a method name that two classes share is found in the right one. A missed mutant whose name maps to no line in the file is `unlocated`: one `confirm` entry, not a fail and not a silent pass, counted in the note (`N unlocated`) for a reader to check by hand.
+- mutmut has no line filter: it writes mutants for every function of the changed files. The runner therefore runs it in two steps. First `mutmut run` with a filter that matches no mutant: mutmut writes the mutants, records which tests reach which function, and runs none. The mutant names say which function each belongs to, and only the mutants of functions that hold a changed line are run in the second step (`mutmut run 'pkg.mod.x_fn__mutmut_*' ...`). A large file touched in one place costs the touched functions, not the file. Both steps share one `mutation-budget`.
+- Of those, only the MISSED mutants on changed lines are reported, the same promise as `--in-diff`. The line comes from mutmut's own files under `mutants/`: each mutant is a whole copy of its function, so its first changed line is an offset from the function's `def` line in the head source. `mutmut show` is asked only for a mutant those files do not explain; its diff text is then searched for in the function. A MISSED mutant on an unchanged line of a touched function is counted in the note (`N missed outside the diff`); the mutants of untouched functions are counted too (`N in functions the diff does not touch: not run`). `tested` and `total` count the mutants of the touched functions.
+- mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under the module name mutmut derives from the file path. A test that starts the program as a subprocess, or imports the file under another name, is not credited: its lines read `no tests`. So each mutant still MISSED on a changed line gets one more try. `mutmut apply` writes it into the worktree, the whole suite runs once (`python3 -B -m pytest -x -q -p no:cacheprovider --ignore=mutants`), and a failing suite has caught it; the file is put back each time. The note counts them (`N more caught only by the whole suite`): a visible nudge towards a test that calls the function, not a blocker. A suite that is red without any mutant is not used (the job log says so). One suite run on a mutant may take 5× the clean run (at least 30 s); one that takes longer is counted as hung, neither caught nor missed. The whole step shares `mutation-budget`: what it cannot reach stays MISSED. A flaky test in the suite can give a false catch here; R4 is the check for flaky tests.
+- A mutant of a touched function that mutmut leaves unrun without a budget hit makes R3 `partial`, never `pass`. A method is located inside its class (mutmut names it `Class` + U+01C1 + `method`), so a method name that two classes share is found in the right one. A missed mutant whose name maps to no line in the file is `unlocated`: one `confirm` entry, not a fail and not a silent pass, counted in the note (`N unlocated`) for a reader to check by hand.
 - `no tests` (no test reaches the line) is a MISSED mutant: the fix is a test that calls it. Survived mutants are MISSED. `timeout`, `suspicious` and similar are neither caught nor missed, as TIMEOUT and UNVIABLE are for cargo-mutants.
 - Timing is wall time only (`checks.R3.timing.wall_s`): mutmut prints no per-phase durations, so the cargo-mutants phase fields are left out, not guessed. `--mutant-timeout` does not apply: mutmut's own timeout (its `timeout_multiplier` times the test time) decides.
 - A budget hit reads the results mutmut kept: `partial (tested/total)` with nothing missed, `fail` with a MISSED.
@@ -142,6 +145,24 @@ What to do with the numbers, in this order:
 2. Narrower tests. If a few mutants dominate `slowest`, their tests are slow for each mutant. Make those tests faster or narrower; the slow test runs once per mutant.
 3. Raise `mutation-budget` last. If `baseline_build_s` and `baseline_test_s` are large against `wall_s`, the fixed per-shard cost is the problem: a bigger budget only buys more mutants.
 
+## Waivers
+
+Some `fail` entries are a person's call: a protected-path change in a PR that is meant to change CI, a test the owner wants gone, an equivalent mutant. A person with write access lets one entry through with a PR comment:
+
+```
+/mech-waive R3-1a2b3c4d: equivalent mutant, the branch is unreachable
+```
+
+- One line per entry id, at the start of a line, with a reason (a waiver with no reason is ignored). Several lines may share one comment.
+- Who: comments whose author is `OWNER`, `MEMBER` or `COLLABORATOR` of the repo, and not a bot. The PR's own content (body, commits, files) can never waive: that is what the checks judge.
+- When: the `report` job reads the PR's comments each time it runs. After commenting, re-run the run's failed job (`report`, the only one that fails on entries), or push: the next run picks the waiver up.
+- Effect: the entry's `severity` becomes `waived` and it gains `waiver: {by, reason, url}`; a check whose fail entries are all waived reads `waived`; the summary counts it (`0 fail, 0 confirm, 1 waived`); the comment says who waived what and why. A waived entry does not fail the check. `all pass` is never printed over a waiver.
+- Scope: a waiver is for one entry id. Ids are stable across pushes (rule + file + test name), so it holds while that same thing stays broken and falls away when the id does. To withdraw one, delete the comment and re-run.
+- Not waivable: `CI` entries (a job with no result). Fix the run instead.
+- Agents do not waive. The skills hand a `needs-human` entry to the user as a Needs-you block; the command above is what the user posts if the answer is yes.
+
+Trust: GitHub attributes a comment to the account that posted it, so an agent that holds your token can post as you. Give agents a token of their own (a bot or app account is never a waiving author), and the waiver stays a person's act. Every waiver is visible in the PR comment with its author.
+
 ## TypeScript R3 (Stryker)
 
 - Stryker 10.0.0 runs on the changed lines only: each changed run of lines is a `--mutate file:start-end` range. Stryker mutates the mutants fully inside a range, so the MISSED list is already the diff; a mutant outside it is counted in the note, not a fail. Class methods are mutated like any other lines.
@@ -154,14 +175,28 @@ What to do with the numbers, in this order:
 - Timing is wall time only (`checks.R3.timing.wall_s`): Stryker's JSON has no per-phase durations.
 - `mutant-timeout` sets Stryker's `timeoutMS`; under auto it stays at 120 s, as before.
 
+## What each stack mutates
+
+The three tools do not make the same mutants, so R3 is not equally strict across stacks. This is a property of the tools, written down here so it is not a surprise:
+
+| | cargo-mutants (rust) | Stryker (ts) | mutmut (python) |
+|---|---|---|---|
+| Operators, conditions, return values | yes | yes | yes |
+| String literals | no | replaced by `""` only | wrapped (`"XXtextXX"`) and case-changed |
+| Arguments removed or set to `None` | no | no | yes |
+| Module-level code | n/a | yes | no (functions only) |
+| A repo can switch a mutator off | config (an R2 `needs-human` change) | `excludedMutations` in the repo's Stryker config (same) | no: there is no such option |
+
+In ekit's own code, most python string and argument mutants that survived were real gaps (a dictionary key, a git flag, an environment variable name), so they block like any other. The ones that are not gaps are equivalent mutants: see the R3 row of the [forbidden cheats](testing-standard.md#3-forbidden-cheats) for what to do with one.
+
 ## Limits
 
-- Fork PRs get a read-only `GITHUB_TOKEN`: the comment cannot be posted, so `report` fails. The result is still in the job summary.
+- Fork and Dependabot PRs get a read-only `GITHUB_TOKEN`: the comment cannot be posted (GitHub answers 403). `report` then prints a warning, leaves the result in the job summary, and passes or fails on the result alone. Waiver comments are still read.
 - Permissions are `contents: read` and `pull-requests: write` only. The workflow uses `pull_request`, not `pull_request_target`, so forks get no secrets.
 - `guard` decides from git diffs only. `red-first` compiles and runs the PR's tests (the code under review) with a job-level `contents: read` token and no other secrets.
 - R1 needs the branch name: the workflow passes `github.head_ref`. A run without it skips R1 and says so.
 - `baseline` (rust) and `mutants` run cargo-mutants, which builds and runs the PR's tests (once for the baseline, once per mutant), with a job-level `contents: read` token and no other secrets. The unmutated baseline runs once, in `baseline` (same token), not once per shard.
-- rust R3 builds: the baseline and shard steps export `CARGO_INCREMENTAL=1` (the toolchain action exports 0) and `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`. Build time only: the same tests run on the same mutants. Measured on Alfredo (#605's diff, one shard of 5 mutants, 4 cores, the shard argv): 654 s wall and 347 s of mutant builds before, 416 s and 148 s after, same verdicts (4 caught, 1 unviable).
+- rust R3 builds: the baseline and shard steps export `CARGO_INCREMENTAL=1` (the toolchain action exports 0) and `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`. Build time only: the same tests run on the same mutants. Measured on a real TUI crate (one shard of 5 mutants, 4 cores, the shard argv): 654 s wall and 347 s of mutant builds before, 416 s and 148 s after, same verdicts (4 caught, 1 unviable).
 - cargo-mutants is pinned to 27.1.0 through `taiki-e/install-action` (pinned to a full SHA). If the install fails the step continues and R3 reports `n/a (env)`: a missing tool is never a pass and never a code failure.
 - ts: Stryker 10.0.0 is pinned in the workflow. The vitest and jest plugins, and the install scripts of the repo's dependencies, run PR code with a read-only token, as the tests do. Yarn berry (PnP, no `node_modules`) and `node --test` are not supported: the runner is `node_modules/.bin/vitest` or `jest`.
 - python: `mutmut` 3.8.1 is pinned in the venv. A repo that already has `[tool.mutmut]` in its `pyproject.toml` gets R3 `n/a (env)`: the runner needs `only_mutate` to limit the run to the changed files, and does not override the repo's table.
@@ -174,7 +209,7 @@ What to do with the numbers, in this order:
 - R1 and R4 results come from `red-first`, the job that compiles and runs PR code. A malicious test can forge that job's JSON. `red-first` has a read-only token (`contents: read`) and cannot edit the comment, but its result is only as trustworthy as the code it ran. R2 runs in `guard`, a separate job with no PR code, and is the hard guard.
 - Non-`.rs` files outside `test-paths` (for example `Cargo.toml`) come from the base in R1's checkout: a test that needs a new dev-dependency is compile-red there (red).
 - R3 results come from `mutants`, which runs the PR's tests. A malicious test can forge that job's JSON, as with R1 and R4; the read-only token stops it editing the comment, not forging its own result. R2 is still the hard guard for weakened tests.
-- R3 measures test strength on the changed production code only. A MISSED mutant can be an equivalent mutant (no observable change): the fix is then to assert the behaviour the code really has, and a reviewer may decide the mutant is not worth a test. There is no waiver: a MISSED mutant stays `fail` until a test kills it or the code changes.
+- R3 measures test strength on the changed production code only. A MISSED mutant can be an equivalent mutant (no observable change): the fix is then to assert the behaviour the code really has, and a person may decide the mutant is not worth a test: that is a [waiver](#waivers). Without one a MISSED mutant stays `fail` until a test kills it or the code changes.
 - `partial` (budget hit, nothing MISSED so far) does not block, so part of the diff was not mutated. The reviewer reads the `tested/total` note; a bigger `mutation-budget` (or fewer changed lines) is the fix. A budget hit with a MISSED found is `fail`.
 - Shard results are merged by `mech-review.py merge`. A missing or stale shard is a CI `fail` entry that names the shard; the other shards' entries are kept.
 

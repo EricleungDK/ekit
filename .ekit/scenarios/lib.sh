@@ -22,8 +22,9 @@ add_scn() { local d="$SAMPLE/.ekit/scenarios/$1"; mkdir -p "$d"
 commit_all() { git -C "$SAMPLE" add -A; git -C "$SAMPLE" commit -qm "${1:-c}"; }
 # the installed hook command for an event, read from the sample's settings.json
 hook_cmd() { jq -er --arg e "$1" '.hooks[$e][0].hooks[0].command' "$SAMPLE/.claude/settings.json" || fail "no $1 hook installed"; }
-# run installed hook: hook <event> <session> [stop_hook_active]
-hook() { local p; p=$(jq -nc --arg s "$2" --arg c "$SAMPLE" --argjson a "${3:-false}" '{session_id:$s,cwd:$c,hook_event_name:"x",stop_hook_active:$a}')
+# run installed hook: hook <event> <session> [stop_hook_active] [last assistant message]
+REPORT=$'## Finish: done\n| Criterion | Status | Evidence |'
+hook() { local p; p=$(jq -nc --arg s "$2" --arg c "$SAMPLE" --argjson a "${3:-false}" --arg e "$1" --arg m "${4:-}" '{session_id:$s,cwd:$c,hook_event_name:$e,stop_hook_active:$a} + (if $m == "" then {} else {last_assistant_message:$m} end)')
   (cd "$SAMPLE" && printf '%s' "$p" | bash -c "$(hook_cmd "$1")"); }
 # user types /orchestrate-agent (cloud install name): arm <session>
 arm() { local p; p=$(jq -nc --arg s "$1" --arg c "$SAMPLE" '{session_id:$s,cwd:$c,hook_event_name:"UserPromptSubmit",prompt:"/orchestrate-agent do x"}')

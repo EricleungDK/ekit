@@ -1,11 +1,15 @@
-"""Stop/SubagentStop hook: block until the finish report is given. Orchestrate-only:
-silent unless the session was armed by a prompt starting with /ekit:orchestrate-agent (or /orchestrate-agent).
+"""Stop hook: in an orchestrate session, block the stop until the work has its finish report.
 
-Plain repo: block once per new uncommitted change set.
-Repo with .ekit/scenarios/: block while scenarios.py `check` isn't a fresh PASS for the current tree
-(committed work counts; stale/failing keeps blocking; stop_hook_active is the loop guard).
-Allowed when the runner tree-hash is unchanged since session start (no work done; baseline is per repo).
-Runner errors fail closed (block). Test seam: EKIT_SCENARIOS_PY overrides the runner path.
+Orchestrate-only: silent unless the session was armed by a prompt starting with /ekit:orchestrate-agent (or /orchestrate-agent).
+Subagent stops are never gated: the orchestrator owns the report and the taste run.
+
+Work = the working tree's content differs from session start (runner `tree-hash`: commits count, a commit alone
+changes nothing; the baseline is per repo). With work done, the stop is allowed when:
+- the last assistant message carries the finish report (`## Finish: done` or `## Finish: blocked`), and
+- in a repo with .ekit/scenarios/, `check` is a fresh PASS for the current tree (a `blocked` report needs no PASS).
+A tree that was reported stays allowed. A missing report blocks once per tree; scenarios that are not green block
+every stop. stop_hook_active is the loop guard. Runner errors fail closed (block).
+Test seam: EKIT_SCENARIOS_PY overrides the runner path.
 
 `finish-gate.py --baseline` (stdin: hook payload) records the tree state at session start instead.
 `finish-gate.py --arm` (UserPromptSubmit payload) arms the session when the prompt invokes orchestrate-agent.
@@ -16,27 +20,22 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.join(
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
 )
+SCEN = os.environ.get("EKIT_SCENARIOS_PY") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios.py")
+KEEP_DAYS = 14
+TAIL = 400_000  # bytes of transcript read to find the last assistant message
+
+ARM = re.compile(r"(?:\A\s*|<command-name>)/(?:ekit:)?orchestrate-agent(?![\w-])")
+FINISH = re.compile(r"^\s{0,3}#{1,6}\s*Finish:\s*(done|blocked)\b", re.M | re.I)
 
 
 def git(cwd, *args):
     r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else None
-
-
-def tree(cwd):
-    """(hash, changed files) of uncommitted state, or None outside git / when clean."""
-    status = git(cwd, "status", "--porcelain=v1", "-uall")
-    if not status:
-        return None
-    diff = git(cwd, "diff", "HEAD") or ""
-    untracked = (git(cwd, "ls-files", "-o", "--exclude-standard") or "").splitlines()
-    blobs = (git(cwd, "hash-object", "--", *untracked) or "") if untracked else ""
-    files = [line[3:] for line in status.splitlines()]
-    return hashlib.sha1((status + diff + blobs).encode()).hexdigest(), files
 
 
 def path(session, kind):
@@ -57,7 +56,16 @@ def write(p, v):
         f.write(v)
 
 
-SCEN = os.environ.get("EKIT_SCENARIOS_PY") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios.py")
+def prune():
+    """Session state older than KEEP_DAYS goes: the directory would otherwise grow by a few files per session."""
+    cutoff = time.time() - KEEP_DAYS * 86400
+    try:
+        for name in os.listdir(STATE):
+            p = os.path.join(STATE, name)
+            if os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                os.remove(p)
+    except OSError:
+        pass
 
 
 def runner(repo, cmd):
@@ -65,39 +73,56 @@ def runner(repo, cmd):
     return r.returncode, (r.stdout.strip() or r.stderr.strip())
 
 
-def scenario_gate(data, session, top):
-    """Gate for repos with .ekit/scenarios/; returns True if handled."""
-    if not top or not any(os.path.isdir(os.path.join(top, d, "scenarios")) for d in (".ekit", ".ek")):
-        return False
-    rc, cur = runner(top, "tree-hash")
-    sbase = path(session, "sbase-" + hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12])
-    if "--baseline" in sys.argv:
-        if read(sbase) is None:
-            write(sbase, cur if rc == 0 else "")
-        return True
-    if data.get("stop_hook_active") or (rc == 0 and cur == read(sbase)):
-        return True
-    err = None
-    if rc != 0:
-        err = cur.splitlines()[0] if cur else f"exit {rc}"
-    else:
-        rc, why = runner(top, "check")
-        if rc == 0:
-            return True
-        if rc != 1:
-            err = why.splitlines()[0] if why else f"exit {rc}"
-    head = f"scenario runner error: {err}" if err else f"Scenarios not green: {why}"
-    print(json.dumps({
-        "decision": "block",
-        "reason": f"[ekit] {head}. Run `python3 {SCEN} --repo {top} run` "
-                  "and follow the taste-it skill (ekit:taste-it). "
-                  "Then give the finish report (finish skill): each criterion with evidence, "
-                  "verification debt, and what stays uncommitted and why. Then stop.",
-    }))
-    return True
+def _text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return ""
 
 
-ARM = re.compile(r"(?:\A\s*|<command-name>)/(?:ekit:)?orchestrate-agent(?![\w-])")
+def last_message(data):
+    """The assistant's final message: the payload's `last_assistant_message`, else the text after the last user
+    entry (prompt or tool result) in the transcript. "" when neither can be read."""
+    msg = data.get("last_assistant_message")
+    if isinstance(msg, str) and msg:
+        return msg
+    path = data.get("transcript_path")
+    if not path:
+        return ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.fstat(f.fileno()).st_size - TAIL))
+            lines = f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return ""
+    parts = []
+    for line in reversed(lines):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue  # a cut first line, or not JSON
+        if not isinstance(e, dict) or e.get("isSidechain"):
+            continue
+        if e.get("type") == "user":
+            break
+        if e.get("type") == "assistant":
+            parts.append(_text((e.get("message") or {}).get("content")))
+    return "\n".join(reversed(parts))
+
+
+def report_kind(data):
+    """`done` or `blocked` when the last message carries the finish report header, else None."""
+    m = FINISH.search(last_message(data))
+    return m.group(1).lower() if m else None
+
+
+def block(reason):
+    print(json.dumps({"decision": "block", "reason": f"[ekit] {reason}"}))
+
+
+ASK = ("Give the finish report (finish skill): it opens with `## Finish: done` or `## Finish: blocked`, then each "
+       "criterion with evidence, verification debt, and what stays uncommitted and why. Then stop.")
 
 
 def main():
@@ -107,31 +132,41 @@ def main():
         if ARM.search(data.get("prompt") or ""):
             write(path(session, "armed"), "1")
         return
-    if "--baseline" not in sys.argv and read(path(session, "armed")) is None:
+    baseline = "--baseline" in sys.argv
+    if not baseline and read(path(session, "armed")) is None:
         return
     top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
-    if scenario_gate(data, session, top):
+    if not top:
         return
-    t = tree(cwd)
-    if "--baseline" in sys.argv:
-        base = path(session, "base")
+    if not baseline and (data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop"):
+        return  # the loop guard, and a subagent's stop (an older install may still register it): nothing to hash
+    key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
+    base, reported, gated = (path(session, f"{k}-{key}") for k in ("sbase", "reported", "gated"))
+    rc, cur = runner(top, "tree-hash")
+    if baseline:
+        prune()
         if read(base) is None:
-            write(base, t[0] if t else "")
+            write(base, cur if rc == 0 else "")
         return
-    if data.get("stop_hook_active") or not t:
+    run_hint = f"Run `python3 {SCEN} --repo {top} run` and follow the taste-it skill (ekit:taste-it). "
+    if rc != 0:
+        return block(f"scenario runner error: {cur.splitlines()[-1] if cur else f'exit {rc}'}. {run_hint}{ASK}")
+    if cur in (read(base), read(reported)):
         return
-    h, files = t
-    gated = path(session, "gated")
-    if h in (read(path(session, "base")), read(gated)):
+    kind = report_kind(data)
+    if kind != "blocked" and any(os.path.isdir(os.path.join(top, d, "scenarios")) for d in (".ekit", ".ek")):
+        rc, why = runner(top, "check")
+        if rc == 1:
+            return block(f"Scenarios not green: {why}. {run_hint}{ASK}")
+        if rc != 0:
+            return block(f"scenario runner error: {why.splitlines()[-1] if why else f'exit {rc}'}. {run_hint}{ASK}")
+    if kind:
+        write(reported, cur)
         return
-    write(gated, h)
-    shown = ", ".join(files[:10]) + (f" (+{len(files) - 10} more)" if len(files) > 10 else "")
-    print(json.dumps({
-        "decision": "block",
-        "reason": f"[ekit] Uncommitted changes since session start: {shown}. "
-                  "Before ending, give the finish report (finish skill): each criterion with evidence, "
-                  "verification debt, and what stays uncommitted and why. Then stop.",
-    }))
+    if cur == read(gated):
+        return
+    write(gated, cur)
+    block(f"Work changed since session start and the last message is not a finish report. {ASK}")
 
 
 if __name__ == "__main__":

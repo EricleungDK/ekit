@@ -4,7 +4,7 @@ allowed_tools: [Skill, Read]
 runs: 2
 ---
 
-Your taster reports three findings for my Python CLI `lsx` (installed with `pip install -e .`), and wants to mark finding B as `human`:
+Your taster reports three findings for my Python CLI `lsx` (installed into a temp venv with `pip install .`), and wants to mark finding B as `human`:
 
 A. `lsx --json` on an empty dir prints `null` instead of `[]` (reproducible by a scenario).
 B. "Verify `lsx` exits 1 with a usage message when run with no arguments" — taster says "needs a human to run it on a real terminal". The sandbox has bash, python3 and pip, and the repo has CI.

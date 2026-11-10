@@ -5,13 +5,13 @@ description: End-of-work report, done or blocked. Use before saying work is done
 
 Every outcome ends in one report, with **evidence** per claim. "Done" is a claim the report proves.
 
-Trivial work (no acceptance criteria, no code behaviour changed) gets the light form instead: one line per change with its evidence, plus what stays uncommitted. Steps below apply to everything else.
+Trivial work (no acceptance criteria, no code behaviour changed) gets the light form instead: the `## Finish: done` line, then one line per change with its evidence, plus what stays uncommitted. Steps below apply to everything else.
 
 ## 1. Re-verify
 
 At report time, rerun the decisive commands: tests, typecheck, build. Counts and results come from this run, never from memory.
 
-- CLI or app deliverable: run the real install and launch the way the user will (`pip install -e .` / `cargo install --path .` / `npm i -g .`, then the command). A built binary or `playwright --list` counts as not run.
+- CLI or app deliverable: install it the way a user gets it, into a throwaway location (a temp venv, `npm pack` plus a local install, `cargo install --root <tmp>`; taste-it's drivers.md has each), then run the command from there. Never install into the user's global environment to verify, and never editable: that runs the source tree. A built binary or `playwright --list` counts as not run.
 - State the env each command ran in: sandboxed or unsandboxed.
 - Mech-review envelope present (PR comment or CLI) → follow [mech.md](mech.md).
 - Repo with `.ekit/scenarios/` → follow [scenarios.md](scenarios.md).
@@ -26,7 +26,7 @@ Done when: every criterion has a fresh result or a reason it can't run here.
 
 ## 3. Report
 
-Pick the branch.
+Pick the branch. Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchestrate session the Stop gate reads it from your last message.
 
 ### Done
 

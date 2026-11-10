@@ -20,3 +20,18 @@ jobs:
           fetch-depth: 0
       - name: tests/run.sh
         run: bash tests/run.sh
+
+  hooks-macos:
+    # The hooks, the scenario runner and the cloud installer run on users' machines. macOS is where they differ:
+    # bash 3.2, BSD tools, no `timeout`, no `ss`. The mech-review engine itself only ever runs on ubuntu runners.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hook, runner and installer tests
+        run: |
+          rc=0
+          for t in preflight session-start failure-match gate runner cloud-install py; do
+            echo "$t.test.sh"
+            bash "tests/$t.test.sh" || rc=1
+          done
+          exit $rc

@@ -12,7 +12,7 @@ Black box. The brief holds only:
 - install and launch steps, as a user gets them
 
 No source, diff, or implementer reasoning in the brief. Taster rules:
-- **Real install** from the repo, as the user will (see [drivers.md](drivers.md)); never the source tree.
+- **Real install** from the repo into the temp dir, as the user will (see [drivers.md](drivers.md)); never the source tree (no editable install), never global.
 - **Fresh temp dir** for every run.
 - **Act as a user**: ordinary tools only.
 - **Break it**: misuse, bad input, first-time use with no config.
@@ -60,7 +60,7 @@ Name the scenarios read and the files created or edited before writing any.
 | `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>` or `CANNOT FAIL <id>`: passes at baseline |
 | `RUN tree-hash` | current tree hash |
 
-Evidence is the runner's `PASS`/`FAIL` lines and results.json (`<git dir>/ekit/`, transcripts beside it), never the taster's say-so. Any edit makes the PASS stale; the Stop gate wants a **fresh PASS**. Missing driver tool (preflight warns) → scenario unrunnable: verification debt (finish skill), not skipped.
+Evidence is the runner's `PASS`/`FAIL` lines and results.json (`<git dir>/ekit/`, transcripts beside it), never the taster's say-so. Any file edit makes the PASS stale; committing the tested tree does not (the hash is the tree's content). The Stop gate wants a **fresh PASS**. Missing driver tool (preflight warns) → scenario unrunnable: verification debt (finish skill), not skipped.
 
 ## 4. Quality bar
 

@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -22,35 +21,36 @@ def git(repo, *args):
     return r.stdout if r.returncode == 0 else ""
 
 
-def blob(p):
-    """content id of one untracked path; never raises (symlink -> target, dir -> marker)."""
-    try:
-        if os.path.islink(p):
-            return "link:" + os.readlink(p)
-        if os.path.isdir(p):
-            return "dir"
-        with open(p, "rb") as f:
-            return hashlib.sha1(f.read()).hexdigest()
-    except OSError as e:
-        return "err:" + e.strerror
-
-
-def special(p):
-    """device/fifo/socket: e.g. /dev/null the sandbox mounts over absent config paths; not real work."""
-    try:
-        m = os.lstat(p).st_mode
-    except OSError:
-        return False
-    return not (stat.S_ISREG(m) or stat.S_ISDIR(m) or stat.S_ISLNK(m))
-
-
 def tree_hash(repo):
-    untracked = [u for u in git(repo, "ls-files", "-z", "-o", "--exclude-standard").split("\0") if u]
-    skip = {u for u in untracked if special(os.path.join(repo, u))}
-    status = [e for e in git(repo, "status", "--porcelain=v1", "-z", "-uall").split("\0") if e and not (e[:2] == "??" and e[3:] in skip)]
-    blobs = "".join(f"{u}\0{blob(os.path.join(repo, u))}\0" for u in untracked if u not in skip)
-    parts = [git(repo, "rev-parse", "HEAD"), "\0".join(status), git(repo, "diff", "HEAD"), blobs]
-    return hashlib.sha1("\0".join(parts).encode()).hexdigest()
+    """Content id of the working tree: the git tree `git add -A` would write (tracked + untracked, ignore rules
+    honoured). A commit, amend or rebase that keeps the files keeps the hash, so a PASS survives the commit that
+    follows it. Read-only for the repo: a copy of its index and a throwaway object dir take the writes, and the repo's
+    own objects are read through an alternate. Files git cannot add (unreadable, fifo, socket, device) are left out."""
+    gd = git(repo, "rev-parse", "--absolute-git-dir").strip()
+    if not os.path.isdir(gd):
+        return ""
+    objects = os.path.join(repo, git(repo, "rev-parse", "--git-path", "objects").strip())
+    with tempfile.TemporaryDirectory() as tmp:  # the throwaway object dir; the index copy sits in it too
+        fd, index = tempfile.mkstemp(dir=tmp)
+        os.close(fd)
+        real = os.path.join(gd, "index")
+        if os.path.exists(real):
+            shutil.copyfile(real, index)  # unchanged files keep their entries: not re-read, and sparse entries stay
+        else:
+            os.unlink(index)  # no index yet (fresh repo): git starts from none, an empty file is an error
+        alt = os.pathsep.join(x for x in (objects, os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")) if x)
+        genv = dict(os.environ, GIT_INDEX_FILE=index, GIT_OBJECT_DIRECTORY=tmp, GIT_ALTERNATE_OBJECT_DIRECTORIES=alt)
+        subprocess.run(["git", "-C", repo, "add", "-A", "--ignore-errors"], env=genv, capture_output=True)
+        r = subprocess.run(["git", "-C", repo, "write-tree"], env=genv, capture_output=True)
+        if r.returncode:
+            print(f"cannot hash the working tree: {r.stderr.decode(errors='replace').strip()}", file=sys.stderr)
+            sys.exit(3)
+        return r.stdout.decode().strip()
+
+
+def repo_state(repo):
+    """(HEAD, tree hash): what a scenario must leave untouched."""
+    return git(repo, "rev-parse", "HEAD").strip(), tree_hash(repo)
 
 
 def env(name):
@@ -130,7 +130,8 @@ def cmd_run(repo, only=None):
         if not ids:
             print(f"no scenario '{only}' (or children) under .ekit/scenarios/")
             return 2
-    th = tree_hash(repo)
+    before = repo_state(repo)
+    th = before[1]
     out = outdir(repo)
     tdir = os.path.join(out, th)
     os.makedirs(tdir, exist_ok=True)
@@ -140,13 +141,26 @@ def cmd_run(repo, only=None):
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}
     if any(r.get("reason") for r in results):
         doc["verdict"] = "FAIL"
-    if tree_hash(repo) != th:
+    if repo_state(repo) != before:
         doc.update(verdict="FAIL", reason="scenarios modified the repo: run in the temp cwd")
         print("FAIL: " + doc["reason"])
     with open(os.path.join(out, "results.json"), "w") as f:
         json.dump(doc, f, indent=1)
+    prune(out, th)
     print(f"{doc['verdict']}: {sum(not r.get('reason') for r in results)}/{len(results)} scenarios")
     return doc["verdict"] == "FAIL"
+
+
+KEEP_DAYS = 14
+
+
+def prune(out, keep):
+    """Drop transcript dirs of other trees once they are older than KEEP_DAYS; the current tree's stay."""
+    cutoff = time.time() - KEEP_DAYS * 86400
+    for name in os.listdir(out):
+        d = os.path.join(out, name)
+        if name != keep and os.path.isdir(d) and not os.path.islink(d) and os.path.getmtime(d) < cutoff:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def cmd_can_fail(repo, ref=None):

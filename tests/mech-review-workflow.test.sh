@@ -149,6 +149,10 @@ check("red-first: caller checkout with full history (base..head needs it)",
 check("red-first: runs mech-review.py red", "mech-review.py" in rt and " red" in rt)
 check("red-first: head branch from github.head_ref", "github.head_ref" in rt)
 check("red-first: agent prefix from the agent-branch-prefix input", "inputs.agent-branch-prefix" in rt)
+check("red-first: one --agent-prefix per line of the input", 'args+=(--agent-prefix "$g")' in rt and '<<< "$AGENT_PREFIX"' in rt)
+_pref = " ".join(block(inputs, "agent-branch-prefix") or [])
+check("inputs: agent-branch-prefix defaults to the harness prefixes",
+      all(p in _pref for p in ("agent/", "claude/", "codex/", "copilot/", "cursor/")), _pref)
 check("red-first: toolchain set up for the rust stack", "rust-toolchain" in rt and "inputs.stack == 'rust'" in rt)
 # the step is a list item: its lines run from "- name: Rust toolchain" to the next "- name:"
 _i = next((n for n, l in enumerate(red) if l.strip() == "- name: Rust toolchain"), None)
@@ -338,7 +342,8 @@ local = [k for k in child_keys(sjobs) if value(block(sjobs, k) or [], "uses") ==
 check("self: exactly one job calls the local reusable workflow", len(local) == 1, str(local))
 if local:
     w = block(block(sjobs, local[0]) or [], "with") or []
-    check("self: stack rust", value(w, "stack") == "rust", str(value(w, "stack")))
+    # ekit's own code is python: on the rust stack no file of it was production code, so R1 and R3 never ran
+    check("self: stack python (the kit's own language)", value(w, "stack") == "python", str(value(w, "stack")))
     check("self: test-paths tests/**", value(w, "test-paths") == "tests/**", str(value(w, "test-paths")))
     check("self: protected-paths .github/**", value(w, "protected-paths") == ".github/**",
           str(value(w, "protected-paths")))

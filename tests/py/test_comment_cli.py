@@ -1,0 +1,243 @@
+"""mech-comment.py main() against a local stand-in for the GitHub API: waivers and the read-only-token fallback."""
+import contextlib
+import io
+import json
+import os
+import tempfile
+import threading
+import types
+import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
+
+import _kit
+from scripts.mech_review import comment
+from scripts.mech_review.report import summarize
+
+SHA = "a" * 40
+poster = _kit.load("mech-comment")
+
+
+def envelope(entries):
+    checks = {c: {"status": "skipped", "note": "not run"} for c in ("R1", "R3", "R4")}
+    checks["R2"] = {"status": "fail" if entries else "pass", "note": ""}
+    return {"ekit": "0", "base": "b" * 40, "head": SHA, "checks": checks, "entries": entries,
+            "summary": summarize(SHA, checks, entries)}
+
+
+FAIL = {"id": "R2-deadbeef", "check": "R2", "class": "agent-fixable", "severity": "fail", "file": "tests/a.rs", "line": 7,
+        "problem": "removed test fn b", "hint": "restore it", "forbidden": "deleting tests"}
+
+
+class Api:
+    """One fake API per test: `comments` are served, writes are logged or refused with `write_status`."""
+
+    def __init__(self, comments=(), write_status=None):
+        api = self
+        self.comments, self.write_status, self.writes, self.comments_status = list(comments), write_status, [], None
+        self.calls, self.write_message = [], "Resource not accessible by integration"
+
+        class H(BaseHTTPRequestHandler):
+            def _send(self, code, obj):
+                data = json.dumps(obj).encode()
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def _known(self):
+                """only this PR of this repo, with the workflow's token: anything else is a wrong call"""
+                if self.headers.get("Authorization") != "Bearer t":
+                    self._send(401, {"message": "Bad credentials"})
+                elif not self.path.startswith(("/repos/o/r/pulls/5", "/repos/o/r/issues/5/comments", "/repos/o/r/issues/comments/")):
+                    self._send(404, {"message": "Not Found"})
+                else:
+                    return True
+
+            def do_GET(self):
+                if not self._known():
+                    return
+                if "/pulls/" in self.path:
+                    return self._send(200, {"head": {"sha": SHA}})
+                if api.comments_status:
+                    return self._send(api.comments_status, {"message": "boom"})
+                self._send(200, api.comments if "page=1" in self.path else [])
+
+            def _write(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if not self._known():
+                    return
+                if api.write_status:
+                    return self._send(api.write_status, {"message": api.write_message})
+                api.writes.append(body["body"])
+                api.calls.append((self.command, self.path))
+                self._send(201, {"id": 1})
+
+            do_POST = do_PATCH = _write
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}"
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def person(body, assoc="OWNER", kind="User"):
+    return {"id": 5, "user": {"login": "eric", "type": kind}, "author_association": assoc, "body": body, "html_url": "u"}
+
+
+class TestPoster(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.summary = os.path.join(self.tmp.name, "summary.md")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def save(self, name, entries, head=SHA):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w") as f:
+            json.dump(dict(envelope(entries), head=head), f)
+        return path
+
+    def call(self, argv, api, **more_env):
+        """main() of mech-comment.py against the fake API: a result with returncode, stdout and stderr."""
+        env = dict({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
+                    "GITHUB_STEP_SUMMARY": self.summary}, **more_env)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = poster.main(["--pr", "5", *argv])
+        finally:
+            api.close()
+        return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
+
+    def post(self, entries, api):
+        return self.call(["--envelope", self.save("env.json", entries)], api)
+
+    def test_the_bots_existing_comment_is_edited_in_place(self):
+        api = Api([{"id": 77, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "author_association": "NONE",
+                    "body": comment.MARKER + "\nold"}])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertEqual(api.calls, [("PATCH", "/repos/o/r/issues/comments/77")])
+        self.assertIn("mech-comment: updated comment 77", p.stderr)
+
+    def test_the_marker_author_can_be_set_by_the_environment(self):
+        api = Api([{"id": 77, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "body": comment.MARKER + "\nold"},
+                   {"id": 88, "user": {"login": "ci-bot", "type": "Bot"}, "body": comment.MARKER + "\nold"}])
+        self.call(["--envelope", self.save("env.json", [FAIL])], api, MECH_COMMENT_AUTHOR="ci-bot")
+        self.assertEqual(api.calls, [("PATCH", "/repos/o/r/issues/comments/88")])
+
+    def test_with_no_comment_yet_one_is_created(self):
+        api = Api()
+        self.post([FAIL], api)
+        self.assertEqual(api.calls, [("POST", "/repos/o/r/issues/5/comments")])
+
+    def test_no_result_at_all_posts_a_crash_notice_and_exits_4(self):
+        api = Api()
+        p = self.call(["--envelope", os.path.join(self.tmp.name, "missing.json"), "--head", SHA, "--reason", "guard exited 2"], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn(f"**no result** for head `{SHA}`", api.writes[0])
+        self.assertIn("reason: guard exited 2", api.writes[0])
+        self.assertEqual(p.stderr.splitlines()[0], "mech-comment: no usable result: guard exited 2")
+
+    def test_no_result_and_no_head_is_a_usage_error_that_posts_nothing(self):
+        api = Api()
+        p = self.call(["--envelope", os.path.join(self.tmp.name, "missing.json")], api)
+        self.assertEqual((p.returncode, api.writes), (2, []))
+        self.assertEqual(p.stderr, "mech-comment: no usable envelope and --head not given\n")
+        self.assertEqual(p.stdout, "")
+
+    def test_named_jobs_with_one_missing_keep_the_other_jobs_result(self):
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", [FAIL]),
+                      "--envelope", "red=" + os.path.join(self.tmp.name, "nope.json"), "--head", SHA, "--reason", "no JSON"], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("R2-deadbeef", api.writes[0])
+        self.assertIn("| CI-c9198ac4 | fail | :0 | red job produced no result: no JSON |", api.writes[0])
+
+    def test_named_jobs_all_missing_is_a_crash_notice_naming_each_job(self):
+        api = Api()
+        missing = os.path.join(self.tmp.name, "nope.json")
+        p = self.call(["--envelope", f"r2={missing}", "--envelope", f"red={missing}", "--head", SHA, "--reason", "no JSON"], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn("reason: r2 job: no JSON; red job: no JSON", api.writes[0])
+        self.assertEqual(p.stderr.splitlines()[0], "mech-comment: no usable result: r2 job: no JSON; red job: no JSON")
+
+    def test_a_named_result_for_an_older_head_is_not_used(self):
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("old.json", [FAIL], head="c" * 40), "--head", SHA], api)
+        self.assertEqual(p.returncode, 4)
+        self.assertIn(f"reason: r2 job: result is for an older head, not {SHA}", api.writes[0])
+        self.assertNotIn("R2-deadbeef", api.writes[0])
+
+    def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
+        api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(api.writes), 1)
+        self.assertIn("Waived: R2-deadbeef by `eric`: moved to the e2e suite", api.writes[0])
+        self.assertIn("(0 fail, 0 confirm, 1 waived; ran: R2; skipped: R1 R3 R4)", api.writes[0])
+
+    def test_a_waiver_from_an_outsider_or_a_bot_changes_nothing(self):
+        for who in (person("/mech-waive R2-deadbeef: trust me", assoc="CONTRIBUTOR"),
+                    person("/mech-waive R2-deadbeef: trust me", kind="Bot")):
+            api = Api([who])
+            p = self.post([FAIL], api)
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertNotIn("Waived:", api.writes[0])
+
+    def test_the_bots_own_comment_cannot_waive(self):
+        api = Api([{"id": 9, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "author_association": "NONE",
+                    "body": comment.MARKER + "\n/mech-waive R2-deadbeef: quoted from the PR"}])
+        self.assertEqual(self.post([FAIL], api).returncode, 1)
+
+    def test_a_read_only_token_keeps_the_result_and_writes_the_summary(self):
+        p = self.post([FAIL], Api(write_status=403))
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("::warning::mech-review: this token cannot comment on the PR", p.stdout)
+        with open(self.summary) as f:
+            self.assertIn("R2-deadbeef", f.read())
+
+    def test_a_read_only_token_on_a_passing_result_exits_0(self):
+        p = self.post([], Api(write_status=403))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("::warning::", p.stdout)
+
+    def test_a_403_that_is_not_about_the_tokens_reach_is_an_api_error(self):
+        api = Api(write_status=403)
+        api.write_message = "API rate limit exceeded for installation ID 1."
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertEqual(p.stdout, "")
+        self.assertIn("mech-comment: GitHub API 403", p.stderr)
+
+    def test_any_other_api_error_is_still_exit_3(self):
+        p = self.post([FAIL], Api(write_status=500))
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertNotIn("::warning::", p.stdout)
+
+    def test_a_read_only_token_warning_says_where_the_result_is(self):
+        p = self.post([FAIL], Api(write_status=403))
+        self.assertEqual(p.stdout.strip(), "::warning::mech-review: this token cannot comment on the PR (a fork or "
+                         "Dependabot PR, or the caller lacks `pull-requests: write`). The result is in the job summary; "
+                         "the check result is unchanged.")
+        self.assertIn("mech-comment: comment not posted: GitHub API 403", p.stderr)
+
+    def test_comments_that_cannot_be_read_apply_no_waiver(self):
+        api = Api([person("/mech-waive R2-deadbeef: moved")])
+        api.comments_status = 500
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 3, p.stderr)  # the publish needs the same listing, so the run ends as an API error
+        self.assertIn("mech-comment: PR comments not read, no waiver applied: GitHub API 500", p.stderr)
+        self.assertEqual(api.writes, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

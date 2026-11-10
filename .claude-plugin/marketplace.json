@@ -1,6 +1,6 @@
 {
   "name": "ekit",
   "owner": { "name": "EricleungDK" },
-  "description": "ekit agent workflow kit, as an installable plugin for Claude Code, Codex and GitHub Copilot.",
-  "plugins": [{ "name": "ekit", "source": "./", "description": "Agent workflow kit", "category": "engineering" }]
+  "description": "ekit: skills, hooks and CI that make a coding agent prove its work. Installable in Claude Code, Codex and GitHub Copilot.",
+  "plugins": [{ "name": "ekit", "source": "./", "description": "Make coding agents prove their work before they say done", "category": "engineering" }]
 }

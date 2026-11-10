@@ -1,6 +1,6 @@
 source "$(dirname "$0")/lib.sh"
 SC="$ROOT/scripts/scenarios.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 export EKIT_STATE="$T/state"
 
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q
@@ -45,11 +45,12 @@ rm -rf "$R/.ekit/scenarios/nodoc"
 rm -rf "$R/.ekit"; mk good 'echo out-line; echo err-line >&2'; mk bad 'echo b; exit 4'
 sc run >/dev/null
 TH="$(sc tree-hash)"
-key="$(printf %s "$(realpath "$R")" | sha1sum | cut -c1-12)"
+rp() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }  # no realpath/sha1sum on stock macOS
+key="$(python3 -c 'import hashlib,os,sys; print(hashlib.sha1(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:12])' "$R")"
 RJ="$EKIT_STATE/scenarios/$key/results.json"
 eq "$(jq -r .verdict "$RJ")" "FAIL" "results verdict"
 eq "$(jq -r .tree "$RJ")" "$TH" "results tree == tree-hash"
-eq "$(jq -r .repo "$RJ")" "$(realpath "$R")" "results repo"
+eq "$(jq -r .repo "$RJ")" "$(rp "$R")" "results repo"
 eq "$(jq -r '.scenarios[]|select(.id=="bad").exit' "$RJ")" "4" "results exit"
 eq "$(jq -r '.scenarios[]|select(.id=="good").duration|type' "$RJ")" "number" "results duration"
 eq "$(jq -r '.scenarios[]|select(.id=="bad").reason' "$RJ")" "exit 4" "results reason on fail"
@@ -85,6 +86,22 @@ rm -rf "$R/.ekit" "$EKIT_STATE"; out="$(sc check)"; eq "$?" "2" "check no scenar
 mk good true
 out="$(sc check)"; eq "$?" "1" "check no results → 1"; has "$out" "no results" "check reason: no results"
 sc run >/dev/null; out="$(sc check)"; eq "$?" "0" "check fresh PASS → 0"
+# the hash is the tree's content: committing, amending or staging the tested files keeps the PASS fresh
+gc() { git -C "$R" -c user.email=t@t -c user.name=t "$@"; }
+echo w > "$R/work.txt"; sc run >/dev/null
+h="$(sc tree-hash)"; git -C "$R" add -A; eq "$(sc tree-hash)" "$h" "staging keeps the hash"
+gc commit -q -m work; eq "$(sc tree-hash)" "$h" "commit keeps the hash"
+eq "$(sc tree-hash)" "$(git -C "$R" rev-parse 'HEAD^{tree}')" "clean tree: hash is HEAD's tree"
+sc check >/dev/null; eq "$?" "0" "check after commit → still fresh"
+gc commit -q --amend -m reworded; sc check >/dev/null; eq "$?" "0" "check after amend → still fresh"
+before="$(git -C "$R" count-objects -v)"; sc tree-hash >/dev/null; echo n > "$R/untracked.txt"; sc tree-hash >/dev/null; rm "$R/untracked.txt"
+eq "$(git -C "$R" count-objects -v)" "$before" "hashing writes no object into the repo"
+# a file that is not UTF-8, a fifo: hashed or left out, never a crash
+printf 'caf\xe9\n' > "$R/latin.txt"; gc add -A; gc commit -q -m latin; printf 'caf\xe9 two\n' > "$R/latin.txt"; mkfifo "$R/pipe"
+out="$(sc tree-hash 2>&1)"; eq "$?" "0" "non-UTF-8 diff and a fifo → hash, exit 0"
+[[ $out =~ ^[0-9a-f]{40}$ ]] && ok "hash is one 40-hex line" || fail "hash is one 40-hex line: $out"
+printf 'caf\xe9 three\n' > "$R/latin.txt"; [[ "$(sc tree-hash)" != "$out" ]] && ok "non-UTF-8 edit changes hash" || fail "non-UTF-8 edit changes hash"
+rm "$R/pipe"; git -C "$R" checkout -q latin.txt; sc run >/dev/null
 echo q >> "$R/.ekit/scenarios/good/run.sh"
 out="$(sc check)"; eq "$?" "1" "check stale → 1"; has "$out" "stale" "check reason: stale"
 mk bad 'exit 1'; sc run >/dev/null
@@ -143,7 +160,9 @@ mk hang 'sleep 30 & echo $! > "$EKIT_STATE/childpid"; sleep 30'
 t0=$SECONDS; out="$(EKIT_SCENARIO_TIMEOUT=1 sc run)"; rc=$?
 eq "$rc" "1" "timeout → exit 1"; has "$out" "FAIL hang: timeout" "timeout reason"
 (( SECONDS - t0 < 10 )) && ok "timeout is prompt" || fail "timeout is prompt"
-sleep 0.3; kill -0 "$(cat "$EKIT_STATE/childpid")" 2>/dev/null && fail "timeout kills process group" || ok "timeout kills process group"
+# killed = gone, or a zombie nobody has reaped yet (a container with no init)
+sleep 0.3; st="$(ps -o stat= -p "$(cat "$EKIT_STATE/childpid")" 2>/dev/null | tr -d ' ')"
+[[ -z $st || $st == Z* ]] && ok "timeout kills process group" || fail "timeout kills process group (state $st)"
 rm -rf "$R/.ekit"
 
 # can-fail
@@ -188,6 +207,6 @@ if command -v bwrap >/dev/null && bwrap --bind / / true 2>/dev/null; then
   h2="$(cd "$D" && bwrap --bind / / --dev /dev --ro-bind /dev/null "$D/.mcp.json" env -u EKIT_STATE python3 -I "$SC" tree-hash)"
   rm -f "$D/.mcp.json"
   eq "$h2" "$h1" "sandbox /dev/null mounts ignored by tree hash"
-else ok "sandbox /dev/null mounts ignored by tree hash (skipped: no bwrap)"; fi
+else skip "sandbox /dev/null mounts ignored by tree hash" "no usable bwrap here"; fi
 
 done_tests

@@ -7,4 +7,4 @@
   2. Read .claude/skills/taste-it/SKILL.md: frontmatter `name: taste-it` + description; relative link drivers.md resolves.
   3. Fire installed SessionStart hook; parse additionalContext.
   4. Run the advertised runner line against the sample repo.
-- expected: context has `[ekit] Scenario runner: python3 <path>` and mentions taste-it; the path exists and runs (exit 2 + layout in a repo with no scenarios).
+- expected: context has `[ekit] Scenario runner: python3 <path>` and no always-on taste-it rule (taste-it is orchestrate-only); the path exists and runs (exit 2 + layout in a repo with no scenarios).

@@ -8,8 +8,12 @@ CHECKS = ("R1", "R2", "R3", "R4")
 
 
 def ekit_version():
-    with open(PLUGIN) as f:
-        return json.load(f)["version"]
+    """The plugin version, or `unknown` when the scripts run without the plugin manifest beside them (a bare copy)."""
+    try:
+        with open(PLUGIN) as f:
+            return json.load(f)["version"]
+    except (OSError, ValueError, KeyError):
+        return "unknown"
 
 
 def entry(check, file, line, key, cls, severity, problem, hint, forbidden):
@@ -46,17 +50,20 @@ def _partial_label(check, name):
 
 def summarize(head, checks, entries):
     """`all pass <head>` only when every check passed and there are no entries. Otherwise
-    `<pass|fail> <head> (<F> fail, <C> confirm; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`.
+    `<pass|fail> <head> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`.
+    `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran.
     n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass."""
     fails = sum(1 for e in entries if e["severity"] == "fail")
-    confirms = len(entries) - fails
+    waived = sum(1 for e in entries if e["severity"] == "waived")
+    confirms = len(entries) - fails - waived
     if not entries and all(checks[c]["status"] == "pass" for c in CHECKS):
         return f"all pass {head}"
     skipped = [c for c in CHECKS if checks[c]["status"] == "skipped"]
     na = [c for c in CHECKS if checks[c]["status"] == "n/a"]
     partial = [c for c in CHECKS if checks[c]["status"] == "partial"]
     ran = [c for c in CHECKS if c not in skipped and c not in na]
-    parts = f"{fails} fail, {confirms} confirm; ran: {' '.join(ran) or 'none'}"
+    counts = f"{fails} fail, {confirms} confirm" + (f", {waived} waived" if waived else "")
+    parts = f"{counts}; ran: {' '.join(ran) or 'none'}"
     if partial:
         parts += "; partial: " + " ".join(_partial_label(checks[c], c) for c in partial)
     if skipped:

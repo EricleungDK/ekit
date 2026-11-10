@@ -10,6 +10,11 @@ out=$(hook Stop sess1)
 has block "$out" '"decision": "block"'; has block "$out" "Scenarios not green"; has block "$out" "scenarios.py"
 eq "loop guard" "$(hook Stop sess1 true)" ""
 python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "runner not green"
-eq "fresh PASS -> allow" "$(hook Stop sess1)" ""
-eq "SubagentStop allow" "$(hook SubagentStop sess1)" ""
+out=$(hook Stop sess1); has "green, no report" "$out" '"decision": "block"'; has "green, no report" "$out" "## Finish: done"
+hasnt "green, no report" "$out" "Scenarios not green"
+echo "y=2" >> "$SAMPLE/app.py"; python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "runner not green"
+eq "fresh PASS + report -> allow" "$(hook Stop sess1 false "$REPORT")" ""
+commit_all work
+eq "commit after PASS + report -> allow" "$(hook Stop sess1)" ""
+[[ $(jq -r '.hooks | has("SubagentStop")' "$SAMPLE/.claude/settings.json") == false ]] || fail "SubagentStop gate installed"
 echo "gate ok"

@@ -48,7 +48,7 @@ check("results: missed fixture rows, in order",
        ("calc.core.x_mul__mutmut_1", "killed"),
        ("calc.core.x_sub__mutmut_1", "survived")])
 check("results: partial fixture keeps not checked rows",
-      [s for _, s in M.parse_results(read("partial", "results.txt"))].count("not checked"), 1)
+      [s for _, s in M.parse_results(read("partial", "results.txt"))].count("not checked"), 2)
 check("results: empty output is no rows", M.parse_results(read("zero", "results.txt")), [])
 check("results: noise lines (warnings, progress) are ignored",
       M.parse_results("UserWarning: x\n    calc.core.x_add__mutmut_1: killed\n⠋ Running\n"),
@@ -159,7 +159,9 @@ has "$(jq -r '.entries[0].hint' <<<"$out")" "add an assert that fails for this m
 has "$(jq -r '[.entries[] | select(.line==6)][0].hint' <<<"$out")" "no test reaches this line" "python missed: no-tests hint"
 eq "$(jq -r .summary <<<"$out")" "fail $H (3 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)" "python missed: summary"
 has "$(jq -r .checks.R3.note <<<"$out")" "3 missed in the diff" "python missed: note counts in-diff misses"
-has "$(jq -r .checks.R3.note <<<"$out")" "1 missed outside the diff" "python missed: note counts outside misses"
+has "$(jq -r .checks.R3.note <<<"$out")" "0 missed outside the diff" "python missed: note counts misses on unchanged lines of touched functions"
+has "$(jq -r .checks.R3.note <<<"$out")" "2 in functions the diff does not touch: not run" "python missed: mul and sub are untouched, so their mutants are not run"
+eq "$(jq -r '.checks.R3.tested, .checks.R3.total' <<<"$out" | tr '\n' ' ')" "3 3 " "python missed: tested and total count the touched functions' mutants"
 has "$(cat "$MECH_STUB_LOG")" "results --all True" "python missed: reads every mutant's status"
 has "$(cat "$MECH_STUB_LOG")" "show calc.core.x_add__mutmut_1" "python missed: shows each MISSED mutant for its location"
 lacks "$(cat "$MECH_STUB_LOG")" "show calc.core.x_mul__mutmut_1" "python missed: killed mutants are not shown"
@@ -179,15 +181,16 @@ eq "$rc" 0 "python caught: exit 0"
 eq "$(jq -r .checks.R3.status <<<"$out")" pass "python caught: R3 pass"
 eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)" "python caught: summary names ran and skipped"
 
-# partial: budget kills the run, 4 of 5 tested, none missed: partial, not blocking, names tested/total
+# partial: budget kills the run, 2 of the 3 mutants in the touched functions tested, none missed: partial, not blocking,
+# names tested/total (the two mutants of untouched functions are not counted: they are never run)
 mrepo partial
 SECONDS=0
 out=$(MUT_FIXTURE=partial MUT_HANG=1 mut --mutation-budget 0.05); rc=$?
 eq "$rc" 0 "python partial: exit 0 (does not block)"
 eq "$(jq -r .checks.R3.status <<<"$out")" partial "python partial: R3 partial"
-has "$(jq -r .checks.R3.note <<<"$out")" "4/5 tested" "python partial: note tested/total"
-eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 1 confirm; ran: R3; partial: R3 (4/5); skipped: R1 R2 R4)" "python partial: summary"
-eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].problem' <<<"$out")" "R3 partial: 1/5 mutants untested at budget" "python partial: confirm names untested"
+has "$(jq -r .checks.R3.note <<<"$out")" "2/3 tested" "python partial: note tested/total"
+eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 1 confirm; ran: R3; partial: R3 (2/3); skipped: R1 R2 R4)" "python partial: summary"
+eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].problem' <<<"$out")" "R3 partial: 1/3 mutants untested at budget" "python partial: confirm names untested"
 [[ $SECONDS -lt 15 ]] && ok "python partial: budget kill is prompt" || fail "python partial: budget kill took ${SECONDS}s"
 
 # not installed: n/a (env), never a pass
@@ -366,7 +369,7 @@ eq "$rc" 1 "review 1: class repo: the changed method's miss fails: exit 1"
 eq "$(jq -r '[.entries[] | select(.check=="R3")] | length' <<<"$out")" 1 "review 1: only the changed method is reported (sub and Other.add are outside)"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 3 "review 1: the changed method's line in its class"
 eq "$(jq -r '.entries[0].problem' <<<"$out")" "MISSED mutant src/calc/core.py:3: return a + b -> return a - b" "review 1: problem names the located line"
-has "$(jq -r .checks.R3.note <<<"$out")" "2 missed outside the diff" "review 1: note counts the two outside misses"
+has "$(jq -r .checks.R3.note <<<"$out")" "2 in functions the diff does not touch: not run" "review 1: note counts the two mutants of untouched methods"
 has "$(jq -r .checks.R3.note <<<"$out")" "0 unlocated" "review 1: note counts unlocated (none here)"
 
 # unlocated: a mutant whose name maps to no class in the file is not a fail; it is one confirm, named, counted

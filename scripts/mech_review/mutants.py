@@ -21,6 +21,7 @@ Verdict (per shard):
   tool not runnable or an unexpected exit -> n/a (env), never pass.
   no mutants in the diff -> pass.
 """
+import itertools
 import json
 import math
 import os
@@ -231,7 +232,7 @@ def verdict(mo, rc, text, adapter, test_globs, wall_s=None, project_dir=".", tim
         desc = _desc(name)
         entries.append(entry("R3", file, m.get("span", {}).get("start", {}).get("line", 0), f"missed:{file}|{desc}",
                              "agent-fixable", "fail", f"MISSED mutant {name}",
-                             f"add an assert that fails for this mutant: {desc}",
+                             f"add an assert that fails for this mutant: {desc}." + HOW,
                              f"MISSED mutant `{desc}` in `{file}`"))
     entries = finalize(entries)
     missed = counts["MissedMutant"]
@@ -323,6 +324,16 @@ def default_runner():
 
 
 DIAG_LINES = 40  # lines of cargo-mutants' own log printed to stderr on a non-pass R3
+
+
+def diag_output(tool, status, text):
+    """A run that produced no result (python: the tests fail before any mutant runs): the last DIAG_LINES of the tool's
+    output to stderr, so the job log names the failing test. Progress spinner frames are dropped. stdout stays the JSON."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip() and not "\u2800" <= ln[0] <= "\u28ff"]
+    tail = lines[-DIAG_LINES:]
+    print(f"mech-review: R3 {status}: last {len(tail)} lines of {tool} output", file=sys.stderr)
+    for line in tail:
+        print(line, file=sys.stderr)
 
 
 def _diagnose(mo, text, status):
@@ -572,10 +583,10 @@ def _find(lines, lo, hi, pattern):
     return next((i for i in range(lo, hi) if rx.match(lines[i])), None)
 
 
-def locate(src, name, removed):
-    """1-based line of the removed text in the function a mutmut name points at, or None when the name cannot be
-    mapped (no such class or function in the file, or a name form this does not read). A method is searched for
-    inside its class, so the same method name in two classes resolves to the right one. Lines are the file's."""
+def scope_span(src, name):
+    """(first, last) 1-based lines of the function a mutmut name points at, or None when the name cannot be mapped
+    (no such class or function in the file, or a name form this does not read). A method is searched for inside its
+    class, so the same method name in two classes resolves to the right one."""
     scope = mutant_scope(name)
     if scope is None:
         return None
@@ -593,10 +604,217 @@ def locate(src, name, removed):
         start = _find(lines, 0, len(lines), rf"(async\s+)?def\s+{re.escape(fn)}\s*\(")  # column 0: a module function
     if start is None:
         return None
-    for j in range(start, _block_end(lines, start)):
+    end = _block_end(lines, start)
+    while not lines[end - 1].strip():
+        end -= 1  # the blank lines between this function and the next are not its own (the def line ends the walk)
+    return start + 1, end
+
+
+def locate(src, name, removed):
+    """1-based line of the removed text in the function a mutmut name points at (scope_span), or None when the name
+    cannot be mapped or the text is not in that function. Lines are the file's."""
+    span = scope_span(src, name)
+    if span is None:
+        return None
+    lines = src.splitlines()
+    for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
             return j + 1
     return None
+
+
+# what every MISSED hint ends with: the way out of a mutant is a behaviour test, a simpler line, or the owner
+HOW = (" Assert what a caller or user can observe. If the change alters nothing observable (an equivalent mutant), "
+       "simplify the code until the variant is gone, or hand the entry to the owner (Needs-you). Never assert an "
+       "internal call, and never move or rewrite the line only to get past this check.")
+
+# the project's whole test suite, as a person runs it: -B and no cache so a file rewritten within one second is read
+# again; mutmut's working copy under mutants/ holds a second copy of the tests and is left out
+SUITE = ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--ignore=mutants"]
+SUITE_FACTOR, SUITE_FLOOR = 5, 30  # one suite run on a mutant may take 5x the clean run, and at least 30 s
+
+
+def whole_suite(runner, base, crate, project_dir, found, left):
+    """mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under
+    the module name mutmut derives from the file path. A test that reaches the code another way (it starts the program,
+    or imports the file under another name) is a real test all the same, and cargo-mutants and Stryker's command
+    runner count it. So each mutant still missed on a changed line gets one more try: `mutmut apply` writes it into
+    the worktree, the whole suite runs once, and a suite that fails has caught it. The file is put back each time.
+    found: [(name, repo file, line, desc, status)]; left(): seconds of budget left, or None.
+    Returns (still missed, {caught, hung, passed}): passed holds the names the whole suite ran against and passed."""
+    state = {"caught": 0, "hung": 0, "passed": set()}
+    spare = left()
+    if spare is not None and spare <= 0:
+        return found, state
+    t0 = time.monotonic()
+    rc, _ = runner(SUITE, crate, spare)
+    if rc != 0:  # not runnable here, or red without any mutant: it can say nothing about one
+        print(f"mech-review: R3: whole suite not used for {len(found)} missed mutant(s): `{' '.join(SUITE)}` "
+              f"ends with {rc} on the unmutated tree", file=sys.stderr)
+        return found, state
+    limit = max(SUITE_FLOOR, SUITE_FACTOR * (time.monotonic() - t0))
+    missed = []
+    for turn, item in enumerate(found, 1):
+        spare = left()
+        if spare is not None and spare <= 0:
+            missed.append(item)  # out of budget: what mutmut said stands
+            continue
+        path = os.path.join(crate, _crate_path(project_dir, item[1]))
+        with open(path, "rb") as f:
+            original = f.read()
+        stamp = os.stat(path)
+        try:
+            arc, _ = runner(base + ["apply", item[0]], crate, PROBE_TIMEOUT)
+            with open(path, "rb") as f:
+                applied = arc == 0 and f.read() != original
+            # python trusts cached bytecode whose source time (whole seconds) and size match, and a test's child
+            # process writes that cache: each mutant's file gets a time of its own, so no run reads another's code
+            os.utime(path, (stamp.st_atime, int(stamp.st_mtime) + turn))
+            cut = spare is not None and spare < limit
+            rc = runner(SUITE, crate, spare if cut else limit)[0] if applied else 0
+        finally:
+            with open(path, "wb") as f:
+                f.write(original)
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        if rc == "timeout" and not cut:
+            state["hung"] += 1  # as mutmut and cargo-mutants treat a timeout: neither caught nor missed
+        elif isinstance(rc, int) and rc != 0:
+            state["caught"] += 1
+        else:
+            missed.append(item)
+            if applied and rc == 0:
+                state["passed"].add(item[0])
+    return missed, state
+
+
+MUTANT_DEF = re.compile(r"\s*(?:async\s+)?def\s+(x[^\s(]*__mutmut_(?:orig|\d+))\s*\(")
+
+
+def mutant_blocks(text):
+    """{copy name: its lines} for the function copies mutmut writes into a mutated file: `x_add__mutmut_orig` (the
+    function as it is) and one `x_add__mutmut_N` per mutant, each a whole function. Trailing blank lines are dropped."""
+    lines = text.splitlines() if text else []
+    out = {}
+    for i, line in enumerate(lines):
+        m = MUTANT_DEF.match(line)
+        if m:
+            end = _block_end(lines, i)
+            while not lines[end - 1].strip():
+                end -= 1
+            out[m.group(1)] = lines[i:end]
+    return out
+
+
+def mutant_change(blocks, name):
+    """(offset, removed, added) of a mutant, read from its copy against the original's: the first changed line as a
+    0-based offset from the function's def line, and the changed lines' text (stripped, joined: what `mutmut show`
+    prints as - and +). A mutant is one edit, so what differs is what lies between the lines the two copies share at
+    the top and at the bottom. None when either copy is not in `blocks` or nothing differs."""
+    short = name.split(".")[-1]
+    fn = short.rpartition("__mutmut_")[0]
+    orig, mut = blocks.get(f"{fn}__mutmut_orig"), blocks.get(short)
+    if orig is None or mut is None:
+        return None
+    # the def lines differ by the copy's own name: compare them under the function's real name, as the source has it
+    scope = mutant_scope(name)
+    real = scope[1] if scope else fn
+    a = [orig[0].replace(f"{fn}__mutmut_orig", real)] + orig[1:]
+    b = [mut[0].replace(short, real)] + mut[1:]
+    if a == b:
+        return None
+    top = next(i for i in itertools.count() if a[i:i + 1] != b[i:i + 1])
+    tail = next(i for i in itertools.count() if a[top:][::-1][i:i + 1] != b[top:][::-1][i:i + 1])
+    return top, " ".join(ln.strip() for ln in a[top:len(a) - tail]), " ".join(ln.strip() for ln in b[top:len(b) - tail])
+
+
+class MutantFiles:
+    """mutmut's own files under `<crate>/mutants`, read once per changed file: which file a mutant belongs to (the
+    keys of `<file>.meta`) and its function copies. This replaces one `mutmut show` per missed mutant, which re-parses
+    the whole mutated file each time. A mutant these files do not explain reads as None: the caller asks mutmut."""
+
+    def __init__(self, crate, paths):
+        self.crate, self.paths, self._file_of, self._blocks = crate, list(paths), None, {}
+
+    def _owner(self, name):
+        if self._file_of is None:
+            self._file_of = {}
+            for path in self.paths:
+                try:
+                    with open(os.path.join(self.crate, "mutants", path + ".meta")) as f:
+                        self._file_of.update(dict.fromkeys(json.load(f)["exit_code_by_key"], path))
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue  # no such file, not JSON, or not mutmut's shape: this file explains no mutant
+        return self._file_of.get(name)
+
+    def change(self, name):
+        """(crate path of the file, offset, removed, added), or None."""
+        path = self._owner(name)
+        if path is None:
+            return None
+        if path not in self._blocks:
+            self._blocks[path] = mutant_blocks(_read(os.path.join(self.crate, "mutants", path)))
+        got = mutant_change(self._blocks[path], name)
+        return got and (path,) + got
+
+
+RESULTS = ["results", "--all", "True"]  # every mutant with its status, the caught ones included
+LIST_ONLY = "ekit-list-only-*"  # a mutant filter that matches nothing: `mutmut run` then writes its mutants and stops
+NO_MATCH = "Filtered for specific mutants, but nothing matches"  # mutmut's words when a filter matches no mutant
+
+
+def function_glob(name):
+    """the mutmut filter for every mutant of the function a mutant name belongs to:
+    `calc.core.x_add__mutmut_3` -> `calc.core.x_add__mutmut_*`."""
+    return _glob_escape(name.rpartition("__mutmut_")[0]) + "__mutmut_*"
+
+
+EARLY = "Stopping early"  # mutmut's words when no test reaches any mutant: every one is then `no tests`
+
+
+def _run_stopped(rc, text, normal_ends):
+    """(check, entries) when a `mutmut run` ended with nothing to read, else None. normal_ends: the messages an exit 1
+    may carry and still be a result (the LIST_ONLY step ends on mutmut's no-match error)."""
+    if rc == 1 and ("failed to collect stats" in text or "Failed to run clean test" in text):
+        diag_output("mutmut", "fail", text)
+        return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
+            entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
+                  "fix the failing tests first: mutation needs an unmutated tree that passes",
+                  "a mutation check that did not run")])
+    if rc in ("timeout", 0) or (rc == 1 and any(end in text for end in normal_ends)):
+        return None
+    return _check("n/a", f"mutmut exit {rc} (env): {_first_line(text)}; check the test deps "
+                         "(requirements, setup-command)"), []
+
+
+def line_at(src, name, offset, removed):
+    """1-based line of a mutant's change: `offset` lines below the def line of the function its name points at. None
+    when the name maps to no function, the offset leaves the function, or the line there is not the removed text (the
+    file and mutmut's copy disagree: the caller falls back to the text search)."""
+    span = scope_span(src, name)
+    if span is None or span[0] + offset > span[1]:
+        return None
+    line = span[0] + offset
+    at = src.splitlines()[line - 1].strip()
+    if removed and not (at and removed.startswith(at)):
+        return None
+    return line
+
+
+def outside_diff(name, sources, changed):
+    """True when the mutant cannot be on a changed line: its function is in the changed files (sources: path -> text)
+    and no copy of it holds a changed line (changed: path -> [(line, text)]). Known from the name alone, so mutmut is
+    not asked for the mutant's diff: it mutates whole files, and a large file a PR touches in one place has thousands
+    of mutants outside the diff. A name this cannot read, or a function found in no changed file, is not settled
+    here (False): the caller looks at the diff."""
+    seen = False
+    for path, src in sources.items():
+        span = scope_span(src, name)
+        if span is None:
+            continue
+        seen = True
+        if any(span[0] <= n <= span[1] for n, _ in changed.get(path, [])):
+            return False
+    return seen
 
 
 def _glob_escape(path):
@@ -675,8 +893,9 @@ def _files_baseline(rv, shards):
 
 class Mutmut:
     """R3 for python: mutmut 3.8.1 on the changed production files, in the crate dir of a worktree at head. mutmut has no
-    line filter, so the MISSED list is narrowed to the changed lines afterwards (the same `--in-diff` promise as
-    cargo-mutants). Paths in the result are repo-root paths. Timing: wall time only (mutmut keeps no per-phase durations
+    line filter and writes mutants for whole files, so it runs in two steps: list the mutants (LIST_ONLY), then run only
+    those of the functions that hold a changed line. The MISSED list is narrowed to the changed lines afterwards (the
+    same `--in-diff` promise as cargo-mutants). Paths in the result are repo-root paths. Timing: wall time only (mutmut keeps no per-phase durations
     in its output); the per-mutant timeout is mutmut's own (timeout_multiplier), so --mutant-timeout is not applied."""
     default_cmd = "mutmut"
 
@@ -705,38 +924,63 @@ class Mutmut:
                 return _check("n/a", f"mutmut not installed (env): `{cmd}` not runnable; install mutmut 3.8.1 "
                                      "(python toolchain step) or set setup-command"), []
             t0 = time.monotonic()
-            rc, text = runner(shlex.split(cmd) + ["run"], crate, budget)
+            base = shlex.split(cmd)
+            sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
+            # step 1: mutmut writes its mutants and records which tests reach which function; LIST_ONLY names no mutant,
+            # so none runs. mutmut mutates whole files: the names tell which mutants sit in a function the diff touches
+            rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
+            stop = _run_stopped(rc, text, (EARLY, NO_MATCH))
+            if stop:
+                return stop
+            if rc != "timeout":
+                rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
+                if rrc != 0:
+                    return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
+                names = [name for name, _ in parse_results(rtext)]
+                if not names:
+                    return _check("pass", "0 mutants in the diff", 0, 0), []
+                touched = sorted({function_glob(n) for n in names if not outside_diff(n, sources, changed)})
+                if not touched:
+                    return _check("pass", f"0 mutants in the diff ({len(names)} in functions the diff does not touch: "
+                                          "not run)", 0, 0), []
+                # step 2: only the mutants of the touched functions run
+                left = None if budget is None else max(1.0, budget - (time.monotonic() - t0))
+                rc, text = runner(base + ["run"] + touched, crate, left)
+                stop = _run_stopped(rc, text, (EARLY,))
+                if stop:
+                    return stop
             wall = time.monotonic() - t0
-            early = "Stopping early" in text
-            if rc == 1 and ("failed to collect stats" in text or "Failed to run clean test" in text):
-                return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
-                    entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
-                          "fix the failing tests first: mutation needs an unmutated tree that passes",
-                          "a mutation check that did not run")])
-            if not (rc in ("timeout", 0) or (rc == 1 and early)):
-                return _check("n/a", f"mutmut exit {rc} (env): {_first_line(text)}; check the test deps "
-                                     "(requirements, setup-command)"), []
-            rrc, rtext = runner(shlex.split(cmd) + ["results", "--all", "True"], crate, PROBE_TIMEOUT)
+            early = EARLY in text
+            rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
             if rrc != 0:
                 return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
-            rows = [(name, _kind(status, early), status) for name, status in parse_results(rtext)]
+            listed = parse_results(rtext)
+            rows = [(name, _kind(status, early), status) for name, status in listed
+                    if not outside_diff(name, sources, changed)]
+            unrun = len(listed) - len(rows)
             tested = sum(1 for _, k, _ in rows if k != "untested")
             total = None if rc == "timeout" and not rows else len(rows)
-            if rc != "timeout" and total == 0:
-                return _check("pass", "0 mutants in the diff", 0, 0), []
             caught = sum(1 for _, k, _ in rows if k == "caught")
             found, outside, unlocated = [], 0, 0
+            copies = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])
             for name, k, status in rows:
                 if k != "missed":
                     continue
-                rc_s, show = runner(shlex.split(cmd) + ["show", name], crate, PROBE_TIMEOUT)
-                parsed = parse_show(show) if rc_s == 0 else None
-                if parsed is None:
-                    unlocated += 1  # no diff to read: not a fail, not outside either; named by the confirm below
-                    continue
-                removed, after = parsed
-                file = _repo_path(project_dir, show_file(show) or "")
-                line = locate(_read(os.path.join(crate, _crate_path(project_dir, file))), name, removed)
+                line, known = None, copies.change(name)
+                if known:  # mutmut's own copy of the function: the changed line is an offset from its def line
+                    file, removed, after = _repo_path(project_dir, known[0]), known[2], known[3]
+                    line = line_at(sources.get(file), name, known[1], removed)
+                if line is None:  # not readable that way: ask mutmut for the diff and find its text in the function
+                    rc_s, show = runner(base + ["show", name], crate, PROBE_TIMEOUT)
+                    parsed = parse_show(show) if rc_s == 0 else None
+                    if parsed is None:
+                        unlocated += 1  # no diff to read: not a fail, not outside either; named by the confirm below
+                        continue
+                    removed, after = parsed
+                    shown = show_file(show)
+                    if shown:
+                        file = _repo_path(project_dir, shown)
+                        line = locate(_read(os.path.join(crate, shown)), name, removed)
                 if line is None:
                     unlocated += 1  # the name maps to no line in the file: a confirm, never a silent fail
                     continue
@@ -744,12 +988,19 @@ class Mutmut:
                     outside += 1
                     continue
                 found.append((name, file, line, f"{removed} -> {after}", status))
+            suite = {"caught": 0, "hung": 0, "passed": set()}
+            if found and rc != "timeout":
+                found, suite = whole_suite(runner, base, crate, project_dir, found,
+                                           lambda: None if budget is None else budget - (time.monotonic() - t0))
+                wall = time.monotonic() - t0
             ents = finalize([
                 entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
-                      (f"add an assert that fails for this mutant: {desc}" if status == "survived" else
-                       "no test reaches this line: add a test that calls it and asserts the result"),
+                      (f"add an assert that fails for this mutant: {desc}." if status == "survived" else
+                       "no test fails with this change, the whole suite included: add a test that calls it and asserts "
+                       "the result." if name in suite["passed"] else
+                       "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
-                for _, file, line, desc, status in found])
+                for name, file, line, desc, status in found])
             if unlocated:
                 ents += finalize([entry("R3", "", 0, "unlocated", "agent-fixable", "confirm",
                                         f"R3 unlocated: {unlocated} missed mutant(s) could not be mapped to a line: not blocking",
@@ -767,7 +1018,15 @@ class Mutmut:
             else:
                 note = (f"{shown} tested: {len(fails)} missed in the diff, {outside} missed outside the diff, "
                         f"{unlocated} unlocated, {caught} caught")
-                check = _check("fail" if fails else "pass", note, tested, total)
+                if suite["caught"]:
+                    note += f"; {suite['caught']} more caught only by the whole suite"
+                if suite["hung"]:
+                    note += f"; {suite['hung']} hung the whole suite"
+                if unrun:
+                    note += f"; {unrun} in functions the diff does not touch: not run"
+                # a mutant of a touched function that mutmut left unrun is not a pass: the run is partial
+                status = "fail" if fails else "partial" if tested < len(rows) else "pass"
+                check = _check(status, note, tested, total)
             check["timing"] = timing
             return check, ents
 
@@ -978,8 +1237,8 @@ class Stryker:
                 found.append((file, line, m, stryker_desc(m, src)))
             ents = finalize([
                 entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
-                      (f"add an assert that fails for this mutant: {desc}" if m.get("status") == "Survived" else
-                       "no test reaches this line: add a test that calls it and asserts the result"),
+                      (f"add an assert that fails for this mutant: {desc}." if m.get("status") == "Survived" else
+                       "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
                 for file, line, m, desc in found])
             if unlocated:

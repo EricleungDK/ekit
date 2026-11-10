@@ -72,7 +72,7 @@ If a behaviour can be tested at unit level, test it there. Push e2e to the one p
 
 | Cheat | Caught by | Forbidden | Do instead |
 |---|---|---|---|
-| Delete or rename a failing test | R2 (`fail`, agent-fixable) | deleting or renaming a test to hide a failure | Fix the code; the test is restored. A removal the owner wants is the owner's call, outside the agent loop. The entry stays `fail` until then; the agent never self-waives it. |
+| Delete or rename a failing test | R2 (`fail`, agent-fixable) | deleting or renaming a test to hide a failure | Fix the code; the test is restored. A removal the owner wants is the owner's call, outside the agent loop. The entry stays `fail` until the owner waives it ([waiver](mech-review-ci.md#waivers)); the agent never self-waives it. |
 | Skip or ignore a test: `#[ignore]`, `@pytest.mark.skip`, `@pytest.mark.xfail`, `@unittest.skip`, `self.skipTest()`, `pytest.skip()` in a body, `it.skip`, `it.todo`, `xit`, `test.only`, `it.only`, `fit`, a `describe.skip` or `describe.only` around it, a `cfg` that disables it or its enclosing mod (`cfg(any())`, `cfg(FALSE)`, `cfg(not(test))`), a skipped class | R2 (`fail`) | #[ignore] / skip / xfail / only on a test | Fix the test failure. Can't run here: note verification debt, don't skip in code. |
 | Turn a failing test into a panic-expecting one: `#[should_panic]` added to an existing test | R2 (`confirm`) | adding #[should_panic] to an existing test | Assert the error or the value instead. Intended change: reviewer confirms the `confirm` entry. |
 | Drop or move assertions out of a test | R2 (`fail`) | fewer asserts in test `<name>`; fewer asserts in changed test file `<file>` (outside test fns) | Keep the assert. Add a stronger one if needed. Extracting asserts into a helper that the test itself calls is fine (the helper must gain the asserts); moving them into another test, or into a helper the test does not call, is not. |
@@ -82,7 +82,7 @@ If a behaviour can be tested at unit level, test it there. Push e2e to the one p
 | Hide code from mutation testing: `#[mutants::skip]` (also in `cfg_attr`), `# pragma: no mutate`, `// Stryker disable`, or a change to the R3 tool's config (`mutants.toml`, `[tool.mutmut]` / `[mutmut]`, `stryker.conf.*` / `stryker.config.*`) | R2 (`fail`, `needs-human`) | hiding code from mutation testing (R3) | Add the test R3 asks for. Code that truly cannot be tested (only a PTY smoke reaches it) is a person's call, in its own PR. No agent downgrade path. |
 | Edit a protected path: CI, gate scripts, agent docs | R2 (`fail`, `needs-human`) | editing CI, gate scripts or agent docs to get the gate green | Stop. A human decides. Never edit the gate to pass. No agent downgrade path. |
 | No test catches the change: every new or changed test passes on the base's code too | R1 | a production change no test catches | Write a test that fails on the base's code for the ticket's reason (writing it first is still the way). A test that pins existing behaviour passes on base by design: it is a guard and may sit beside it. Fix an R1 fail with a new commit; no history rewrite. |
-| Weak or missing assert: test still passes with the code broken, or no test reaches the changed line (python `no tests`, stryker `NoCoverage`) | R3 | MISSED mutant `<desc>` in `<file>` | Add the assert that kills the mutant, or the test that reaches the line. |
+| Weak or missing assert: test still passes with the code broken, or no test reaches the changed line (python `no tests`, stryker `NoCoverage`) | R3 | MISSED mutant `<desc>` in `<file>` | Add the assert that kills the mutant, or the test that reaches the line: an assert on what a caller or user can observe ([§1](#1-good-test)). A mutant that changes nothing observable is an equivalent mutant: simplify the code until the variant is gone, or hand the entry to the owner ([waiver](mech-review-ci.md#waivers)). Never assert an internal call or move the line to get past the check: that is the last row of this table. |
 | Flaky test: passes and fails on same code | R4 | flaky test `<name>` | Find the nondeterminism (time, order, shared state, sleep). Fix it. Never retry to green. |
 | Test asserts internals, mocks own code, bad name, logic in test | code review | n/a | Test through public interface. Mock only boundaries. Rename to the behaviour. Remove the logic. |
 
@@ -91,7 +91,7 @@ If a behaviour can be tested at unit level, test it there. Push e2e to the one p
 | Check | Enforces | Status |
 |---|---|---|
 | R1 red-first | The tests base..head adds or changes run on the base's production code (a worktree at the merge base with head's test-path files on top). At least one fails there; a test that does not build there is `compile-red` and counts as red (R4 builds and runs it at head in the same job, so only this PR's production change can be what it needs); the rest are guards. R4 runs them at head. Commit order and subjects do not matter, so a later commit fixes an R1 fail. A PR whose only new tests are files of another language under `test-paths` (a python PTY smoke in a rust crate) gets an agent-fixable fail per file with the route in the hint (a stack test; smoke-only logic moved into a testable fn). Agent branches only (`--head-branch` starts with the agent prefix), when production files changed. | implemented (#16; fails-on-base) |
-| R2 test-diff guard | Cheat rows above: removed tests (a rename with the same asserts is not a removal), new skip/ignore/xfail/only, `should_panic` added to an existing test (`confirm`), fewer asserts per surviving test fn, weakened or changed expected values (`confirm`), unreasoned suppressions, mutation skips and mutation config edits (`needs-human`), protected paths. No waiver in the PR body. | implemented (#13, #26, #27, review round 1) |
+| R2 test-diff guard | Cheat rows above: removed tests (a rename with the same asserts is not a removal), new skip/ignore/xfail/only, `should_panic` added to an existing test (`confirm`), fewer asserts per surviving test fn, weakened or changed expected values (`confirm`), unreasoned suppressions, mutation skips and mutation config edits (`needs-human`), protected paths. No waiver in the PR body, commits or files: only a person's `/mech-waive` PR comment waives ([waivers](mech-review-ci.md#waivers)). | implemented (#13, #26, #27, review round 1) |
 
 R2 assert rules:
 
@@ -103,13 +103,14 @@ R2 assert rules:
 - Python assertions: bare `assert`, `self.assert*` (`assertEqual` and `assertNotEqual` are eq and ne), `pytest.raises`. Test fns: `test_*` functions, `test*` methods of `Test*` classes and of `unittest.TestCase` subclasses (a subclass in the same file counts). Names: `test_fn`, `Class::test_method`.
 - Python suppressions: `# noqa` and `# type: ignore` need a reason after the codes (`# noqa: E501 - url literal`). An unparseable file is an R2 `fail` (it cannot be checked), not a crash.
 - TypeScript/JavaScript assertions: `expect(x).toBe(y)`, `toEqual`, `toStrictEqual` (eq; `.not` makes it ne), any other matcher is `other`. Test fns: `it`/`test` inside `describe` (qualified `Describe > name`), and at top level; `.each` rows are one test. Suppressions: `eslint-disable*` (`-- reason`), `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck` (text after the directive). The parse check is lexical (brackets, unterminated comment or template): a file that passes it can still fail to compile, which the runner reports as `build`.
-| R3 mutation on diff | Rust: cargo-mutants `--in-diff` on changed production code only, run in a worktree at head. Python: mutmut 3.8.1 on the changed files, MISSED kept on changed lines only. TypeScript: Stryker 10.0.0 on the changed lines (`--mutate` ranges). MISSED mutant = `fail` (agent-fixable), one entry per mutant. TIMEOUT and UNVIABLE ignored. per-mutant timeout derived from the measured baseline (`mutant-timeout` overrides); the baseline runs once, shards skip it; budget per shard and for the baseline (`mutation-budget`, minutes). Budget hit with no MISSED so far = `partial`: `R3 partial (tested/total)`, does not block. Tool not installed = `n/a (env)`. No production file changed = skipped. Sharded in the workflow: round-robin, no empty shard. | implemented (#17) |
+| R3 mutation on diff | Rust: cargo-mutants `--in-diff` on changed production code only, run in a worktree at head. Python: mutmut 3.8.1 on the functions that hold a changed line, MISSED kept on changed lines only; a mutant still missed there is tried once against the whole test suite, which also holds the tests mutmut cannot credit. TypeScript: Stryker 10.0.0 on the changed lines (`--mutate` ranges). MISSED mutant = `fail` (agent-fixable), one entry per mutant. TIMEOUT and UNVIABLE ignored. per-mutant timeout derived from the measured baseline (`mutant-timeout` overrides); the baseline runs once, shards skip it; budget per shard and for the baseline (`mutation-budget`, minutes). Budget hit with no MISSED so far = `partial`: `R3 partial (tested/total)`, does not block. Tool not installed = `n/a (env)`. No production file changed = skipped. Sharded in the workflow: round-robin, no empty shard. | implemented (#17) |
 | R4 determinism | Each new or changed test runs 5× at head, in a worktree. Any failing run = `fail`, class `agent-fixable`. A test that does not build or cannot run is a `fail` too. | implemented (#16) |
 
 Statuses (per check, in the envelope):
 
 - `pass`: ran, no `fail` entries.
-- `fail`: at least one `fail` entry. Blocks. Only a code fix (or a human decision for `needs-human`) clears it.
+- `fail`: at least one `fail` entry. Blocks. Only a code fix, or a person's waiver of each entry, clears it.
+- `waived`: the check ran and every `fail` entry it had was waived by a person (CI report step only). Does not block. Never `all pass`.
 - `partial`: R3 budget hit with no MISSED so far. Reported `R3 partial (tested/total)`. Does not block.
 - `n/a`: tool not installable (`n/a (env)`). Not a pass. Say so in the report.
 - `skipped`: check does not apply, or a subcommand does not run it (`not run by r2`). Reason in the note. R1 is skipped for docs-only PRs and non-agent branches.
@@ -132,7 +133,7 @@ Order:
 
 1. Mech-review runs first. Its JSON (`<!-- mech-review -->` PR comment) goes to the reviewer.
 2. Reviewer does not re-derive facts. It reads `confirm` entries and decides each.
-3. Reviewer cannot waive a `fail` entry. Fix it or report it.
+3. A reviewing agent cannot waive a `fail` entry: fix it or report it. A person can, with a `/mech-waive <id> <reason>` PR comment ([waivers](mech-review-ci.md#waivers)).
 4. Mech green does not mean review passed. Review approve does not excuse a `fail`.
 
 ## 6. Contract
@@ -144,18 +145,19 @@ Entry fields (stable; add fields, never rename):
 | `id` | `<check>-<8 hex of sha1(check + file + key)>`, key = rule and test fn name (`ignore:<fn>`, `assert-count:<fn>`, ...). Same across rounds, survives line moves. A repeat of one key in one file (line order): the 2nd occurrence is keyed `<key>#1`, the 3rd `<key>#2`; the first keeps the plain key. |
 | `check` | `R1`, `R2`, `R3`, `R4`, `CI` (`CI` reserved for CI-level failures outside R1–R4, e.g. mech-review's own infra error) |
 | `class` | `agent-fixable`, `needs-human`, `env` |
-| `severity` | `fail` (blocks), `confirm` (reviewer decides) |
+| `severity` | `fail` (blocks), `confirm` (reviewer decides), `waived` (was `fail`; a person let it through, see `waiver`) |
+| `waiver` | only on a `waived` entry: `{by, reason, url}` of the `/mech-waive` comment |
 | `file`, `line` | location |
 | `problem` | what broke |
 | `hint` | intended fix |
 | `forbidden` | shortcut not allowed |
 
-Envelope: head SHA, base SHA, ekit version, per-check status (`pass|fail|partial|n/a|skipped`) with note, entries, summary.
+Envelope: head SHA, base SHA, ekit version, per-check status (`pass|fail|waived|partial|n/a|skipped`) with note, entries, summary.
 
 Summary:
 
 - `all pass <sha>`: no entries and every check passed. Never while a check is skipped or n/a.
-- Otherwise `<pass|fail> <sha> (<F> fail, <C> confirm; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`. The `; skipped:` part appears only when some check is skipped, `; n/a:` only when some check is n/a, e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`. `fail` when `F` > 0.
+- Otherwise `<pass|fail> <sha> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`. `, <W> waived` appears only when a person waived an entry. The `; skipped:` part appears only when some check is skipped, `; n/a:` only when some check is n/a, e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`. `fail` when `F` > 0.
 - Same format in `--format text` (first line) and in the envelope.
 
 ## Per-app doc

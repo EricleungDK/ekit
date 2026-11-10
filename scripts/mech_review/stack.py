@@ -510,6 +510,9 @@ class PythonAdapter(Adapter):
     default_test_cmd = "python3 -m pytest"
     manifests = ("pyproject.toml", "setup.py", "setup.cfg")
 
+    def ignored_text(self, name):
+        return f"test `{name}` marked skipped (skip or xfail)"
+
     def classify(self, path, test_globs):
         if not path.endswith(".py"):
             return None

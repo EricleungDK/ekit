@@ -13,7 +13,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 ## Gate
 
 1. Envelope `head` ≠ `git rev-parse HEAD` → **stale** ([stale.md](stale.md): judge only the run for your SHA). Rerun mech-review at HEAD.
-2. `severity: confirm` → not red. Reviewer decides. List under Open (finish).
+2. `severity: confirm` → not red. Reviewer decides. List under Open (finish). `severity: waived` → not red: a person let it through (`waiver.by`, `waiver.reason`). Leave it; list it under Open.
 3. `severity: fail` → classify below.
 
 ## Class map
@@ -23,9 +23,21 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 | `env` | sandbox/env | No app code or test change. Fix the environment (install the missing tool, or rerun where it failed). Protected CI config → Needs-you. Can't rerun → verification debt. |
 | `agent-fixable`, check `R4` | flaky | Follow [flaky.md](flaky.md). |
 | `agent-fixable`, other | real bug | Fix red→green: the entry's test or rule. |
-| `needs-human` | Needs-you | No edit. Needs-you block (finish shape; `Decide:` in place of `Run:`). |
+| `needs-human` | Needs-you | No edit. Needs-you block (finish shape; `Decide:` in place of `Run:`). If the answer is yes, the user comments `/mech-waive <id> <reason>` on the PR and re-runs the failed `report` job. You never post that comment. |
 
 Each `agent-fixable` fail: open its fix plan with two lines, verbatim: `Fix: <hint>` and `Forbidden: <forbidden>`. Your steps go after them. Never take the forbidden route.
+
+## R3 MISSED mutants
+
+A MISSED mutant is a change to your code that no test noticed. For each one, in this order:
+
+1. **A caller or user would see the difference** → add the assert on that output, return value, exit code or file. This is the usual case.
+2. **Nothing observable changes** (an equivalent mutant: a default nobody passes, a redundant condition, a second cleanup of the same thing) → simplify the code until the variant is gone. Less code, same behaviour, no mutant.
+3. **Neither is possible** → Needs-you: the owner decides, and may waive it.
+
+Never kill a mutant by asserting an internal call (`mock.assert_called_with(...)` on your own helper), by pinning a message's wording that no user relies on, or by moving or rewriting the line so the check no longer sees it. The entry's `hint` says the same.
+
+`N more caught only by the whole suite` in the R3 note is not a failure: those lines are tested, but only by a test that starts the program or imports it another way. Prefer adding a test that calls the function.
 
 ## Rounds
 

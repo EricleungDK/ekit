@@ -1,4 +1,5 @@
-"""SessionStart hook: record tree baseline, inject preflight warnings and the kit's always-on rules (finish/taste-it are orchestrate-only)."""
+"""SessionStart hook: record the tree baseline for the finish gate, inject preflight warnings and the kit's always-on rules
+(the finish gate and taste-it are orchestrate-only)."""
 import json
 import os
 import subprocess
