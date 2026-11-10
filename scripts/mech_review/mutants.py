@@ -232,7 +232,7 @@ def verdict(mo, rc, text, adapter, test_globs, wall_s=None, project_dir=".", tim
         desc = _desc(name)
         entries.append(entry("R3", file, m.get("span", {}).get("start", {}).get("line", 0), f"missed:{file}|{desc}",
                              "agent-fixable", "fail", f"MISSED mutant {name}",
-                             f"add an assert that fails for this mutant: {desc}",
+                             f"add an assert that fails for this mutant: {desc}." + HOW,
                              f"MISSED mutant `{desc}` in `{file}`"))
     entries = finalize(entries)
     missed = counts["MissedMutant"]
@@ -623,6 +623,65 @@ def locate(src, name, removed):
     return None
 
 
+# what every MISSED hint ends with: the way out of a mutant is a behaviour test, a simpler line, or the owner
+HOW = (" Assert what a caller or user can observe. If the change alters nothing observable (an equivalent mutant), "
+       "simplify the code until the variant is gone, or hand the entry to the owner (Needs-you). Never assert an "
+       "internal call, and never move or rewrite the line only to get past this check.")
+
+# the project's whole test suite, as a person runs it: -B and no cache so a file rewritten within one second is read
+# again; mutmut's working copy under mutants/ holds a second copy of the tests and is left out
+SUITE = ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--ignore=mutants"]
+SUITE_FACTOR, SUITE_FLOOR = 5, 30  # one suite run on a mutant may take 5x the clean run, and at least 30 s
+
+
+def whole_suite(runner, base, crate, project_dir, found, left):
+    """mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under
+    the module name mutmut derives from the file path. A test that reaches the code another way (it starts the program,
+    or imports the file under another name) is a real test all the same, and cargo-mutants and Stryker's command
+    runner count it. So each mutant still missed on a changed line gets one more try: `mutmut apply` writes it into
+    the worktree, the whole suite runs once, and a suite that fails has caught it. The file is put back each time.
+    found: [(name, repo file, line, desc, status)]; left(): seconds of budget left, or None.
+    Returns (still missed, {caught, hung, passed}): passed holds the names the whole suite ran against and passed."""
+    state = {"caught": 0, "hung": 0, "passed": set()}
+    spare = left()
+    if spare is not None and spare <= 0:
+        return found, state
+    t0 = time.monotonic()
+    rc, _ = runner(SUITE, crate, spare)
+    if rc != 0:  # not runnable here, or red without any mutant: it can say nothing about one
+        print(f"mech-review: R3: whole suite not used for {len(found)} missed mutant(s): `{' '.join(SUITE)}` "
+              f"ends with {rc} on the unmutated tree", file=sys.stderr)
+        return found, state
+    limit = max(SUITE_FLOOR, SUITE_FACTOR * (time.monotonic() - t0))
+    missed = []
+    for item in found:
+        spare = left()
+        if spare is not None and spare <= 0:
+            missed.append(item)  # out of budget: what mutmut said stands
+            continue
+        path = os.path.join(crate, _crate_path(project_dir, item[1]))
+        with open(path, "rb") as f:
+            original = f.read()
+        try:
+            arc, _ = runner(base + ["apply", item[0]], crate, PROBE_TIMEOUT)
+            with open(path, "rb") as f:
+                applied = arc == 0 and f.read() != original
+            cut = spare is not None and spare < limit
+            rc = runner(SUITE, crate, spare if cut else limit)[0] if applied else 0
+        finally:
+            with open(path, "wb") as f:
+                f.write(original)
+        if rc == "timeout" and not cut:
+            state["hung"] += 1  # as mutmut and cargo-mutants treat a timeout: neither caught nor missed
+        elif isinstance(rc, int) and rc != 0:
+            state["caught"] += 1
+        else:
+            missed.append(item)
+            if applied and rc == 0:
+                state["passed"].add(item[0])
+    return missed, state
+
+
 MUTANT_DEF = re.compile(r"\s*(?:async\s+)?def\s+(x[^\s(]*__mutmut_(?:orig|\d+))\s*\(")
 
 
@@ -924,12 +983,19 @@ class Mutmut:
                     outside += 1
                     continue
                 found.append((name, file, line, f"{removed} -> {after}", status))
+            suite = {"caught": 0, "hung": 0, "passed": set()}
+            if found and rc != "timeout":
+                found, suite = whole_suite(runner, base, crate, project_dir, found,
+                                           lambda: None if budget is None else budget - (time.monotonic() - t0))
+                wall = time.monotonic() - t0
             ents = finalize([
                 entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
-                      (f"add an assert that fails for this mutant: {desc}" if status == "survived" else
-                       "no test reaches this line: add a test that calls it and asserts the result"),
+                      (f"add an assert that fails for this mutant: {desc}." if status == "survived" else
+                       "no test fails with this change, the whole suite included: add a test that calls it and asserts "
+                       "the result." if name in suite["passed"] else
+                       "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
-                for _, file, line, desc, status in found])
+                for name, file, line, desc, status in found])
             if unlocated:
                 ents += finalize([entry("R3", "", 0, "unlocated", "agent-fixable", "confirm",
                                         f"R3 unlocated: {unlocated} missed mutant(s) could not be mapped to a line: not blocking",
@@ -947,6 +1013,10 @@ class Mutmut:
             else:
                 note = (f"{shown} tested: {len(fails)} missed in the diff, {outside} missed outside the diff, "
                         f"{unlocated} unlocated, {caught} caught")
+                if suite["caught"]:
+                    note += f"; {suite['caught']} more caught only by the whole suite"
+                if suite["hung"]:
+                    note += f"; {suite['hung']} hung the whole suite"
                 if unrun:
                     note += f"; {unrun} in functions the diff does not touch: not run"
                 # a mutant of a touched function that mutmut left unrun is not a pass: the run is partial
@@ -1162,8 +1232,8 @@ class Stryker:
                 found.append((file, line, m, stryker_desc(m, src)))
             ents = finalize([
                 entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
-                      (f"add an assert that fails for this mutant: {desc}" if m.get("status") == "Survived" else
-                       "no test reaches this line: add a test that calls it and asserts the result"),
+                      (f"add an assert that fails for this mutant: {desc}." if m.get("status") == "Survived" else
+                       "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
                 for file, line, m, desc in found])
             if unlocated:

@@ -248,12 +248,24 @@ class TestRun(unittest.TestCase):
             return failed, out.getvalue(), json.load(f)
 
     def test_a_pass_is_recorded_for_the_tree_that_was_run(self):
-        with mock.patch.object(scenarios, "prune") as prune:
-            failed, out, doc = self.run_all("exit 0\n")
+        failed, out, doc = self.run_all("exit 0\n")
         self.assertIs(failed, False)
         self.assertEqual(out, "PASS one\nPASS: 1/1 scenarios\n")
         self.assertEqual((doc["verdict"], doc["tree"]), ("PASS", scenarios.tree_hash(self.repo)))
-        prune.assert_called_once_with(scenarios.outdir(self.repo), doc["tree"])
+
+    def test_a_run_clears_old_transcripts_of_other_trees_and_keeps_its_own(self):
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenario")
+        other = os.path.join(scenarios.outdir(self.repo), "0" * 40)
+        os.makedirs(other)
+        # a clock a month ahead: every transcript dir is past the keep window, this run's own included
+        ahead = time.time() + 30 * 86400
+        with mock.patch.object(scenarios.time, "time", lambda: ahead), contextlib.redirect_stdout(io.StringIO()):
+            scenarios.cmd_run(self.repo)
+        tree = scenarios.tree_hash(self.repo)
+        self.assertFalse(os.path.exists(other))
+        self.assertEqual(os.listdir(os.path.join(scenarios.outdir(self.repo), tree)), ["one.log"])
 
     def test_a_scenario_that_commits_in_the_repo_fails_the_run(self):
         failed, out, doc = self.run_all('git -C "$EKIT_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x\n')
@@ -292,10 +304,18 @@ class TestPrune(unittest.TestCase):
         self.assertEqual((os.path.exists(at), os.path.exists(past)), (True, False))
 
     def test_a_dir_that_will_not_go_does_not_stop_the_run(self):
-        old = self.make("old", scenarios.KEEP_DAYS + 1)
-        with mock.patch.object(scenarios.shutil, "rmtree") as rmtree:
+        stuck, gone = self.make("stuck", scenarios.KEEP_DAYS + 1), self.make("zgone", scenarios.KEEP_DAYS + 1)
+        real = scenarios.shutil.rmtree
+
+        def rmtree(path, ignore_errors=False):  # the filesystem refuses one directory, as a busy or foreign one would
+            if path != stuck:
+                return real(path, ignore_errors=ignore_errors)
+            if not ignore_errors:
+                raise PermissionError(13, "Permission denied", path)
+
+        with mock.patch.object(scenarios.shutil, "rmtree", rmtree):
             scenarios.prune(self.out, "ccc")
-        rmtree.assert_called_once_with(old, ignore_errors=True)
+        self.assertEqual((os.path.exists(stuck), os.path.exists(gone)), (True, False))
 
     def test_old_transcript_dirs_of_other_trees_go(self):
         old, kept = self.make("aaa", scenarios.KEEP_DAYS + 1), self.make("bbb", scenarios.KEEP_DAYS - 1)

@@ -35,7 +35,12 @@ class FakeMutmut:
     FAILED = "....F\nFAILED tests/test_calc.py::test_sub - AssertionError: 3 != 2\n"
 
     def __init__(self, mutants, fail_run=None, leave_unrun=(), timeout_run=None, fail_text="Failed to run clean test\n",
-                 early_run=None, results_rc=None, show_rc=0):
+                 early_run=None, results_rc=None, show_rc=0, edits=None, suite_fails_on=(), suite_hangs_on=(),
+                 clean_rc=0, apply_rc=0):
+        # the whole-suite step: `apply` makes the mutant's edit (old, new) in calc.py; the suite then fails when the
+        # file holds a text in suite_fails_on, hangs on one in suite_hangs_on, and ends with clean_rc on the file as it is
+        self.edits, self.suite_fails_on, self.suite_hangs_on = edits or {}, suite_fails_on, suite_hangs_on
+        self.clean_rc, self.apply_rc, self.applied, self.suite_runs = clean_rc, apply_rc, [], []
         self.mutants, self.ran, self.runs, self.shown, self.budgets = dict(mutants), set(), [], [], []
         self.fail_run, self.leave_unrun, self.timeout_run = fail_run, set(leave_unrun), timeout_run
         self.fail_text, self.early_run, self.results_rc, self.show_rc = fail_text, early_run, results_rc, show_rc
@@ -46,6 +51,28 @@ class FakeMutmut:
         self.cwds.add(cwd)
         if verb == "--version":
             return 0, "mutmut, version 3.8.1"
+        if argv[0] == "python3":
+            if argv != mutants.SUITE:
+                return 4, f"ERROR: usage: unexpected arguments {argv}"
+            with open(os.path.join(cwd, "calc.py")) as f:
+                source = f.read()
+            self.suite_runs.append((timeout, source))
+            if any(text in source for text in self.suite_hangs_on):
+                return "timeout", ""
+            if any(text in source for text in self.suite_fails_on):
+                return 1, "1 failed"
+            return (self.clean_rc, "") if source == self.unmutated else (0, "3 passed")
+        if verb == "apply":
+            self.applied.append(args[0])
+            if timeout != mutants.PROBE_TIMEOUT:
+                return 2, f"unexpected timeout {timeout!r} for apply"
+            if self.apply_rc == 0 and args[0] in self.edits:
+                path = os.path.join(cwd, "calc.py")
+                with open(path) as f:
+                    source = f.read()
+                with open(path, "w") as f:
+                    f.write(source.replace(*self.edits[args[0]]))
+            return self.apply_rc, ""
         if verb in ("results", "show") and timeout != mutants.PROBE_TIMEOUT:
             return 2, f"unexpected timeout {timeout!r} for {verb}"
         if verb == "results":
@@ -77,10 +104,15 @@ class FakeMutmut:
 
 
 ADD1, ADD2, SUB1, SUB2 = (f"calc.x_{fn}__mutmut_{n}" for fn in ("add", "sub") for n in (1, 2))
+FakeMutmut.unmutated = HEAD
+EDITS = {SUB1: ("c = a - b", "c = a + b"), SUB2: ("return c", "return None")}
+NO_TEST_FAILS = ("no test fails with this change, the whole suite included: add a test that calls it and asserts the "
+                 "result." + mutants.HOW)
 
 
-class TestMutmutCheck(unittest.TestCase):
-    """The diff changes `sub` only (BASE -> HEAD). mutmut mutates the whole file, so it also has mutants of `add`."""
+class DiffOfSub(unittest.TestCase):
+    """A repo whose diff changes `sub` only (BASE -> HEAD). mutmut mutates the whole file, so it also has mutants of
+    `add`. No tests of its own: the classes below share it."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -104,6 +136,13 @@ class TestMutmutCheck(unittest.TestCase):
             check, entries = mutants.run(rv, None, budget_min, None, None, fake)
         return check, entries, err.getvalue()
 
+    def clock(self, *times):
+        """time.monotonic as the engine sees it: these readings in order, then the last one again"""
+        left = list(times)
+        return mock.patch.object(mutants.time, "monotonic", lambda: left.pop(0) if len(left) > 1 else left[0])
+
+
+class TestMutmutCheck(DiffOfSub):
     def test_only_the_mutants_of_touched_functions_run(self):
         fake = FakeMutmut({ADD1: "survived", ADD2: "no tests", SUB1: "survived", SUB2: "killed"})
         check, entries, _ = self.r3(fake)
@@ -159,7 +198,9 @@ class TestMutmutCheck(unittest.TestCase):
         check, entries, _ = self.r3(fake)
         self.assertEqual(fake.shown, [SUB1, SUB2])
         self.assertEqual((check["status"], check["tested"], check["total"]), ("fail", 2, 2))
-        self.assertEqual({e["hint"] for e in entries}, {"no test reaches this line: add a test that calls it and asserts the result"})
+        # this fake applies no mutant, so the whole suite never ran against one: the hint claims only mutmut's finding
+        self.assertEqual({e["hint"] for e in entries},
+                         {"no test reaches this line: add a test that calls it and asserts the result." + mutants.HOW})
 
     def test_a_filter_that_matches_nothing_on_the_real_run_is_not_a_result(self):
         fake = FakeMutmut({SUB1: "killed"}, leave_unrun=[SUB1])
@@ -196,11 +237,6 @@ class TestMutmutCheck(unittest.TestCase):
         # line 7 `return c` is new in this diff as well (the base returned `a - b` directly)
         self.assertEqual([(e["line"], e["problem"]) for e in entries], [(7, "MISSED mutant calc.py:7: return c -> return None")])
         self.assertEqual(check["status"], "fail")
-
-    def clock(self, *times):
-        """time.monotonic as the engine sees it: these readings in order, then the last one again"""
-        left = list(times)
-        return mock.patch.object(mutants.time, "monotonic", lambda: left.pop(0) if len(left) > 1 else left[0])
 
     def test_the_second_run_gets_what_is_left_of_the_budget(self):
         fake = FakeMutmut({SUB1: "killed"})
@@ -283,7 +319,9 @@ def x_sub__mutmut_2(a, b):
 
 
 class WritingMutmut(FakeMutmut):
-    """A fake that also leaves what mutmut leaves in `mutants/`: the mutated file and its .meta."""
+    """A fake that also leaves what mutmut leaves in `mutants/`: the mutated file and its .meta (which lists `listed`,
+    by default every mutant)."""
+    listed = None
 
     def __call__(self, argv, cwd, timeout):
         if argv[1] == "run" and not self.runs:
@@ -291,7 +329,7 @@ class WritingMutmut(FakeMutmut):
             with open(os.path.join(cwd, "mutants", "calc.py"), "w") as f:
                 f.write(COPIES)
             with open(os.path.join(cwd, "mutants", "calc.py.meta"), "w") as f:
-                json.dump({"exit_code_by_key": dict.fromkeys(self.mutants)}, f)
+                json.dump({"exit_code_by_key": dict.fromkeys(self.mutants if self.listed is None else self.listed)}, f)
         return super().__call__(argv, cwd, timeout)
 
 
@@ -349,13 +387,159 @@ class TestMutmutFiles(unittest.TestCase):
         self.assertEqual(fake.shown, [SUB2])  # same offset, other text: the copy is of another version of the file
         self.assertEqual([e["problem"] for e in entries], ["MISSED mutant calc.py:3: return c + 0 -> return c - 0"])
 
-    def test_a_mutant_the_files_do_not_explain_is_asked_of_mutmut(self):
-        fake = WritingMutmut({SUB1: "survived"})
-        with mock.patch.object(mutants, "mutant_change", return_value=None), \
-                mock.patch.dict(SHOW, {SUB1: "--- calc.py\n+++ calc.py\n@@ -1 +1 @@\n-    return c + 0\n+    return c - 0\n"}):
+    def test_a_mutant_the_files_do_not_list_is_asked_of_mutmut(self):
+        fake = WritingMutmut({SUB2: "survived"})
+        fake.listed = [SUB1]  # the .meta beside the mutated file names another mutant only
+        with mock.patch.dict(SHOW, {SUB2: "--- calc.py\n+++ calc.py\n@@ -1 +1 @@\n-    return c + 0\n+    return c - 0\n"}):
             check, entries = self.r3(fake)
-        self.assertEqual(fake.shown, [SUB1])
+        self.assertEqual(fake.shown, [SUB2])
         self.assertEqual([e["line"] for e in entries], [3])
+
+
+class TestWholeSuite(DiffOfSub):
+    """A mutant mutmut reports missed is tried once more against the whole suite, which also holds the tests mutmut
+    cannot credit (they start the program, or import the file under another name)."""
+
+    def fake(self, statuses, **kw):
+        return FakeMutmut(statuses, edits=EDITS, **kw)
+
+    def test_a_mutant_the_whole_suite_catches_is_not_missed(self):
+        fake = self.fake({SUB1: "no tests", SUB2: "killed"}, suite_fails_on=["c = a + b"])
+        check, entries, err = self.r3(fake)
+        self.assertEqual((check["status"], entries, err), ("pass", [], ""))
+        self.assertEqual(check["note"], "2/2 tested: 0 missed in the diff, 0 missed outside the diff, 0 unlocated, 1 caught; "
+                                        "1 more caught only by the whole suite")
+        self.assertEqual(fake.applied, [SUB1])
+
+    def test_the_suite_runs_clean_first_then_once_per_missed_mutant_on_a_restored_file(self):
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
+        check, entries, _ = self.r3(fake, budget_min=None)
+        self.assertEqual([source for _, source in fake.suite_runs],
+                         [HEAD, HEAD.replace("c = a - b", "c = a + b"), HEAD.replace("return c", "return None")])
+        self.assertEqual((check["status"], entries), ("pass", []))
+        self.assertIn("2 more caught only by the whole suite", check["note"])
+
+    def test_a_mutant_the_whole_suite_passes_with_stays_missed_and_the_hint_says_so(self):
+        fake = self.fake({SUB1: "no tests", SUB2: "survived"}, suite_fails_on=["nothing"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual(check["note"], "2/2 tested: 2 missed in the diff, 0 missed outside the diff, 0 unlocated, 0 caught")
+        self.assertEqual([e["hint"] for e in entries],
+                         [NO_TEST_FAILS, "add an assert that fails for this mutant: return c -> return None." + mutants.HOW])
+        self.assertEqual(len(fake.suite_runs), 3)
+
+    def test_one_caught_one_not_keeps_the_one(self):
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["return None"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual([e["line"] for e in entries], [6])
+        self.assertEqual(check["note"], "2/2 tested: 1 missed in the diff, 0 missed outside the diff, 0 unlocated, 0 caught; "
+                                        "1 more caught only by the whole suite")
+
+    def test_a_suite_that_is_red_without_any_mutant_says_nothing_about_one(self):
+        for rc in (1, 5, None, "timeout"):
+            fake = self.fake({SUB1: "no tests"}, clean_rc=rc, suite_fails_on=["c = a + b"])
+            check, entries, err = self.r3(fake)
+            self.assertEqual((check["status"], fake.applied, len(fake.suite_runs)), ("fail", [], 1), rc)
+            self.assertEqual(err, "mech-review: R3: whole suite not used for 1 missed mutant(s): `python3 -B -m pytest -x -q "
+                                  f"-p no:cacheprovider --ignore=mutants` ends with {rc} on the unmutated tree\n")
+            self.assertEqual(entries[0]["hint"], "no test reaches this line: add a test that calls it and asserts the result."
+                             + mutants.HOW)
+
+    def test_a_mutant_mutmut_cannot_apply_stays_missed_without_a_suite_run(self):
+        fake = self.fake({SUB1: "no tests"}, apply_rc=1, suite_fails_on=["c = a - b"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual((check["status"], len(entries), len(fake.suite_runs)), ("fail", 1, 1))
+        # the suite never ran against it, so the hint claims only what mutmut found
+        self.assertEqual(entries[0]["hint"], "no test reaches this line: add a test that calls it and asserts the result."
+                         + mutants.HOW)
+
+    def test_an_apply_that_changes_nothing_gets_no_suite_run(self):
+        fake = FakeMutmut({SUB1: "no tests"}, edits={})
+        check, entries, _ = self.r3(fake)
+        self.assertEqual((check["status"], len(entries), fake.applied, len(fake.suite_runs)), ("fail", 1, [SUB1], 1))
+        self.assertTrue(entries[0]["hint"].startswith("no test reaches this line:"), entries[0]["hint"])
+
+    def test_a_mutant_that_hangs_the_suite_is_neither_caught_nor_missed(self):
+        fake = self.fake({SUB1: "survived", SUB2: "killed"}, suite_hangs_on=["c = a + b"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual((check["status"], entries), ("pass", []))
+        self.assertEqual(check["note"], "2/2 tested: 0 missed in the diff, 0 missed outside the diff, 0 unlocated, 1 caught; "
+                                        "1 hung the whole suite")
+
+    def test_one_suite_run_may_take_five_times_the_clean_run(self):
+        fake = self.fake({SUB1: "survived"})
+        with self.clock(100, 140, 200, 210, 220):  # start, mutmut done, suite starts, clean run took 10 s
+            check, _, _ = self.r3(fake, budget_min=None)
+        self.assertEqual([t for t, _ in fake.suite_runs], [None, 50])
+        self.assertEqual(check["timing"], {"wall_s": 120})  # the suite runs are part of the R3 time
+
+    def test_and_at_least_thirty_seconds(self):
+        fake = self.fake({SUB1: "survived"})
+        with self.clock(100, 140, 200, 201, 220):
+            self.r3(fake, budget_min=None)
+        self.assertEqual([t for t, _ in fake.suite_runs], [None, 30])
+
+    def test_exactly_no_budget_left_is_spent_and_one_second_is_not(self):
+        fake = self.fake({SUB1: "survived"}, suite_fails_on=["c = a + b"])
+        with self.clock(100, 130, 140, 220):  # 120 s budget, 120 s gone
+            self.r3(fake, budget_min=2)
+        self.assertEqual(fake.suite_runs, [])
+        fake = self.fake({SUB1: "survived"}, suite_fails_on=["c = a + b"])
+        with self.clock(100, 130, 140, 219):
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual([t for t, _ in fake.suite_runs], [1, 1])
+        self.assertEqual(entries, [])
+
+    def test_the_budget_gone_after_the_clean_run_keeps_every_mutant_missed(self):
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
+        with self.clock(100, 130, 140, 150, 150, 151, 220):  # the clean run fits; then exactly nothing is left
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual(([e["line"] for e in entries], fake.applied, len(fake.suite_runs)), ([6, 7], [], 1))
+
+    def test_a_run_given_exactly_its_limit_that_times_out_is_a_hang(self):
+        fake = self.fake({SUB1: "survived"}, suite_hangs_on=["c = a + b"])
+        with self.clock(100, 130, 140, 190):  # 30 s left: the floor of one suite run, not less
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual(([t for t, _ in fake.suite_runs], entries), ([30, 30], []))
+        self.assertIn("1 hung the whole suite", check["note"])
+
+    def test_two_hangs_are_counted_as_two(self):
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_hangs_on=["c = a + b", "return None"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual(entries, [])
+        self.assertIn("2 hung the whole suite", check["note"])
+
+    def test_a_spent_budget_leaves_what_mutmut_said(self):
+        fake = self.fake({SUB1: "survived"}, suite_fails_on=["c = a + b"])
+        with self.clock(100, 130, 140, 700):
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual((check["status"], len(entries), fake.suite_runs, fake.applied), ("fail", 1, [], []))
+
+    def test_the_budget_running_out_between_mutants_keeps_the_rest_missed(self):
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
+        with self.clock(100, 130, 140, 150, 150, 151, 160, 300):  # the second mutant finds the budget gone
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual(([e["line"] for e in entries], fake.applied), ([7], [SUB1]))
+        self.assertIn("1 more caught only by the whole suite", check["note"])
+
+    def test_a_suite_run_cut_short_by_the_budget_is_not_a_hang(self):
+        fake = self.fake({SUB1: "no tests"}, suite_hangs_on=["c = a + b"])
+        with self.clock(100, 130, 140, 195):  # 25 s of the 120 left: less than one suite run may take
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual([t for t, _ in fake.suite_runs], [25, 25])
+        self.assertEqual((check["status"], len(entries)), ("fail", 1))
+        self.assertNotIn("hung", check["note"])
+        self.assertTrue(entries[0]["hint"].startswith("no test reaches this line:"), entries[0]["hint"])
+
+    def test_the_budget_ending_during_mutmuts_run_skips_the_suite(self):
+        fake = self.fake({SUB1: "no tests", SUB2: "killed"}, timeout_run=2, suite_fails_on=["c = a + b"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual((fake.suite_runs, fake.applied), ([], []))
+        self.assertEqual((check["status"], check["note"]), ("fail", "1/2 tested: budget hit, 1 missed"))
+        self.assertTrue(entries[0]["hint"].startswith("no test reaches this line:"), entries[0]["hint"])
+
+    def test_the_suite_is_pytest_fresh_bytecode_and_without_mutmuts_copy_of_the_tests(self):
+        self.assertEqual(mutants.SUITE, ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider",
+                                         "--ignore=mutants"])
 
 
 class TestFunctionGlob(unittest.TestCase):
