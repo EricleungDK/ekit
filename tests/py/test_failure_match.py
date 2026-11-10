@@ -1,3 +1,6 @@
+import os
+import sys
+import time
 import unittest
 from unittest import mock
 
@@ -24,7 +27,20 @@ def tools(**outputs):
 
 class TestListeners(unittest.TestCase):
     def test_ss_names_the_owner_on_linux(self):
-        self.assertEqual(fm.listeners("4321", tools(ss=SS)), ("777", "vite"))
+        run = tools(ss=SS)
+        self.assertEqual(fm.listeners("4321", run), ("777", "vite"))
+        self.assertEqual(run.calls, [["ss", "-ltnpH", "sport = :4321"]])
+
+    def test_a_stubbed_ss_answer_is_used_without_running_ss(self):
+        run = tools()
+        with mock.patch.dict(os.environ, {"SS_STUB": SS}):
+            self.assertEqual(fm.listeners("4321", run), ("777", "vite"))
+        self.assertEqual(run.calls, [])
+
+    def test_lsof_rows_need_a_command_and_a_numeric_pid(self):
+        head = LSOF.splitlines()[0] + "\n"
+        self.assertEqual(fm.listeners("4321", tools(lsof=head + "node 4242\n")), ("4242", "node"))
+        self.assertIsNone(fm.listeners("4321", tools(lsof=head + "node\n\nnode notapid x\n")))
 
     def test_lsof_names_the_owner_where_there_is_no_ss(self):
         run = tools(lsof=LSOF)
@@ -40,13 +56,23 @@ class TestListeners(unittest.TestCase):
     def test_a_missing_executable_reads_as_empty_output(self):
         self.assertEqual(fm.run(["ekit-no-such-tool-xyz"]), "")
 
+    def test_run_returns_the_tools_stdout_as_text_and_keeps_stderr_out(self):
+        self.assertEqual(fm.run([sys.executable, "-c", "import sys; print('hi'); print('noise', file=sys.stderr)"]), "hi\n")
+
+    def test_a_tool_that_does_not_answer_in_time_reads_as_empty_output(self):
+        t0 = time.monotonic()
+        with mock.patch.object(fm, "LOOKUP_TIMEOUT", 0.3):
+            self.assertEqual(fm.run([sys.executable, "-c", "import time; time.sleep(5)"]), "")
+        self.assertLess(time.monotonic() - t0, 3)
+
 
 class TestClassify(unittest.TestCase):
     def test_env_signature_is_a_lead_with_the_check_that_settles_it(self):
         msg = fm.classify("npm test", "Error: getaddrinfo ENOTFOUND api.exmaple.com")
-        self.assertIn("looks like sandbox/env (matched `ENOTFOUND`)", msg)
-        self.assertIn("Fails the same way there → it is the code or the test", msg)
-        self.assertNotIn("failure, not a code bug", msg)
+        self.assertEqual(msg, "[ekit] looks like sandbox/env (matched `ENOTFOUND`), not yet a code bug. Leave code as is "
+                              "and rerun once unsandboxed/escalated. Passes there → record 'passed only unsandboxed'. "
+                              "Fails the same way there → it is the code or the test: classify it with the "
+                              "failure-triage skill. Can't rerun → verification debt.")
 
     def test_port_in_use_without_an_owner_still_answers(self):
         with mock.patch.object(fm, "listeners", lambda port: None):

@@ -24,23 +24,22 @@ def git(repo, *args):
 def tree_hash(repo):
     """Content id of the working tree: the git tree `git add -A` would write (tracked + untracked, ignore rules
     honoured). A commit, amend or rebase that keeps the files keeps the hash, so a PASS survives the commit that
-    follows it. Read-only for the repo: a copy of the index and a throwaway object dir take the writes.
-    Files git cannot add (unreadable, fifo, socket, device) are left out."""
+    follows it. Read-only for the repo: a copy of its index and a throwaway object dir take the writes, and the repo's
+    own objects are read through an alternate. Files git cannot add (unreadable, fifo, socket, device) are left out."""
     gd = git(repo, "rev-parse", "--absolute-git-dir").strip()
-    if not gd:
+    if not os.path.isdir(gd):
         return ""
-    objects = git(repo, "rev-parse", "--git-path", "objects").strip()
-    objects = objects if os.path.isabs(objects) else os.path.join(repo, objects)
-    with tempfile.TemporaryDirectory(prefix="ekit-tree-") as tmp:
-        index = os.path.join(tmp, "index")
-        try:
-            shutil.copyfile(os.path.join(gd, "index"), index)
-        except OSError:
-            pass  # no index yet (fresh repo): start empty
-        os.mkdir(os.path.join(tmp, "objects"))
+    objects = os.path.join(repo, git(repo, "rev-parse", "--git-path", "objects").strip())
+    with tempfile.TemporaryDirectory() as tmp:  # the throwaway object dir; the index copy sits in it too
+        fd, index = tempfile.mkstemp(dir=tmp)
+        os.close(fd)
+        real = os.path.join(gd, "index")
+        if os.path.exists(real):
+            shutil.copyfile(real, index)  # unchanged files keep their entries: not re-read, and sparse entries stay
+        else:
+            os.unlink(index)  # no index yet (fresh repo): git starts from none, an empty file is an error
         alt = os.pathsep.join(x for x in (objects, os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")) if x)
-        genv = dict(os.environ, GIT_INDEX_FILE=index, GIT_OBJECT_DIRECTORY=os.path.join(tmp, "objects"),
-                    GIT_ALTERNATE_OBJECT_DIRECTORIES=alt)
+        genv = dict(os.environ, GIT_INDEX_FILE=index, GIT_OBJECT_DIRECTORY=tmp, GIT_ALTERNATE_OBJECT_DIRECTORIES=alt)
         subprocess.run(["git", "-C", repo, "add", "-A", "--ignore-errors"], env=genv, capture_output=True)
         r = subprocess.run(["git", "-C", repo, "write-tree"], env=genv, capture_output=True)
         if r.returncode:

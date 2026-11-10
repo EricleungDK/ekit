@@ -18,10 +18,13 @@ FALLBACK = {"python": "python3", "rg": "grep -rn / find", "jq": "python3 -c 'imp
 TEST_CMD = re.compile(r"\b(pytest|vitest|jest|playwright test|cargo test|go test|npm (run )?test|pnpm test|yarn test|bun test|unittest)\b")
 
 
+LOOKUP_TIMEOUT = 5  # seconds a port lookup may take: the hook must never hold the session up
+
+
 def run(argv):
-    """stdout of a lookup tool, or "" when the host has no such tool or it will not run."""
+    """stdout of a lookup tool, or "" when the host has no such tool, it will not run, or it does not answer in time."""
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=5).stdout
+        return subprocess.run(argv, capture_output=True, text=True, timeout=LOOKUP_TIMEOUT).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 

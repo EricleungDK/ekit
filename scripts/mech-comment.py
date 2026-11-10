@@ -78,7 +78,6 @@ def main(argv):
         print("mech-comment: several --envelope need job names: r2=FILE red=FILE", file=sys.stderr)
         return 2
 
-    crash = None  # the reason, when no job gave a usable result
     if jobs and jobs[0][0] is not None:
         parts, reasons = {}, {}
         for job, path in jobs:
@@ -88,18 +87,15 @@ def main(argv):
             else:
                 why = args.reason
             parts[job], reasons[job] = got, why
-        if any(e is not None for e in parts.values()):
-            env = merge.merge(parts, reasons)
-        else:
-            env, crash = None, "; ".join(f"{j} job: {r}" for j, r in reasons.items())
+        crash = "; ".join(f"{j} job: {r}" for j, r in reasons.items())  # the reason, used when no job has a result
+        env = merge.merge(parts, reasons) if any(e is not None for e in parts.values()) else None
     else:
         env = load(jobs[0][1] if jobs else None)
         if env is not None and args.head and env["head"] != args.head:
             print(f"mech-comment: envelope is for {env['head']}, not head {args.head}: stale", file=sys.stderr)
             env = None
             args.reason = f"guard result is for an older head, not {args.head}"
-        if env is None:
-            crash = args.reason
+        crash = args.reason
 
     call = C.http_call(token)
     if env is None:

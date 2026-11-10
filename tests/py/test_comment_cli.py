@@ -105,10 +105,10 @@ class TestPoster(unittest.TestCase):
             json.dump(dict(envelope(entries), head=head), f)
         return path
 
-    def call(self, argv, api):
+    def call(self, argv, api, **more_env):
         """main() of mech-comment.py against the fake API: a result with returncode, stdout and stderr."""
-        env = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
-               "GITHUB_STEP_SUMMARY": self.summary}
+        env = dict({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url,
+                    "GITHUB_STEP_SUMMARY": self.summary}, **more_env)
         out, err = io.StringIO(), io.StringIO()
         try:
             with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -127,6 +127,12 @@ class TestPoster(unittest.TestCase):
         self.assertEqual(p.returncode, 1, p.stderr)
         self.assertEqual(api.calls, [("PATCH", "/repos/o/r/issues/comments/77")])
         self.assertIn("mech-comment: updated comment 77", p.stderr)
+
+    def test_the_marker_author_can_be_set_by_the_environment(self):
+        api = Api([{"id": 77, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "body": comment.MARKER + "\nold"},
+                   {"id": 88, "user": {"login": "ci-bot", "type": "Bot"}, "body": comment.MARKER + "\nold"}])
+        self.call(["--envelope", self.save("env.json", [FAIL])], api, MECH_COMMENT_AUTHOR="ci-bot")
+        self.assertEqual(api.calls, [("PATCH", "/repos/o/r/issues/comments/88")])
 
     def test_with_no_comment_yet_one_is_created(self):
         api = Api()

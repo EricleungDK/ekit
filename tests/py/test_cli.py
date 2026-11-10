@@ -20,8 +20,11 @@ class TestAgentPrefixFlag(unittest.TestCase):
     def test_the_flag_repeats(self):
         self.assertEqual(self.parse("--agent-prefix", "bot/", "--agent-prefix", "ai/"), ["bot/", "ai/"])
 
-    def test_help_lists_the_default_prefixes(self):
-        self.assertIn("agent/ claude/ codex/ copilot/ cursor/", " ".join(cli.build_parser().format_help().split()))
+    def test_help_names_the_flag_its_value_and_the_default_prefixes(self):
+        (flag,) = [a for a in cli.build_parser()._actions if a.option_strings == ["--agent-prefix"]]
+        self.assertEqual(flag.metavar, "PREFIX")
+        self.assertEqual(flag.help, "agent branch prefix for R1, repeatable or comma-separated (default: agent/ claude/ "
+                                    "codex/ copilot/ cursor/); * matches every branch")
 
 
 class TestMain(unittest.TestCase):

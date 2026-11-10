@@ -594,8 +594,8 @@ def scope_span(src, name):
     if start is None:
         return None
     end = _block_end(lines, start)
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1  # the blank lines between this function and the next are not its own
+    while not lines[end - 1].strip():
+        end -= 1  # the blank lines between this function and the next are not its own (the def line ends the walk)
     return start + 1, end
 
 
@@ -605,7 +605,7 @@ def locate(src, name, removed):
     span = scope_span(src, name)
     if span is None:
         return None
-    lines = (src or "").splitlines()
+    lines = src.splitlines()
     for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
             return j + 1

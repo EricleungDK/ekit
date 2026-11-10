@@ -170,8 +170,17 @@ class TestWork(GateCase):
         self.runner.tree = (0, "T1")
         self.stop()          # blocked: gated
         self.stop(DONE)      # reported
-        kinds = sorted(n.split(".", 1)[1].rsplit("-", 1)[0] for n in os.listdir(fg.STATE))
-        self.assertEqual(kinds, ["armed", "gated", "reported", "sbase"])
+        names = sorted(os.listdir(fg.STATE))
+        self.assertEqual([n.split(".", 1)[1].rsplit("-", 1)[0] for n in names], ["armed", "gated", "reported", "sbase"])
+        for n in names[1:]:
+            self.assertRegex(n, r"^s1\.[a-z]+-[0-9a-f]{12}$")  # per repo: 12 hex of its path
+
+    def test_a_failed_baseline_is_stored_as_the_empty_string(self):
+        self.runner.tree = (3, "boom")
+        self.start()
+        (base,) = [n for n in os.listdir(fg.STATE) if ".sbase-" in n]
+        with open(os.path.join(fg.STATE, base)) as f:
+            self.assertEqual(f.read(), "")
 
 
 class TestScenarios(GateCase):
@@ -334,6 +343,17 @@ class TestReport(unittest.TestCase):
 
 
 class TestPrune(GateCase):
+    def test_the_window_is_keep_days_to_the_second(self):
+        now = 1_800_000_000
+        os.makedirs(fg.STATE)
+        for name, extra in (("at.armed", 0), ("past.armed", 1)):
+            p = os.path.join(fg.STATE, name)
+            open(p, "w").close()
+            os.utime(p, (now - fg.KEEP_DAYS * 86400 - extra,) * 2)
+        with mock.patch.object(fg.time, "time", return_value=now):
+            fg.prune()
+        self.assertEqual(os.listdir(fg.STATE), ["at.armed"])
+
     def test_session_start_drops_state_older_than_the_keep_window(self):
         self.start(session="old")
         state = fg.STATE

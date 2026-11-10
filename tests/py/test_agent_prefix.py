@@ -48,6 +48,12 @@ class TestR1Branch(unittest.TestCase):
                          runner=lambda argv, cwd: (0, ""), **kw)
         return env["checks"]["R1"]
 
+    def test_with_no_subcommand_named_the_engine_runs_the_guard_alone(self):
+        env = engine.run(self.repo, "HEAD~1", "HEAD", "python", ["tests/**"])
+        self.assertEqual({k: v["status"] for k, v in env["checks"].items()},
+                         {"R1": "skipped", "R2": "pass", "R3": "skipped", "R4": "skipped"})
+        self.assertEqual(env["checks"]["R1"]["note"], "not run by r2")
+
     def test_a_claude_branch_is_an_agent_branch_by_default(self):
         self.assertEqual(self.r1("claude/fix-login"), {"status": "skipped", "note": "no production file changed"})
 

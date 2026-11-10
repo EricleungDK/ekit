@@ -1,8 +1,12 @@
+import contextlib
+import io
+import json
 import os
 import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts import scenarios
@@ -14,9 +18,31 @@ def git(repo, *args):
     return r.stdout.strip()
 
 
-def write(repo, name, text):
-    with open(os.path.join(repo, name), "w") as f:
+def write(repo, name, text, age=0):
+    """age (seconds): an old mtime, so git trusts its index entry for the file and does not read it again"""
+    path = os.path.join(repo, name)
+    with open(path, "w") as f:
         f.write(text)
+    if age:
+        os.utime(path, (time.time() - age, time.time() - age))
+
+
+@contextlib.contextmanager
+def fd_output():
+    """What this process and its children write to stdout and stderr, at the file descriptor level."""
+    with tempfile.TemporaryFile() as f:
+        saved = os.dup(1), os.dup(2)
+        os.dup2(f.fileno(), 1)
+        os.dup2(f.fileno(), 2)
+        box = []
+        try:
+            yield box
+        finally:
+            for fd, old in zip((1, 2), saved):
+                os.dup2(old, fd)
+                os.close(old)
+            f.seek(0)
+            box.append(f.read().decode())
 
 
 class TestTreeHash(unittest.TestCase):
@@ -49,8 +75,8 @@ class TestTreeHash(unittest.TestCase):
 
     def test_unchanged_files_beside_a_changed_one_hash_from_the_repos_own_objects(self):
         os.makedirs(os.path.join(self.repo, "pkg", "sub"))
-        write(self.repo, "pkg/keep.txt", "keep\n")
-        write(self.repo, "pkg/sub/deep.txt", "deep\n")
+        write(self.repo, "pkg/keep.txt", "keep\n", age=7200)  # old: its blob is looked up, not written again
+        write(self.repo, "pkg/sub/deep.txt", "deep\n", age=7200)
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "more")
         write(self.repo, "pkg/sub/deep.txt", "deeper\n")
@@ -71,6 +97,80 @@ class TestTreeHash(unittest.TestCase):
         git(wt, "commit", "-q", "-am", "in worktree")
         self.assertEqual(changed, git(wt, "rev-parse", "HEAD^{tree}"))
         self.assertEqual(self.hash(), git(self.repo, "rev-parse", "HEAD^{tree}"))  # the main checkout is untouched
+
+    def test_a_subdirectory_of_the_repo_hashes_the_whole_tree(self):
+        os.makedirs(os.path.join(self.repo, "pkg"))
+        write(self.repo, "pkg/keep.txt", "keep\n", age=7200)
+        write(self.repo, "pkg/edit.txt", "one\n", age=7200)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "more")
+        write(self.repo, "pkg/edit.txt", "two\n")
+        self.assertEqual(scenarios.tree_hash(os.path.join(self.repo, "pkg")), self.hash())
+
+    def test_nothing_is_left_in_the_temp_dir(self):
+        with tempfile.TemporaryDirectory() as private, mock.patch.object(tempfile, "tempdir", private):
+            self.hash()
+            self.assertEqual(os.listdir(private), [])
+
+    def test_a_sparse_entry_absent_from_the_worktree_stays_in_the_hash(self):
+        write(self.repo, "sparse.txt", "not checked out\n", age=7200)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "sparse")
+        git(self.repo, "update-index", "--skip-worktree", "sparse.txt")
+        os.remove(os.path.join(self.repo, "sparse.txt"))
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+        self.assertEqual(self.hash(), git(self.repo, "rev-parse", "HEAD^{tree}"))
+
+    def test_objects_reached_through_the_callers_alternates_are_still_reached(self):
+        with tempfile.TemporaryDirectory() as d:
+            dst = os.path.join(os.path.realpath(d), "dst")
+            git(self.repo, "clone", "-q", "--shared", self.repo, dst)
+            alternates = os.path.join(dst, ".git", "objects", "info", "alternates")
+            with open(alternates) as f:
+                borrowed = f.read().strip()
+            os.remove(alternates)
+            with mock.patch.dict(os.environ, {"GIT_ALTERNATE_OBJECT_DIRECTORIES": borrowed}):
+                old = time.time() - 7200
+                os.utime(os.path.join(dst, "a.txt"), (old, old))
+                git(dst, "update-index", "--refresh")
+                self.assertEqual(scenarios.tree_hash(dst), git(self.repo, "rev-parse", "HEAD^{tree}"))
+
+    def test_the_callers_git_environment_reaches_the_hash(self):
+        clean = self.hash()
+        write(self.repo, "scratch.tmp", "ignored by the user's own excludes file\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".ignore") as f:
+            f.write("*.tmp\n")
+            f.flush()
+            env = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.excludesFile", "GIT_CONFIG_VALUE_0": f.name}
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(self.hash(), clean)
+        self.assertNotEqual(self.hash(), clean)
+
+    def test_git_warnings_do_not_leak_into_the_runners_output(self):
+        inner = os.path.join(self.repo, "inner")
+        os.mkdir(inner)
+        git(inner, "init", "-q")
+        git(inner, "commit", "-q", "--allow-empty", "-m", "embedded repo: git add warns about it")
+        with fd_output() as out:
+            got = self.hash()
+        self.assertRegex(got, r"^[0-9a-f]{40}$")
+        self.assertEqual(out[0], "")
+
+    def test_a_tree_git_cannot_write_is_exit_3_with_gits_reason_on_stderr(self):
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if "write-tree" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: git-write-tree: error building trees \xff\n")
+            return real(argv, **kw)
+
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(scenarios.subprocess, "run", run), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as stop:
+            self.hash()
+        self.assertEqual(stop.exception.code, 3)
+        self.assertEqual(err.getvalue(), "cannot hash the working tree: fatal: git-write-tree: error building trees \ufffd\n")
+        self.assertEqual(out.getvalue(), "")
 
     def test_a_tracked_edit_and_an_untracked_file_each_change_the_hash(self):
         clean = self.hash()
@@ -122,23 +222,80 @@ class TestTreeHash(unittest.TestCase):
         self.assertNotEqual(after[0], before[0])
 
 
+class TestRun(unittest.TestCase):
+    """cmd_run in-process: one scenario in a repo, results under EKIT_STATE."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(self.tmp.name), "repo")
+        self.state = os.path.join(os.path.realpath(self.tmp.name), "state")
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "one"))
+        git(self.repo, "init", "-q")
+        write(self.repo, ".ekit/scenarios/one/SCENARIO.md", "- story: s\n")
+        p = mock.patch.dict(os.environ, {"EKIT_STATE": self.state})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_all(self, script):
+        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenario")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            failed = scenarios.cmd_run(self.repo)
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            return failed, out.getvalue(), json.load(f)
+
+    def test_a_pass_is_recorded_for_the_tree_that_was_run(self):
+        with mock.patch.object(scenarios, "prune") as prune:
+            failed, out, doc = self.run_all("exit 0\n")
+        self.assertIs(failed, False)
+        self.assertEqual(out, "PASS one\nPASS: 1/1 scenarios\n")
+        self.assertEqual((doc["verdict"], doc["tree"]), ("PASS", scenarios.tree_hash(self.repo)))
+        prune.assert_called_once_with(scenarios.outdir(self.repo), doc["tree"])
+
+    def test_a_scenario_that_commits_in_the_repo_fails_the_run(self):
+        failed, out, doc = self.run_all('git -C "$EKIT_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x\n')
+        self.assertIs(failed, True)
+        self.assertEqual(doc["verdict"], "FAIL")
+        self.assertEqual(doc["reason"], "scenarios modified the repo: run in the temp cwd")
+        self.assertIn("FAIL: scenarios modified the repo: run in the temp cwd\n", out)
+
+
 class TestPrune(unittest.TestCase):
+    NOW = 1_800_000_000
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.out = self.tmp.name
+        p = mock.patch.object(scenarios.time, "time", return_value=self.NOW)
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def make(self, name, age_days, is_dir=True):
+    def make(self, name, age_days, is_dir=True, extra_s=0):
         p = os.path.join(self.out, name)
         if is_dir:
             os.mkdir(p)
         else:
             open(p, "w").close()
-        t = time.time() - age_days * 86400
+        t = self.NOW - age_days * 86400 - extra_s
         os.utime(p, (t, t))
         return p
+
+    def test_the_window_is_keep_days_to_the_second(self):
+        at, past = self.make("at", scenarios.KEEP_DAYS), self.make("past", scenarios.KEEP_DAYS, extra_s=1)
+        scenarios.prune(self.out, "ccc")
+        self.assertEqual((os.path.exists(at), os.path.exists(past)), (True, False))
+
+    def test_a_dir_that_will_not_go_does_not_stop_the_run(self):
+        old = self.make("old", scenarios.KEEP_DAYS + 1)
+        with mock.patch.object(scenarios.shutil, "rmtree") as rmtree:
+            scenarios.prune(self.out, "ccc")
+        rmtree.assert_called_once_with(old, ignore_errors=True)
 
     def test_old_transcript_dirs_of_other_trees_go(self):
         old, kept = self.make("aaa", scenarios.KEEP_DAYS + 1), self.make("bbb", scenarios.KEEP_DAYS - 1)

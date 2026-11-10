@@ -22,9 +22,9 @@ def collect(comments):
     out = {}
     for c in comments:
         user = c.get("user") or {}
-        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN:
+        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body"):
             continue
-        for m in WAIVE.finditer(c.get("body") or ""):
+        for m in WAIVE.finditer(c["body"]):
             reason = " ".join(m.group(2).split())[:REASON_MAX]
             if reason:
                 out[m.group(1)] = {"by": user.get("login", ""), "reason": reason, "url": c.get("html_url", "")}
@@ -47,7 +47,7 @@ def apply(env, waivers):
         n = sum(1 for e in mine if e["severity"] == "waived")
         if c and n and c.get("status") == "fail" and not any(e["severity"] == "fail" for e in mine):
             c["status"] = "waived"
-            c["note"] = f"{c.get('note', '')}; {n} waived by a person".lstrip("; ")
+            c["note"] = "; ".join(x for x in (c.get("note"), f"{n} waived by a person") if x)
     out = dict(env, entries=entries, checks=checks)
     if all(name in checks for name in CHECKS):
         out["summary"] = summarize(env["head"], checks, entries)

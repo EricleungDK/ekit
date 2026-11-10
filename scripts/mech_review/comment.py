@@ -205,7 +205,7 @@ def comments(call, api, repo, pr):
 def find_marker(call, api, repo, pr, author=DEFAULT_AUTHOR):
     """Id of the first issue comment by `author` whose body starts with MARKER. None if absent."""
     for c in comments(call, api, repo, pr):
-        if c.get("body", "").startswith(MARKER) and (c.get("user") or {}).get("login") == author:
+        if c.get("body") and c["body"].startswith(MARKER) and (c.get("user") or {}).get("login") == author:
             return c["id"]
     return None
 

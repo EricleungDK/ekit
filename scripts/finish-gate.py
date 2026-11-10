@@ -87,11 +87,13 @@ def last_message(data):
     msg = data.get("last_assistant_message")
     if isinstance(msg, str) and msg:
         return msg
+    path = data.get("transcript_path")
+    if not path:
+        return ""
     try:
-        with open(data.get("transcript_path") or "", "rb") as f:
-            f.seek(0, os.SEEK_END)
-            f.seek(max(0, f.tell() - TAIL))
-            lines = f.read().decode("utf-8", "replace").splitlines()
+        with open(path, "rb") as f:
+            f.seek(max(0, os.fstat(f.fileno()).st_size - TAIL))
+            lines = f.read().decode(errors="replace").splitlines()
     except OSError:
         return ""
     parts = []

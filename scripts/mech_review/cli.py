@@ -110,7 +110,7 @@ def build_parser():
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text (summary + entries)")
     p.add_argument("--head-branch", metavar="NAME", help="head branch name (R1 needs it: CI passes github.head_ref)")
-    p.add_argument("--agent-prefix", action="append", default=None, metavar="PREFIX",
+    p.add_argument("--agent-prefix", action="append", metavar="PREFIX",
                    help="agent branch prefix for R1, repeatable or comma-separated (default: " + " ".join(red.AGENT_PREFIXES)
                         + "); * matches every branch")
     p.add_argument("--test-cmd", metavar="CMD", help="test command for R1/R4 (default: the stack's: rust cargo test, python "

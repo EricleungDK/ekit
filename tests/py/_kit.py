@@ -16,8 +16,20 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
+def _alias_engine():
+    """The scripts import the engine as `mech_review` (their own dir is on sys.path). Point that name at the
+    `scripts.mech_review` modules, so a script under test and the tests share one copy of each module."""
+    import pkgutil
+
+    import scripts.mech_review as pkg
+    sys.modules.setdefault("mech_review", pkg)
+    for m in pkgutil.iter_modules(pkg.__path__):
+        sys.modules.setdefault(f"mech_review.{m.name}", importlib.import_module(f"scripts.mech_review.{m.name}"))
+
+
 def load(name):
     """scripts/<name>.py as the module `scripts.<name>` (finish-gate, failure-match: not importable by name)."""
+    _alias_engine()
     spec = importlib.util.spec_from_file_location(f"scripts.{name}", os.path.join(SCRIPTS, name + ".py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
