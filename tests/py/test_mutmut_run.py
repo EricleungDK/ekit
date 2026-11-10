@@ -41,6 +41,7 @@ class FakeMutmut:
         # file holds a text in suite_fails_on, hangs on one in suite_hangs_on, and ends with clean_rc on the file as it is
         self.edits, self.suite_fails_on, self.suite_hangs_on = edits or {}, suite_fails_on, suite_hangs_on
         self.clean_rc, self.apply_rc, self.applied, self.suite_runs = clean_rc, apply_rc, [], []
+        self.suite_mtimes, self.apply_mtimes = [], []
         self.mutants, self.ran, self.runs, self.shown, self.budgets = dict(mutants), set(), [], [], []
         self.fail_run, self.leave_unrun, self.timeout_run = fail_run, set(leave_unrun), timeout_run
         self.fail_text, self.early_run, self.results_rc, self.show_rc = fail_text, early_run, results_rc, show_rc
@@ -57,6 +58,7 @@ class FakeMutmut:
             with open(os.path.join(cwd, "calc.py")) as f:
                 source = f.read()
             self.suite_runs.append((timeout, source))
+            self.suite_mtimes.append(int(os.stat(os.path.join(cwd, "calc.py")).st_mtime))
             if any(text in source for text in self.suite_hangs_on):
                 return "timeout", ""
             if any(text in source for text in self.suite_fails_on):
@@ -66,6 +68,7 @@ class FakeMutmut:
             self.applied.append(args[0])
             if timeout != mutants.PROBE_TIMEOUT:
                 return 2, f"unexpected timeout {timeout!r} for apply"
+            self.apply_mtimes.append(os.stat(os.path.join(cwd, "calc.py")).st_mtime_ns)
             if self.apply_rc == 0 and args[0] in self.edits:
                 path = os.path.join(cwd, "calc.py")
                 with open(path) as f:
@@ -418,6 +421,18 @@ class TestWholeSuite(DiffOfSub):
                          [HEAD, HEAD.replace("c = a - b", "c = a + b"), HEAD.replace("return c", "return None")])
         self.assertEqual((check["status"], entries), ("pass", []))
         self.assertIn("2 more caught only by the whole suite", check["note"])
+
+    def test_each_mutants_file_has_a_time_of_its_own_and_the_original_gets_its_time_back(self):
+        # python reuses cached bytecode when the source's time (in whole seconds) and size are unchanged, and both
+        # edits here keep the size: without a time of its own, a run could execute the previous mutant's code
+        same_size = {SUB1: ("c = a - b", "c = a + b"), SUB2: ("c = a - b", "c = a * b")}
+        fake = FakeMutmut({SUB1: "survived", SUB2: "survived"}, edits=same_size, suite_fails_on=["c = a + b", "c = a * b"])
+        with mock.patch.dict(SHOW, {SUB2: SHOW[SUB1].replace("a + b", "a * b")}):
+            self.r3(fake)
+        clean, first, second = fake.suite_mtimes
+        self.assertEqual((first, second), (clean + 1, clean + 2))
+        self.assertEqual(len(set(fake.apply_mtimes)), 1)  # every apply found the file as the checkout left it
+        self.assertEqual(fake.apply_mtimes[0] // 10**9, clean)
 
     def test_a_mutant_the_whole_suite_passes_with_stays_missed_and_the_hint_says_so(self):
         fake = self.fake({SUB1: "no tests", SUB2: "survived"}, suite_fails_on=["nothing"])

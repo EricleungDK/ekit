@@ -12,7 +12,7 @@ from .stack import ADAPTERS
 HELP = """\
 mechanical PR checks over base...head (merge-base diff). Prints the contract JSON.
 
-checks (status in envelope: pass | fail | partial | n/a | skipped):
+checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report step may turn fail into waived):
   R2  test-diff guard: removed test fn (a rename with the same asserts is not
       a removal); added #[ignore] or a cfg that disables it or its mod; should_panic added to an
       existing test (confirm); fewer asserts in a surviving test fn, or helper asserts per file;

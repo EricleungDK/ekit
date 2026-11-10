@@ -155,13 +155,13 @@ AGENT_PREFIXES = ("agent/", "claude/", "codex/", "copilot/", "cursor/")
 
 
 def agent_prefixes(value):
-    """--agent-prefix as a list: None is the default set; a string or strings split on commas and whitespace.
-    `*` matches every branch."""
+    """--agent-prefix as a list: None (the flag not given) is the default set; a string or strings split on commas
+    and whitespace. `*` matches every branch, and so does a value that names no prefix (`--agent-prefix ''`, which
+    matched every branch when the flag took one prefix)."""
     if value is None:
         return list(AGENT_PREFIXES)
     items = [value] if isinstance(value, str) else list(value)
-    out = [p for item in items for p in re.split(r"[,\s]+", item) if p]
-    return out or list(AGENT_PREFIXES)
+    return [p for item in items for p in re.split(r"[,\s]+", item) if p] or ["*"]
 
 
 def r1(rv, head_branch, agent_prefix, cmd, runner):

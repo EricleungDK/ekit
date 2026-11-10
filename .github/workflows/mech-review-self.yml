@@ -18,5 +18,6 @@ jobs:
       stack: python
       test-paths: 'tests/**'
       protected-paths: '.github/**'
-      # mutmut mutates whole files: a PR that touches the two large engine modules needs more than the default 10 minutes
+      # a PR that touches the large functions of the engine has thousands of mutants in them, and each missed one
+      # costs a whole-suite run: more than the default 10 minutes
       mutation-budget: '20'

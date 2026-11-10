@@ -11,7 +11,7 @@ Works in Claude Code, Codex, GitHub Copilot, and any agent that reads [Agent Ski
 
 ## What it looks like
 
-An agent "fixes" a divide-by-zero bug by returning 0, deletes the test that expected an error, and skips another. The PR gets this comment (real output; SHA shortened, one row left out):
+An agent "fixes" a divide-by-zero bug by returning 0, deletes the test that expected an error, and skips another. Run on that branch, the checks give this (real output of the local `mech-review.py all`, as the PR comment renders it; SHA shortened, one row left out; `all` leaves R3 to CI):
 
 > ## mech-review
 >
@@ -68,7 +68,7 @@ Cloud sessions load no plugins. Add to the environment's setup script:
 curl -fsSL https://raw.githubusercontent.com/EricleungDK/ekit/main/cloud/setup.sh | bash
 ```
 
-It installs skills + hooks into each repo's `.claude/`, hidden from `git status` (nothing to commit), and fetches the kit again on each setup. To stay on released versions instead of `main`, pin the ref: `... | EKIT_REF=v0 bash`. No repo found at setup time: `bash ~/.ekit/cloud/install.sh <repo>`.
+It installs skills + hooks into each repo's `.claude/`, hidden from `git status` (nothing to commit), and fetches the kit again on each setup. To stay on released versions instead of `main`, pin both the script and what it fetches: `curl -fsSL https://raw.githubusercontent.com/EricleungDK/ekit/v0/cloud/setup.sh | EKIT_REF=v0 bash` (from release 0.3.0 on). No repo found at setup time: `bash ~/.ekit/cloud/install.sh <repo>`.
 
 </details>
 
@@ -169,7 +169,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | `SessionStart` | Preflight warnings (missing tools, sandbox limits) + three working rules into context; prints the scenario runner path. |
 | `UserPromptSubmit` | Prompt starts with `/ekit:orchestrate-agent` → arms the finish gate for the session. |
 | `PostToolUseFailure` | Known Bash failure signatures (sandbox, port in use, missing tool, red test) → one line with the check that settles it. |
-| `Stop` | Orchestrate sessions only. If the files changed since the session started, the stop is blocked until the last message is the finish report (`## Finish: done` or `## Finish: blocked`); in repos with `.ekit/scenarios/`, also until the scenarios pass for the current files. Committing does not invalidate a pass. Subagents are not gated. |
+| `Stop` | Orchestrate sessions only. If the files changed since the session started, the stop is blocked once per set of file contents, asking for the finish report (`## Finish: done` or `## Finish: blocked`) as the last message; in repos with `.ekit/scenarios/`, on each stop until the scenarios pass for the current files. Committing does not invalidate a pass. Subagents are not gated. |
 
 Outside orchestrate sessions the gate is silent: the skills still apply, nothing blocks.
 

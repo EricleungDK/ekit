@@ -654,7 +654,7 @@ def whole_suite(runner, base, crate, project_dir, found, left):
         return found, state
     limit = max(SUITE_FLOOR, SUITE_FACTOR * (time.monotonic() - t0))
     missed = []
-    for item in found:
+    for turn, item in enumerate(found, 1):
         spare = left()
         if spare is not None and spare <= 0:
             missed.append(item)  # out of budget: what mutmut said stands
@@ -662,15 +662,20 @@ def whole_suite(runner, base, crate, project_dir, found, left):
         path = os.path.join(crate, _crate_path(project_dir, item[1]))
         with open(path, "rb") as f:
             original = f.read()
+        stamp = os.stat(path)
         try:
             arc, _ = runner(base + ["apply", item[0]], crate, PROBE_TIMEOUT)
             with open(path, "rb") as f:
                 applied = arc == 0 and f.read() != original
+            # python trusts cached bytecode whose source time (whole seconds) and size match, and a test's child
+            # process writes that cache: each mutant's file gets a time of its own, so no run reads another's code
+            os.utime(path, (stamp.st_atime, int(stamp.st_mtime) + turn))
             cut = spare is not None and spare < limit
             rc = runner(SUITE, crate, spare if cut else limit)[0] if applied else 0
         finally:
             with open(path, "wb") as f:
                 f.write(original)
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         if rc == "timeout" and not cut:
             state["hung"] += 1  # as mutmut and cargo-mutants treat a timeout: neither caught nor missed
         elif isinstance(rc, int) and rc != 0:

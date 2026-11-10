@@ -141,6 +141,15 @@ class TestWork(GateCase):
         self.runner.tree = (0, "T1")
         self.assertIsNone(self.stop(stop_hook_active=True))
 
+    def test_loop_guard_and_subagent_stops_start_no_runner_process(self):
+        self.start()
+        del self.runner.calls[:]
+        self.stop(stop_hook_active=True)
+        self.stop(hook_event_name="SubagentStop")
+        self.assertEqual(self.runner.calls, [])
+        self.hook("--baseline", session="fresh", stop_hook_active=True)  # a session start always records its tree
+        self.assertEqual(self.runner.calls, ["tree-hash"])
+
     def test_a_subagent_stop_is_never_gated(self):
         self.start()
         self.runner.tree = (0, "T1")

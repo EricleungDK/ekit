@@ -35,7 +35,7 @@ class Api:
     def __init__(self, comments=(), write_status=None):
         api = self
         self.comments, self.write_status, self.writes, self.comments_status = list(comments), write_status, [], None
-        self.calls = []
+        self.calls, self.write_message = [], "Resource not accessible by integration"
 
         class H(BaseHTTPRequestHandler):
             def _send(self, code, obj):
@@ -68,7 +68,7 @@ class Api:
                 if not self._known():
                     return
                 if api.write_status:
-                    return self._send(api.write_status, {"message": "Resource not accessible by integration"})
+                    return self._send(api.write_status, {"message": api.write_message})
                 api.writes.append(body["body"])
                 api.calls.append((self.command, self.path))
                 self._send(201, {"id": 1})
@@ -209,6 +209,14 @@ class TestPoster(unittest.TestCase):
         p = self.post([], Api(write_status=403))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("::warning::", p.stdout)
+
+    def test_a_403_that_is_not_about_the_tokens_reach_is_an_api_error(self):
+        api = Api(write_status=403)
+        api.write_message = "API rate limit exceeded for installation ID 1."
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertEqual(p.stdout, "")
+        self.assertIn("mech-comment: GitHub API 403", p.stderr)
 
     def test_any_other_api_error_is_still_exit_3(self):
         p = self.post([FAIL], Api(write_status=500))

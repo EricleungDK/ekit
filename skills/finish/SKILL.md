@@ -5,7 +5,7 @@ description: End-of-work report, done or blocked. Use before saying work is done
 
 Every outcome ends in one report, with **evidence** per claim. "Done" is a claim the report proves.
 
-Trivial work (no acceptance criteria, no code behaviour changed) gets the light form instead: one line per change with its evidence, plus what stays uncommitted. Steps below apply to everything else.
+Trivial work (no acceptance criteria, no code behaviour changed) gets the light form instead: the `## Finish: done` line, then one line per change with its evidence, plus what stays uncommitted. Steps below apply to everything else.
 
 ## 1. Re-verify
 

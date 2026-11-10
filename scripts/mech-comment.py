@@ -10,7 +10,8 @@ env: GITHUB_TOKEN, GITHUB_REPOSITORY (owner/repo), GITHUB_API_URL (default https
 superseded: if the PR head is no longer this run's head, the comment is left alone (exit = own rc, 0 on crash).
 waivers: a `/mech-waive <id> <reason>` comment on the PR from a person with write access (OWNER, MEMBER or
      COLLABORATOR, never a bot) turns that fail entry into `waived`; it no longer fails the check (mech_review/waiver.py).
-read-only token (a fork or Dependabot PR: GitHub answers 403): the comment cannot be posted, so the result goes to the
+read-only token (a fork or Dependabot PR: GitHub answers 403 "Resource not accessible by integration"): the comment
+     cannot be posted, so the result goes to the
      job summary and the log only, and the exit code is still the result's.
 exit: 0 no fail entries; 1 any fail entry; 2 usage; 3 GitHub API error (other than that 403);
       4 no usable result (a crash comment is posted in place of the result).
@@ -120,7 +121,7 @@ def main(argv):
     try:
         action, out = C.publish(call, api, repo, args.pr, run_head, body, author)
     except C.ApiError as e:
-        if e.status == 403:
+        if e.status == 403 and "Resource not accessible" in str(e.body):  # GitHub's words for a read-only token
             print("::warning::mech-review: this token cannot comment on the PR (a fork or Dependabot PR, or the caller "
                   "lacks `pull-requests: write`). The result is in the job summary; the check result is unchanged.")
             print(f"mech-comment: comment not posted: {e}", file=sys.stderr)

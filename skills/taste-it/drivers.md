@@ -12,7 +12,7 @@ Install the deliverable the way a user gets it, **into the scenario's temp cwd**
 | Web UI | launch the server | `playwright` script | DOM text, screenshot only as artifact |
 | Library | build or pack it, install the artifact into a fresh venv or project | consumer script importing it | script output, exit code |
 | Batch job | run the entrypoint on fixture input | shell | output files, row counts, rerun idempotence |
-| Claude plugin | `claude plugin marketplace add <repo>`, `claude plugin install` | `claude -p "<prompt>"` | output text, hook JSON, files |
+| Claude plugin | `claude plugin marketplace add <repo>`, `claude plugin install` (the one row that cannot stay in the temp cwd: a plugin installs into the user's Claude config, so uninstall it when the scenario ends) | `claude -p "<prompt>"` | output text, hook JSON, files |
 
 Not an install a user gets, so not a taste:
 - **Editable or linked** (`pip install -e`, `npm link`, a bare `npm install <folder>`): the source tree is what runs, and packaging mistakes (a file missing from the wheel or tarball) stay hidden.

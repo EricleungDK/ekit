@@ -21,8 +21,9 @@ class TestPrefixList(unittest.TestCase):
     def test_repeated_values_are_joined_in_order(self):
         self.assertEqual(red.agent_prefixes(["bot/", "ai/,x/"]), ["bot/", "ai/", "x/"])
 
-    def test_an_empty_value_falls_back_to_the_default(self):
-        self.assertEqual(red.agent_prefixes(" , "), list(red.AGENT_PREFIXES))
+    def test_a_value_that_names_no_prefix_means_every_branch(self):
+        self.assertEqual(red.agent_prefixes(""), ["*"])
+        self.assertEqual(red.agent_prefixes([" , "]), ["*"])
 
 
 class TestR1Branch(unittest.TestCase):
@@ -73,6 +74,9 @@ class TestR1Branch(unittest.TestCase):
 
     def test_star_matches_every_branch(self):
         self.assertEqual(self.r1("feature/login", agent_prefix="*")["note"], "no production file changed")
+
+    def test_an_empty_prefix_still_matches_every_branch(self):
+        self.assertEqual(self.r1("feature/login", agent_prefix=[""])["note"], "no production file changed")
 
     def test_a_prefix_matches_the_start_only(self):
         self.assertEqual(self.r1("my/claude/x")["status"], "skipped")

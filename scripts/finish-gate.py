@@ -138,6 +138,8 @@ def main():
     top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
     if not top:
         return
+    if not baseline and (data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop"):
+        return  # the loop guard, and a subagent's stop (an older install may still register it): nothing to hash
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
     base, reported, gated = (path(session, f"{k}-{key}") for k in ("sbase", "reported", "gated"))
     rc, cur = runner(top, "tree-hash")
@@ -145,8 +147,6 @@ def main():
         prune()
         if read(base) is None:
             write(base, cur if rc == 0 else "")
-        return
-    if data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop":
         return
     run_hint = f"Run `python3 {SCEN} --repo {top} run` and follow the taste-it skill (ekit:taste-it). "
     if rc != 0:
