@@ -62,10 +62,13 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     # each side is classified by its own path: a file moved between test and prod paths is judged per side
     whole_b = old is not None and adapter.classify(old, test_globs) == "test"
     whole_a = new is not None and adapter.classify(new, test_globs) == "test"
-    bas = [a for a in adapter.assertions(before) if whole_b or a.scope] if before is not None else []
-    aas = [a for a in adapter.assertions(after) if whole_a or a.scope] if after is not None else []
-    bfns = adapter.test_fns(before) if before is not None else []
-    afns = adapter.test_fns(after) if after is not None else []
+    # a side whose path cannot hold tests (python: a production file not named like a test file) has none to read
+    held_b = before if old is not None and adapter.holds_tests(old, test_globs) else None
+    held_a = after if new is not None and adapter.holds_tests(new, test_globs) else None
+    bas = [a for a in adapter.assertions(held_b) if whole_b or a.scope] if held_b is not None else []
+    aas = [a for a in adapter.assertions(held_a) if whole_a or a.scope] if held_a is not None else []
+    bfns = adapter.test_fns(held_b) if held_b is not None else []
+    afns = adapter.test_fns(held_a) if held_a is not None else []
     gone, renamed = _renames(bfns, afns, bas, aas)
     entries = _removed(path, gone)
     entries += _markers(adapter, path, afns, bfns, renamed)

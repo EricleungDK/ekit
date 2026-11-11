@@ -4,6 +4,7 @@ A signature is a lead, not a verdict: the line names what matched and the check 
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -13,9 +14,14 @@ ENV = re.compile(
     re.I,
 )
 PORT = re.compile(r"EADDRINUSE|address already in use", re.I)
+PORT_NO = re.compile(r":(\d{2,5})\b")
+CLOCK = re.compile(r"(?<![\d.])\d{1,2}:\d{2}(?::\d{2})?")  # a log line's 12:34:56 is not host:port
 NOT_FOUND = re.compile(r"(?:^|\s)([\w.-]+): command not found")
 FALLBACK = {"python": "python3", "rg": "grep -rn / find", "jq": "python3 -c 'import json'", "pip": "uv pip / python3 -m pip"}
 TEST_CMD = re.compile(r"\b(pytest|vitest|jest|playwright test|cargo test|go test|npm (run )?test|pnpm test|yarn test|bun test|unittest)\b")
+# tools that read or print: a failing one that names a test runner (`grep -rn pytest docs/`) has run no test
+READERS = frozenset("grep egrep fgrep rg ag ack cat head tail less more ls find fd wc echo printf which type file stat diff "
+                    "sed awk cut sort tree git".split())
 
 
 LOOKUP_TIMEOUT = 5  # seconds a port lookup may take: the hook must never hold the session up
@@ -42,9 +48,28 @@ def listeners(port, run=run):
     return None
 
 
+def runs_tests(cmd):
+    """True when the line runs a test runner: one of its commands names one and is not a tool that only reads or
+    prints. Commands end at ; | & ( ) and newlines, quotes honoured. A line that does not tokenise (an open quote)
+    is judged as a whole."""
+    try:
+        tokens = list(shlex.shlex(cmd.replace("\n", " ; "), posix=True, punctuation_chars=True))
+    except ValueError:
+        return bool(TEST_CMD.search(cmd))
+    words = []
+    for tok in tokens + [";"]:
+        if tok.strip(";|&()"):
+            words.append(tok)
+            continue
+        if words and os.path.basename(words[0]) not in READERS and TEST_CMD.search(" ".join(words)):
+            return True
+        words = []
+    return False
+
+
 def classify(cmd, err):
     if PORT.search(err):
-        m = re.search(r":(\d{2,5})\b", err)
+        m = next(filter(None, map(PORT_NO.search, CLOCK.split(err))), None)
         port = m and m.group(1)
         owner = port and listeners(port)
         held = f"port {port} held by pid {owner[0]} ({owner[1]})" if owner else f"port {port or '?'} in use"
@@ -58,7 +83,7 @@ def classify(cmd, err):
     if m:
         tool = m.group(1)
         return f"[ekit] {tool} missing → {FALLBACK.get(tool, 'find an installed alternative or log as verification debt')}."
-    if TEST_CMD.search(cmd):
+    if runs_tests(cmd):
         return "[ekit] test red. Before editing code, classify it with the failure-triage skill."
     return None
 

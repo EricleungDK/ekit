@@ -222,6 +222,17 @@ class TestTreeHash(unittest.TestCase):
         self.assertNotEqual(after[0], before[0])
 
 
+class TestFind(unittest.TestCase):
+    def test_scenarios_are_the_dirs_with_a_run_sh_parents_first_and_never_inside_fixtures(self):
+        with tempfile.TemporaryDirectory() as repo:
+            for d in ("a", "a/b", "a-x", "a/fixtures/sample-app", "notes"):
+                os.makedirs(os.path.join(repo, ".ekit", "scenarios", d))
+            for d in ("a", "a/b", "a-x", "a/fixtures/sample-app"):
+                write(repo, f".ekit/scenarios/{d}/run.sh", "exit 0\n")
+            write(repo, ".ekit/scenarios/notes/readme.txt", "not a scenario\n")
+            self.assertEqual(scenarios.find(repo), ["a", "a/b", "a-x"])
+
+
 class TestRun(unittest.TestCase):
     """cmd_run in-process: one scenario in a repo, results under EKIT_STATE."""
 
@@ -266,6 +277,20 @@ class TestRun(unittest.TestCase):
         tree = scenarios.tree_hash(self.repo)
         self.assertFalse(os.path.exists(other))
         self.assertEqual(os.listdir(os.path.join(scenarios.outdir(self.repo), tree)), ["one.log"])
+
+    def test_a_child_run_alone_still_gets_its_parents_dir(self):
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "one", "kid"))
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        write(self.repo, ".ekit/scenarios/one/kid/SCENARIO.md", "- story: s\n")
+        write(self.repo, ".ekit/scenarios/one/kid/run.sh", 'printf %s "$EKIT_PARENT_DIR" > "$EKIT_STATE/parent"\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenarios")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            scenarios.cmd_run(self.repo, "one/kid")
+        self.assertEqual(out.getvalue(), "PASS one/kid\nPASS: 1/1 scenarios\n")
+        with open(os.path.join(self.state, "parent")) as f:
+            self.assertEqual(f.read(), os.path.join(self.repo, ".ekit", "scenarios", "one"))
 
     def test_a_scenario_that_commits_in_the_repo_fails_the_run(self):
         failed, out, doc = self.run_all('git -C "$EKIT_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x\n')

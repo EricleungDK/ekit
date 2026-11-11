@@ -147,7 +147,9 @@ out="$(sc run a)"; rc=$?
 eq "$rc" "0" "filter pass → 0"
 has "$out" "PASS a/b" "filter includes child"; has "$out" "PASS a/b/d" "filter includes grandchild"
 lacks "$out" "a-x" "filter excludes sibling prefix"; lacks "$out" "PASS c" "filter excludes others"
+rm -f "$EKIT_STATE/order"
 out="$(sc run a/b)"; grep -qx "PASS a" <<<"$out" && fail "filter child excludes parent" || ok "filter child excludes parent"
+eq "$(head -1 "$EKIT_STATE/order")" "b:$R/.ekit/scenarios/a" "filter child still gets its parent dir"
 out="$(sc run nope)"; rc=$?
 eq "$rc" "2" "unknown id → 2"; has "$out" "nope" "unknown id named"
 sc run a >/dev/null
@@ -176,15 +178,16 @@ out="$(sc can-fail "$BASE")"; rc=$?
 eq "$rc" "1" "can-fail flagged → 1"
 has "$out" "CAN-FAIL ✓ detects" "can-fail ✓ line"
 has "$out" "CANNOT FAIL blind: passes on baseline $BASE" "cannot-fail line"
-eq "$(git -C "$R" worktree list | wc -l)" "1" "worktree removed"
+# BSD wc (macOS) pads its count with spaces: compare the number alone
+eq "$(git -C "$R" worktree list | wc -l | tr -d ' ')" "1" "worktree removed"
 eq "$(cat "$EKIT_STATE/scenarios/$key/results.json")" "$(cat "$T/before.json")" "main results untouched"
 rm -rf "$R/.ekit/scenarios/blind"
 out="$(sc can-fail "$BASE")"; eq "$?" "0" "can-fail all good → 0"
 out="$(sc can-fail nosuchref 2>&1)"; eq "$?" "2" "bad ref → 2"
-eq "$(git -C "$R" worktree list | wc -l)" "1" "no worktree left after bad ref"
+eq "$(git -C "$R" worktree list | wc -l | tr -d ' ')" "1" "no worktree left after bad ref"
 mk slow 'sleep 30'
 out="$(EKIT_SCENARIO_TIMEOUT=1 sc can-fail "$BASE")"
-eq "$(git -C "$R" worktree list | wc -l)" "1" "worktree removed after timeout"
+eq "$(git -C "$R" worktree list | wc -l | tr -d ' ')" "1" "worktree removed after timeout"
 
 # results live with the repo (no EKIT_STATE): sandbox-shaped read-only HOME, and hook env (CLAUDE_PLUGIN_DATA) ≠ Bash env
 D="$T/def"; mkdir -p "$D/home" "$D/.ekit/scenarios/ok"; git -C "$D" init -q; echo /home/ > "$D/.gitignore"

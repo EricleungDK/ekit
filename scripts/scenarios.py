@@ -73,8 +73,15 @@ def root(repo):
 
 
 def find(repo):
+    """ids of the repo's scenarios: each dir under the root that holds a run.sh, a parent before its children.
+    A `fixtures` dir is a scenario's data: nothing inside one is a scenario, whatever it holds."""
     base = root(repo)
-    return sorted((os.path.relpath(d, base) for d, _, fs in os.walk(base) if "run.sh" in fs), key=lambda i: i.split("/"))
+    ids = []
+    for d, dirs, fs in os.walk(base):
+        dirs[:] = [name for name in dirs if name != "fixtures"]
+        if "run.sh" in fs:
+            ids.append(os.path.relpath(d, base))
+    return sorted(ids, key=lambda i: i.split("/"))
 
 
 def timeout():
@@ -85,6 +92,8 @@ def timeout():
 
 
 def run_one(repo, sid, ids, tdir):
+    """ids: every scenario in the repo, not only the ones this run was filtered to: a child run alone still gets its
+    parent's dir."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
     if not os.path.isfile(os.path.join(d, "SCENARIO.md")):
@@ -120,7 +129,7 @@ def run_one(repo, sid, ids, tdir):
 
 
 def cmd_run(repo, only=None):
-    ids = find(repo)
+    ids = known = find(repo)
     if not ids:
         print(f"no scenarios found. expected layout: {LAYOUT}")
         return 2
@@ -135,7 +144,7 @@ def cmd_run(repo, only=None):
     out = outdir(repo)
     tdir = os.path.join(out, th)
     os.makedirs(tdir, exist_ok=True)
-    results = [run_one(repo, sid, ids, tdir) for sid in ids]
+    results = [run_one(repo, sid, known, tdir) for sid in ids]
     for r in results:
         print(f"FAIL {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}

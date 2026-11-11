@@ -50,8 +50,9 @@ def _partial_label(check, name):
 
 def summarize(head, checks, entries):
     """`all pass <head>` only when every check passed and there are no entries. Otherwise
-    `<pass|fail> <head> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`.
-    `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran.
+    `<pass|fail> <head> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; partial: R3 (<tested>/<total>)]
+    [; skipped: <checks>][; n/a: <checks>])`.
+    `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran, a partial one too.
     n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass."""
     fails = sum(1 for e in entries if e["severity"] == "fail")
     waived = sum(1 for e in entries if e["severity"] == "waived")

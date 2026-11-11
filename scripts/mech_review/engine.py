@@ -46,21 +46,15 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         raw += r2(rv, list(protected_globs))
         fails = sum(1 for e in raw if e["severity"] == "fail")
         checks["R2"] = {"status": "fail" if fails else "pass", "note": f"{fails} fail, {len(raw) - fails} confirm"}
-    else:
-        checks["R2"] = {"status": "skipped", "note": f"not run by {which}"}
     if "R1" in want or "R4" in want:
         cmd = test_cmd  # None: each checkout resolves its stack's command (red.r1/r4)
         run_test = runner or red.default_runner()
     if "R1" in want:
         checks["R1"], more = red.r1(rv, head_branch, agent_prefix, cmd, run_test)
         raw += more
-    else:
-        checks["R1"] = {"status": "skipped", "note": f"not run by {which}"}
     if "R4" in want:
         checks["R4"], more = red.r4(rv, cmd, run_test)
         raw += more
-    else:
-        checks["R4"] = {"status": "skipped", "note": f"not run by {which}"}
     if which == "all":
         checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job mutants)"}
     r3 = []
