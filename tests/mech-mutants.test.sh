@@ -847,7 +847,9 @@ eq "$?" 0 "combine: one entry per id; exact repeats collapse; distinct entries k
 
 # crate_check: the one crate-dir check every mutation tool runs in its worktree at head
 python3 -I - "$ROOT" <<'PY'
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 sys.path.insert(0, sys.argv[1] + "/scripts")
@@ -856,6 +858,7 @@ from mech_review.gitio import Review  # noqa: E402
 from mech_review.stack import PythonAdapter, RustAdapter  # noqa: E402
 
 wt = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, wt, ignore_errors=True)  # gone when this heredoc exits, failed or not
 rv = lambda a, d: Review("r", "m", "h", a, [], d)
 crate, bad = M.crate_check(rv(RustAdapter(), "x"), wt)
 assert crate == os.path.join(wt, "x"), crate
