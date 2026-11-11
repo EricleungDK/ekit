@@ -62,11 +62,12 @@ def prod_changes(rv):
 
 
 def touched(rv):
-    """[(path, name, line)] of #[test] fns new or changed between mb (before) and head (after)."""
+    """[(path, name, line)] of #[test] fns new or changed between mb (before) and head (after), in the files that can
+    hold tests (adapter.holds_tests)."""
     repo, a, b, adapter, test_globs, _ = rv
     out = []
     for ch in changes(repo, a, b):
-        if ch.new is None or adapter.classify(ch.new, test_globs) is None:
+        if ch.new is None or adapter.classify(ch.new, test_globs) is None or not adapter.holds_tests(ch.new, test_globs):
             continue
         text_after = blob(repo, b, ch.new)
         if adapter.parse_error(text_after):

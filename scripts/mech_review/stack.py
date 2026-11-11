@@ -2,6 +2,8 @@
 
 Adapter interface:
   classify(path, test_globs) -> "test" | "prod" | None (None: not a source file of this stack)
+  holds_tests(path, test_globs) -> bool: a file at this path can hold tests. False: the checks read no test fn and no
+      assertion in it (python: a file outside the test paths that is not named like a test file). Default True
   test_fns(text) -> [TestFn(name, line, markers)]   markers: "ignore" (skip-like), "should_panic";
       name: fn name qualified by its enclosing mods (`m1::works`); top-level fns are bare
   assertions(text) -> [Assertion(line, fn, scope, kind, left, right, text)]  fn: enclosing test fn name or None;
@@ -183,6 +185,9 @@ class Adapter:
 
     def classify(self, path, test_globs):
         raise NotImplementedError
+
+    def holds_tests(self, path, test_globs):
+        return True
 
     def test_fns(self, text):
         raise NotImplementedError
@@ -388,6 +393,7 @@ PY_PASSED = re.compile(r"\b[1-9]\d* passed\b")
 PY_OK = re.compile(r"^OK\b", re.M)
 PY_RAN = re.compile(r"^Ran [1-9]\d* tests?\b", re.M)
 PY_SEP = re.compile(r"^[\s#:;,\-\u2014\u2013]+")
+PY_TEST_FILE = re.compile(r"(?:test_.*|.*_test|tests)\.py")  # pytest's test_*.py and *_test.py, and django's tests.py
 
 
 def _last(node):
@@ -517,6 +523,11 @@ class PythonAdapter(Adapter):
         if not path.endswith(".py"):
             return None
         return "test" if any_glob(path, test_globs) else "prod"
+
+    def holds_tests(self, path, test_globs):
+        """A test-paths file, or a file named as the runners name test files. In any other file a function called
+        `test_connection` is production code: no runner collects it, so it is not a test to guard or to run."""
+        return any_glob(path, test_globs) or PY_TEST_FILE.fullmatch(os.path.basename(path)) is not None
 
     @staticmethod
     def _scan(text):
