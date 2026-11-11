@@ -168,7 +168,8 @@ def r1(rv, head_branch, agent_prefix, cmd, runner):
     """R1 red-first: the tests this PR adds or changes, run against the base's production code (a worktree at the merge
     base with head's test-path files on top), must catch the change: at least one fails there. Tests that pass there
     pin existing behaviour (guards) and are fine. Commit order does not matter, so a later commit can fix an R1 fail.
-    R4 runs the same tests at head. Returns (check, entries)."""
+    Only tests in test-path files are run there; one in any other file is counted in the note and left to R4.
+    R4 runs every new or changed test at head. Returns (check, entries)."""
     repo, mb, head, adapter, test_globs, project_dir = rv
     if head_branch is None:
         return check("skipped", "no --head-branch: cannot tell an agent branch"), []
@@ -197,12 +198,24 @@ def r1(rv, head_branch, agent_prefix, cmd, runner):
         return check("fail", "no new or changed test"), [
             entry("R1", "", 0, "no-tests", "agent-fixable", "fail", "the PR adds or changes no test",
                   "add a test that fails without this PR's production change, for the ticket's reason", forbidden)]
+    # only test-path files are put on the base's code (overlay_tests). A test in any other file (a rust `#[cfg(test)]`
+    # mod beside the code it tests) is absent there, or the base's own version: it proves nothing, so it is not run
+    judged = [t for t in tests if adapter.classify(t[0], test_globs) == "test"]
+    beside = len(tests) - len(judged)
+    if not judged:
+        path, _, line = tests[0]
+        return check("fail", f"0 of {beside} new or changed test(s) are in a test-paths file"), [
+            entry("R1", path, line, "outside-test-paths", "agent-fixable", "fail",
+                  f"R1 cannot run this PR's {beside} new or changed test(s) on the base's code: they are in files "
+                  f"outside test-paths (first: `{path}`), which the base has in its own version",
+                  "add a test in a test-paths file that fails without this PR's production change, through the "
+                  "public interface; the tests beside the code can stay", forbidden)]
     entries, red_count, compile_red, guards = [], 0, 0, []
     with worktree(repo, mb) as wt:
         overlay_tests(rv, wt)
         adapter.worktree_setup(repo, wt, project_dir)
         cmd = cmd or adapter.test_cmd_in(os.path.join(wt, project_dir))
-        for path, name, line in tests:
+        for path, name, line in judged:
             verdict, first = run_in(rv, runner, cmd, wt, path, name)
             if verdict == "env":
                 return check("n/a", absent(cmd, "tests on the base's production code", first)), []
@@ -223,16 +236,18 @@ def r1(rv, head_branch, agent_prefix, cmd, runner):
                                      forbidden))
     if red_count + compile_red == 0 and not any(e["severity"] == "fail" for e in entries):
         shown = ", ".join(f"`{n}`" for n in guards[:5]) + (f" and {len(guards) - 5} more" if len(guards) > 5 else "")
-        path, _, line = tests[0]
+        path, _, line = judged[0]
         entries.append(entry("R1", path, line, "no-red", "agent-fixable", "fail",
                              f"no new or changed test fails without this PR's production change: {shown} pass on "
                              "the base's code too",
                              "add or change a test so it fails on the base's code for the ticket's reason; tests that "
                              "pin existing behaviour can stay as guards",
                              forbidden))
-    note = f"{red_count + compile_red} of {len(tests)} new or changed test(s) fail on the base's production code"
+    note = f"{red_count + compile_red} of {len(judged)} new or changed test(s) fail on the base's production code"
     if compile_red:
         note += f" ({compile_red} compile-red)"
+    if beside:
+        note += f"; {beside} in files outside test-paths: not run there"
     return check("fail" if any(e["severity"] == "fail" for e in entries) else "pass", note), entries
 
 
