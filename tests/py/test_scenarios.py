@@ -267,6 +267,20 @@ class TestRun(unittest.TestCase):
         self.assertFalse(os.path.exists(other))
         self.assertEqual(os.listdir(os.path.join(scenarios.outdir(self.repo), tree)), ["one.log"])
 
+    def test_a_child_run_alone_still_gets_its_parents_dir(self):
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "one", "kid"))
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        write(self.repo, ".ekit/scenarios/one/kid/SCENARIO.md", "- story: s\n")
+        write(self.repo, ".ekit/scenarios/one/kid/run.sh", 'printf %s "$EKIT_PARENT_DIR" > "$EKIT_STATE/parent"\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenarios")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            scenarios.cmd_run(self.repo, "one/kid")
+        self.assertEqual(out.getvalue(), "PASS one/kid\nPASS: 1/1 scenarios\n")
+        with open(os.path.join(self.state, "parent")) as f:
+            self.assertEqual(f.read(), os.path.join(self.repo, ".ekit", "scenarios", "one"))
+
     def test_a_scenario_that_commits_in_the_repo_fails_the_run(self):
         failed, out, doc = self.run_all('git -C "$EKIT_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x\n')
         self.assertIs(failed, True)

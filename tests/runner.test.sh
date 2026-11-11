@@ -147,7 +147,9 @@ out="$(sc run a)"; rc=$?
 eq "$rc" "0" "filter pass → 0"
 has "$out" "PASS a/b" "filter includes child"; has "$out" "PASS a/b/d" "filter includes grandchild"
 lacks "$out" "a-x" "filter excludes sibling prefix"; lacks "$out" "PASS c" "filter excludes others"
+rm -f "$EKIT_STATE/order"
 out="$(sc run a/b)"; grep -qx "PASS a" <<<"$out" && fail "filter child excludes parent" || ok "filter child excludes parent"
+eq "$(head -1 "$EKIT_STATE/order")" "b:$R/.ekit/scenarios/a" "filter child still gets its parent dir"
 out="$(sc run nope)"; rc=$?
 eq "$rc" "2" "unknown id → 2"; has "$out" "nope" "unknown id named"
 sc run a >/dev/null
