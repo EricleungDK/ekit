@@ -180,6 +180,22 @@ class TestTreeHash(unittest.TestCase):
         write(self.repo, "new.txt", "n\n")
         self.assertNotEqual(self.hash(), edited)
 
+    def test_a_same_size_edit_in_the_second_the_index_was_written_changes_the_hash(self):
+        """Racy git: the edit keeps the size and the mtime second git recorded, and the index was written in that same
+        second, so only re-reading the file shows it. git status re-reads it; the hash must too. The times are set,
+        not waited for: the unit test cannot hit the second boundary by chance."""
+        git(self.repo, "config", "core.trustctime", "false")  # a ctime cannot be set; this keeps it out of the compare
+        t0, a = 1_700_000_000, os.path.join(self.repo, "a.txt")
+        os.utime(a, (t0, t0))
+        git(self.repo, "add", "-A")  # the entry now records mtime t0
+        clean = self.hash()
+        write(self.repo, "a.txt", "two\n")  # same size as "one\n"
+        os.utime(a, (t0, t0))
+        os.utime(os.path.join(self.repo, ".git", "index"), (t0, t0))  # the index was written in that second too
+        edited = self.hash()  # before git status, which would rewrite the index and mark the entry for a re-read
+        self.assertNotEqual(edited, clean)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "M a.txt")
+
     def test_an_ignored_file_does_not_count(self):
         write(self.repo, ".gitignore", "*.log\n")
         before = self.hash()

@@ -29,6 +29,7 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 ### Fixed
 
 - A scenario PASS no longer goes stale when you commit: the tree hash is the files' content, not `HEAD` plus a diff.
+- The tree hash could miss an edit that kept a file's size, made in the same second git last wrote its index: the finish gate and `scenarios.py check` then took an old PASS as fresh. It hashed from a copy of the index with a new mtime, which hid the edit from git's racy-index re-read.
 - The scenario runner no longer crashes on a modified file that is not UTF-8.
 - macOS: preflight reported `gh: not authed` and `docker: unusable` in every session (it needed `timeout`); the Playwright check only knew the Linux cache; a port-in-use failure crashed the failure hook (it needed `ss`).
 - Preflight no longer warns about scenario driver tools (tmux, expect, curl, Playwright) that no scenario runs, or about a missing `.venv` when `pyproject.toml` only configures tools.
