@@ -2,9 +2,7 @@
 mutmut (python, pinned) runs on the changed files and reads its results through `mutmut results` and `mutmut show`.
 Both run in the crate dir (project-dir). The shared parts (budget runner, verdict shape, partial entry, timing) live here.
 
-cargo-mutants contract:
-
-Contract used (cargo-mutants 27.1.0, read from its source and checked on real runs; see docs/mech-review-ci.md):
+cargo-mutants contract (27.1.0, read from its source and checked on real runs; see docs/mech-review-ci.md):
   exit: 0 nothing missed (or no mutants in the diff: no output dir), 2 MISSED, 3 TIMEOUT (wins over 2),
         4 unmutated baseline fails, 1/5/6/70 usage, diff or internal error.
   <out>/mutants.out/mutants.json   every mutant of this run (written before the baseline runs).
@@ -34,10 +32,9 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 
 from . import red
-from .gitio import added_lines, git
+from .gitio import Die, added_lines, git
 from .report import entry, finalize
 from .stack import ts_runner
 
@@ -446,10 +443,16 @@ class CargoMutants:
 
 def cargo_config(crate):
     """(timeout_multiplier, minimum_test_timeout) from the crate's .cargo/mutants.toml (cargo-mutants' snake_case keys), or
-    its defaults. The derived per-mutant timeout uses them, so it is the value cargo-mutants would have set."""
+    its defaults. The derived per-mutant timeout uses them, so it is the value cargo-mutants would have set.
+    tomllib (python 3.11+) is imported here, where a config file is read, and nowhere else: every other subcommand,
+    and a crate without that file, runs on an older python."""
     mult, minimum = TIMEOUT_MULTIPLIER, MIN_TEST_TIMEOUT
     path = os.path.join(crate, ".cargo", "mutants.toml")
     if os.path.isfile(path):
+        try:
+            import tomllib
+        except ImportError:
+            raise Die("reading .cargo/mutants.toml needs python 3.11 or newer (tomllib)") from None
         with open(path, "rb") as f:
             cfg = tomllib.load(f)
         mult = float(cfg.get("timeout_multiplier", mult))
