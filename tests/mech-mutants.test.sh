@@ -342,6 +342,16 @@ eq "$rc" 0 "merge partial: exit 0 (does not block)"
 eq "$(jq -r .checks.R3.status <<<"$out")" partial "merge partial: R3 partial"
 eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 1 confirm; ran: R3; partial: R3 (12/20); skipped: R1 R2 R4)" "merge partial: summary sums tested/total"
 
+# a shard that could not run + a passing shard: n/a, never a pass on the other shard's word
+mrepo mna
+MUT_RC=1 MUT_OUT='error: boom' mut --shard 0/2 > "$MG/n0.json"
+MUT_FIXTURE=caught MUT_RC=0 mut --shard 1/2 > "$MG/n1.json"
+out=$(mg 2 --envelope 0="$MG/n0.json" --envelope 1="$MG/n1.json"); rc=$?
+eq "$rc" 0 "merge n/a: exit 0 (no fail entry)"
+eq "$(jq -r .checks.R3.status <<<"$out")" n/a "merge n/a: one shard could not run: R3 n/a, not pass"
+has "$(jq -r .checks.R3.note <<<"$out")" "shard 0/2: cargo-mutants exit 1 (env): error: boom" "merge n/a: the note names the shard and why"
+eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: none; skipped: R1 R2 R4; n/a: R3)" "merge n/a: summary names n/a, never all pass"
+
 out=$(mg 2 --envelope 5="$MG/s0.json"); rc=$?
 eq "$rc" 2 "merge: shard index out of range is a usage error"
 
