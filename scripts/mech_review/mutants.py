@@ -184,7 +184,7 @@ def partial_entry(check):
         problem = f"R3 partial: {total - tested}/{total} mutants untested at budget"
     e = entry("R3", "", 0, PARTIAL_KEY, "agent-fixable", "confirm", problem,
               "read checks.R3.timing (wall, phase seconds, slowest mutants): shrink the diff first, then narrow the tests "
-              "cargo-mutants runs, then raise mutation-budget",
+              "the mutation tool runs, then raise mutation-budget",
               "treating a partial R3 as tested")
     return finalize([e])[0]
 
