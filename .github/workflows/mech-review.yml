@@ -36,7 +36,7 @@ on:
         type: string
         default: "10"
       extra-apt-packages:
-        description: "apt packages (space-separated) installed before the red-first job runs its tests"
+        description: "apt packages (space-separated) installed in red-first, mutants and (rust) baseline, before the tests run"
         type: string
         default: ""
       project-dir:
@@ -44,7 +44,7 @@ on:
         type: string
         default: "."
       setup-command:
-        description: "shell command (run with bash) before the tests in red-first and mutants, after extra-apt-packages; a failure stops that job. Set it in the caller's workflow file only (trusted)"
+        description: "shell command (run with bash) before the tests in red-first, mutants and (rust) baseline, after extra-apt-packages; a failure stops that job. Set it in the caller's workflow file only (trusted)"
         type: string
         default: ""
       mutant-timeout:
