@@ -30,6 +30,7 @@ fn rejects_zero() {
 PASSED = "test result: ok. 1 passed; 0 failed\n"
 FAILED = "test result: FAILED. 0 passed; 1 failed\n"
 NOT_THERE = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n"
+NO_BUILD = "error[E0425]: cannot find function `div_checked` in crate `fx`\nerror: could not compile `fx`\n"
 
 
 def git(repo, *args):
@@ -62,7 +63,8 @@ class TestTestsOutsideTestPaths(unittest.TestCase):
         if fixed:
             return 0, PASSED
         self.on_base.append(argv[-1])
-        return {"rejects_zero": (101, FAILED), "pins_what_was_there": (0, PASSED)}.get(argv[-1], (0, NOT_THERE))
+        return {"rejects_zero": (101, FAILED), "pins_what_was_there": (0, PASSED),
+                "needs_the_new_fn": (101, NO_BUILD)}.get(argv[-1], (0, NOT_THERE))
 
     def red(self):
         return engine.run(self.repo, "HEAD~1", "HEAD", "rust", ["tests/**"], which="red", head_branch="claude/fix",
@@ -87,6 +89,17 @@ class TestTestsOutsideTestPaths(unittest.TestCase):
         self.commit("fix")
         self.assertEqual(self.red()["checks"]["R1"], {
             "status": "pass", "note": "1 of 1 new or changed test(s) fail on the base's production code"})
+
+    def test_a_test_that_does_not_build_on_the_base_is_counted_as_red(self):
+        self.write("src/lib.rs", HEAD_LIB)
+        self.write("tests/it.rs", IN_TEST_PATHS.replace("rejects_zero", "needs_the_new_fn"))
+        self.commit("fix")
+        env = self.red()
+        self.assertEqual(env["checks"]["R1"], {
+            "status": "pass",
+            "note": "1 of 1 new or changed test(s) fail on the base's production code (1 compile-red); "
+                    "1 in files outside test-paths: not run there"})
+        self.assertEqual(env["entries"], [])
 
     def test_only_tests_beside_the_code_is_one_fail_that_names_the_way_out(self):
         self.write("src/lib.rs", HEAD_LIB)
