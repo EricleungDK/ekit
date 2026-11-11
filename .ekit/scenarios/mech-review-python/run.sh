@@ -52,7 +52,7 @@ eq "mutmut lines" "$(jq -r '[.entries[].line] | sort | map(tostring) | join(",")
 hasnt "sub outside diff" "$(jq -r '[.entries[].problem] | join(" ")' <<<"$out")" "core.py:14"
 eq "mutmut summary" "$(jq -r .summary <<<"$out")" "fail $MUT (3 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)"
 
-# plan: a python production change runs the mutants job over 4 shards
-out=$(python3 "$MR" plan --repo "$R" --base "$BASE" --head "$MUT" --stack python --test-paths 'tests/**' --shards 4)
-eq "plan" "$(jq -c '{run,count,shards}' <<<"$out")" '{"run":true,"count":4,"shards":[0,1,2,3]}'
+# plan: a python production change runs the mutants job
+out=$(python3 "$MR" plan --repo "$R" --base "$BASE" --head "$MUT" --stack python --test-paths 'tests/**')
+eq "plan" "$(jq -c . <<<"$out")" '{"run":true}'
 echo "mech-review python ok"

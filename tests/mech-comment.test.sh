@@ -3,9 +3,11 @@
 # and the CLI against a local HTTP server standing in for the GitHub API.
 source "$(dirname "$0")/lib.sh"
 python3 -I - "$ROOT" <<'PY'
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -280,6 +282,7 @@ srv = HTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 local_api = f"http://127.0.0.1:{srv.server_port}"
 tmp = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, tmp, ignore_errors=True)  # gone when this heredoc exits, failed or not
 
 
 def run_cli(args, extra_env=None, api=local_api):

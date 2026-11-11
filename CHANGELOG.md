@@ -24,10 +24,12 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 
 - Python R3 no longer reports a line as untested when the only test that covers it starts the program as a subprocess or imports the file under another name. A mutant mutmut reports missed on a changed line is applied and run once against the whole suite; the note counts those (`N more caught only by the whole suite`).
 - Every R3 MISSED hint now ends with what to do: assert observable behaviour, simplify away an equivalent mutant, or hand it to the owner; never pin internals. `failure-triage` has the same steps, and the CI doc records which mutations each stack's tool makes.
+- `mech-review.py plan` prints `{"run": true|false}` and nothing else. Its `count` and `shards` were read by nothing: the baseline step sets the shard count. `--shards` is ignored by `plan`.
 
 ### Fixed
 
 - A scenario PASS no longer goes stale when you commit: the tree hash is the files' content, not `HEAD` plus a diff.
+- The tree hash could miss an edit that kept a file's size, made in the same second git last wrote its index: the finish gate and `scenarios.py check` then took an old PASS as fresh. It hashed from a copy of the index with a new mtime, which hid the edit from git's racy-index re-read.
 - The scenario runner no longer crashes on a modified file that is not UTF-8.
 - macOS: preflight reported `gh: not authed` and `docker: unusable` in every session (it needed `timeout`); the Playwright check only knew the Linux cache; a port-in-use failure crashed the failure hook (it needed `ss`).
 - Preflight no longer warns about scenario driver tools (tmux, expect, curl, Playwright) that no scenario runs, or about a missing `.venv` when `pyproject.toml` only configures tools.

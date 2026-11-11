@@ -108,6 +108,15 @@ class TestR2(unittest.TestCase):
         self.assertEqual(problems("src/pkg/test_app.py", "src/pkg/app_checks.py", TESTS_BEFORE, TESTS_BEFORE),
                          [("fail", "test fn `test_a` removed"), ("fail", "test fn `test_b` removed")])
 
+    def test_a_test_method_of_a_plain_class_is_not_a_removed_test(self):
+        before = "class Fixtures:\n    def test_data(self):\n        return [1]\n"
+        self.assertEqual(problems("tests/test_app.py", "tests/test_app.py", before, "class Fixtures:\n    pass\n"), [])
+
+    def test_a_raises_call_on_anything_but_pytest_is_not_a_dropped_assertion(self):
+        before = "def test_x(client):\n    client.raises(404)\n    assert client.ok\n"
+        after = "def test_x(client):\n    assert client.ok\n"
+        self.assertEqual(problems("tests/test_app.py", "tests/test_app.py", before, after), [])
+
 
 def git(repo, *args):
     subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", *args], check=True, capture_output=True)

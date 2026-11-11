@@ -41,7 +41,9 @@ chmod +x "$STUB"
 
 # ---- adapter unit: runner detection, named-test argv, outcome vocabulary on captured output (pure) ----
 python3 -I - "$ROOT" "$FX" <<'PY'
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 
@@ -69,6 +71,7 @@ def read(*p):
 
 def pkg(devdeps):
     d = tempfile.mkdtemp()
+    atexit.register(shutil.rmtree, d, ignore_errors=True)  # gone when this heredoc exits, failed or not
     with open(os.path.join(d, "package.json"), "w") as f:
         f.write('{"devDependencies": {' + ", ".join(f'"{k}": "1.0.0"' for k in devdeps) + "}}")
     return d

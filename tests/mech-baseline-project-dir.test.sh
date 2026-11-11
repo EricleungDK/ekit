@@ -37,7 +37,7 @@ if command -v cargo-mutants >/dev/null; then
   out="$(python3 -I "$MR" mutants --repo "$R" --base HEAD~1 --head HEAD --stack rust --test-paths 'sub/tests/**' --project-dir sub --mutant-timeout "$t" --mutation-budget 3 --shard 0/1)"
   has "$out" "MISSED" "real: a shard reports the surviving mutant"
 else
-  ok "skip real run: cargo-mutants not installed"
+  skip "real: baseline and a shard, end to end" "cargo-mutants not installed"
 fi
 
 done_tests

@@ -6,14 +6,11 @@ from .report import CHECKS, envelope, finalize
 from .stack import ADAPTERS
 
 
-def plan(repo, base_ref, head_ref, stack, test_globs, shards):
-    """Mutants job plan (git only, no toolchain): run only when a production file changed. The matrix is
-    shards 0..N-1 when it runs, one placeholder shard otherwise (the job is skipped by its `if`). The workflow reads
-    only `run`: the real shard count is the baseline step's (#46)."""
+def plan(repo, base_ref, head_ref, stack, test_globs):
+    """Does the mutants job run (git only, no toolchain): only when a production file changed. How many shards is the
+    baseline step's answer (#46)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    run_r3 = bool(red.prod_changes(Review(repo, mb, head, ADAPTERS[stack](), test_globs)))
-    count = shards if run_r3 else 1
-    return {"run": run_r3, "count": count, "shards": list(range(count))}
+    return {"run": bool(red.prod_changes(Review(repo, mb, head, ADAPTERS[stack](), test_globs)))}
 
 
 def baseline(repo, base_ref, head_ref, stack, test_globs, mutants_cmd=None, mutation_budget=None, shards=4, project_dir="."):

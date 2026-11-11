@@ -35,7 +35,12 @@ def tree_hash(repo):
         os.close(fd)
         real = os.path.join(gd, "index")
         if os.path.exists(real):
-            shutil.copyfile(real, index)  # unchanged files keep their entries: not re-read, and sparse entries stay
+            # unchanged files keep their entries: not re-read, and sparse entries stay. The copy keeps the index's
+            # mtime: git re-reads an entry written in the same second as the index (racy git), because a same-size
+            # edit in that second leaves the stat data git compares unchanged. A fresh mtime would hide that edit.
+            st = os.stat(real)  # before the copy: an index rewritten in between only makes git re-read more
+            shutil.copyfile(real, index)
+            os.utime(index, ns=(st.st_atime_ns, st.st_mtime_ns))
         else:
             os.unlink(index)  # no index yet (fresh repo): git starts from none, an empty file is an error
         alt = os.pathsep.join(x for x in (objects, os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")) if x)

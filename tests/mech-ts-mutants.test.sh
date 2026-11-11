@@ -31,8 +31,10 @@ chmod +x "$STUB"
 
 # ---- pure: stryker report, kinds, log total, ranges, descriptions, config detection ----
 python3 -I - "$ROOT" "$FX" <<'PY'
+import atexit
 import json
 import os
+import shutil
 import sys
 import tempfile
 
@@ -92,11 +94,13 @@ check("desc: a span over lines is joined and whitespace-normalized",
       "BlockStatement `function f() { x;` -> `{}`")
 
 d = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, d, ignore_errors=True)  # gone when this heredoc exits, failed or not
 check("config: a repo's own stryker config is detected",
       M.stryker_config(d), None)
 open(os.path.join(d, "stryker.conf.json"), "w").close()
 check("config: stryker.conf.json is the repo's config", M.stryker_config(d), "stryker.conf.json")
 d2 = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, d2, ignore_errors=True)  # gone when this heredoc exits, failed or not
 open(os.path.join(d2, "stryker.config.mjs"), "w").close()
 check("config: stryker.config.mjs is the repo's config", M.stryker_config(d2), "stryker.config.mjs")
 
@@ -379,9 +383,9 @@ export MUT_REPORT="$T/badmutant.json" MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=
 out=$(st "$R" "$B" "$H"); rc=$?
 eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts report with a non-object mutant: R3 n/a, the others are not lost"
 
-# plan: a ts production change runs the mutants job over 4 shards
+# plan: a ts production change runs the mutants job
 mrepo plan
-out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --shards 4)
-eq "$(jq -c '{run,count,shards}' <<<"$out")" '{"run":true,"count":4,"shards":[0,1,2,3]}' "ts plan: a production change runs 4 shards"
+out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**')
+eq "$(jq -c . <<<"$out")" '{"run":true}' "ts plan: a production change runs the mutants job"
 
 done_tests

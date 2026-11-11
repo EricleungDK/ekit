@@ -148,14 +148,10 @@ def render_text(env):
 SHARD = re.compile(r"^(\d+)/(\d+)$")
 
 
-def _plan(parser, args):
-    """Print {run, count, shards}: whether the mutants job runs and its shard matrix (the workflow reads run only; the
-    baseline step sets the real count, #46). Exit 0 (2 on usage or git error)."""
-    shards = 1 if args.shards is None else args.shards
-    if shards < 1:
-        parser.error("--shards N: want N >= 1")
+def _plan(args):
+    """Print {run}: whether the mutants job runs (the baseline step sets the shard count, #46). Exit 0 (2 on a git error)."""
     try:
-        out = engine.plan(args.repo, args.base, args.head, args.stack, args.test_paths, shards)
+        out = engine.plan(args.repo, args.base, args.head, args.stack, args.test_paths)
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
@@ -260,7 +256,7 @@ def main(argv):
     if args.check == "merge":
         return _merge(parser, args)
     if args.check == "plan":
-        return _plan(parser, args)
+        return _plan(args)
     if args.check == "baseline":
         return _baseline(parser, args)
     if args.shard is not None:
