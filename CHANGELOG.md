@@ -37,6 +37,9 @@ First release under the name **ekit** (was `ek`). MIT licensed.
 - Python R3 looked up every missed mutant of a changed file with `mutmut show`, one call each and unbounded: on a large file with little unit coverage the step ran for tens of minutes after the mutation budget. Mutants in functions the diff does not touch are now counted without a lookup.
 - Python R3 ran every mutant of every changed file to judge the changed lines. It now lists mutmut's mutants first and runs only those in functions the diff touches, and reads each missed mutant's line from mutmut's files instead of one `mutmut show` call per mutant (about half a second each, over a thousand on a large diff).
 - Python R3: when the tests fail before any mutant runs, the job log now shows the tail of mutmut's output (the failing test), as it already did for cargo-mutants.
+- R1 failed every PR that added a test outside `test-paths`, such as a rust `#[cfg(test)]` unit test beside the code: the test is not on the base's code, so it read `cannot be proven red`, even next to a properly red test under `tests/`. Such tests are no longer run on the base; the R1 note counts them, and a PR with no test in a `test-paths` file gets one fail that says so.
+- `mech-review.py` and `mech-comment.py` crashed on python 3.9 and 3.10 (`No module named 'tomllib'`), the python macOS ships. The engine needs 3.9 now; only a rust crate's `.cargo/mutants.toml` needs 3.11 to be read.
+- `scenarios.py run <child>` gave the child an empty `EKIT_PARENT_DIR`, so a child that reuses its parent's fixtures passed in a full run and failed alone.
 - The test suites no longer run under the machine's git config (commit signing, hooks, default branch), and two tests that failed as root or in a container without an init process now say why they could not run.
 
 ## 0.2.6 and earlier

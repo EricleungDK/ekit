@@ -47,8 +47,8 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
 
 summary (one line, text format first line and envelope `summary`):
   `all pass <head sha>`: no entries and every check passed (never while a check is skipped or n/a).
-  otherwise `<pass|fail> <head sha> (<F> fail, <C> confirm; ran: <checks>[; skipped: <checks>][; n/a: <checks>])`,
-  e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`.
+  otherwise `<pass|fail> <head sha> (<F> fail, <C> confirm; ran: <checks>[; partial: R3 (<tested>/<total>)]
+  [; skipped: <checks>][; n/a: <checks>])`, e.g. `pass <sha> (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)`.
   `pass` = no fail entries; `fail` = at least one fail entry; `n/a` = toolchain absent, not run.
 
 doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base or head): finds the stack and project dir,

@@ -55,9 +55,9 @@ instead; then upgrading is a bump in that repo again.
 | `protected-paths` | `.github/**` | globs, one per line; any change under them is a `needs-human` fail |
 | `agent-branch-prefix` | `agent/`, `claude/`, `codex/`, `copilot/`, `cursor/` | prefixes, one per line: R1 runs only when the PR head branch starts with one of them (`--agent-prefix`, repeatable); other branches skip R1. `*` runs R1 on every branch. A value you set replaces the default list |
 | `mutation-budget` | `10` | R3 budget in minutes, per mutants shard and for the baseline step. A budget hit is `partial` (no MISSED so far) or `fail` (a MISSED found), never a crash; a baseline that does not finish in it is `n/a`. Applies to all stacks |
-| `extra-apt-packages` | `` | apt packages (space-separated) installed before `red-first` runs its tests |
+| `extra-apt-packages` | `` | apt packages (space-separated) installed in `red-first`, `mutants` and (rust) `baseline`, before the tests run |
 | `project-dir` | `.` | crate dir under the repo root (`package.json` for ts). R1, R4 and R3 run there; `test-paths` and `protected-paths` stay repo-root globs; a path with `..` or a leading `/` is a usage error |
-| `setup-command` | `` | shell command (run with bash) in `red-first` and `mutants`, after `extra-apt-packages`, before the tests. A non-zero exit stops that job, which then reports a CI entry |
+| `setup-command` | `` | shell command (run with bash) in `red-first`, `mutants` and (rust) `baseline`, after `extra-apt-packages`, before the tests. A non-zero exit stops that job, which then reports a CI entry |
 | `mutant-timeout` | `` (derived) | R3 per-mutant timeout in seconds. Empty is the timeout derived from the measured baseline: 5× its test time, at least 20 s (cargo-mutants' own rule; `timeout_multiplier` and `minimum_test_timeout` are read from the crate dir's `.cargo/mutants.toml`, not a workspace root above it). A set value is used as is. Neither caps the baseline: it runs once, in the `baseline` job, bounded by `mutation-budget`. Stryker's `timeoutMS` is 120 s when unset |
 | `rust-toolchain` | `stable` | Rust toolchain for `red-first` and `mutants` (rust stack), passed to the toolchain action, e.g. `1.96.0` to pin a repo |
 
@@ -202,7 +202,7 @@ In ekit's own code, most python string and argument mutants that survived were r
 - python: `mutmut` 3.8.1 is pinned in the venv. A repo that already has `[tool.mutmut]` in its `pyproject.toml` gets R3 `n/a (env)`: the runner needs `only_mutate` to limit the run to the changed files, and does not override the repo's table.
 - The shard count is at most 4 and at most the mutant count (rust) or changed file count (python, ts), set by the `baseline` job; a shard never runs empty. The per-mutant timeout is derived from the baseline unless `mutant-timeout` is set (see Inputs). The wall time of R3 is the baseline (once) plus about the budget per shard, not the budget times the shards.
 - R3 runs cargo-mutants in a worktree at the head, in the crate dir (`project-dir`), on `base...head` changes only (`--in-diff`; the diff is made relative to the crate dir, and result paths are mapped back to the repo root). A checkout that does not match head is not mutated.
-- R1 checks out the merge base as a git worktree and puts the PR's test-path files on top; the caller's checkout is not moved.
+- R1 checks out the merge base as a git worktree and puts the PR's test-path files on top; the caller's checkout is not moved. A new or changed test in a file outside `test-paths` (a rust `#[cfg(test)]` mod beside the code) is not on the base's code, so R1 does not run it there: its note counts it (`N in files outside test-paths: not run there`), R4 still runs it at head, and R1 needs at least one red test in a `test-paths` file.
 
 ## Trust limits
 

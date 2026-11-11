@@ -117,7 +117,7 @@ Copies editable skill files. Update: `npx skills@latest update`.
 
 </details>
 
-Needs `git`, `bash` and `python3` (standard library only). Runs on Linux and macOS; on Windows use WSL.
+Needs `git`, `bash` and `python3` 3.9 or newer (standard library only). Runs on Linux and macOS; on Windows use WSL.
 
 ### Hooks and scripts outside Claude Code
 
