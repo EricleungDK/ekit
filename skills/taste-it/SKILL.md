@@ -38,7 +38,7 @@ Layout, committed in the repo:
 - **steps**: what the user does
 - **expected**: observable result
 
-No `SCENARIO.md` → FAIL. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run.
+No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run.
 
 ### Reuse before write
 

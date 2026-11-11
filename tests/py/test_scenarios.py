@@ -222,6 +222,17 @@ class TestTreeHash(unittest.TestCase):
         self.assertNotEqual(after[0], before[0])
 
 
+class TestFind(unittest.TestCase):
+    def test_scenarios_are_the_dirs_with_a_run_sh_parents_first_and_never_inside_fixtures(self):
+        with tempfile.TemporaryDirectory() as repo:
+            for d in ("a", "a/b", "a-x", "a/fixtures/sample-app", "notes"):
+                os.makedirs(os.path.join(repo, ".ekit", "scenarios", d))
+            for d in ("a", "a/b", "a-x", "a/fixtures/sample-app"):
+                write(repo, f".ekit/scenarios/{d}/run.sh", "exit 0\n")
+            write(repo, ".ekit/scenarios/notes/readme.txt", "not a scenario\n")
+            self.assertEqual(scenarios.find(repo), ["a", "a/b", "a-x"])
+
+
 class TestRun(unittest.TestCase):
     """cmd_run in-process: one scenario in a repo, results under EKIT_STATE."""
 

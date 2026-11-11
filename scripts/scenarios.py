@@ -73,8 +73,15 @@ def root(repo):
 
 
 def find(repo):
+    """ids of the repo's scenarios: each dir under the root that holds a run.sh, a parent before its children.
+    A `fixtures` dir is a scenario's data: nothing inside one is a scenario, whatever it holds."""
     base = root(repo)
-    return sorted((os.path.relpath(d, base) for d, _, fs in os.walk(base) if "run.sh" in fs), key=lambda i: i.split("/"))
+    ids = []
+    for d, dirs, fs in os.walk(base):
+        dirs[:] = [name for name in dirs if name != "fixtures"]
+        if "run.sh" in fs:
+            ids.append(os.path.relpath(d, base))
+    return sorted(ids, key=lambda i: i.split("/"))
 
 
 def timeout():
