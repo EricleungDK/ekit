@@ -85,6 +85,55 @@ class TestClassify(unittest.TestCase):
     def test_unknown_failure_is_silent(self):
         self.assertIsNone(fm.classify("ls /nope", "No such file or directory"))
 
+    def test_a_search_that_names_a_test_runner_is_silent(self):
+        self.assertIsNone(fm.classify("grep -rn pytest docs/", "Exit code 1"))
+
+    def port(self, err):
+        with mock.patch.object(fm, "listeners", lambda port: None):
+            return fm.classify("docker compose up", err)
+
+    def test_a_log_lines_clock_time_is_not_the_port(self):
+        self.assertIn("port 3000 in use", self.port("2026-11-10 12:34:56 web | listen EADDRINUSE: address already in use :::3000"))
+        self.assertIn("port 5173 in use", self.port("2026-11-10T09:05:01Z bind [::1]:5173: address already in use"))
+
+    def test_a_port_after_an_ip_address_is_still_read(self):
+        self.assertIn("port 8080 in use", self.port("listen tcp 127.0.0.1:8080: bind: address already in use"))
+        self.assertIn("port 80 in use", self.port("listen tcp 0.0.0.0:80: bind: address already in use"))
+
+    def test_an_error_that_names_no_port_says_so(self):
+        self.assertIn("port ? in use", self.port("12:34:56 OSError: [Errno 98] Address already in use"))
+
+
+class TestRunsTests(unittest.TestCase):
+    """The `test red` hint is for a command that ran tests, not for one that only mentions a runner."""
+
+    def test_a_runner_is_a_test_run_alone_behind_a_wrapper_or_with_arguments(self):
+        for cmd in ("pytest -q", "uv run pytest tests/test_x.py", "PYTHONPATH=. python3 -m pytest", "cargo test",
+                    "npm run test -- --ci", "bash -c 'pytest -q'"):
+            self.assertIs(fm.runs_tests(cmd), True, cmd)
+
+    def test_a_tool_that_reads_or_prints_ran_no_test_whatever_it_names(self):
+        for cmd in ("grep -rn pytest docs/", "/usr/bin/grep pytest f", "'grep' -rn pytest docs/", "git log --grep jest",
+                    "cat vitest.config.ts", "grep x f > pytest.log", "grep -c X pytest.ini"):
+            self.assertIs(fm.runs_tests(cmd), False, cmd)
+
+    def test_each_command_of_a_line_is_judged_on_its_own(self):
+        for cmd in ("cat pytest.ini; pytest -q", "grep -c x f && cargo test", "pytest -q | tee out.txt",
+                    "(cd app && npm test)", "grep pytest a\npytest -q", "pytest -q;"):
+            self.assertIs(fm.runs_tests(cmd), True, cmd)
+        self.assertIs(fm.runs_tests("grep pytest a\ngrep jest b"), False)
+
+    def test_a_separator_inside_quotes_does_not_start_a_command(self):
+        self.assertIs(fm.runs_tests('grep -E "pytest|jest" notes.md'), False)
+
+    def test_a_line_with_an_open_quote_is_judged_as_a_whole(self):
+        self.assertIs(fm.runs_tests("pytest -q 'oops"), True)
+        self.assertIs(fm.runs_tests("echo 'oops"), False)
+
+    def test_a_command_that_names_no_runner_is_not_a_test_run(self):
+        self.assertIs(fm.runs_tests("ls /nope"), False)
+        self.assertIs(fm.runs_tests(""), False)
+
 
 if __name__ == "__main__":
     unittest.main()
