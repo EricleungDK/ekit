@@ -27,9 +27,9 @@ Done when: you know the branch, HEAD, owner rules, and the spec.
 
 ## 3. Acceptance checklist
 
-Write the checklist: each spec outcome (issue criterion or derived outcome), plus the repo gates (tests red-first, typecheck, the test suites the change touches, CI green, docs updated). In a repo with `.ekit/scenarios/`, or when the deliverable is something a user runs, map each criterion to scenario ids (taste-it skill; `covers` field); an unmapped criterion is a gap to fill. Show it to the user before dispatching, together with the division of labor (step 4). Each item will later be ticked with **evidence** (a command and its result, a commit, a CI job, a mech-review result for the head), never with an agent's say-so.
+Write the checklist: each spec outcome (issue criterion or derived outcome), plus the repo gates (tests red-first, typecheck, the test suites the change touches, CI green, docs updated). In a repo with `.ekit/scenarios/`, or when the deliverable is something a user runs, map each criterion to scenario ids (taste-it skill; `covers` field); an unmapped criterion is a gap to fill. Name each outcome's **seam**: the public interface (function, CLI, endpoint) its tests go through. The user agrees the seams here, because a subagent cannot ask. Show it to the user before dispatching, together with the division of labor (step 4). Each item will later be ticked with **evidence** (a command and its result, a commit, a CI job, a mech-review result for the head), never with an agent's say-so.
 
-Done when: the user has seen the checklist.
+Done when: the user has seen the checklist, with a seam for every outcome.
 
 ## 4. Divide and dispatch
 
@@ -42,15 +42,15 @@ Done when: the user has seen the checklist.
 Show the units (name, files owned, checklist items, depends on) with the checklist in step 3.
 
 - One agent per unit; units touching disjoint files run in parallel, in one message. Run them in the background.
-- Every brief follows [brief-template.md](brief-template.md). An agent starts with none of your context, so the brief is self-contained.
-- **Subagents cannot spawn subagents.** A subagent whose flow (an implement skill, say) reaches a step that fans out, code review above all, hands that step to you through the **review relay** below. Research skills and workflows stay with you from the start.
+- Every brief follows [brief-template.md](brief-template.md). An agent starts with none of your context, so the brief is self-contained: it is the agent's whole implement flow (red → green at the agreed seams, verify, review, commit). An implement skill reserved for the user cannot be loaded by an agent; the brief stands in for it. The brief's `Skills:` line lets the agent load a TDD or bug-diagnosis skill its install has.
+- **Subagents cannot spawn subagents.** A step of that flow that fans out, code review above all, comes to you through the **review relay** below. Research skills and workflows stay with you from the start.
 - Fix loop: each failing unit gets at most **3 rounds** (initial fix plus two retries after CI or verification fails). Count rounds per unit and per mech entry `id`; the first to reach 3 escalates. Hand each failing or open entry to the engineer verbatim (id, file, line, problem, hint, forbidden), brief or review relay alike, with the rule: its fix commit carries body line `mech: <id>`. No agent waives a `fail`. After round 3, stop and escalate to the user with evidence.
 
 Done when: every unit has a running agent.
 
 ### Review relay
 
-Review stays inside the subagent's own implement flow; only the dispatch moves to you.
+Review is a task of the brief's flow; only the dispatch moves to you.
 
 1. At its review step, the subagent commits its work and stops with a **review request** as its report: branch, base and head SHAs, checklist items covered, files changed, what to focus on. It stays alive, context intact.
 2. Run the mech checks first (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`, cloned once from `https://github.com/EricleungDK/ekit`): `python3 -I <kit>/scripts/mech-review.py all --repo <worktree> --base <base> --head <head> --stack <stack> --head-branch <branch>` plus the repo's `--test-paths`/`--protected-paths`/`--agent-prefix` (or its `<!-- mech-review -->` PR comment). `<stack>` is `rust`, `python` or `ts`; a repo in any other language has no mech checks: say so once, list `mech-review: unsupported stack` as verification debt, and go on to the review. Then run the code review this harness offers (`/code-review`, or reviewer subagents briefed with the range) scoped to base..head, on the subagent model from step 1, with the mech JSON. The review is yours to run, never skip it because the agent's tests are green.
