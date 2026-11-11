@@ -379,9 +379,9 @@ export MUT_REPORT="$T/badmutant.json" MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=
 out=$(st "$R" "$B" "$H"); rc=$?
 eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts report with a non-object mutant: R3 n/a, the others are not lost"
 
-# plan: a ts production change runs the mutants job over 4 shards
+# plan: a ts production change runs the mutants job
 mrepo plan
-out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --shards 4)
-eq "$(jq -c '{run,count,shards}' <<<"$out")" '{"run":true,"count":4,"shards":[0,1,2,3]}' "ts plan: a production change runs 4 shards"
+out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**')
+eq "$(jq -c . <<<"$out")" '{"run":true}' "ts plan: a production change runs the mutants job"
 
 done_tests

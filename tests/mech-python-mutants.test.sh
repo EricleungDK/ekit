@@ -271,13 +271,13 @@ out2=$(MUT_FIXTURE=missed MECH_TEST_STUB="$MUTSTUB" python3 -I "$MR" mutants --r
 eq "$(jq -r '[.entries[].id] | sort | join(" ")' <<<"$out1")" "$(jq -r '[.entries[].id] | sort | join(" ")' <<<"$out2")" "python ids: stable when lines move"
 eq "$(jq -r '.entries[0].line' <<<"$out2")" 3 "python ids: the entry line follows the code (add moved to line 3)"
 
-# plan: a python production change runs the mutants job over the shard matrix; a rust stack does not run it for .py files
+# plan: a python production change runs the mutants job; a rust stack does not run it for .py files
 mrepo planpy
-out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack python --test-paths 'tests/**' --shards 4)
-eq "$(jq -c '{run,count,shards}' <<<"$out")" '{"run":true,"count":4,"shards":[0,1,2,3]}' "python plan: production change runs 4 shards"
+out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack python --test-paths 'tests/**')
+eq "$(jq -c . <<<"$out")" '{"run":true}' "python plan: a production change runs the mutants job"
 mrepo planrust
-out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' --shards 4)
-eq "$(jq -c '{run,count}' <<<"$out")" '{"run":false,"count":1}' "rust stack on .py files: not run (ekit itself stays on rust)"
+out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**')
+eq "$(jq -c . <<<"$out")" '{"run":false}' "rust stack on .py files: not run"
 
 
 # ---- project-dir on python: mutmut runs in the crate dir, config there, file names repo-root ----

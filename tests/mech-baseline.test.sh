@@ -452,15 +452,15 @@ mrepo bzero
 bl --shards 0 >/dev/null 2>&1; rc=$?
 eq "$rc" 2 "baseline --shards 0: usage error exit 2"
 
-# plan: whether R3 runs; the CLI keeps its matrix for the file-sharded stacks, the workflow reads run only (#46)
+# plan: whether R3 runs, and only that: the shard count is the baseline step's (#46)
 mrepo pl
 out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**'); rc=$?
 eq "$rc" 0 "plan: exit 0"
-eq "$(jq -c '{run,count,shards}' <<<"$out")" '{"run":true,"count":1,"shards":[0]}' "plan: run true; placeholder matrix (count from baseline)"
+eq "$(jq -c . <<<"$out")" '{"run":true}' "plan: run true, no shard count (that is the baseline's)"
 mrepo pldocs
 printf 'notes\n' > "$R/README.md"; git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm docs; H2=$(git -C "$R" rev-parse HEAD)
 out=$(python3 -I "$MR" plan --repo "$R" --base "$H" --head "$H2" --stack rust --test-paths 'tests/**')
-eq "$(jq -c '{run}' <<<"$out")" '{"run":false}' "plan: docs-only: run false"
+eq "$(jq -c . <<<"$out")" '{"run":false}' "plan: docs-only: run false"
 
 # merge with the baseline: shards merge when it ran; baseline timing once; a shard that never ran is a CI fail
 mrepo mrg
