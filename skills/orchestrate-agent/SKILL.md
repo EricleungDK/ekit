@@ -55,7 +55,7 @@ Review is a task of the brief's flow; only the dispatch moves to you.
 1. At its review step, the subagent commits its work and stops with a **review request** as its report: branch, base and head SHAs, checklist items covered, files changed, what to focus on. It stays alive, context intact.
 2. Run the mech checks first (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`, cloned once from `https://github.com/EricleungDK/ekit`): `python3 -I <kit>/scripts/mech-review.py all --repo <worktree> --base <base> --head <head> --stack <stack> --head-branch <branch>` plus the repo's `--test-paths`/`--protected-paths`/`--agent-prefix` (or its `<!-- mech-review -->` PR comment). `<stack>` is `rust`, `python` or `ts`; a repo in any other language has no mech checks: say so once, list `mech-review: unsupported stack` as verification debt, and go on to the review. Then run the code review this harness offers (`/code-review`, or reviewer subagents briefed with the range) scoped to base..head, on the subagent model from step 1, with the mech JSON. The review is yours to run, never skip it because the agent's tests are green.
 3. Send the findings back to that same agent with SendMessage (its ID, not a new agent): each finding with file, line, and failure scenario, plus which ones you judge real. Filter out findings you verified as false, and say why. `fail` entries go back verbatim. Each `confirm` (changed expected value): confirm only if the spec sets the new value, else reject with reason. Legit test removal: `needs-human`, the owner decides (a `/mech-waive` PR comment is theirs to post), never self-declared.
-4. The agent fixes, re-verifies, and either finishes its flow or sends a new review request. Each review-fix cycle counts as one of its 3 rounds.
+4. The agent fixes, re-verifies, and either finishes its flow or sends a new review request. Each fix is a new commit on top of the reviewed head, so that head stays an ancestor of the one you verify and the next review covers only the range after it. Squashing, amending or filtering reviewed commits is the user's call (step 7), pushed or not. Each review-fix cycle counts as one of its 3 rounds.
 
 Several agents may request review at once: run each review separately, scoped to that agent's diff, and route findings back to the right agent.
 
@@ -90,7 +90,7 @@ Done when: every checklist item is ticked with evidence, or escalated.
 
 ## 7. Human gates
 
-Some steps belong to the user: owner approvals, merges, changes that relax a test or a security check, deploys and promotions. Also any action the permission classifier denies: stop, do not route around it through another tool or a later turn.
+Some steps belong to the user: owner approvals, merges, rewrites of reviewed commits, changes that relax a test or a security check, deploys and promotions. Also any action the permission classifier denies: stop, do not route around it through another tool or a later turn.
 
 Hand each one over as a Needs-you block (finish skill, blocked branch), or the settings rule that would let you do it. A `!` command runs only when typed as the first character in the terminal on the PC; via Remote Control from a phone it arrives as text, so give the plain-shell form too.
 
@@ -100,4 +100,4 @@ After the user acts, verify the result (`git status`, a count, the test) before 
 
 - PR: title, concise body, issue link (`Closes #N` when it completes the issue), test evidence, what is not done. Merge only with the user's explicit approval and every check green or explained.
 - Update the repo's task and system docs per its rules.
-- Final report to the user: the finish skill's report over the whole checklist, plus commits and PR.
+- Load the finish skill and end on its report over the whole checklist, plus commits and PR. Its first line is `## Finish: done` or `## Finish: blocked`, as the skill writes it: the Stop gate reads that line.

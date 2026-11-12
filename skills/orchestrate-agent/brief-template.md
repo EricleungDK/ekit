@@ -17,15 +17,15 @@ Known context: <recent commits that may be involved, suspects, what was ruled ou
 Environment: <how to run tests here: env vars, binaries, build step first>.
 
 Tasks:
-1. Build: red → green in slices: one failing test at a seam, then only the code that passes it. Each slice: typecheck and run that test file. Full suite once, at the end. R1 needs at least one new or changed test that fails on the base's code; tests that pin existing behaviour are guards and may sit beside it. An R1 fail is fixed with a new commit, never a history rewrite.
+1. Build: red → green in slices: one failing test at a seam, then only the code that passes it. Each slice: typecheck and run that test file. Full suite once, at the end. R1 needs at least one new or changed test that fails on the base's code; tests that pin existing behaviour are guards and may sit beside it.
    Fix: reproduce and capture the actual error; classify it with the failure-triage skill; check new vs pre-existing on the parent commit in a temp worktree (remove it after; flaky: failure-triage's flaky protocol); fix the root cause red first (test-only fix only when the test is wrong).
 2. Stay in your files; a needed change elsewhere goes in your report, not your diff.
 3. Keep guards and checks at full strength. Forbidden: delete, skip or weaken a test; change an expected value to match output; suppress a lint without reason; edit protected paths; pass a test before the fix. Full table: testing standard §3. No waivers.
 4. Verify: <exact commands, and how many runs>.
 5. Docs: <task log entry, report section, SOP rule if reusable>.
-6. Commit on <branch>. A fix for a mech entry carries body line `mech: <id>` (rounds count per id). Commit message ends with:
+6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (rounds count per id). Commit message ends with:
    <attribution trailer>
-7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and report a REVIEW REQUEST: branch, base SHA, head SHA, checklist items covered, files changed, focus areas. Wait; findings arrive by message. Fix the real ones red-first, re-verify, then finish or request review again.
+7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and report a REVIEW REQUEST: branch, base SHA, head SHA, checklist items covered, files changed, focus areas. Wait; findings arrive by message. Fix the real ones red-first, each in a new commit, re-verify, then finish or request review again.
 8. Push: <yes after review passes, then watch `gh pr checks <n> --watch` / no>.
 9. Fix rounds (each review-fix cycle counts; per entry `id` too): up to <rounds left of 3>; after that, stop and report.
 
