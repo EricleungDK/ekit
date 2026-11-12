@@ -1,6 +1,6 @@
 {
   "name": "ekit",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Make coding agents prove their work: triage before fixing, verify by using it, an evidence-based finish report, and mechanical PR checks (red-first, test-diff guard, mutation testing).",
   "author": { "name": "EricleungDK" },
   "repository": "https://github.com/EricleungDK/ekit",

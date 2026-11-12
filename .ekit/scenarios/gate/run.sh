@@ -8,6 +8,8 @@ eq "no work -> allow" "$(hook Stop sess1)" ""
 echo "x=1" >> "$SAMPLE/app.py"
 out=$(hook Stop sess1)
 has block "$out" '"decision": "block"'; has block "$out" "Scenarios not green"; has block "$out" "scenarios.py"
+eq "subagent still running -> wait, allow" "$(hook Stop sess1 false "" "$RUNNING")" ""
+has "subagent finished -> block again" "$(hook Stop sess1 false "" '{"background_tasks":[]}')" "Scenarios not green"
 eq "loop guard" "$(hook Stop sess1 true)" ""
 python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "runner not green"
 out=$(hook Stop sess1); has "green, no report" "$out" '"decision": "block"'; has "green, no report" "$out" "## Finish: done"

@@ -22,9 +22,12 @@ add_scn() { local d="$SAMPLE/.ekit/scenarios/$1"; mkdir -p "$d"
 commit_all() { git -C "$SAMPLE" add -A; git -C "$SAMPLE" commit -qm "${1:-c}"; }
 # the installed hook command for an event, read from the sample's settings.json
 hook_cmd() { jq -er --arg e "$1" '.hooks[$e][0].hooks[0].command' "$SAMPLE/.claude/settings.json" || fail "no $1 hook installed"; }
-# run installed hook: hook <event> <session> [stop_hook_active] [last assistant message]
+# run installed hook: hook <event> <session> [stop_hook_active] [last assistant message] [more payload fields, a JSON object]
 REPORT=$'## Finish: done\n| Criterion | Status | Evidence |'
-hook() { local p; p=$(jq -nc --arg s "$2" --arg c "$SAMPLE" --argjson a "${3:-false}" --arg e "$1" --arg m "${4:-}" '{session_id:$s,cwd:$c,hook_event_name:$e,stop_hook_active:$a} + (if $m == "" then {} else {last_assistant_message:$m} end)')
+# what Claude Code puts on a Stop payload while a subagent of the session still runs
+RUNNING='{"background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"unit","agent_type":"general-purpose"}]}'
+hook() { local p x="${5:-}"; [[ -n $x ]] || x='{}'
+  p=$(jq -nc --arg s "$2" --arg c "$SAMPLE" --argjson a "${3:-false}" --arg e "$1" --arg m "${4:-}" --argjson x "$x" '{session_id:$s,cwd:$c,hook_event_name:$e,stop_hook_active:$a} + (if $m == "" then {} else {last_assistant_message:$m} end) + $x')
   (cd "$SAMPLE" && printf '%s' "$p" | bash -c "$(hook_cmd "$1")"); }
 # user types /orchestrate-agent (cloud install name): arm <session>
 arm() { local p; p=$(jq -nc --arg s "$1" --arg c "$SAMPLE" '{session_id:$s,cwd:$c,hook_event_name:"UserPromptSubmit",prompt:"/orchestrate-agent do x"}')
