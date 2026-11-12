@@ -192,6 +192,63 @@ class TestWork(GateCase):
             self.assertEqual(f.read(), "")
 
 
+def task(type="subagent", status="running"):
+    """One `background_tasks` entry, as Claude Code sends it on a Stop payload."""
+    return {"id": "a547f8e8e20894387", "type": type, "status": status, "description": "unit core", "agent_type": "general-purpose"}
+
+
+class TestWaiting(GateCase):
+    """A stop while a subagent still runs is a wait for its report: the session wakes again, so nothing is asked yet."""
+
+    def test_a_stop_while_a_subagent_runs_is_not_gated(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.assertIsNone(self.stop("waiting for the implementer", background_tasks=[task()]))
+
+    def test_a_wait_does_not_use_up_the_ask_for_that_tree(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.stop(background_tasks=[task()])
+        self.assertEqual(self.stop(background_tasks=[])["decision"], "block")
+
+    def test_a_wait_is_allowed_while_the_scenarios_are_red(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree, self.runner.check = (0, "T1"), (1, "FAIL ok")
+        self.assertIsNone(self.stop(background_tasks=[task()]))
+        self.assertIn("Scenarios not green", self.stop()["reason"])
+
+    def test_a_wait_starts_no_runner_process(self):
+        self.start()
+        del self.runner.calls[:]
+        self.stop(background_tasks=[task()])
+        self.assertEqual(self.runner.calls, [])
+
+    def test_one_running_subagent_among_finished_tasks_is_a_wait(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.assertIsNone(self.stop(background_tasks=[task(status="completed"), task("shell"), task()]))
+
+    def test_only_a_running_subagent_is_a_wait(self):
+        """A subagent that finished wakes nothing, and a background shell (a dev server) may never end."""
+        self.start()
+        for n, tasks in enumerate(([task(status="completed")], [task(status="failed")], [task("shell")], [task("bash")], [])):
+            self.runner.tree = (0, f"T{n + 1}")
+            self.assertEqual(self.stop(background_tasks=tasks)["decision"], "block", tasks)
+
+    def test_a_payload_without_readable_tasks_is_gated_as_before(self):
+        self.start()
+        for n, tasks in enumerate((None, "running", {"type": "subagent", "status": "running"}, ["subagent"], [None], [{}])):
+            self.runner.tree = (0, f"T{n + 1}")
+            self.assertEqual(self.stop(background_tasks=tasks)["decision"], "block", tasks)
+
+    def test_an_unarmed_session_stays_silent_while_a_subagent_runs(self):
+        self.start(arm=False)
+        self.runner.tree = (0, "T1")
+        self.assertIsNone(self.stop(background_tasks=[task()]))
+        self.assertEqual(os.listdir(fg.STATE), [n for n in os.listdir(fg.STATE) if ".sbase-" in n])
+
+
 class TestScenarios(GateCase):
     def test_a_plain_repo_never_runs_check(self):
         self.start()

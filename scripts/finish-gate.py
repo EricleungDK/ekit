@@ -9,6 +9,8 @@ changes nothing; the baseline is per repo). With work done, the stop is allowed 
 - in a repo with .ekit/scenarios/, `check` is a fresh PASS for the current tree (a `blocked` report needs no PASS).
 A tree that was reported stays allowed. A missing report blocks once per tree; scenarios that are not green block
 every stop. stop_hook_active is the loop guard. Runner errors fail closed (block).
+A stop while a subagent still runs (the payload's `background_tasks`) is a wait for its report, not the end of the
+work: it is allowed and asks nothing. A payload without that list (an older Claude Code) is gated as any stop.
 Test seam: EKIT_SCENARIOS_PY overrides the runner path.
 
 `finish-gate.py --baseline` (stdin: hook payload) records the tree state at session start instead.
@@ -117,6 +119,14 @@ def report_kind(data):
     return m.group(1).lower() if m else None
 
 
+def waiting(data):
+    """True when a subagent of this session still runs: the session wakes when it reports, so this stop ends nothing.
+    Only a running subagent counts. One that finished wakes nothing; a background shell (a dev server) may never end."""
+    tasks = data.get("background_tasks")
+    return isinstance(tasks, list) and any(
+        isinstance(t, dict) and t.get("type") == "subagent" and t.get("status") == "running" for t in tasks)
+
+
 def block(reason):
     print(json.dumps({"decision": "block", "reason": f"[ekit] {reason}"}))
 
@@ -140,6 +150,8 @@ def main():
         return
     if not baseline and (data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop"):
         return  # the loop guard, and a subagent's stop (an older install may still register it): nothing to hash
+    if not baseline and waiting(data):
+        return
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
     base, reported, gated = (path(session, f"{k}-{key}") for k in ("sbase", "reported", "gated"))
     rc, cur = runner(top, "tree-hash")

@@ -2,6 +2,13 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Changed
+
+- **Finish gate**: a stop while a subagent is still running is a wait for its report, and is let through. The gate used to ask for the finish report then, when the work was not finished: the orchestrator had to refuse, or report early. It reads the Stop payload's `background_tasks`; only a running subagent counts, a background shell does not. On a Claude Code that sends no such list the gate asks as before.
+- **orchestrate-agent**: the subagent brief is the whole implement flow (red to green in slices at the seams, typecheck and the test file each slice, the full suite once at the end), since an agent cannot load an implement skill reserved for the user. The checklist names a seam per outcome for the user to agree before dispatch, and the brief lets the agent load a TDD or bug-diagnosis skill its install lists.
+
 ## 0.3.0
 
 First release under the name **ekit** (was `ek`). MIT licensed.
