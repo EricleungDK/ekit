@@ -13,6 +13,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 ### Fixed
 
 - **orchestrate-agent**: the closing step now loads the finish skill and names the report's first line. It said "final report", and an orchestrator that never loaded the skill headed its report `## Final report: done`: the Stop gate did not take that for the finish report and blocked the stop.
+- **orchestrate-agent**: a subagent's review request is the finish skill's report, with evidence per checklist item. The brief asked for the finish report in a closing line that orchestrators replaced with a free-form "Report:" sentence, so no subagent loaded the skill; the report is now a numbered task, and the template says its fixed text goes in as written.
 
 ## 0.3.0
 

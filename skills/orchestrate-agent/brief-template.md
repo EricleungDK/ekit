@@ -1,6 +1,6 @@
 # Subagent brief template
 
-Fill every section. The agent sees nothing but this brief.
+Fill every `<…>`; the text around them goes in as written. The agent sees nothing but this brief.
 
 ```
 Repo: <absolute path>, branch `<branch>` (HEAD <sha>, pushed: yes/no; PR #<n> if any).
@@ -25,10 +25,10 @@ Tasks:
 5. Docs: <task log entry, report section, SOP rule if reusable>.
 6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (rounds count per id). Commit message ends with:
    <attribution trailer>
-7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and report a REVIEW REQUEST: branch, base SHA, head SHA, checklist items covered, files changed, focus areas. Wait; findings arrive by message. Fix the real ones red-first, each in a new commit, re-verify, then finish or request review again.
+7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and send your report (task 10) as a REVIEW REQUEST. Wait; findings arrive by message. Fix the real ones red-first, each in a new commit, re-verify, then report again.
 8. Push: <yes after review passes, then watch `gh pr checks <n> --watch` / no>.
 9. Fix rounds (each review-fix cycle counts; per entry `id` too): up to <rounds left of 3>; after that, stop and report.
+10. Report: load the finish skill; every report you send (review request, after a fix round, blocked) is its report, done or blocked branch, one row per checklist item you own. Add: branch, base SHA, head SHA, files changed, focus areas, commits; for a fix, the error, its cause, and new vs pre-existing. The issue and the PR stay with the orchestrator.
 
 Do not merge. A step that spawns agents, in these tasks or in a skill you loaded: hand it to the orchestrator the same way as review.
-Report with the finish skill (done or blocked branch), plus: what was built or the error, cause and new vs pre-existing (fixes), commits.
 ```
