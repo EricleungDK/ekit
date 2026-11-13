@@ -2,6 +2,13 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Added
+
+- **Task verification hook** (`TaskCreated`, `TaskCompleted`): a task whose description carries a ``Verify: `<command>` `` line cannot be marked completed until that command passed on the files as they are now. The agent runs it with `scripts/task-verify.py run -- <command>`, which records the exit code against the tree hash; the hook only reads that record, so the command stays under the session's permission rules and sandbox. The command is kept when the task is created: editing the description later does not change the check. A pass in a linked worktree counts from the main checkout while that worktree's files are unchanged. Tasks without the line are not gated. In agent teams, where a teammate's turn end fires the hook, the block is given once per set of file contents.
+- **orchestrate-agent**: each unit gets a verify command, agreed with the checklist, and a task that carries it.
+
 ## 0.3.1
 
 ### Changed

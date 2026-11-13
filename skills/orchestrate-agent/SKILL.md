@@ -27,9 +27,9 @@ Done when: you know the branch, HEAD, owner rules, and the spec.
 
 ## 3. Acceptance checklist
 
-Write the checklist: each spec outcome (issue criterion or derived outcome), plus the repo gates (tests red-first, typecheck, the test suites the change touches, CI green, docs updated). In a repo with `.ekit/scenarios/`, or when the deliverable is something a user runs, map each criterion to scenario ids (taste-it skill; `covers` field); an unmapped criterion is a gap to fill. Name each outcome's **seam**: the public interface (function, CLI, endpoint) its tests go through. The user agrees the seams here, because a subagent cannot ask. Show it to the user before dispatching, together with the division of labor (step 4). Each item will later be ticked with **evidence** (a command and its result, a commit, a CI job, a mech-review result for the head), never with an agent's say-so.
+Write the checklist: each spec outcome (issue criterion or derived outcome), plus the repo gates (tests red-first, typecheck, the test suites the change touches, CI green, docs updated). In a repo with `.ekit/scenarios/`, or when the deliverable is something a user runs, map each criterion to scenario ids (taste-it skill; `covers` field); an unmapped criterion is a gap to fill. Name each outcome's **seam**: the public interface (function, CLI, endpoint) its tests go through. The user agrees the seams here, because a subagent cannot ask. Give each unit (step 4) a **verify command**: the one command that runs the tests its outcomes go through (`pytest tests/test_auth.py -q`). The user agrees it here too: it is fixed once the unit's task exists. A unit with nothing to run has none; say so, and list it as verification debt. Show it to the user before dispatching, together with the division of labor (step 4). Each item will later be ticked with **evidence** (a command and its result, a commit, a CI job, a mech-review result for the head), never with an agent's say-so.
 
-Done when: the user has seen the checklist, with a seam for every outcome.
+Done when: the user has seen the checklist, with a seam for every outcome and a verify command for every unit that has tests.
 
 ## 4. Divide and dispatch
 
@@ -39,9 +39,10 @@ Done when: the user has seen the checklist, with a seam for every outcome.
 - Order dependent units: a unit that needs another's output waits for it, or gets a stated interface to build against.
 - One unit is the right answer for a small change; split only where parallel work or context size earns it.
 
-Show the units (name, files owned, checklist items, depends on) with the checklist in step 3.
+Show the units (name, files owned, checklist items, verify command, depends on) with the checklist in step 3.
 
 - One agent per unit; units touching disjoint files run in parallel, in one message. Run them in the background.
+- One task per unit, in the harness's task list when it has one, created before the agent starts. Its description carries the line ``Verify: `<command>` ``. The task hook keeps that command: the task completes only after `python3 -I <kit>/scripts/task-verify.py --repo <checkout> run -- <command>` exited 0 on the files as they are now (`<kit>`: review relay, step 2).
 - Every brief follows [brief-template.md](brief-template.md). An agent starts with none of your context, so the brief is self-contained: it is the agent's whole implement flow (red → green at the agreed seams, verify, review, commit). An implement skill reserved for the user cannot be loaded by an agent; the brief stands in for it. The brief's `Skills:` line lets the agent load a TDD or bug-diagnosis skill its install has.
 - **Subagents cannot spawn subagents.** A step of that flow that fans out, code review above all, comes to you through the **review relay** below. Research skills and workflows stay with you from the start.
 - Fix loop: each failing unit gets at most **3 rounds** (initial fix plus two retries after CI or verification fails). Count rounds per unit and per mech entry `id`; the first to reach 3 escalates. Hand each failing or open entry to the engineer verbatim (id, file, line, problem, hint, forbidden), brief or review relay alike, with the rule: its fix commit carries body line `mech: <id>`. No agent waives a `fail`. After round 3, stop and escalate to the user with evidence.
@@ -81,7 +82,7 @@ Subagents cannot spawn, so the orchestrator owns taste-it. After the review rela
 When an agent reports, its report is a claim, in the finish skill's format. Verify it row by row:
 
 1. Read its diff (`git show --stat`, then the diff of the core files). The fix addresses the root cause, and tests are not weakened to pass.
-2. Rerun the decisive test yourself.
+2. Rerun the unit's verify command yourself, through `task-verify.py run` (step 4), in the checkout that holds the work. Mark the unit's task completed only then. The hook blocking the completion is a failed check: fix or escalate, never reword the task to get past it.
 3. **Mech and review**: run the mech checks for the head. Every agent's work passed through the review relay; one that finished without a review request gets one now: run the mech checks, then the review, send findings back. Tick a criterion on the result of the check(s) that back it, for the head SHA (e.g. "no test weakened" ← R2 `pass`, no open `fail`/`confirm`). A skipped or partial check backs nothing: never tick a criterion that needs one; name it as verification debt. R3 runs only in CI: read it from the PR comment; `all` skips it. `all pass <sha>` only means every check ran.
 4. CI per job: `gh pr checks`. Classify each failure with the failure-triage skill. CI specifics: pre-existing = reproduces on the parent commit; infrastructure = rerun once with `gh run rerun --failed`; expected by design = a release gate. Explain every non-green check to the user; never leave one unexplained.
 5. Tick each checklist item with its evidence: the mech check(s) backing it for the head, a command result, a commit, a CI job. Never a finish report alone.

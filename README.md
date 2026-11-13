@@ -121,7 +121,7 @@ Needs `git`, `bash` and `python3` 3.9 or newer (standard library only). Runs on 
 
 ### Hooks and scripts outside Claude Code
 
-The hooks (preflight, failure hints, finish gate) run in Claude Code. Elsewhere, skills still work: those that need the kit's scripts use `~/.ekit`, cloned once:
+The hooks (preflight, failure hints, task verification, finish gate) run in Claude Code. Elsewhere, skills still work: those that need the kit's scripts use `~/.ekit`, cloned once:
 
 ```bash
 git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
@@ -148,6 +148,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | **waiver** | A `/mech-waive <id> <reason>` PR comment from a person with write access. Agents cannot waive. |
 | **scenario** | A script in `.ekit/scenarios/` that installs your deliverable and uses it like a user would. |
 | **taste** | Running the scenarios through a subagent that has not seen the code. |
+| **verify command** | The one command that runs a unit's tests. Agreed in the checklist, written into the unit's task as ``Verify: `<command>` ``. |
 | **finish report** | The end-of-work table: each criterion with fresh evidence. |
 | **Needs-you block** | The exact command or decision the agent is waiting on you for. |
 | **verification debt** | Every check that could not run here, with where to run it. |
@@ -169,9 +170,10 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | `SessionStart` | Preflight warnings (missing tools, sandbox limits) + three working rules into context; prints the scenario runner path. |
 | `UserPromptSubmit` | Prompt starts with `/ekit:orchestrate-agent` → arms the finish gate for the session. |
 | `PostToolUseFailure` | Known Bash failure signatures (sandbox, port in use, missing tool, red test) → one line with the check that settles it. |
+| `TaskCreated`, `TaskCompleted` | A task whose description has a ``Verify: `<command>` `` line completes only after that command passed, through `task-verify.py run`, on the files as they are now. The command is fixed when the task is created. The hook runs nothing itself: the agent runs the command, under the session's permission rules. Tasks without the line are not gated. |
 | `Stop` | Orchestrate sessions only. If the files changed since the session started, the stop is blocked once per set of file contents, asking for the finish report (`## Finish: done` or `## Finish: blocked`) as the last message; in repos with `.ekit/scenarios/`, on each stop until the scenarios pass for the current files. The stop that directly follows a block is always let through, so a session cannot loop on the gate. Committing does not invalidate a pass. Subagents are not gated, and a stop while a subagent is still running is a wait for its report: it passes and asks nothing. |
 
-Outside orchestrate sessions the gate is silent: the skills still apply, nothing blocks.
+Outside orchestrate sessions the Stop gate is silent: the skills still apply, nothing blocks.
 
 ## mech-review CI
 
@@ -197,6 +199,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 |---|---|
 | `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. |
+| `scripts/task-verify.py` | `run -- CMD`: runs a task's verify command and records the result for the current files. `--hook`: the task hook that reads it. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
 
 </details>
