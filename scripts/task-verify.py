@@ -25,7 +25,6 @@ import re
 import shlex
 import subprocess
 import sys
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
@@ -35,63 +34,62 @@ import scenarios  # noqa: E402 - the sys.path line above has to run first
 STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.join(
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
 )
-KEEP_DAYS = 14
 LINE = re.compile(r"^[ \t]*(?:[-*][ \t]+)?\**verify:\**[ \t]*(\S.*?)[ \t]*$", re.I | re.M)
+QUOTED = re.compile(r"`([^`]*)`")  # the whole value in one pair of backticks
 
 
 def declared(description):
     """The command of the first `Verify:` line, whitespace collapsed; None when the text has no such line."""
-    m = LINE.search(description or "")
+    m = LINE.search(str(description))
     if not m:
         return None
     cmd = m.group(1)
-    if len(cmd) > 1 and cmd[0] == cmd[-1] == "`":
-        cmd = cmd[1:-1]
+    quoted = QUOTED.fullmatch(cmd)
+    if quoted:
+        cmd = quoted.group(1)
     return " ".join(cmd.split()) or None
 
 
 def git(repo, *args):
-    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 else ""
+    """stdout of a git query; empty when git fails (not a repo)."""
+    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True).stdout.strip()
 
 
 def tree(top):
-    """The tree hash of the worktree at `top`; "" when it is gone or cannot be hashed."""
-    if not os.path.isdir(top):
-        return ""
+    """The tree hash of the worktree at `top`: empty when the worktree is gone, None when it cannot be hashed."""
     try:
         return scenarios.tree_hash(top)
     except SystemExit:
-        return ""
+        return None
 
 
 def records_path(top):
-    common = os.path.realpath(os.path.join(top, git(top, "rev-parse", "--git-common-dir") or ".git"))
+    common = os.path.realpath(os.path.join(top, git(top, "rev-parse", "--git-common-dir")))
     state = scenarios.env("STATE")
     if state:
-        return os.path.join(state, "verify", hashlib.sha1(common.encode()).hexdigest()[:12], "verify.json")
+        return os.path.join(state, "verify", hashlib.sha1(common.encode()).hexdigest(), "verify.json")
     return os.path.join(common, "ekit", "verify.json")
 
 
 def load(path):
+    """The recorded runs: one per worktree and command. Anything else in the file reads as no runs."""
     try:
         with open(path) as f:
             recs = json.load(f)
-        return recs if isinstance(recs, dict) else {}
     except (OSError, ValueError):
-        return {}
+        return []
+    return recs if isinstance(recs, list) else []
 
 
 def record(top, cmd, rc):
+    """Replaces this worktree's earlier run of `cmd`."""
     path = records_path(top)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    cutoff = time.time() - KEEP_DAYS * 86400
-    recs = {k: r for k, r in load(path).items() if isinstance(r, dict) and r.get("at", 0) >= cutoff}
-    key = hashlib.sha1(f"{top}\0{cmd}".encode()).hexdigest()[:16]
-    recs[key] = {"cmd": cmd, "top": top, "tree": tree(top), "rc": rc, "at": time.time()}
+    recs = [r for r in load(path) if (r["top"], r["cmd"]) != (top, cmd)]
+    recs.append({"cmd": cmd, "top": top, "tree": tree(top), "rc": rc})
     tmp = f"{path}.{os.getpid()}"
     with open(tmp, "w") as f:
-        json.dump(recs, f, indent=1)
+        json.dump(recs, f)
     os.replace(tmp, path)
 
 
@@ -107,11 +105,6 @@ def cmd_run(repo, words):
     return rc
 
 
-def session_file(session, kind, task):
-    os.makedirs(STATE, exist_ok=True)
-    return os.path.join(STATE, f"{session}.{kind}-{hashlib.sha1(str(task).encode()).hexdigest()[:12]}")
-
-
 def read(path):
     try:
         with open(path) as f:
@@ -121,35 +114,32 @@ def read(path):
 
 
 def write(path, text):
+    os.makedirs(STATE, exist_ok=True)
     with open(path, "w") as f:
         f.write(text)
 
 
 def why_not(top, cmd):
     """None when a recorded run of `cmd` passed on files that are still the same; else what is missing."""
-    runs = sorted((r for r in load(records_path(top)).values() if isinstance(r, dict) and r.get("cmd") == cmd),
-                  key=lambda r: r.get("at", 0))
+    runs = [r for r in load(records_path(top)) if r["cmd"] == cmd]
     if not runs:
         return "no run recorded"
-    passed = [r for r in runs if r.get("rc") == 0]
-    if any(r.get("tree") and tree(r.get("top", "")) == r["tree"] for r in passed):
+    passed = [r for r in runs if r["rc"] == 0]
+    if any(r["tree"] and tree(r["top"]) == r["tree"] for r in passed):
         return None
-    if runs[-1].get("rc") != 0:
-        return f"the last run exited {runs[-1].get('rc')}"
+    if not passed:
+        return f"the run exited {runs[-1]['rc']}"
     return "the files changed since the passing run"
 
 
 def hook():
     data = json.load(sys.stdin)
-    session, task = data.get("session_id", "none"), data.get("task_id", "")
-    event = data.get("hook_event_name")
+    session, task = data.get("session_id"), hashlib.sha1(str(data.get("task_id")).encode()).hexdigest()
     now = declared(data.get("task_description"))
-    kept = session_file(session, "task", task)
-    if event == "TaskCreated":
+    kept = os.path.join(STATE, f"{session}.task-{task}")
+    if data.get("hook_event_name") == "TaskCreated":
         if now:
             write(kept, now)
-        return 0
-    if event != "TaskCompleted":
         return 0
     cmd = read(kept) or now
     if not cmd:
@@ -161,11 +151,11 @@ def hook():
     if why is None:
         return 0
     if data.get("teammate_name"):
-        seen, mark = session_file(session, "taskblock", task), f"{tree(top)} {why}"
+        seen, mark = os.path.join(STATE, f"{session}.taskblock-{task}"), f"{tree(top)} {why}"
         if read(seen) == mark:
             return 0
         write(seen, mark)
-    print(f"[ekit] Task \"{data.get('task_subject') or task}\" is not verified for the current files: {why}. "
+    print(f"[ekit] Task \"{data.get('task_subject')}\" is not verified for the current files: {why}. "
           f"Run `python3 {os.path.abspath(__file__)} run -- {cmd}` in the checkout that holds the work, fix what it "
           "shows, and mark the task completed once it exits 0. The command is the one the task was created with: "
           "a different one is the user's call. It cannot pass here → leave the task open and report it blocked "
@@ -173,23 +163,24 @@ def hook():
     return 2
 
 
-def usage():
-    print("usage: task-verify.py [--repo DIR] run -- CMD... | task-verify.py --hook", file=sys.stderr)
-    return 2
+USAGE = "usage: task-verify.py [--repo DIR] run -- CMD... | task-verify.py --hook"
 
 
 def main():
     a = sys.argv[1:]
     if a == ["--hook"]:
         return hook()
-    repo = "."
-    if a[:1] == ["--repo"]:
-        if len(a) < 2:
-            return usage()
-        repo, a = a[1], a[2:]
-    if a[:2] != ["run", "--"] or not "".join(a[2:]).strip():
-        return usage()
-    return cmd_run(os.path.abspath(repo), a[2:])
+    repo = os.getcwd()
+    try:
+        if a[0] == "--repo":
+            repo, a = os.path.abspath(a[1]), a[2:]
+        runs = a[0] == "run" and a[1] == "--" and any(w.strip() for w in a[2:])
+    except IndexError:
+        runs = False
+    if not runs:
+        print(USAGE, file=sys.stderr)
+        return 2
+    return cmd_run(repo, a[2:])
 
 
 if __name__ == "__main__":

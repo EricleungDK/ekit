@@ -1,6 +1,7 @@
 """task-verify.py in-process: `run -- CMD` records a result for the tree, the TaskCreated/TaskCompleted hook reads it.
 The repos are real: the tree hash is the scenario runner's own."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -65,6 +66,14 @@ class VerifyCase(unittest.TestCase):
     def complete(self, desc=None, **kw):
         return self.hook("TaskCompleted", desc, **kw)
 
+    def blocked(self, why, cmd, subject="Unit auth"):
+        """What a blocked completion sends to the agent: exit 2 and this text on stderr."""
+        return 2, (f"[ekit] Task \"{subject}\" is not verified for the current files: {why}. "
+                   f"Run `python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} run -- {cmd}` in the checkout that "
+                   "holds the work, fix what it shows, and mark the task completed once it exits 0. The command is "
+                   "the one the task was created with: a different one is the user's call. It cannot pass here → "
+                   "leave the task open and report it blocked (finish skill).\n")
+
     def edit(self, text="b\n", repo=None):
         with open(os.path.join(repo or self.repo, "a.txt"), "a") as f:
             f.write(text)
@@ -76,12 +85,9 @@ class Completion(VerifyCase):
         self.assertEqual(self.complete(None), (0, ""))
 
     def test_no_recorded_run_blocks_and_names_the_command(self):
-        rc, err = self.complete("Build it.\nVerify: `true`")
-        self.assertEqual(rc, 2)
-        self.assertIn("no run recorded", err)
-        self.assertIn("run -- true", err)
-        self.assertIn("task-verify.py", err)
-        self.assertIn("Unit auth", err)
+        self.assertEqual(self.complete("Build it.\nVerify: `true`"), self.blocked("no run recorded", "true"))
+        self.assertEqual(self.complete("Verify: `true`", task_subject="Fix div"),
+                         self.blocked("no run recorded", "true", subject="Fix div"))
 
     def test_passing_run_lets_the_task_complete(self):
         self.assertEqual(self.run_cmd("true"), 0)
@@ -89,16 +95,35 @@ class Completion(VerifyCase):
 
     def test_failing_run_blocks_with_its_exit_code(self):
         self.assertEqual(self.run_cmd("exit 3"), 3)
-        rc, err = self.complete("Verify: `exit 3`")
-        self.assertEqual(rc, 2)
-        self.assertIn("exited 3", err)
+        self.assertEqual(self.complete("Verify: `exit 3`"), self.blocked("the run exited 3", "exit 3"))
+
+    def test_run_reports_the_exit_code_on_stderr(self):
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "exit 3"]), (3, "task-verify: `exit 3` exited 3\n"))
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "true"]), (0, "task-verify: `true` exited 0\n"))
+
+    def test_a_later_failing_run_replaces_the_pass(self):
+        flag = os.path.join(self.repo, ".git", "flag")  # outside the tree: the files stay as they were
+        self.assertEqual(self.run_cmd("test ! -f .git/flag"), 0)
+        open(flag, "w").close()
+        self.assertEqual(self.run_cmd("test ! -f .git/flag"), 1)
+        self.assertEqual(self.complete("Verify: `test ! -f .git/flag`")[0], 2)
+        os.remove(flag)
+        self.assertEqual(self.run_cmd("test ! -f .git/flag"), 0)
+        self.assertEqual(self.complete("Verify: `test ! -f .git/flag`")[0], 0)
+
+    def test_each_command_keeps_its_own_result(self):
+        self.run_cmd("true")
+        self.run_cmd("test -f a.txt")
+        self.run_cmd("false")
+        self.assertEqual(self.complete("Verify: `true`")[0], 0)
+        self.assertEqual(self.complete("Verify: `test -f a.txt`")[0], 0)
+        self.assertEqual(self.complete("Verify: `false`"), self.blocked("the run exited 1", "false"))
 
     def test_edit_after_the_pass_blocks_until_rerun(self):
         self.run_cmd("true")
         self.edit()
-        rc, err = self.complete("Verify: `true`")
-        self.assertEqual(rc, 2)
-        self.assertIn("changed since", err)
+        self.assertEqual(self.complete("Verify: `true`"),
+                         self.blocked("the files changed since the passing run", "true"))
         self.run_cmd("true")
         self.assertEqual(self.complete("Verify: `true`")[0], 0)
 
@@ -120,8 +145,53 @@ class Completion(VerifyCase):
         os.mkdir(os.path.join(self.repo, "sub"))
         self.assertEqual(self.run_cmd("test -f a.txt", repo=os.path.join(self.repo, "sub")), 0)
 
+    def test_run_without_repo_uses_the_current_directory(self):
+        sub = os.path.join(self.repo, "sub")
+        os.mkdir(sub)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(sub)
+        self.assertEqual(self.call(["run", "--", "test -f a.txt"])[0], 0)
+        os.chdir(here)
+        self.assertEqual(self.complete("Verify: `test -f a.txt`")[0], 0)
+
+    def test_tree_that_cannot_be_hashed_is_no_pass(self):
+        self.run_cmd("true")
+        with mock.patch.object(tv.scenarios, "tree_hash", side_effect=SystemExit(3)):
+            self.assertEqual(self.complete("Verify: `true`"),
+                             self.blocked("the files changed since the passing run", "true"))
+            self.assertEqual(self.run_cmd("true"), 0)  # recorded without a tree: never a pass
+            self.assertEqual(self.complete("Verify: `true`")[0], 2)
+        self.assertEqual(self.complete("Verify: `true`")[0], 2)
+
     def test_outside_a_git_repo_is_silent(self):
         self.assertEqual(self.complete("Verify: `true`", cwd=os.path.realpath(self.tmp.name)), (0, ""))
+
+
+class Records(VerifyCase):
+    def test_record_sits_in_the_repos_git_dir(self):
+        self.run_cmd("true")
+        self.assertTrue(os.path.isfile(os.path.join(self.repo, ".git", "ekit", "verify.json")))
+
+    def test_record_sits_under_ekit_state_when_set(self):
+        state = os.path.join(os.path.realpath(self.tmp.name), "st")
+        os.environ["EKIT_STATE"] = state
+        self.run_cmd("true")
+        key = hashlib.sha1(os.path.join(self.repo, ".git").encode()).hexdigest()
+        self.assertTrue(os.path.isfile(os.path.join(state, "verify", key, "verify.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "ekit")))
+        self.assertEqual(self.complete("Verify: `true`")[0], 0)
+
+    def test_file_that_is_not_a_record_list_reads_as_no_runs(self):
+        path = os.path.join(self.repo, ".git", "ekit", "verify.json")
+        os.makedirs(os.path.dirname(path))
+        for junk in ('{"a": 1}', "not json", '"text"'):
+            with self.subTest(junk=junk):
+                with open(path, "w") as f:
+                    f.write(junk)
+                self.assertEqual(self.complete("Verify: `true`"), self.blocked("no run recorded", "true"))
+        self.assertEqual(self.run_cmd("true"), 0)
+        self.assertEqual(self.complete("Verify: `true`")[0], 0)
 
 
 class DeclaredAtCreation(VerifyCase):
@@ -132,9 +202,8 @@ class DeclaredAtCreation(VerifyCase):
     def test_command_from_creation_wins_over_a_later_edit(self):
         self.hook("TaskCreated", "Verify: `test -f missing.txt`")
         self.run_cmd("true")
-        rc, err = self.complete("Verify: `true`")
-        self.assertEqual(rc, 2)
-        self.assertIn("test -f missing.txt", err)
+        self.assertEqual(self.complete("Verify: `true`"),
+                         self.blocked("no run recorded", "test -f missing.txt"))
 
     def test_line_added_after_creation_is_used(self):
         self.hook("TaskCreated", "no line yet")
@@ -175,6 +244,20 @@ class Teammate(VerifyCase):
         self.edit()
         self.assertEqual(self.complete("Verify: `true`", **kw)[0], 2)
 
+    def test_teammate_block_is_per_session_and_task(self):
+        kw = {"teammate_name": "implementer"}
+        self.assertEqual(self.complete("Verify: `true`", **kw)[0], 2)
+        self.assertEqual(self.complete("Verify: `true`", session="s2", **kw)[0], 2)
+        self.assertEqual(self.complete("Verify: `true`", task="t2", **kw)[0], 2)
+        self.assertEqual(self.complete("Verify: `true`", **kw)[0], 0)
+
+    def test_teammate_is_blocked_again_when_the_reason_changes(self):
+        kw = {"teammate_name": "implementer"}
+        self.assertEqual(self.complete("Verify: `false`", **kw), self.blocked("no run recorded", "false"))
+        self.run_cmd("false")
+        self.assertEqual(self.complete("Verify: `false`", **kw), self.blocked("the run exited 1", "false"))
+        self.assertEqual(self.complete("Verify: `false`", **kw), (0, ""))
+
     def test_plain_session_is_blocked_every_time(self):
         for _ in range(3):
             self.assertEqual(self.complete("Verify: `true`")[0], 2)
@@ -189,6 +272,9 @@ class VerifyLine(unittest.TestCase):
             ("Verify: bash tests/run.sh", "bash tests/run.sh"),
             ("Verify: `a`\nVerify: `b`", "a"),
             ("We verify: nothing here by hand, see `x`", None),
+            ("Verify: `a` && `b`", "`a` && `b`"),
+            ("Verify: ``", None),
+            ("Verify: `  `", None),
             ("Verify:", None),
             ("", None),
             (None, None),
@@ -199,13 +285,16 @@ class VerifyLine(unittest.TestCase):
 
 class Usage(VerifyCase):
     def test_run_without_a_command_is_a_usage_error(self):
-        self.assertEqual(self.call(["--repo", self.repo, "run", "--"])[0], 2)
-        self.assertEqual(self.call(["bogus"])[0], 2)
+        usage = (2, "usage: task-verify.py [--repo DIR] run -- CMD... | task-verify.py --hook\n")
+        for argv in ([], ["--repo"], ["--repo", self.repo], ["run"], ["run", "--"], ["run", "--", "", " "],
+                     ["--repo", self.repo, "run", "--"], ["--repo", self.repo, "run", "true"], ["bogus", "--", "true"],
+                     ["run", "true", "--"], ["--hook", "x"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.call(argv), usage)
 
     def test_run_outside_a_repo_is_a_usage_error(self):
         rc, err = self.call(["--repo", os.path.realpath(self.tmp.name), "run", "--", "true"])
-        self.assertEqual(rc, 2)
-        self.assertIn("not a git repo", err)
+        self.assertEqual((rc, err), (2, f"task-verify: not a git repo: {os.path.realpath(self.tmp.name)}\n"))
 
 
 if __name__ == "__main__":
