@@ -350,11 +350,11 @@ class TestVerifyCommands(GateCase):
             out = self.stop(DONE)
             self.assertEqual(out["decision"], "block")
         self.assertEqual(out["reason"], (
-            "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. Each task of "
-            "this session carries a line `Verify: <command>` (the whole job: one task with the full suite). "
-            f"Run each through `python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} run -- "
-            "<command>`, fix what it shows, then give the finish report again. It cannot pass here → "
-            "`## Finish: blocked`."))
+            "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. A done report "
+            "needs each of the session's verify commands green: the units' and the full suite for the whole job. "
+            f"Declare one with `CLAUDE_CODE_SESSION_ID=s1 python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} "
+            f"--repo {self.repo} declare -- <command>`, run each with `run -- <command>` in place of `declare`, fix "
+            "what it shows, then give the finish report again. It cannot pass here → `## Finish: blocked`."))
         self.assertEqual(self.verifier.calls[-1], (self.repo, "s1"))
 
     def test_a_done_report_with_green_commands_allows(self):
@@ -403,7 +403,7 @@ class TestVerifierProcess(unittest.TestCase):
                            "task_description": "Verify: `true`"}
                 subprocess.run(["python3", "-I", tv, "--hook"], input=json.dumps(payload), text=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (1, "`true`: no run recorded"))
-                self.assertEqual(fg.verifier(repo, "s2"), (1, "no task of this session has a `Verify:` line"))
+                self.assertEqual(fg.verifier(repo, "s2"), (1, "no verify command was declared for this session"))
                 subprocess.run(["python3", "-I", tv, "--repo", repo, "run", "--", "true"], capture_output=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (0, ""))
 

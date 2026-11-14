@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""Task verification: a task whose description carries a `Verify: \\`<command>\\`` line completes only after that
-command passed on the files as they are now.
+"""Task verification: work is checked with verify commands that were named before it was called done.
+
+A verify command belongs to a session. It gets there in one of two ways:
+- `task-verify.py [--repo DIR] declare -- CMD...`, run by the agent. The session is $CLAUDE_CODE_SESSION_ID, which
+  Claude Code sets for Bash commands. This works in every session.
+- a task whose description carries a line ``Verify: `<command>` ``, in a harness with a task list (the hook below).
+A command stays once it is there: no call takes one away, and a task keeps the command it was first seen with.
 
 `task-verify.py [--repo DIR] run -- CMD...` runs CMD in the repo root and records its exit code with the tree hash.
 The agent runs it, through the Bash tool, so the command passes the session's permission rules and sandbox.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
-- TaskCreated: the task's Verify command is kept for the session. An edit of the description later does not change
-  what the task is checked with.
-  A command first seen at completion is kept from then on.
-- TaskCompleted: allowed when a recorded run of that command exited 0 and the tree it ran on is unchanged; otherwise
-  exit 2, and the reason goes to the agent on stderr. A task without a Verify line is never gated.
+- TaskCreated: the task's Verify command becomes a command of the session.
+- TaskCompleted: allowed when a recorded run of the task's command exited 0 and the tree it ran on is unchanged;
+  otherwise exit 2, and the reason goes to the agent on stderr. A task without a Verify line is never gated.
 
 `task-verify.py [--repo DIR] check SESSION` is the Stop gate's question at a `## Finish: done` report: did every
-verify command of the session's tasks pass on the files as they are now? Exit 0 when so; else 1, with one line per
-command that did not, or one line saying the session has none.
+verify command of the session pass on the files as they are now? Exit 0 when so; else 1, with one line per command
+that did not, or one line saying the session has none.
 
-Records sit in the repo's common git dir (<git dir>/ekit/verify.json, or $EKIT_STATE/verify/<repo key>/), so a run in a
-linked worktree is seen from the main checkout. Each record names its worktree: a pass counts while that worktree's
-files are the ones the command ran on. The tree hash is the scenario runner's: a commit alone changes nothing.
+Commands and runs sit in the repo's common git dir (<git dir>/ekit/, or $EKIT_STATE/verify/<repo key>/): the hook
+process and a sandboxed Bash command agree on that place, and a linked worktree shares it with the main checkout.
+A sandbox that keeps the git dir read-only cannot write there: `declare` and `run` then exit 3 and say so, and the
+same command outside the sandbox is the next step.
+Each run names its worktree: a pass counts while that worktree's files are the ones the command ran on. The tree
+hash is the scenario runner's: a commit alone changes nothing.
 
 A teammate's turn end fires TaskCompleted too (agent teams). There the block is given once per tree and reason:
 a block on every try would hold the turn open for good.
@@ -68,46 +74,83 @@ def tree(top):
         return None
 
 
-def records_path(top):
+def store(top):
+    """The directory that holds this repo's verify commands and runs."""
     common = os.path.realpath(os.path.join(top, git(top, "rev-parse", "--git-common-dir")))
     state = scenarios.env("STATE")
     if state:
-        return os.path.join(state, "verify", hashlib.sha1(common.encode()).hexdigest(), "verify.json")
-    return os.path.join(common, "ekit", "verify.json")
+        return os.path.join(state, "verify", hashlib.sha1(common.encode()).hexdigest())
+    return os.path.join(common, "ekit")
 
 
-def load(path):
-    """The recorded runs: one per worktree and command. Anything else in the file reads as no runs."""
+def load(path, kind):
+    """The JSON value in the file when it is a `kind` (list of runs, dict of sessions); else an empty one."""
     try:
         with open(path) as f:
-            recs = json.load(f)
+            value = json.load(f)
     except (OSError, ValueError):
-        return []
-    return recs if isinstance(recs, list) else []
+        return kind()
+    return value if isinstance(value, kind) else kind()
+
+
+def save(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}"
+    with open(tmp, "w") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)
+
+
+def runs_of(top):
+    return load(os.path.join(store(top), "verify.json"), list)
 
 
 def record(top, cmd, rc):
     """Replaces this worktree's earlier run of `cmd`."""
-    path = records_path(top)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    recs = [r for r in load(path) if (r["top"], r["cmd"]) != (top, cmd)]
-    recs.append({"cmd": cmd, "top": top, "tree": tree(top), "rc": rc})
-    tmp = f"{path}.{os.getpid()}"
-    with open(tmp, "w") as f:
-        json.dump(recs, f)
-    os.replace(tmp, path)
+    runs = [r for r in runs_of(top) if (r["top"], r["cmd"]) != (top, cmd)]
+    runs.append({"cmd": cmd, "top": top, "tree": tree(top), "rc": rc})
+    save(os.path.join(store(top), "verify.json"), runs)
 
 
-def cmd_run(repo, words):
-    top = git(repo, "rev-parse", "--show-toplevel")
-    if not top:
-        print(f"task-verify: not a git repo: {repo}", file=sys.stderr)
-        return 2
-    cmd = words[0] if len(words) == 1 else shlex.join(words)
+def keep(top, session, key, cmd):
+    """The session's command under `key`: the one already there, else `cmd`, which is then kept (None is not)."""
+    path = os.path.join(store(top), "declared.json")
+    sessions = load(path, dict)
+    mine = sessions.setdefault(session, {})
+    if key not in mine and cmd:
+        mine[key] = cmd
+        save(path, sessions)
+    return mine.get(key)
+
+
+def commands(top, session):
+    """The session's verify commands, each once."""
+    return sorted(set(load(os.path.join(store(top), "declared.json"), dict).get(session, {}).values()))
+
+
+def spelled(words):
+    """The command line the words stand for, whitespace collapsed: one word is a shell line already."""
+    return " ".join((words[0] if len(words) == 1 else shlex.join(words)).split())
+
+
+def cmd_run(top, words):
+    cmd = spelled(words)
     rc = subprocess.run(cmd, shell=True, cwd=top).returncode
-    record(top, " ".join(cmd.split()), rc)  # hashed after the run: what the command left is what the hook will see
+    record(top, cmd, rc)  # hashed after the run: what the command left is what the hook will see
     print(f"task-verify: `{cmd}` exited {rc}", file=sys.stderr)
     return rc
+
+
+def cmd_declare(top, words):
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not session:
+        print("task-verify: CLAUDE_CODE_SESSION_ID is not set: run this as a Claude Code Bash command, or set it to "
+              "the session id", file=sys.stderr)
+        return 2
+    cmd = spelled(words)
+    keep(top, session, f"cmd:{cmd}", cmd)
+    print(f"task-verify: `{cmd}` is a verify command of this session", file=sys.stderr)
+    return 0
 
 
 def read(path):
@@ -126,7 +169,7 @@ def write(path, text):
 
 def why_not(top, cmd):
     """None when a recorded run of `cmd` passed on files that are still the same; else what is missing."""
-    runs = [r for r in load(records_path(top)) if r["cmd"] == cmd]
+    runs = [r for r in runs_of(top) if r["cmd"] == cmd]
     if not runs:
         return "no run recorded"
     passed = [r for r in runs if r["rc"] == 0]
@@ -137,20 +180,10 @@ def why_not(top, cmd):
     return "the files changed since the passing run"
 
 
-def kept_commands(session):
-    """The verify commands of the session's tasks, each once."""
-    try:
-        names = os.listdir(STATE)
-    except OSError:
-        return []
-    return sorted({read(os.path.join(STATE, n)) for n in names if n.startswith(f"{session}.task-")})
-
-
-def cmd_check(repo, session):
-    top = git(repo, "rev-parse", "--show-toplevel")
-    cmds = kept_commands(session)
+def cmd_check(top, session):
+    cmds = commands(top, session)
     if not cmds:
-        print("no task of this session has a `Verify:` line")
+        print("no verify command was declared for this session")
         return 1
     red = [f"`{cmd}`: {why}" for cmd, why in ((cmd, why_not(top, cmd)) for cmd in cmds) if why]
     if red:
@@ -161,25 +194,19 @@ def cmd_check(repo, session):
 
 def hook():
     data = json.load(sys.stdin)
-    session, task = data.get("session_id"), hashlib.sha1(str(data.get("task_id")).encode()).hexdigest()
-    now = declared(data.get("task_description"))
-    kept = os.path.join(STATE, f"{session}.task-{task}")
-    if data.get("hook_event_name") == "TaskCreated":
-        if now:
-            write(kept, now)
-        return 0
-    cmd = read(kept) or now
-    if not cmd:
-        return 0
-    write(kept, cmd)
+    session, task = data.get("session_id"), data.get("task_id")
     top = git(data.get("cwd") or os.getcwd(), "rev-parse", "--show-toplevel")
     if not top:
+        return 0
+    cmd = keep(top, session, f"task:{task}", declared(data.get("task_description")))
+    if not cmd or data.get("hook_event_name") == "TaskCreated":
         return 0
     why = why_not(top, cmd)
     if why is None:
         return 0
     if data.get("teammate_name"):
-        seen, mark = os.path.join(STATE, f"{session}.taskblock-{task}"), f"{tree(top)} {why}"
+        name = hashlib.sha1(f"{session} {task}".encode()).hexdigest()
+        seen, mark = os.path.join(STATE, f"{name}.taskblock"), f"{tree(top)} {why}"
         if read(seen) == mark:
             return 0
         write(seen, mark)
@@ -191,7 +218,7 @@ def hook():
     return 2
 
 
-USAGE = "usage: task-verify.py [--repo DIR] run -- CMD... | [--repo DIR] check SESSION | --hook"
+USAGE = "usage: task-verify.py [--repo DIR] declare -- CMD... | run -- CMD... | check SESSION | task-verify.py --hook"
 
 
 def main():
@@ -203,12 +230,23 @@ def main():
         if a[0] == "--repo":
             repo, a = os.path.abspath(a[1]), a[2:]
         check = a[0] == "check" and len(a) == 2
-        if not check and (a[0] != "run" or a[1] != "--" or not any(w.strip() for w in a[2:])):
+        if not check and (a[0] not in ("declare", "run") or a[1] != "--" or not any(w.strip() for w in a[2:])):
             raise IndexError
     except IndexError:  # a word is missing, or is not the one the usage line names
         print(USAGE, file=sys.stderr)
         return 2
-    return cmd_check(repo, a[1]) if check else cmd_run(repo, a[2:])
+    top = git(repo, "rev-parse", "--show-toplevel")
+    if not top:
+        print(f"task-verify: not a git repo: {repo}", file=sys.stderr)
+        return 2
+    if check:
+        return cmd_check(top, a[1])
+    try:
+        return (cmd_declare if a[0] == "declare" else cmd_run)(top, a[2:])
+    except OSError as e:
+        print(f"task-verify: nothing recorded, cannot write {e.filename}: {e.strerror}. A sandbox keeps the git dir "
+              "read-only: run this same command outside the sandbox.", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

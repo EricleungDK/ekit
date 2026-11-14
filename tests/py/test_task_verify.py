@@ -228,7 +228,7 @@ class SessionCheck(VerifyCase):
 
     def test_session_without_a_verify_command_is_not_green(self):
         self.hook("TaskCreated", "no line")
-        self.assertEqual(self.check(), (1, "no task of this session has a `Verify:` line\n"))
+        self.assertEqual(self.check(), (1, "no verify command was declared for this session\n"))
 
     def test_each_command_that_did_not_pass_is_named(self):
         self.hook("TaskCreated", "Verify: `true`", task="t1")
@@ -263,6 +263,98 @@ class SessionCheck(VerifyCase):
 
     def test_before_any_task_hook_ran_there_is_no_command(self):
         self.assertEqual(self.check()[0], 1)
+
+
+class Declare(VerifyCase):
+    """`declare -- CMD`: the way to a verify command in a session that has no task list."""
+
+    def declare(self, *cmd, session="s1", repo=None):
+        env = {} if session is None else {"CLAUDE_CODE_SESSION_ID": session}
+        with mock.patch.dict(os.environ, env):
+            if session is None:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            return self.call(["--repo", repo or self.repo, "declare", "--", *cmd])
+
+    def test_declared_command_is_one_the_session_must_pass(self):
+        self.assertEqual(self.declare("test", "-f", "a.txt"),
+                         (0, "task-verify: `test -f a.txt` is a verify command of this session\n"))
+        self.assertEqual(self.check(), (1, "`test -f a.txt`: no run recorded\n"))
+        self.run_cmd("test  -f a.txt")
+        self.assertEqual(self.check(), (0, ""))
+
+    def test_declaring_again_and_declaring_more_keeps_them_all(self):
+        self.declare("true")
+        self.declare("exit 3")
+        self.declare("true")
+        self.assertEqual(self.check(), (1, "`exit 3`: no run recorded\n`true`: no run recorded\n"))
+
+    def test_declared_commands_and_task_commands_are_one_list(self):
+        self.declare("true")
+        self.hook("TaskCreated", "Verify: `exit 3`")
+        self.hook("TaskCreated", "Verify: `true`", task="t2")
+        self.assertEqual(self.check(), (1, "`exit 3`: no run recorded\n`true`: no run recorded\n"))
+
+    def test_the_session_is_the_one_in_the_environment(self):
+        self.declare("true", session="s2")
+        self.assertEqual(self.check()[1], "no verify command was declared for this session\n")
+        self.assertEqual(self.check("s2"), (1, "`true`: no run recorded\n"))
+
+    def test_without_a_session_id_nothing_is_declared(self):
+        self.assertEqual(self.declare("true", session=None), (
+            2, "task-verify: CLAUDE_CODE_SESSION_ID is not set: run this as a Claude Code Bash command, or set it "
+               "to the session id\n"))
+        self.assertEqual(self.declare("true", session=""), self.declare("true", session=None))
+
+    def test_declared_in_a_linked_worktree_counts_in_the_main_checkout(self):
+        wt = os.path.join(os.path.realpath(self.tmp.name), "wt")
+        git(self.repo, "worktree", "add", "-q", wt, "-b", "unit")
+        self.declare("true", repo=wt)
+        self.assertEqual(self.check(), (1, "`true`: no run recorded\n"))
+
+    def test_commands_sit_beside_the_runs(self):
+        self.declare("true")
+        self.assertTrue(os.path.isfile(os.path.join(self.repo, ".git", "ekit", "declared.json")))
+        state = os.path.join(os.path.realpath(self.tmp.name), "st")
+        os.environ["EKIT_STATE"] = state
+        self.declare("true")
+        key = hashlib.sha1(os.path.join(self.repo, ".git").encode()).hexdigest()
+        self.assertTrue(os.path.isfile(os.path.join(state, "verify", key, "declared.json")))
+
+    def test_file_that_is_not_a_session_map_reads_as_no_commands(self):
+        path = os.path.join(self.repo, ".git", "ekit", "declared.json")
+        os.makedirs(os.path.dirname(path))
+        for junk in ("[1]", "not json"):
+            with self.subTest(junk=junk):
+                with open(path, "w") as f:
+                    f.write(junk)
+                self.assertEqual(self.check()[1], "no verify command was declared for this session\n")
+        self.declare("true")
+        self.assertEqual(self.check(), (1, "`true`: no run recorded\n"))
+
+
+class ReadOnlyGitDir(VerifyCase):
+    """A sandboxed Bash command cannot write the git dir: the verbs that record say so, with their own exit code."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = os.path.join(self.repo, ".git", "ekit")
+        os.mkdir(self.dir)
+        os.chmod(self.dir, 0o500)
+        self.addCleanup(os.chmod, self.dir, 0o700)
+
+    def refused(self, name):
+        return 3, (f"task-verify: nothing recorded, cannot write {os.path.join(self.dir, name)}.{os.getpid()}: "
+                   "Permission denied. A sandbox keeps the git dir read-only: run this same command outside the "
+                   "sandbox.\n")
+
+    def test_run_that_cannot_record_is_not_a_pass(self):
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "true"]), self.refused("verify.json"))
+        os.chmod(self.dir, 0o700)  # the hook runs outside the sandbox
+        self.assertEqual(self.complete("Verify: `true`"), self.blocked("no run recorded", "true"))
+
+    def test_declare_that_cannot_record_says_so(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}):
+            self.assertEqual(self.call(["--repo", self.repo, "declare", "--", "true"]), self.refused("declared.json"))
 
 
 class Worktree(VerifyCase):
@@ -334,16 +426,22 @@ class VerifyLine(unittest.TestCase):
 
 class Usage(VerifyCase):
     def test_run_without_a_command_is_a_usage_error(self):
-        usage = (2, "usage: task-verify.py [--repo DIR] run -- CMD... | [--repo DIR] check SESSION | --hook\n")
+        usage = (2, "usage: task-verify.py [--repo DIR] declare -- CMD... | run -- CMD... | check SESSION | "
+                    "task-verify.py --hook\n")
         for argv in ([], ["--repo"], ["--repo", self.repo], ["run"], ["run", "--"], ["run", "--", "", " "],
                      ["--repo", self.repo, "run", "--"], ["--repo", self.repo, "run", "true"], ["bogus", "--", "true"],
                      ["run", "true", "--"], ["--hook", "x"], ["check"],
-                     ["check", "s1", "s2"], ["--repo", self.repo, "check"]):
+                     ["check", "s1", "s2"], ["--repo", self.repo, "check"], ["declare"], ["declare", "--"],
+                     ["declare", "true"], ["declare", "--", " "]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.call(argv), usage)
 
-    def test_run_outside_a_repo_is_a_usage_error(self):
-        rc, err = self.call(["--repo", os.path.realpath(self.tmp.name), "run", "--", "true"])
+    def test_outside_a_repo_every_verb_is_an_error(self):
+        base = os.path.realpath(self.tmp.name)
+        for verb in (["declare", "--", "true"], ["check", "s1"]):
+            with self.subTest(verb=verb):
+                self.assertEqual(self.call(["--repo", base, *verb]), (2, f"task-verify: not a git repo: {base}\n"))
+        rc, err = self.call(["--repo", base, "run", "--", "true"])
         self.assertEqual((rc, err), (2, f"task-verify: not a git repo: {os.path.realpath(self.tmp.name)}\n"))
 
 

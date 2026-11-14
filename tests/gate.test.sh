@@ -181,12 +181,15 @@ V="$T/verify"; mkdir -p "$V"; git -C "$V" init -q; git -C "$V" -c user.email=t@t
 mktask() { jq -nc --arg c "$V" --arg d "$1" --arg t "$2" '{hook_event_name:"TaskCreated",session_id:"v1",cwd:$c,task_id:$t,task_description:$d}' | python3 -I "$TV" --hook; }
 start "$V" v1 >/dev/null; arm "$V" v1 >/dev/null; echo a > "$V/a.txt"
 out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, no verify command in the session → block"
-has "$(jq -r .reason <<<"$out")" "no task of this session has a \`Verify:\` line" "reason: no command declared"
+has "$(jq -r .reason <<<"$out")" "no verify command was declared for this session" "reason: no command declared"
+has "$(jq -r .reason <<<"$out")" "CLAUDE_CODE_SESSION_ID=v1 python3 $TV --repo $V declare -- <command>" "reason gives the declare command with the session id"
+CLAUDE_CODE_SESSION_ID=v1 python3 -I "$TV" --repo "$V" declare -- 'test -f a.txt' 2>/dev/null
+out="$(stop "$V" v1 false Stop "$REPORT")"; has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "a declared command is asked for"
 mktask 'Verify: `test -f a.txt`' 1; mktask 'Whole job. Verify: nothing on this line
 Verify: `test -f a.txt && test ! -f broken`' 2
 out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, commands never run → block"
 has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "reason names the command and what is missing"
-has "$(jq -r .reason <<<"$out")" "$TV --repo $V run -- <command>" "reason gives the runner"
+has "$(jq -r .reason <<<"$out")" 'run -- <command>' "reason gives the runner"
 python3 -I "$TV" --repo "$V" run -- test -f a.txt 2>/dev/null
 eq "$(dec "$(stop "$V" v1 false Stop "$REPORT")")" "block" "one command of two green → block"
 python3 -I "$TV" --repo "$V" run -- 'test -f a.txt && test ! -f broken' 2>/dev/null

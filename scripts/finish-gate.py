@@ -7,7 +7,7 @@ Work = the working tree's content differs from session start (runner `tree-hash`
 changes nothing; the baseline is per repo). With work done, the stop is allowed when:
 - the last assistant message carries the finish report (`## Finish: done` or `## Finish: blocked`), and
 - in a repo with .ekit/scenarios/, `check` is a fresh PASS for the current tree (a `blocked` report needs no PASS).
-- for a `done` report, every verify command of the session's tasks passed on the current tree (`task-verify.py check`):
+- for a `done` report, every verify command of the session passed on the current tree (`task-verify.py check`):
   the units' commands and the whole job's, whose task carries the full suite. A session with no such command is not
   green. A `blocked` report needs none.
 A tree that was reported stays allowed. A missing report blocks once per tree; scenarios that are not green block
@@ -184,10 +184,11 @@ def main():
     if kind == "done":
         rc, why = verifier(top, session)
         if rc != 0:
-            return block(f"Verify commands not green for the current files: {why}. Each task of this session carries "
-                         "a line `Verify: <command>` (the whole job: one task with the full suite). Run each "
-                         f"through `python3 {VERIFY} --repo {top} run -- <command>`, fix what it shows, then give the "
-                         "finish report again. It cannot pass here → `## Finish: blocked`.")
+            return block(f"Verify commands not green for the current files: {why}. A done report needs each of the "
+                         "session's verify commands green: the units' and the full suite for the whole job. Declare "
+                         f"one with `CLAUDE_CODE_SESSION_ID={session} python3 {VERIFY} --repo {top} declare -- "
+                         "<command>`, run each with `run -- <command>` in place of `declare`, fix what it shows, then "
+                         "give the finish report again. It cannot pass here → `## Finish: blocked`.")
     if kind:
         write(reported, cur)
         return
