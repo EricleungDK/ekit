@@ -3,7 +3,7 @@
 # The task touches both files: two units, each with its own verify command, plus the suite for the whole job.
 set -e
 git init -q -b main .; git config user.email t@t; git config user.name t
-printf '.gitconfig\n.config/\n.npm/\n' >> .git/info/exclude  # sandbox HOME files: not the work, keep the finish gate quiet
+printf '.gitconfig\n.config/\n.npm/\n__pycache__/\n' >> .git/info/exclude  # sandbox HOME files: not the work, keep the finish gate quiet
 mkdir tests
 cat > calc.py <<'PY'
 def div(a, b):
@@ -41,7 +41,7 @@ cat > AGENTS.md <<'MD'
 
 - Lint: `python3 -m compileall -q calc.py cli.py`
 - One test file: `python3 -m unittest tests.test_calc` (or `tests.test_cli`)
-- Full suite: `python3 -m unittest discover -s tests -t .`
+- Full suite: `python3 -m unittest discover -s tests`
 - Commits: conventional, no attribution trailer.
 MD
 git add -A; git commit -qm "calc + cli"

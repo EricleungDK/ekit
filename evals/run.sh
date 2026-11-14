@@ -6,5 +6,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ $(uname) == Darwin ]] && real="$(xcrun --find git 2>/dev/null)"; then
   PATH="$(dirname "$real"):$PATH"
+  export xcrun_nocache=1  # a shell profile may put /usr/bin first again: then the shim at least skips its cache
 fi
 exec claude plugin eval . --judge-model claude-opus-5-5 --scaffold --allow-tools Bash Edit Write "$@"
