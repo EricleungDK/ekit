@@ -4,6 +4,7 @@
 set -e
 git init -q -b main .; git config user.email t@t; git config user.name t
 printf '.gitconfig\n.config/\n.npm/\n' >> .git/info/exclude  # sandbox HOME files: not the work, keep the finish gate quiet
+printf '__pycache__/\n' >> .git/info/exclude  # bytecode from running the tests: a verify-only run changes no file the gate counts
 cat > version.py <<'PY'
 def parse_version(s):
     nums = [int(p) for p in s.split(".")]
