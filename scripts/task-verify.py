@@ -174,10 +174,9 @@ def main():
     try:
         if a[0] == "--repo":
             repo, a = os.path.abspath(a[1]), a[2:]
-        runs = a[0] == "run" and a[1] == "--" and any(w.strip() for w in a[2:])
-    except IndexError:
-        runs = False
-    if not runs:
+        if a[0] != "run" or a[1] != "--" or not any(w.strip() for w in a[2:]):
+            raise IndexError
+    except IndexError:  # a word is missing, or is not the one the usage line names
         print(USAGE, file=sys.stderr)
         return 2
     return cmd_run(repo, a[2:])
