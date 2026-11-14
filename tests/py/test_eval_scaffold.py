@@ -10,7 +10,18 @@ import unittest
 
 import _kit
 
-CASE = os.path.join(_kit.ROOT, "evals", "orchestrate-mech-tick")
+
+
+def case_dir(name):
+    """evals/<name> of the repo. The mutation run (R3) executes the tests from a copy under <repo>/mutants/ that
+    holds the scripts and the tests only: the eval cases are then one level up."""
+    root = _kit.ROOT
+    while not os.path.isdir(os.path.join(root, "evals", name)) and os.path.dirname(root) != root:
+        root = os.path.dirname(root)
+    return os.path.join(root, "evals", name)
+
+
+CASE = case_dir("orchestrate-mech-tick")
 GATE = os.path.join(_kit.SCRIPTS, "finish-gate.py")
 
 
