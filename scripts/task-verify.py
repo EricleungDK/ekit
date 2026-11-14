@@ -8,8 +8,13 @@ The agent runs it, through the Bash tool, so the command passes the session's pe
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command is kept for the session. An edit of the description later does not change
   what the task is checked with.
+  A command first seen at completion is kept from then on.
 - TaskCompleted: allowed when a recorded run of that command exited 0 and the tree it ran on is unchanged; otherwise
   exit 2, and the reason goes to the agent on stderr. A task without a Verify line is never gated.
+
+`task-verify.py [--repo DIR] check SESSION` is the Stop gate's question at a `## Finish: done` report: did every
+verify command of the session's tasks pass on the files as they are now? Exit 0 when so; else 1, with one line per
+command that did not, or one line saying the session has none.
 
 Records sit in the repo's common git dir (<git dir>/ekit/verify.json, or $EKIT_STATE/verify/<repo key>/), so a run in a
 linked worktree is seen from the main checkout. Each record names its worktree: a pass counts while that worktree's
@@ -132,6 +137,28 @@ def why_not(top, cmd):
     return "the files changed since the passing run"
 
 
+def kept_commands(session):
+    """The verify commands of the session's tasks, each once."""
+    try:
+        names = os.listdir(STATE)
+    except OSError:
+        return []
+    return sorted({read(os.path.join(STATE, n)) for n in names if n.startswith(f"{session}.task-")})
+
+
+def cmd_check(repo, session):
+    top = git(repo, "rev-parse", "--show-toplevel")
+    cmds = kept_commands(session)
+    if not cmds:
+        print("no task of this session has a `Verify:` line")
+        return 1
+    red = [f"`{cmd}`: {why}" for cmd, why in ((cmd, why_not(top, cmd)) for cmd in cmds) if why]
+    if red:
+        print("\n".join(red))
+        return 1
+    return 0
+
+
 def hook():
     data = json.load(sys.stdin)
     session, task = data.get("session_id"), hashlib.sha1(str(data.get("task_id")).encode()).hexdigest()
@@ -144,6 +171,7 @@ def hook():
     cmd = read(kept) or now
     if not cmd:
         return 0
+    write(kept, cmd)
     top = git(data.get("cwd") or os.getcwd(), "rev-parse", "--show-toplevel")
     if not top:
         return 0
@@ -163,7 +191,7 @@ def hook():
     return 2
 
 
-USAGE = "usage: task-verify.py [--repo DIR] run -- CMD... | task-verify.py --hook"
+USAGE = "usage: task-verify.py [--repo DIR] run -- CMD... | [--repo DIR] check SESSION | --hook"
 
 
 def main():
@@ -174,12 +202,13 @@ def main():
     try:
         if a[0] == "--repo":
             repo, a = os.path.abspath(a[1]), a[2:]
-        if a[0] != "run" or a[1] != "--" or not any(w.strip() for w in a[2:]):
+        check = a[0] == "check" and len(a) == 2
+        if not check and (a[0] != "run" or a[1] != "--" or not any(w.strip() for w in a[2:])):
             raise IndexError
     except IndexError:  # a word is missing, or is not the one the usage line names
         print(USAGE, file=sys.stderr)
         return 2
-    return cmd_run(repo, a[2:])
+    return cmd_check(repo, a[1]) if check else cmd_run(repo, a[2:])
 
 
 if __name__ == "__main__":

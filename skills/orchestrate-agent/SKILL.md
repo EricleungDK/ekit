@@ -43,6 +43,7 @@ Show the units (name, files owned, checklist items, verify command, depends on) 
 
 - One agent per unit; units touching disjoint files run in parallel, in one message. Run them in the background.
 - One task per unit, in the harness's task list when it has one, created before the agent starts. Its description carries the line ``Verify: `<command>` ``. The task hook keeps that command: the task completes only after `python3 -I <kit>/scripts/task-verify.py --repo <checkout> run -- <command>` exited 0 on the files as they are now (`<kit>`: review relay, step 2).
+- One more task for the whole job, created with the others: its Verify line is the repo's full suite (`bash tests/run.sh`). The Stop gate takes `## Finish: done` only when every Verify command of this session, this one included, passed on the final files.
 - Every brief follows [brief-template.md](brief-template.md). An agent starts with none of your context, so the brief is self-contained: it is the agent's whole implement flow (red → green at the agreed seams, verify, review, commit). An implement skill reserved for the user cannot be loaded by an agent; the brief stands in for it. The brief's `Skills:` line lets the agent load a TDD or bug-diagnosis skill its install has.
 - **Subagents cannot spawn subagents.** A step of that flow that fans out, code review above all, comes to you through the **review relay** below. Research skills and workflows stay with you from the start.
 - Fix loop: each failing unit gets at most **3 rounds** (initial fix plus two retries after CI or verification fails). Count rounds per unit and per mech entry `id`; the first to reach 3 escalates. Hand each failing or open entry to the engineer verbatim (id, file, line, problem, hint, forbidden), brief or review relay alike, with the rule: its fix commit carries body line `mech: <id>`. No agent waives a `fail`. After round 3, stop and escalate to the user with evidence.
@@ -101,4 +102,5 @@ After the user acts, verify the result (`git status`, a count, the test) before 
 
 - PR: title, concise body, issue link (`Closes #N` when it completes the issue), test evidence, what is not done. Merge only with the user's explicit approval and every check green or explained.
 - Update the repo's task and system docs per its rules.
+- Rerun every unit's verify command and the whole job's through `task-verify.py run`, on the files as they now are: a unit's pass from before a later unit's edits no longer counts. Mark the whole-job task completed.
 - Load the finish skill and end on its report over the whole checklist, plus commits and PR. Its first line is `## Finish: done` or `## Finish: blocked`, as the skill writes it: the Stop gate reads that line.

@@ -53,6 +53,13 @@ class VerifyCase(unittest.TestCase):
                 rc = e.code
         return rc or 0, err.getvalue()
 
+    def check(self, session="s1"):
+        """(exit code, stdout) of `check SESSION`: what the Stop gate reads."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self.call(["--repo", self.repo, "check", session])[0]
+        return rc, out.getvalue()
+
     def run_cmd(self, *cmd, repo=None):
         return self.call(["--repo", repo or self.repo, "run", "--", *cmd])[0]
 
@@ -115,9 +122,9 @@ class Completion(VerifyCase):
         self.run_cmd("true")
         self.run_cmd("test -f a.txt")
         self.run_cmd("false")
-        self.assertEqual(self.complete("Verify: `true`")[0], 0)
-        self.assertEqual(self.complete("Verify: `test -f a.txt`")[0], 0)
-        self.assertEqual(self.complete("Verify: `false`"), self.blocked("the run exited 1", "false"))
+        self.assertEqual(self.complete("Verify: `true`", task="t1")[0], 0)
+        self.assertEqual(self.complete("Verify: `test -f a.txt`", task="t2")[0], 0)
+        self.assertEqual(self.complete("Verify: `false`", task="t3"), self.blocked("the run exited 1", "false"))
 
     def test_edit_after_the_pass_blocks_until_rerun(self):
         self.run_cmd("true")
@@ -216,6 +223,48 @@ class DeclaredAtCreation(VerifyCase):
         self.assertEqual(self.complete("Verify: `true`", session="s2")[0], 0)
 
 
+class SessionCheck(VerifyCase):
+    """`check SESSION`: every verify command of the session's tasks, on the files as they are now."""
+
+    def test_session_without_a_verify_command_is_not_green(self):
+        self.hook("TaskCreated", "no line")
+        self.assertEqual(self.check(), (1, "no task of this session has a `Verify:` line\n"))
+
+    def test_each_command_that_did_not_pass_is_named(self):
+        self.hook("TaskCreated", "Verify: `true`", task="t1")
+        self.hook("TaskCreated", "Verify: `exit 3`", task="t2")
+        self.hook("TaskCreated", "Verify: `test -f a.txt`", task="t3")
+        self.run_cmd("exit 3")
+        self.run_cmd("test -f a.txt")
+        self.assertEqual(self.check(), (1, "`exit 3`: the run exited 3\n`true`: no run recorded\n"))
+
+    def test_all_passed_on_the_current_files_is_green(self):
+        self.hook("TaskCreated", "Verify: `true`", task="t1")
+        self.hook("TaskCreated", "Verify: `true`", task="t2")
+        self.run_cmd("true")
+        self.assertEqual(self.check(), (0, ""))
+        self.edit()
+        self.assertEqual(self.check(), (1, "`true`: the files changed since the passing run\n"))
+
+    def test_only_this_sessions_commands_count(self):
+        self.hook("TaskCreated", "Verify: `false`", session="s2")
+        self.hook("TaskCreated", "Verify: `false`", session="s11")
+        self.hook("TaskCreated", "Verify: `true`")
+        self.run_cmd("true")
+        self.assertEqual(self.check(), (0, ""))
+        self.assertEqual(self.check("s2")[0], 1)
+
+    def test_command_first_seen_at_completion_is_kept(self):
+        self.hook("TaskCreated", "no line yet")
+        self.assertEqual(self.complete("Verify: `false`")[0], 2)
+        self.run_cmd("true")
+        self.assertEqual(self.complete("Verify: `true`"), self.blocked("no run recorded", "false"))
+        self.assertEqual(self.check(), (1, "`false`: no run recorded\n"))
+
+    def test_before_any_task_hook_ran_there_is_no_command(self):
+        self.assertEqual(self.check()[0], 1)
+
+
 class Worktree(VerifyCase):
     def test_pass_in_a_linked_worktree_counts_in_the_main_checkout(self):
         wt = os.path.join(os.path.realpath(self.tmp.name), "wt")
@@ -285,10 +334,11 @@ class VerifyLine(unittest.TestCase):
 
 class Usage(VerifyCase):
     def test_run_without_a_command_is_a_usage_error(self):
-        usage = (2, "usage: task-verify.py [--repo DIR] run -- CMD... | task-verify.py --hook\n")
+        usage = (2, "usage: task-verify.py [--repo DIR] run -- CMD... | [--repo DIR] check SESSION | --hook\n")
         for argv in ([], ["--repo"], ["--repo", self.repo], ["run"], ["run", "--"], ["run", "--", "", " "],
                      ["--repo", self.repo, "run", "--"], ["--repo", self.repo, "run", "true"], ["bogus", "--", "true"],
-                     ["run", "true", "--"], ["--hook", "x"]):
+                     ["run", "true", "--"], ["--hook", "x"], ["check"],
+                     ["check", "s1", "s2"], ["--repo", self.repo, "check"]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.call(argv), usage)
 
