@@ -121,7 +121,7 @@ Needs `git`, `bash` and `python3` 3.9 or newer (standard library only). Runs on 
 
 ### Hooks and scripts outside Claude Code
 
-The hooks (preflight, failure hints, finish gate) run in Claude Code. Elsewhere, skills still work: those that need the kit's scripts use `~/.ekit`, cloned once:
+The hooks (preflight, failure hints, task verification, finish gate) run in Claude Code. Elsewhere, skills still work: those that need the kit's scripts use `~/.ekit`, cloned once:
 
 ```bash
 git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
@@ -148,6 +148,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | **waiver** | A `/mech-waive <id> <reason>` PR comment from a person with write access. Agents cannot waive. |
 | **scenario** | A script in `.ekit/scenarios/` that installs your deliverable and uses it like a user would. |
 | **taste** | Running the scenarios through a subagent that has not seen the code. |
+| **verify command** | The one command that runs a unit's lint and tests, or the full suite for the whole job. Agreed in the checklist, then declared for the session; it stays once declared. |
 | **finish report** | The end-of-work table: each criterion with fresh evidence. |
 | **Needs-you block** | The exact command or decision the agent is waiting on you for. |
 | **verification debt** | Every check that could not run here, with where to run it. |
@@ -169,9 +170,10 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | `SessionStart` | Preflight warnings (missing tools, sandbox limits) + three working rules into context; prints the scenario runner path. |
 | `UserPromptSubmit` | Prompt starts with `/ekit:orchestrate-agent` → arms the finish gate for the session. |
 | `PostToolUseFailure` | Known Bash failure signatures (sandbox, port in use, missing tool, red test) → one line with the check that settles it. |
-| `Stop` | Orchestrate sessions only. If the files changed since the session started, the stop is blocked once per set of file contents, asking for the finish report (`## Finish: done` or `## Finish: blocked`) as the last message; in repos with `.ekit/scenarios/`, on each stop until the scenarios pass for the current files. The stop that directly follows a block is always let through, so a session cannot loop on the gate. Committing does not invalidate a pass. Subagents are not gated, and a stop while a subagent is still running is a wait for its report: it passes and asks nothing. |
+| `TaskCreated`, `TaskCompleted` | Sessions that have a task list (Claude Code leaves the task tools out on newer models unless `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`). A task whose description has a ``Verify: `<command>` `` line completes only after that command passed, through `task-verify.py run`, on the files as they are now. The hook runs nothing itself: the agent runs the command, under the session's permission rules. Tasks without the line are not gated. |
+| `Stop` | Orchestrate sessions only. If the files changed since the session started, the stop is blocked once per set of file contents, asking for the finish report (`## Finish: done` or `## Finish: blocked`) as the last message; in repos with `.ekit/scenarios/`, on each stop until the scenarios pass for the current files. A `## Finish: done` report is taken only when every verify command of the session passed on the current files (declared with `task-verify.py declare`, or carried by a task), the whole job's full-suite command among them; a session that declared none is not done. `## Finish: blocked` needs neither. The stop that directly follows a block is always let through, so a session cannot loop on the gate. Committing does not invalidate a pass. Subagents are not gated, and a stop while a subagent is still running is a wait for its report: it passes and asks nothing. |
 
-Outside orchestrate sessions the gate is silent: the skills still apply, nothing blocks.
+Outside orchestrate sessions the Stop gate is silent: the skills still apply, nothing blocks.
 
 ## mech-review CI
 
@@ -197,6 +199,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 |---|---|
 | `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. |
+| `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
 
 </details>
@@ -213,10 +216,10 @@ ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml
 Skill evals (kit dev only):
 
 ```bash
-claude plugin eval . --judge-model claude-opus-5-5 --scaffold --allow-tools Bash Edit Write
+evals/run.sh                     # all cases; options go to `claude plugin eval`, e.g. --case 'triage-*' -j 4
 ```
 
-`taste-act-*` cases grant Bash, so the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`. Their Bash is read-only, so graders check the commands run, not a runner PASS.
+On Linux the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`. On macOS `evals/run.sh` puts the real `git` first on `PATH`: the `/usr/bin/git` shim cannot run inside the sandbox. On both, the sandbox keeps the git dir read-only, so nothing a case runs can record there (a scenario PASS, a verify run): graders check the commands run and what the agent says about them.
 
 Changes per release: [CHANGELOG.md](CHANGELOG.md).
 

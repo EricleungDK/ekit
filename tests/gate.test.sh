@@ -2,6 +2,8 @@ source "$(dirname "$0")/lib.sh"
 SS="$ROOT/scripts/session-start.py"; FG="$ROOT/scripts/finish-gate.py"
 T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT  # physical path: macOS temp dirs sit behind a symlink
 export EKIT_STATE="$T/state"
+# The verify commands have their own section at the end; until then a stand-in answers "all green".
+printf 'raise SystemExit(0)\n' > "$T/greenverify"; export EKIT_TASK_VERIFY_PY="$T/greenverify"
 
 R="$T/repo"; mkdir -p "$R"; git -C "$R" init -q; git -C "$R" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 start() { jq -nc --arg c "$1" --arg s "$2" '{hook_event_name:"SessionStart",session_id:$s,cwd:$c,source:"startup"}' | python3 -I "$SS"; }
@@ -172,5 +174,29 @@ A2="$T/a2"; B2="$T/b2"; mkrepo "$A2" 0; mkrepo "$B2" 0; echo b > "$B2/b.txt"
 start "$A2" m1 >/dev/null; arm "$A2" m1 >/dev/null; start "$B2" m1 >/dev/null; arm "$B2" m1 >/dev/null
 eq "$(stop "$B2" m1)" "" "second repo own baseline → allow"
 eq "$(stop "$A2" m1)" "" "first repo own baseline → allow"
+
+# --- verify commands: a done report stands only when each of the session's commands passed on the current files ---
+unset EKIT_TASK_VERIFY_PY; TV="$ROOT/scripts/task-verify.py"
+V="$T/verify"; mkdir -p "$V"; git -C "$V" init -q; git -C "$V" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+mktask() { jq -nc --arg c "$V" --arg d "$1" --arg t "$2" '{hook_event_name:"TaskCreated",session_id:"v1",cwd:$c,task_id:$t,task_description:$d}' | python3 -I "$TV" --hook; }
+start "$V" v1 >/dev/null; arm "$V" v1 >/dev/null; echo a > "$V/a.txt"
+out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, no verify command in the session → block"
+has "$(jq -r .reason <<<"$out")" "no verify command was declared for this session" "reason: no command declared"
+has "$(jq -r .reason <<<"$out")" "CLAUDE_CODE_SESSION_ID=v1 python3 $TV --repo $V declare -- <command>" "reason gives the declare command with the session id"
+CLAUDE_CODE_SESSION_ID=v1 python3 -I "$TV" --repo "$V" declare -- 'test -f a.txt' 2>/dev/null
+out="$(stop "$V" v1 false Stop "$REPORT")"; has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "a declared command is asked for"
+mktask 'Verify: `test -f a.txt`' 1; mktask 'Whole job. Verify: nothing on this line
+Verify: `test -f a.txt && test ! -f broken`' 2
+out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, commands never run → block"
+has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "reason names the command and what is missing"
+has "$(jq -r .reason <<<"$out")" 'run -- <command>' "reason gives the runner"
+python3 -I "$TV" --repo "$V" run -- test -f a.txt 2>/dev/null
+eq "$(dec "$(stop "$V" v1 false Stop "$REPORT")")" "block" "one command of two green → block"
+python3 -I "$TV" --repo "$V" run -- 'test -f a.txt && test ! -f broken' 2>/dev/null
+eq "$(stop "$V" v1 false Stop "$REPORT")" "" "every command green on these files → allow"
+echo b >> "$V/a.txt"
+out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "edit after the passes → block"
+has "$(jq -r .reason <<<"$out")" "the files changed since the passing run" "reason: stale pass"
+eq "$(stop "$V" v1 false Stop "$BLOCKED")" "" "a blocked report needs no green command"
 
 done_tests

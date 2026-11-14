@@ -29,15 +29,26 @@ class Runner:
         return self.tree if cmd == "tree-hash" else self.check
 
 
+class Verifier:
+    """Stands in for `task-verify.py check`: `result` is its (rc, text)."""
+
+    def __init__(self):
+        self.result, self.calls = (0, ""), []
+
+    def __call__(self, repo, session):
+        self.calls.append((repo, session))
+        return self.result
+
+
 class GateCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = os.path.join(os.path.realpath(self.tmp.name), "repo")
         os.mkdir(self.repo)
         subprocess.run(["git", "-C", self.repo, "init", "-q"], check=True)
-        self.runner = Runner()
+        self.runner, self.verifier = Runner(), Verifier()
         for p in (mock.patch.object(fg, "STATE", os.path.join(self.tmp.name, "state")),
-                  mock.patch.object(fg, "runner", self.runner)):
+                  mock.patch.object(fg, "runner", self.runner), mock.patch.object(fg, "verifier", self.verifier)):
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -323,6 +334,78 @@ class TestScenarios(GateCase):
         self.assertNotIn("Scenarios not green", out["reason"])
         self.runner.check = (2, "")
         self.assertIn("scenario runner error: exit 2. ", self.stop(DONE)["reason"])
+
+
+class TestVerifyCommands(GateCase):
+    """A `done` report stands only when every verify command of the session passed on the files as they are."""
+
+    def work(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+
+    def test_a_done_report_with_commands_not_green_blocks_every_stop(self):
+        self.work()
+        self.verifier.result = (1, "`pytest -q`: the run exited 1")
+        for _ in range(2):
+            out = self.stop(DONE)
+            self.assertEqual(out["decision"], "block")
+        self.assertEqual(out["reason"], (
+            "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. A done report "
+            "needs each of the session's verify commands green: the units' and the full suite for the whole job. "
+            f"Declare one with `CLAUDE_CODE_SESSION_ID=s1 python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} "
+            f"--repo {self.repo} declare -- <command>`, run each with `run -- <command>` in place of `declare`, fix "
+            "what it shows, then give the finish report again. It cannot pass here → `## Finish: blocked`."))
+        self.assertEqual(self.verifier.calls[-1], (self.repo, "s1"))
+
+    def test_a_done_report_with_green_commands_allows(self):
+        self.work()
+        self.assertIsNone(self.stop(DONE))
+        self.assertEqual(len(self.verifier.calls), 1)
+
+    def test_a_blocked_report_needs_no_green_command(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.assertIsNone(self.stop(BLOCKED))
+        self.assertEqual(self.verifier.calls, [])
+
+    def test_without_a_report_the_ask_is_the_report(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.assertIn("not a finish report", self.stop("still working")["reason"])
+        self.assertEqual(self.verifier.calls, [])
+
+    def test_a_tree_reported_while_red_is_not_remembered_as_reported(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.stop(DONE)
+        self.verifier.result = (0, "")
+        self.assertEqual(self.stop("later turn")["decision"], "block")
+
+    def test_red_scenarios_are_named_before_the_commands(self):
+        self.work()
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios"))
+        self.runner.check = (1, "last run FAIL")
+        self.verifier.result = (1, "x")
+        self.assertIn("Scenarios not green", self.stop(DONE)["reason"])
+
+
+class TestVerifierProcess(unittest.TestCase):
+    """fg.verifier for real: it asks task-verify.py about the session's commands in the repo."""
+
+    def test_it_reports_check_for_the_session_and_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(os.path.realpath(tmp), "repo")
+            os.mkdir(repo)
+            subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
+            tv = os.path.join(_kit.SCRIPTS, "task-verify.py")
+            with mock.patch.dict(os.environ, {"EKIT_STATE": os.path.join(tmp, "state")}):
+                payload = {"hook_event_name": "TaskCreated", "session_id": "s1", "cwd": repo, "task_id": "1",
+                           "task_description": "Verify: `true`"}
+                subprocess.run(["python3", "-I", tv, "--hook"], input=json.dumps(payload), text=True, check=True)
+                self.assertEqual(fg.verifier(repo, "s1"), (1, "`true`: no run recorded"))
+                self.assertEqual(fg.verifier(repo, "s2"), (1, "no verify command was declared for this session"))
+                subprocess.run(["python3", "-I", tv, "--repo", repo, "run", "--", "true"], capture_output=True, check=True)
+                self.assertEqual(fg.verifier(repo, "s1"), (0, ""))
 
 
 class TestReport(unittest.TestCase):

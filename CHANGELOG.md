@@ -2,6 +2,19 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Added
+
+- **Verify commands** (`scripts/task-verify.py`): a session names the commands its work is checked with, and they stay once named. `declare -- <command>` adds one (the session is `$CLAUDE_CODE_SESSION_ID`, set by Claude Code for Bash commands). `run -- <command>` runs it and records the exit code against the tree hash, in the repo's git dir. The hooks only read those records: the commands run under the session's permission rules and sandbox, never from a hook. A sandbox that keeps the git dir read-only gets exit 3 and the same call outside the sandbox as next step.
+- **Task hook** (`TaskCreated`, `TaskCompleted`), for sessions that have a task list: a task whose description carries a ``Verify: `<command>` `` line cannot be marked completed until that command passed on the files as they are now. The command is kept from the first time the task is seen. A pass in a linked worktree counts from the main checkout while that worktree's files are unchanged. Tasks without the line are not gated. In agent teams, where a teammate's turn end fires the hook, the block is given once per set of file contents.
+- **orchestrate-agent**: each unit gets a verify command (lint and typecheck in front, then its tests), agreed with the checklist and declared before its agent starts. The full suite is declared for the whole job.
+- **Evals**: `evals/run.sh` runs the suite, on macOS too (the `git` shim does not work inside the eval sandbox). New case `orchestrate-verify-declare`.
+
+### Changed
+
+- **Finish gate**: `## Finish: done` now needs every verify command of the session green on the current files (`task-verify.py check`). A unit's pass from before a later edit does not count, and an orchestrate session with no verify command cannot report done: the block gives the `declare` call. `## Finish: blocked` is unchanged, and no other stop is checked.
+
 ## 0.3.1
 
 ### Changed
