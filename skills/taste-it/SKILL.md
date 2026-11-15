@@ -1,6 +1,6 @@
 ---
 name: taste-it
-description: Verify a deliverable by using it as a real user, via black-box scenarios in .ekit/scenarios/. Use when acceptance criteria need a user run, when adding or changing scenarios, when a scenario fails, or before calling a feature done in a repo with .ekit/scenarios/. Not /code-review (that reads code; this uses the result).
+description: Verify a deliverable by using it as a real user, via black-box scenarios in .ekit/scenarios/. Use when acceptance criteria need a user run, when adding or changing scenarios, when a scenario fails, when a user reports a bug or one shows up in use, or before calling a feature done in a repo with .ekit/scenarios/. Not /code-review (that reads code; this uses the result).
 ---
 
 Tests green is not "works". A **taster** (a subagent, never the implementer) acts as a real user; the project's **scenarios** keep that user run repeatable. Separate gate from /code-review: review asks "is the code right", taste asks "does it work in use".
@@ -77,3 +77,19 @@ Each finding gets one verdict.
 **fix**: the agent can repair it. Send back to the implementer with the failing scenario id and its transcript as the repro, then re-run the **full** set. Max 3 rounds; still red → **human** with the 3 transcripts.
 
 **human**: only when nothing the agent can reach, CI included, can run the check, or it needs human judgement (taste, visual, real account). Reaching for human on a runnable check is a mistake: reclass as fix and run it. Each human item is a Needs-you block (finish skill) with exact steps, expected result, why it matters; the criterion row is 👤 human-only.
+
+## 6. Bug from use
+
+A user reports a bug, one shows up while the deliverable is in use, or failure-triage hands one over. The scenario decides whether it is real, so it runs **before any fix edit**.
+
+1. Sort it:
+   - a user sees the symptom through the installed deliverable → scenario
+   - internal only → unit test, no scenario
+   - needs a real account or human judgement → **human**
+2. Write the scenario from the symptom alone: what the user did, saw, expected. The taster gets no cause and no diff. "Reuse before write" applies.
+3. `RUN run <id>` on the unfixed code:
+   - `FAIL` on the reported symptom → real. Verdict **fix**; the transcript is the repro.
+   - `PASS` → not reproduced. No code change. Report the run and ask the reporter for the missing step (exact command, input, version). The scenario stays only as a regression guard for behaviour no other scenario covers, named as that; otherwise remove it.
+4. After the fix: full `RUN run`, then `RUN can-fail <pre-fix ref>` → `CAN-FAIL ✓`.
+
+Report each bug with its scenario id and the runner lines: the `FAIL` from before the fix, the `PASS` after. A reproduction by hand is not that evidence.

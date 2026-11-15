@@ -1,6 +1,21 @@
 #!/bin/bash
 # Environment preflight: one line per problem, with fallback. Checks are gated on project markers.
 # Usage: preflight.sh [--quiet] [dir]   (--quiet: print problems only)
+#        preflight.sh --env             the finish report's Env line, from what this shell can do right now
+if [[ ${1:-} == --env ]]; then
+  # A sandboxed Bash command writes only inside the project and the temp dir, and often cannot bind a port.
+  # Probed, never assumed: the kit's own cache dir stands for "outside the project" (a file made and removed).
+  signs=""
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}/ekit"
+  if probe="$(mkdir -p "$cache" 2>/dev/null && mktemp "$cache/env.XXXXXX" 2>/dev/null)"; then rm -f "$probe"
+  else signs="no write outside the project"; fi
+  if command -v python3 >/dev/null 2>&1 \
+     && ! python3 -c "import socket;socket.socket().bind(('127.0.0.1',0))" 2>/dev/null; then
+    signs="${signs:+$signs, }loopback bind blocked"
+  fi
+  [[ -n $signs ]] && echo "Env: sandboxed ($signs)" || echo "Env: unsandboxed"
+  exit 0
+fi
 quiet=0; [[ $1 == --quiet ]] && { quiet=1; shift; }
 dir="${1:-$PWD}"
 have() { command -v "$1" >/dev/null 2>&1; }

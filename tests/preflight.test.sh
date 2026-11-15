@@ -7,6 +7,18 @@ unset CHROME_BIN PLAYWRIGHT_BROWSERS_PATH
 
 run() { PATH="$1" HOME="$T/home" bash "$PF" "$2" 2>&1; }
 
+# --env: the finish report's Env line comes from a probe of this shell, not from the agent's guess
+H="$T/envhome"; mkdir -p "$H"
+eq "$(HOME="$H" XDG_CACHE_HOME= bash "$PF" --env)" "Env: unsandboxed" "--env: a shell that writes outside the project → unsandboxed"
+eq "$(ls "$H/.cache/ekit")" "" "--env: the probe file is removed"
+mkdir -p "$T/ro"; chmod 500 "$T/ro"
+eq "$(HOME="$T/ro" XDG_CACHE_HOME= bash "$PF" --env)" "Env: sandboxed (no write outside the project)" "--env: no write outside the project → sandboxed"
+eq "$(HOME="$T/none" XDG_CACHE_HOME="$T/ro/cache" bash "$PF" --env)" "Env: sandboxed (no write outside the project)" "--env: XDG_CACHE_HOME is the place probed"
+chmod 700 "$T/ro"
+B0="$T/b0"; fakebin "$B0"; stub "$B0" python3 'exit 1'
+eq "$(PATH="$B0" HOME="$H" bash "$PF" --env)" "Env: sandboxed (loopback bind blocked)" "--env: loopback bind blocked → sandboxed"
+eq "$(PATH="$B0" HOME="$T/none2" XDG_CACHE_HOME=/dev/null/x bash "$PF" --env)" "Env: sandboxed (no write outside the project, loopback bind blocked)" "--env: both signs named"
+
 # bare python missing, python3 present
 B="$T/b1"; fakebin "$B" python3; P="$T/p1"; mkdir -p "$P"
 out="$(run "$B" "$P")"
