@@ -21,7 +21,7 @@ Tasks:
    Fix: reproduce and capture the actual error; classify it with the failure-triage skill; check new vs pre-existing on the parent commit in a temp worktree (remove it after; flaky: failure-triage's flaky protocol); fix the root cause red first (test-only fix only when the test is wrong).
 2. Stay in your files; a needed change elsewhere goes in your report, not your diff.
 3. Keep guards and checks at full strength. Forbidden: delete, skip or weaken a test; change an expected value to match output; suppress a lint without reason; edit protected paths; pass a test before the fix. Full table: testing standard §3. No waivers.
-4. Verify: <exact commands, and how many runs>.
+4. Verify: <the unit's verify command, as `python3 -I <kit>/scripts/task-verify.py --repo <checkout> run -- <command>` with both paths filled in; other commands, and how many runs>.
 5. Docs: <task log entry, report section, SOP rule if reusable>.
 6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (rounds count per id). Commit message ends with:
    <attribution trailer>

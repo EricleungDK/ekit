@@ -12,7 +12,7 @@ Trivial work (no acceptance criteria, no code behaviour changed) gets the light 
 At report time, rerun the decisive commands: tests, typecheck, build. Counts and results come from this run, never from memory.
 
 - CLI or app deliverable: install it the way a user gets it, into a throwaway location (a temp venv, `npm pack` plus a local install, `cargo install --root <tmp>`; taste-it's drivers.md has each), then run the command from there. Never install into the user's global environment to verify, and never editable: that runs the source tree. A built binary or `playwright --list` counts as not run.
-- State the env each command ran in: sandboxed or unsandboxed.
+- The report's `Env:` line is what `bash <kit>/scripts/preflight.sh --env` prints, run now as a plain Bash command (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`). Copy it; never write it from memory or from an earlier report. A command you ran outside the sandbox says so in its own row.
 - Mech-review envelope present (PR comment or CLI) → follow [mech.md](mech.md).
 - Repo with `.ekit/scenarios/` → follow [scenarios.md](scenarios.md).
 
@@ -26,7 +26,13 @@ Done when: every criterion has a fresh result or a reason it can't run here.
 
 ## 3. Report
 
-Pick the branch. Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchestrate session the Stop gate reads it from your last message.
+Pick the branch by what is left:
+
+- Work you can still do (a red command, an agent-fixable mech entry, a fix round not yet used) → neither yet: do it first.
+- Everything you can do is done, and what is left is the user's (a 👤 row, a `needs-human` entry, a merge) → **Done**, with the "done except" verdict.
+- The work itself cannot go on: a criterion is not met and the next step is not yours to take → **Blocked**.
+
+Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchestrate session the Stop gate reads it from your last message.
 
 ### Done
 
@@ -39,7 +45,7 @@ Pick the branch. Keep the `## Finish: done` / `## Finish: blocked` line as writt
 | <criterion> | 👤 human-only | <what the user checks>; Needs-you block below |
 Mech <head sha>: R1 <status> · R2 <status> · R3 <status> · R4 <status>
 TDD: <test> red (`<failure line>`) → green (`<cmd>` exit 0)
-Env: <sandboxed|unsandboxed>
+Env: <the line `preflight.sh --env` printed>
 Verification debt: <items, or none>
 Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
 ```

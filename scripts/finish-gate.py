@@ -7,11 +7,17 @@ Work = the working tree's content differs from session start (runner `tree-hash`
 changes nothing; the baseline is per repo). With work done, the stop is allowed when:
 - the last assistant message carries the finish report (`## Finish: done` or `## Finish: blocked`), and
 - in a repo with .ekit/scenarios/, `check` is a fresh PASS for the current tree (a `blocked` report needs no PASS).
-A tree that was reported stays allowed. A missing report blocks once per tree; scenarios that are not green block
-every stop. stop_hook_active is the loop guard. Runner errors fail closed (block).
+- for a `done` report, every verify command of the session passed on the current tree (`task-verify.py check`):
+  the units' commands and the whole job's, whose task carries the full suite. A session with no such command is not
+  green. A `blocked` report needs none.
+A tree that was reported stays allowed. A missing report blocks once per tree; scenarios or verify commands that are
+not green block every `done` report. stop_hook_active (the stop right after a block) is the loop guard: such a stop is
+let through, except one that gives a `done` report again. Saying done twice proves nothing, so its checks run each
+time; `## Finish: blocked` is the way out, and Claude Code itself ends a run of consecutive blocks.
+Runner errors fail closed (block).
 A stop while a subagent still runs (the payload's `background_tasks`) is a wait for its report, not the end of the
 work: it is allowed and asks nothing. A payload without that list (an older Claude Code) is gated as any stop.
-Test seam: EKIT_SCENARIOS_PY overrides the runner path.
+Test seams: EKIT_SCENARIOS_PY overrides the runner path, EKIT_TASK_VERIFY_PY the verifier's.
 
 `finish-gate.py --baseline` (stdin: hook payload) records the tree state at session start instead.
 `finish-gate.py --arm` (UserPromptSubmit payload) arms the session when the prompt invokes orchestrate-agent.
@@ -28,6 +34,7 @@ STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.jo
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
 )
 SCEN = os.environ.get("EKIT_SCENARIOS_PY") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenarios.py")
+VERIFY = os.environ.get("EKIT_TASK_VERIFY_PY") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "task-verify.py")
 KEEP_DAYS = 14
 TAIL = 400_000  # bytes of transcript read to find the last assistant message
 
@@ -72,6 +79,11 @@ def prune():
 
 def runner(repo, cmd):
     r = subprocess.run([sys.executable, "-I", SCEN, "--repo", repo, cmd], capture_output=True, text=True)
+    return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+
+def verifier(repo, session):
+    r = subprocess.run([sys.executable, "-I", VERIFY, "--repo", repo, "check", session], capture_output=True, text=True)
     return r.returncode, (r.stdout.strip() or r.stderr.strip())
 
 
@@ -148,8 +160,10 @@ def main():
     top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
     if not top:
         return
-    if not baseline and (data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop"):
-        return  # the loop guard, and a subagent's stop (an older install may still register it): nothing to hash
+    if not baseline and data.get("hook_event_name") == "SubagentStop":
+        return  # a subagent's stop (an older install may still register it): nothing to hash
+    if not baseline and data.get("stop_hook_active") and report_kind(data) != "done":
+        return  # the loop guard: the stop after a block ends the turn, unless it claims done again
     if not baseline and waiting(data):
         return
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
@@ -172,6 +186,18 @@ def main():
             return block(f"Scenarios not green: {why}. {run_hint}{ASK}")
         if rc != 0:
             return block(f"scenario runner error: {why.splitlines()[-1] if why else f'exit {rc}'}. {run_hint}{ASK}")
+    if kind == "done":
+        rc, why = verifier(top, session)
+        tool = f"python3 {VERIFY} --repo {top}"
+        if rc == 4:
+            return block("A done report needs verify commands, and no verify command was declared for this session. "
+                         "Declare the units' commands and the full suite for the whole job, each with "
+                         f"`CLAUDE_CODE_SESSION_ID={session} {tool} declare -- <command>`, run each with `run -- "
+                         "<command>` in place of `declare`, then give the finish report again.")
+        if rc != 0:
+            return block(f"Verify commands not green for the current files: {why}. Run each with `{tool} run -- "
+                         "<command>`, fix what it shows, then give the finish report again. It cannot pass here → "
+                         "`## Finish: blocked`.")
     if kind:
         write(reported, cur)
         return
