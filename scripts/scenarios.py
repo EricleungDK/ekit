@@ -108,7 +108,11 @@ def run_one(repo, sid, ids, tdir):
     else:
         parent = os.path.dirname(sid)
         pdir = os.path.join(root(repo), parent) if parent in ids else ""
-        env = dict(os.environ, EKIT_REPO=repo, EKIT_SCENARIO_DIR=d, EKIT_PARENT_DIR=pdir,
+        # screenshots and other files a person checks: kept beside the transcript, outside the work tree
+        art = os.path.join(tdir, sid.replace("/", "__"))
+        shutil.rmtree(art, ignore_errors=True)  # a rerun on the same tree lists only its own files
+        os.makedirs(art)
+        env = dict(os.environ, EKIT_REPO=repo, EKIT_SCENARIO_DIR=d, EKIT_PARENT_DIR=pdir, EKIT_ARTIFACT_DIR=art,
                    EK_REPO=repo, EK_SCENARIO_DIR=d, EK_PARENT_DIR=pdir)  # EK_*: pre-rename scenarios
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
@@ -125,6 +129,11 @@ def run_one(repo, sid, ids, tdir):
         finally:
             res["duration"] = round(time.time() - t0, 3)
             shutil.rmtree(cwd, ignore_errors=True)
+            files = sorted(os.path.join(dp, n) for dp, _, ns in os.walk(art) for n in ns)
+            if files:
+                res["artifacts"] = files
+            else:
+                shutil.rmtree(art, ignore_errors=True)
         if res["exit"] and "reason" not in res:
             res["reason"] = f"exit {res['exit']}"
     with open(res["transcript"], "wb") as f:

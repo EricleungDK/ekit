@@ -308,6 +308,38 @@ class TestRun(unittest.TestCase):
         with open(os.path.join(self.state, "parent")) as f:
             self.assertEqual(f.read(), os.path.join(self.repo, ".ekit", "scenarios", "one"))
 
+    def test_a_file_saved_to_the_artifact_dir_is_kept_beside_the_transcript_and_listed(self):
+        failed, _, doc = self.run_all('mkdir -p "$EKIT_ARTIFACT_DIR/shots"; echo png > "$EKIT_ARTIFACT_DIR/shots/home.png"\n')
+        art = os.path.join(scenarios.outdir(self.repo), scenarios.tree_hash(self.repo), "one")
+        self.assertIs(failed, False)
+        self.assertEqual(doc["scenarios"][0]["artifacts"], [os.path.join(art, "shots", "home.png")])
+        with open(os.path.join(art, "shots", "home.png")) as f:
+            self.assertEqual(f.read(), "png\n")
+
+    def test_a_failing_scenario_keeps_its_artifacts(self):
+        failed, _, doc = self.run_all('echo png > "$EKIT_ARTIFACT_DIR/broken.png"; exit 1\n')
+        art = os.path.join(scenarios.outdir(self.repo), scenarios.tree_hash(self.repo), "one")
+        self.assertIs(failed, True)
+        self.assertEqual(doc["scenarios"][0]["artifacts"], [os.path.join(art, "broken.png")])
+
+    def test_a_rerun_on_the_same_tree_lists_only_its_own_artifacts(self):
+        write(self.repo, ".ekit/scenarios/one/run.sh",
+              'if [ -e "$EKIT_STATE/second" ]; then echo b > "$EKIT_ARTIFACT_DIR/b.png"; '
+              'else echo a > "$EKIT_ARTIFACT_DIR/a.png"; touch "$EKIT_STATE/second"; fi\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenario")
+        with contextlib.redirect_stdout(io.StringIO()):
+            scenarios.cmd_run(self.repo)
+            scenarios.cmd_run(self.repo)
+        art = os.path.join(scenarios.outdir(self.repo), scenarios.tree_hash(self.repo), "one")
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            self.assertEqual(json.load(f)["scenarios"][0]["artifacts"], [os.path.join(art, "b.png")])
+        self.assertEqual(os.listdir(art), ["b.png"])
+
+    def test_a_scenario_that_saves_nothing_has_no_artifacts_entry(self):
+        _, _, doc = self.run_all("exit 0\n")
+        self.assertNotIn("artifacts", doc["scenarios"][0])
+
     def test_a_scenario_that_commits_in_the_repo_fails_the_run(self):
         failed, out, doc = self.run_all('git -C "$EKIT_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m x\n')
         self.assertIs(failed, True)
