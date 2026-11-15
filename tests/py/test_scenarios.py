@@ -336,6 +336,31 @@ class TestRun(unittest.TestCase):
             self.assertEqual(json.load(f)["scenarios"][0]["artifacts"], [os.path.join(art, "b.png")])
         self.assertEqual(os.listdir(art), ["b.png"])
 
+    def test_a_child_scenarios_artifacts_sit_beside_its_own_transcript(self):
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "one", "kid"))
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        write(self.repo, ".ekit/scenarios/one/kid/SCENARIO.md", "- story: s\n")
+        write(self.repo, ".ekit/scenarios/one/kid/run.sh", 'echo png > "$EKIT_ARTIFACT_DIR/kid.png"\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenarios")
+        with contextlib.redirect_stdout(io.StringIO()):
+            scenarios.cmd_run(self.repo)
+        tdir = os.path.join(scenarios.outdir(self.repo), scenarios.tree_hash(self.repo))
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            kid = json.load(f)["scenarios"][1]
+        self.assertEqual((kid["transcript"], kid["artifacts"]),
+                         (os.path.join(tdir, "one__kid.log"), [os.path.join(tdir, "one__kid", "kid.png")]))
+
+    def test_run_sh_gets_its_own_scenario_dir(self):
+        self.run_all('printf %s "$EKIT_SCENARIO_DIR" > "$EKIT_STATE/dir"\n')
+        with open(os.path.join(self.state, "dir")) as f:
+            self.assertEqual(f.read(), os.path.join(self.repo, ".ekit", "scenarios", "one"))
+
+    def test_a_scenario_that_removes_its_artifact_dir_still_passes(self):
+        failed, out, doc = self.run_all('rmdir "$EKIT_ARTIFACT_DIR"\n')
+        self.assertEqual((failed, out), (False, "PASS one\nPASS: 1/1 scenarios\n"))
+        self.assertNotIn("artifacts", doc["scenarios"][0])
+
     def test_a_scenario_that_saves_nothing_has_no_artifacts_entry(self):
         _, _, doc = self.run_all("exit 0\n")
         self.assertNotIn("artifacts", doc["scenarios"][0])
