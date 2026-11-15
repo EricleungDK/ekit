@@ -22,7 +22,7 @@ Check them in this order; the first that fits wins.
 4. **unowned**: the failure is in files outside your write scope, or changed by someone else (compare `git status` / `git diff --stat` with what you touched).
    → Report it with file and error; keep your diff to your scope.
 5. **real bug**: none of the above holds.
-   → Reproduce it in a failing test, then fix it red→green (TDD; for a hard one, a diagnosis loop first: reproduce, narrow, name the cause). If a user would hit the symptom through the installed deliverable and no scenario covers it, hand it to the taste-it skill (Bug from use) before the fix: the symptom only (user steps, seen, expected), no cause or diff.
+   → Reproduce it in a failing test, then fix it red→green (TDD; for a hard one, a diagnosis loop first: reproduce, narrow, name the cause). If a user would hit the symptom through the installed deliverable and no scenario covers it, also hand it to the taste-it skill (Bug from use) before the fix, so a scenario guards it beside the test: the symptom only (user steps, seen, expected), no cause or diff.
 
 ## Evidence
 
