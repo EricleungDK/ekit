@@ -38,7 +38,7 @@ Layout, committed in the repo:
 - **steps**: what the user does
 - **expected**: observable result
 
-No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run.
+No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR`, `EKIT_ARTIFACT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run. Files a person should see, screenshots first, go in `EKIT_ARTIFACT_DIR`: the runner keeps them beside the transcript and lists them under `artifacts` in results.json.
 
 ### Reuse before write
 
@@ -76,7 +76,7 @@ Each finding gets one verdict.
 
 **fix**: the agent can repair it. Send back to the implementer with the failing scenario id and its transcript as the repro, then re-run the **full** set. Max 3 rounds; still red → **human** with the 3 transcripts.
 
-**human**: only when nothing the agent can reach, CI included, can run the check, or it needs human judgement (taste, visual, real account). Reaching for human on a runnable check is a mistake: reclass as fix and run it. Each human item is a Needs-you block (finish skill) with exact steps, expected result, why it matters; the criterion row is 👤 human-only.
+**human**: only when nothing the agent can reach, CI included, can run the check, or it needs human judgement (taste, visual, real account). Reaching for human on a runnable check is a mistake: reclass as fix and run it. Each human item is a Needs-you block (finish skill) with exact steps, expected result, why it matters, and the scenario's screenshot paths from results.json when it has them; the criterion row is 👤 human-only.
 
 ## 6. Bug from use
 

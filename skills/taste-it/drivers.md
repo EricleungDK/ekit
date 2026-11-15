@@ -9,7 +9,7 @@ Install the deliverable the way a user gets it, **into the scenario's temp cwd**
 | Rust CLI | `cargo install --path "$EKIT_REPO" --root .` | `./bin/<cmd>` | same |
 | TUI | as its CLI row | `tmux new -d`, `send-keys`, `capture-pane`; or `expect` | pane text |
 | HTTP API | as its CLI row; launch the server in the background, wait for the port | `curl`, `jq` | status, body fields; kill the server on exit |
-| Web UI | launch the server | `playwright` script | DOM text, screenshot only as artifact |
+| Web UI | launch the server | `playwright` script | DOM text; a screenshot of each asserted state saved to `$EKIT_ARTIFACT_DIR`, the reviewer's proof (the assertion stays on text) |
 | Library | build or pack it, install the artifact into a fresh venv or project | consumer script importing it | script output, exit code |
 | Batch job | run the entrypoint on fixture input | shell | output files, row counts, rerun idempotence |
 | Claude plugin | `claude plugin marketplace add <repo>`, `claude plugin install` (the one row that cannot stay in the temp cwd: a plugin installs into the user's Claude config, so uninstall it when the scenario ends) | `claude -p "<prompt>"` | output text, hook JSON, files |
