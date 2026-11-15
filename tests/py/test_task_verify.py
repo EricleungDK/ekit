@@ -38,8 +38,8 @@ class VerifyCase(unittest.TestCase):
         env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
-        for name in ("EKIT_STATE", "EK_STATE"):
-            os.environ.pop(name, None)  # records go to the repo's git dir, as on a user's machine
+        for name in ("EKIT_STATE", "EK_STATE", "CLAUDE_CODE_SESSION_ID"):
+            os.environ.pop(name, None)  # records go to the repo's git dir; the session is the one a test names
 
     def call(self, argv, payload=None):
         """(exit code, stderr) of one task-verify.py invocation."""
@@ -228,7 +228,7 @@ class SessionCheck(VerifyCase):
 
     def test_session_without_a_verify_command_is_not_green(self):
         self.hook("TaskCreated", "no line")
-        self.assertEqual(self.check(), (1, "no verify command was declared for this session\n"))
+        self.assertEqual(self.check(), (4, "no verify command was declared for this session\n"))
 
     def test_each_command_that_did_not_pass_is_named(self):
         self.hook("TaskCreated", "Verify: `true`", task="t1")
@@ -262,7 +262,7 @@ class SessionCheck(VerifyCase):
         self.assertEqual(self.check(), (1, "`false`: no run recorded\n"))
 
     def test_before_any_task_hook_ran_there_is_no_command(self):
-        self.assertEqual(self.check()[0], 1)
+        self.assertEqual(self.check()[0], 4)
 
 
 class Declare(VerifyCase):
@@ -342,19 +342,26 @@ class ReadOnlyGitDir(VerifyCase):
         os.chmod(self.dir, 0o500)
         self.addCleanup(os.chmod, self.dir, 0o700)
 
-    def refused(self, name):
+    def refused(self, name, call):
         return 3, (f"task-verify: nothing recorded, cannot write {os.path.join(self.dir, name)}.{os.getpid()}: "
-                   "Permission denied. A sandbox keeps the git dir read-only: run this same command outside the "
-                   "sandbox.\n")
+                   "Permission denied. A sandbox keeps the git dir read-only: run it outside the sandbox, as "
+                   f"`{call}`.\n")
+
+    def tool(self, verb):
+        return f"python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} {verb} --"
 
     def test_run_that_cannot_record_is_not_a_pass(self):
-        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "true"]), self.refused("verify.json"))
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "test", "-f", "a.txt"]),
+                         self.refused("verify.json", f"{self.tool('run')} 'test -f a.txt'"))
         os.chmod(self.dir, 0o700)  # the hook runs outside the sandbox
-        self.assertEqual(self.complete("Verify: `true`"), self.blocked("no run recorded", "true"))
+        self.assertEqual(self.complete("Verify: `test -f a.txt`"), self.blocked("no run recorded", "test -f a.txt"))
 
-    def test_declare_that_cannot_record_says_so(self):
+    def test_declare_that_cannot_record_gives_the_call_with_the_session_id(self):
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}):
-            self.assertEqual(self.call(["--repo", self.repo, "declare", "--", "true"]), self.refused("declared.json"))
+            self.assertEqual(self.call(["--repo", self.repo, "declare", "--", "true"]), self.refused(
+                "declared.json", f"CLAUDE_CODE_SESSION_ID=s1 {self.tool('declare')} true"))
+        os.chmod(self.dir, 0o700)
+        self.assertEqual(self.check()[0], 4)
 
 
 class Worktree(VerifyCase):

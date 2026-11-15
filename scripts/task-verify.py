@@ -16,8 +16,8 @@ The agent runs it, through the Bash tool, so the command passes the session's pe
   otherwise exit 2, and the reason goes to the agent on stderr. A task without a Verify line is never gated.
 
 `task-verify.py [--repo DIR] check SESSION` is the Stop gate's question at a `## Finish: done` report: did every
-verify command of the session pass on the files as they are now? Exit 0 when so; else 1, with one line per command
-that did not, or one line saying the session has none.
+verify command of the session pass on the files as they are now? Exit 0 when so; 1 with one line per command that
+did not; 4 when the session has no verify command.
 
 Commands and runs sit in the repo's common git dir (<git dir>/ekit/, or $EKIT_STATE/verify/<repo key>/): the hook
 process and a sandboxed Bash command agree on that place, and a linked worktree shares it with the main checkout.
@@ -184,7 +184,7 @@ def cmd_check(top, session):
     cmds = commands(top, session)
     if not cmds:
         print("no verify command was declared for this session")
-        return 1
+        return 4
     red = [f"`{cmd}`: {why}" for cmd, why in ((cmd, why_not(top, cmd)) for cmd in cmds) if why]
     if red:
         print("\n".join(red))
@@ -244,8 +244,11 @@ def main():
     try:
         return (cmd_declare if a[0] == "declare" else cmd_run)(top, a[2:])
     except OSError as e:
+        # the session id goes along for declare: a shell outside the session (the user's own) does not have it
+        session = f"CLAUDE_CODE_SESSION_ID={os.environ.get('CLAUDE_CODE_SESSION_ID')} " if a[0] == "declare" else ""
         print(f"task-verify: nothing recorded, cannot write {e.filename}: {e.strerror}. A sandbox keeps the git dir "
-              "read-only: run this same command outside the sandbox.", file=sys.stderr)
+              f"read-only: run it outside the sandbox, as `{session}python3 {os.path.abspath(__file__)} --repo {top} "
+              f"{a[0]} -- {shlex.quote(spelled(a[2:]))}`.", file=sys.stderr)
         return 3
 
 

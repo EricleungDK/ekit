@@ -219,7 +219,7 @@ Skill evals (kit dev only):
 evals/run.sh                     # all cases; options go to `claude plugin eval`, e.g. --case 'triage-*' -j 4
 ```
 
-On Linux the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`. On macOS `evals/run.sh` puts the real `git` first on `PATH`: the `/usr/bin/git` shim cannot run inside the sandbox. On both, the sandbox keeps the git dir read-only, so nothing a case runs can record there (a scenario PASS, a verify run): graders check the commands run and what the agent says about them.
+On Linux the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`. On macOS `evals/run.sh` puts the real `git` first on `PATH`: the `/usr/bin/git` shim cannot run inside the sandbox. On both, the sandbox blocks writes under `.git/worktrees`, where the scenario runner and mech-review's trial make their scratch worktrees: graders for those cases check the commands run and what the agent says about them, not a runner PASS. `.git/ekit` stays writable, so verify commands are declared and recorded as in a real session.
 
 Changes per release: [CHANGELOG.md](CHANGELOG.md).
 

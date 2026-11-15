@@ -188,12 +188,16 @@ def main():
             return block(f"scenario runner error: {why.splitlines()[-1] if why else f'exit {rc}'}. {run_hint}{ASK}")
     if kind == "done":
         rc, why = verifier(top, session)
+        tool = f"python3 {VERIFY} --repo {top}"
+        if rc == 4:
+            return block("A done report needs verify commands, and no verify command was declared for this session. "
+                         "Declare the units' commands and the full suite for the whole job, each with "
+                         f"`CLAUDE_CODE_SESSION_ID={session} {tool} declare -- <command>`, run each with `run -- "
+                         "<command>` in place of `declare`, then give the finish report again.")
         if rc != 0:
-            return block(f"Verify commands not green for the current files: {why}. A done report needs each of the "
-                         "session's verify commands green: the units' and the full suite for the whole job. Declare "
-                         f"one with `CLAUDE_CODE_SESSION_ID={session} python3 {VERIFY} --repo {top} declare -- "
-                         "<command>`, run each with `run -- <command>` in place of `declare`, fix what it shows, then "
-                         "give the finish report again. It cannot pass here → `## Finish: blocked`.")
+            return block(f"Verify commands not green for the current files: {why}. Run each with `{tool} run -- "
+                         "<command>`, fix what it shows, then give the finish report again. It cannot pass here → "
+                         "`## Finish: blocked`.")
     if kind:
         write(reported, cur)
         return

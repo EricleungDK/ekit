@@ -350,12 +350,26 @@ class TestVerifyCommands(GateCase):
             out = self.stop(DONE)
             self.assertEqual(out["decision"], "block")
         self.assertEqual(out["reason"], (
-            "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. A done report "
-            "needs each of the session's verify commands green: the units' and the full suite for the whole job. "
-            f"Declare one with `CLAUDE_CODE_SESSION_ID=s1 python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} "
-            f"--repo {self.repo} declare -- <command>`, run each with `run -- <command>` in place of `declare`, fix "
-            "what it shows, then give the finish report again. It cannot pass here → `## Finish: blocked`."))
+            "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. Run each with "
+            f"`python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} run -- <command>`, fix what "
+            "it shows, then give the finish report again. It cannot pass here → `## Finish: blocked`."))
         self.assertEqual(self.verifier.calls[-1], (self.repo, "s1"))
+
+    def test_a_done_report_in_a_session_without_a_command_gets_the_declare_call(self):
+        self.work()
+        self.verifier.result = (4, "no verify command was declared for this session")
+        self.assertEqual(self.stop(DONE)["reason"], (
+            "[ekit] A done report needs verify commands, and no verify command was declared for this session. "
+            "Declare the units' commands and the full suite for the whole job, each with "
+            f"`CLAUDE_CODE_SESSION_ID=s1 python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} "
+            "declare -- <command>`, run each with `run -- <command>` in place of `declare`, then give the finish "
+            "report again."))
+
+    def test_a_verifier_that_fails_blocks_with_what_it_said(self):
+        self.work()
+        self.verifier.result = (2, "task-verify: not a git repo: /x")
+        self.assertIn("Verify commands not green for the current files: task-verify: not a git repo: /x. Run each",
+                      self.stop(DONE)["reason"])
 
     def test_a_done_report_with_green_commands_allows(self):
         self.work()
@@ -462,7 +476,7 @@ class TestVerifierProcess(unittest.TestCase):
                            "task_description": "Verify: `true`"}
                 subprocess.run(["python3", "-I", tv, "--hook"], input=json.dumps(payload), text=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (1, "`true`: no run recorded"))
-                self.assertEqual(fg.verifier(repo, "s2"), (1, "no verify command was declared for this session"))
+                self.assertEqual(fg.verifier(repo, "s2"), (4, "no verify command was declared for this session"))
                 subprocess.run(["python3", "-I", tv, "--repo", repo, "run", "--", "true"], capture_output=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (0, ""))
 

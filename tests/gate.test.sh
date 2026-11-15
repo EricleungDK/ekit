@@ -186,6 +186,8 @@ has "$(jq -r .reason <<<"$out")" "no verify command was declared for this sessio
 has "$(jq -r .reason <<<"$out")" "CLAUDE_CODE_SESSION_ID=v1 python3 $TV --repo $V declare -- <command>" "reason gives the declare command with the session id"
 CLAUDE_CODE_SESSION_ID=v1 python3 -I "$TV" --repo "$V" declare -- 'test -f a.txt' 2>/dev/null
 out="$(stop "$V" v1 false Stop "$REPORT")"; has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "a declared command is asked for"
+lacks "$(jq -r .reason <<<"$out")" "declare --" "with a command declared, the reason is the run, not the declare call"
+has "$(jq -r .reason <<<"$out")" "python3 $TV --repo $V run -- <command>" "reason gives the run call"
 mktask 'Verify: `test -f a.txt`' 1; mktask 'Whole job. Verify: nothing on this line
 Verify: `test -f a.txt && test ! -f broken`' 2
 out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, commands never run → block"
