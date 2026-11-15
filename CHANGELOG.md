@@ -14,6 +14,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 ### Changed
 
 - **Finish gate**: `## Finish: done` now needs every verify command of the session green on the current files (`task-verify.py check`). A unit's pass from before a later edit does not count, and an orchestrate session with no verify command cannot report done: the block gives the `declare` call. `## Finish: blocked` is unchanged, and no other stop is checked.
+- **Finish gate**: a `## Finish: done` report repeated right after a block is checked again. The gate used to let every stop after a block through (Claude Code's `stop_hook_active`), so an agent that answered a block with the same report, having run nothing, got past red scenarios and red verify commands alike. A stop without a `done` report is still let through after a block.
 
 ## 0.3.1
 

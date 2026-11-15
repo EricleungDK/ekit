@@ -10,8 +10,11 @@ changes nothing; the baseline is per repo). With work done, the stop is allowed 
 - for a `done` report, every verify command of the session passed on the current tree (`task-verify.py check`):
   the units' commands and the whole job's, whose task carries the full suite. A session with no such command is not
   green. A `blocked` report needs none.
-A tree that was reported stays allowed. A missing report blocks once per tree; scenarios that are not green block
-every stop. stop_hook_active is the loop guard. Runner errors fail closed (block).
+A tree that was reported stays allowed. A missing report blocks once per tree; scenarios or verify commands that are
+not green block every `done` report. stop_hook_active (the stop right after a block) is the loop guard: such a stop is
+let through, except one that gives a `done` report again. Saying done twice proves nothing, so its checks run each
+time; `## Finish: blocked` is the way out, and Claude Code itself ends a run of consecutive blocks.
+Runner errors fail closed (block).
 A stop while a subagent still runs (the payload's `background_tasks`) is a wait for its report, not the end of the
 work: it is allowed and asks nothing. A payload without that list (an older Claude Code) is gated as any stop.
 Test seams: EKIT_SCENARIOS_PY overrides the runner path, EKIT_TASK_VERIFY_PY the verifier's.
@@ -157,8 +160,10 @@ def main():
     top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
     if not top:
         return
-    if not baseline and (data.get("stop_hook_active") or data.get("hook_event_name") == "SubagentStop"):
-        return  # the loop guard, and a subagent's stop (an older install may still register it): nothing to hash
+    if not baseline and data.get("hook_event_name") == "SubagentStop":
+        return  # a subagent's stop (an older install may still register it): nothing to hash
+    if not baseline and data.get("stop_hook_active") and report_kind(data) != "done":
+        return  # the loop guard: the stop after a block ends the turn, unless it claims done again
     if not baseline and waiting(data):
         return
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]

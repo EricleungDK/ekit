@@ -389,6 +389,65 @@ class TestVerifyCommands(GateCase):
         self.assertIn("Scenarios not green", self.stop(DONE)["reason"])
 
 
+class TestRetry(GateCase):
+    """The stop right after a block has stop_hook_active set. It lets a stop without a `done` report through (the
+    ask for the report is one nudge), never a `done` report whose checks are red: saying done twice proves nothing."""
+
+    def work(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+
+    def test_a_repeated_done_report_with_red_commands_is_blocked_again(self):
+        self.work()
+        self.verifier.result = (1, "`pytest -q`: the run exited 1")
+        self.assertEqual(self.stop(DONE)["decision"], "block")
+        for _ in range(3):
+            out = self.stop(DONE, stop_hook_active=True)
+            self.assertEqual(out["decision"], "block")
+            self.assertIn("Verify commands not green for the current files: `pytest -q`: the run exited 1", out["reason"])
+
+    def test_a_repeated_done_report_with_red_scenarios_is_blocked_again(self):
+        self.work()
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios"))
+        self.runner.check = (1, "stale: tree changed since run")
+        self.assertEqual(self.stop(DONE)["decision"], "block")
+        out = self.stop(DONE, stop_hook_active=True)
+        self.assertIn("Scenarios not green: stale: tree changed since run", out["reason"])
+
+    def test_a_done_report_on_the_retry_stands_once_the_checks_are_green(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.stop(DONE)
+        self.verifier.result = (0, "")
+        self.assertIsNone(self.stop(DONE, stop_hook_active=True))
+        self.assertIsNone(self.stop("a later turn"))  # the tree is remembered as reported
+
+    def test_a_blocked_report_on_the_retry_is_the_way_out(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.stop(DONE)
+        self.assertIsNone(self.stop(BLOCKED, stop_hook_active=True))
+        self.assertEqual(len(self.verifier.calls), 1)
+
+    def test_a_retry_without_a_report_is_let_through_and_asks_nothing(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.assertIsNone(self.stop("still thinking", stop_hook_active=True))
+        self.assertEqual(self.verifier.calls, [])
+
+    def test_a_subagents_done_report_is_never_gated(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        self.assertIsNone(self.stop(DONE, hook_event_name="SubagentStop"))
+        self.assertIsNone(self.stop(DONE, hook_event_name="SubagentStop", stop_hook_active=True))
+
+    def test_a_done_report_while_a_subagent_runs_waits_on_the_retry_too(self):
+        self.work()
+        self.verifier.result = (1, "x")
+        running = [{"type": "subagent", "status": "running"}]
+        self.assertIsNone(self.stop(DONE, stop_hook_active=True, background_tasks=running))
+
+
 class TestVerifierProcess(unittest.TestCase):
     """fg.verifier for real: it asks task-verify.py about the session's commands in the repo."""
 

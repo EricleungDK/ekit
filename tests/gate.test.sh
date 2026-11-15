@@ -137,6 +137,7 @@ has "$(jq -r .reason <<<"$out")" "finish" "block reason asks finish report"
 eq "$(dec "$(stop "$P" p1)")" "block" "stale keeps blocking (no once-only)"
 eq "$(dec "$(stop "$P" p1 false Stop "$REPORT")")" "block" "a done report does not excuse a stale PASS"
 eq "$(stop "$P" p1 true)" "" "scenarios + stop_hook_active → allow"
+eq "$(dec "$(stop "$P" p1 true Stop "$REPORT")")" "block" "done repeated on a stale PASS (stop_hook_active) → blocked again"
 eq "$(stop "$P" p1 false SubagentStop)" "" "scenarios SubagentStop → allow"
 eq "$(stop "$P" p1 false Stop "$BLOCKED")" "" "a blocked report needs no PASS"
 
@@ -197,6 +198,10 @@ eq "$(stop "$V" v1 false Stop "$REPORT")" "" "every command green on these files
 echo b >> "$V/a.txt"
 out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "edit after the passes → block"
 has "$(jq -r .reason <<<"$out")" "the files changed since the passing run" "reason: stale pass"
+out="$(stop "$V" v1 true Stop "$REPORT")"; eq "$(dec "$out")" "block" "done repeated right after the block (stop_hook_active) → blocked again"
+has "$(jq -r .reason <<<"$out")" "the files changed since the passing run" "the retry gets the same reason"
+eq "$(stop "$V" v1 true Stop "thinking it over")" "" "retry without a report → let through"
+eq "$(stop "$V" v1 true Stop "$BLOCKED")" "" "retry with a blocked report → the way out"
 eq "$(stop "$V" v1 false Stop "$BLOCKED")" "" "a blocked report needs no green command"
 
 done_tests
