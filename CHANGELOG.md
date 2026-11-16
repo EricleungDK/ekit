@@ -2,7 +2,7 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
-## Unreleased
+## 0.4.0
 
 ### Added
 
