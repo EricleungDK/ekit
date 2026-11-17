@@ -30,6 +30,8 @@ class Docs(unittest.TestCase):
         self.assertEqual(path.read_text(), "# guide\\n")
 """
 
+PASSES = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 1)\n"
+
 
 def git(repo, *args):
     return subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
@@ -138,6 +140,25 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
         self.assertEqual(env["entries"][0]["problem"],
                          "R3's mutmut sandbox fails where the plain run passes (missing there: `calc/data/x.txt`)")
+
+    def test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash(self):
+        # mutmut copies tests/ with copytree, which stops on a link whose target is untracked (build/ is ignored)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/data", "../build/data")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
+        [e] = env["entries"]
+        self.assertEqual((e["check"], e["class"], e["severity"]), ("doctor", "env", "fail"))
+        self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
+                                       "`tests/data`")
+
+    def test_a_dangling_file_link_in_a_possible_source_is_an_entry_naming_it(self):
+        # also_copy leaves calc/ out for the link; mutmut's copy of calc/ as a source copies each file and stops on it
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("calc/conf.yaml", "../build/conf.yaml")])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `calc/conf.yaml`")
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})

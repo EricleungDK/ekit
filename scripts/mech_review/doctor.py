@@ -222,12 +222,7 @@ def trial(repo, head, stack, project_dir, runner):
             verdict = adapter.outcome(rc, out)
             box, box_entries = "skipped", []
             if stack == "python" and verdict == "pass":
-                where = sandbox(repo, head, crate, project_dir)
-                with _import_path(where):
-                    brc, bout = runner(shlex.split(cmd), where)
-                box = "pass" if adapter.outcome(brc, bout) == "pass" else "fail"
-                if box == "fail":
-                    box_entries = [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
+                box, box_entries = _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner)
             tool = MUTATION_TOOL[stack]
             tool_rc, _ = runner(shlex.split(tool) + ["--version"], crate)
     except gitio.Die as e:  # read-only .git (sandbox): the static findings still stand
@@ -244,6 +239,30 @@ def trial(repo, head, stack, project_dir, runner):
         entries.append(report.entry("doctor", "", 0, "mutation-tool", "env", "fail", f"`{tool} --version` failed ({tool_rc})",
                                     "repair the install; in CI, set setup-command", NOT_SKIP))
     return result, _test_entries(verdict, cmd, out) + box_entries + entries
+
+
+def _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner):
+    """the suite once inside R3's mutmut sandbox: ("pass" | "fail", entries)."""
+    crate = os.path.join(wt, project_dir)
+    try:
+        where = sandbox(repo, head, crate, project_dir)
+    except OSError as e:  # mutmut's copy stops on the same entry (shutil.Error: a link that does not resolve)
+        failed = [src for src, _, _ in e.args[0]] if isinstance(e, shutil.Error) else [e.filename or crate]
+        paths = ", ".join(f"`{os.path.relpath(p, crate)}`" for p in failed)
+        return "fail", [report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
+                                     f"R3's mutmut sandbox cannot be built: mutmut's copy into {_box_dir(project_dir)} "
+                                     f"fails on {paths}",
+                                     "a link there does not resolve in a fresh checkout (its target untracked or outside "
+                                     "the project dir): track the target or drop the link; rerun doctor", NOT_SKIP)]
+    with _import_path(where):
+        brc, bout = runner(shlex.split(cmd), where)
+    if adapter.outcome(brc, bout) == "pass":
+        return "pass", []
+    return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
+
+
+def _box_dir(project_dir):
+    return "mutants/" if project_dir == "." else f"{project_dir}/mutants/"
 
 
 def missing(out, wt, box):
@@ -265,7 +284,7 @@ def missing(out, wt, box):
 
 
 def _sandbox_entry(cmd, project_dir, paths):
-    where = "mutants/" if project_dir == "." else f"{project_dir}/mutants/"
+    where = _box_dir(project_dir)
     if paths:
         found = "missing there: " + ", ".join(f"`{p}`" for p in paths)
     else:
