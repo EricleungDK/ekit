@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import doctor
@@ -166,6 +167,33 @@ class SandboxTrial(unittest.TestCase):
         sandbox_run = self.calls[1]  # after the plain run, before the mutation tool's --version
         self.assertEqual(sandbox_run[0], ["python3", "-m", "pytest", "-p", "no:randomly", "-p", "no:random-order"])
 
+    def test_a_dangling_top_level_link_is_skipped_as_mutmut_skips_a_missing_source(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("gen.py", "build/gen.py")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
+    def test_a_possible_source_is_found_when_repo_names_the_project_dir_itself(self):
+        # git lists a tree from the cwd unless told --full-tree: with --repo app/ it would list nothing under app/
+        self.commit({"app/pyproject.toml": "[project]\n", "app/calc/__init__.py": "X = 1\n", "shared/data/x.txt": "x\n",
+                     "app/tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_x(self):\n        self.assertEqual(calc.X, 1)\n"},
+                    links=[("app/calc/data", "../../shared/data")])
+        env = doctor.run(os.path.join(self.repo, "app"), stack="python", project_dir="app",
+                         runner=unittest_runner(self.calls))
+        self.assertEqual(env["trial"]["sandbox"], "pass")
+
+    def test_the_sandbox_run_keeps_an_inherited_pythonpath_after_its_own(self):
+        lib = os.path.join(os.path.dirname(self.repo), "lib")
+        write(lib, {"helper.py": "Y = 2\n"})
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n",
+                     ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_a.py": "import unittest\n\nimport helper\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_y(self):\n        self.assertEqual(helper.Y, 2)\n"})
+        with unittest.mock.patch.dict(os.environ, {"PYTHONPATH": lib}):
+            env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
                      ".github/workflows/mech-review.yml": CALLER % ""})
@@ -229,7 +257,8 @@ class SandboxTrial(unittest.TestCase):
     def test_the_sandbox_holds_the_sources_also_copy_and_mutmut_defaults_merged_over_a_tracked_mutants_dir(self):
         self.commit({"pyproject.toml": "[project]\n", "setup.cfg": "", "uv.lock": "", "test_root.py": "",
                      "tests/test_a.py": "", "test/test_b.py": "", "src/calc/core.py": "X = 1\n", "conftest.py": "",
-                     "README.md": "", "docs/guide.md": "# guide\n", "mutants/docs/stale.md": ""})
+                     "README.md": "", "docs/guide.md": "# guide\n", "mutants/docs/stale.md": "",
+                     "mutants/stale.py": ""})
         seen = {}
 
         def run(argv, cwd):
@@ -241,8 +270,8 @@ class SandboxTrial(unittest.TestCase):
             return (0, "mutmut, version 3.8.1\n") if "--version" in argv else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
         self.assertEqual(env["trial"]["sandbox"], "pass")
-        self.assertEqual(seen, {"top": ["README.md", "conftest.py", "docs", "pyproject.toml", "setup.cfg", "src", "test",
-                                        "test_root.py", "tests", "uv.lock"],
+        self.assertEqual(seen, {"top": ["README.md", "conftest.py", "docs", "pyproject.toml", "setup.cfg", "src", "stale.py",
+                                        "test", "test_root.py", "tests", "uv.lock"],
                                 "docs": ["guide.md", "stale.md"], "guide": "# guide\n"})
 
     def test_doctor_leaves_the_checkout_as_it_was_and_no_worktree(self):

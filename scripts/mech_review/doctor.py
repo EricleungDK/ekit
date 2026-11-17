@@ -5,7 +5,6 @@ Reads the tree at HEAD (manifests, .github/workflows), then trial-runs the tests
 a human decision, so caller gaps are needs-human.
 """
 import contextlib
-import fnmatch
 import json
 import os
 import re
@@ -157,8 +156,9 @@ def _copy(src, dst):
 
 
 def _copy_source(crate, name, box):
-    """mutmut 3.8.1's copy of a source path (copy_src_dir): a file with copy2; a dir walked with os.walk, which does not
-    follow a link to a dir, and each file in it (a file link followed) copied with copy2 unless already there."""
+    """mutmut 3.8.1's copy of a source path (copy_src_dir): a file with copy2, a dangling link skipped; a dir walked with
+    os.walk, which does not follow a link to a dir, and each file in it (a file link followed) copied with copy2.
+    mutmut keeps a file already in mutants/ (only a tracked mutants/ holds one here): the fresh copy is R3's best case."""
     top = os.path.join(crate, name)
     if os.path.isdir(top):
         files = [os.path.join(root, f) for root, _, fs in os.walk(top) for f in fs]
@@ -166,14 +166,13 @@ def _copy_source(crate, name, box):
         files = [top] if os.path.isfile(top) else []
     for src in files:
         dst = os.path.join(box, os.path.relpath(src, crate))
-        if not os.path.exists(dst):
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
 
 
 def sandbox(repo, head, crate, project_dir):
     """`<crate>/mutants/` filled the way R3's mutmut run fills it, at best: the entries that may be R3's source_paths,
-    then also_copy and mutmut's defaults (root test*.py from the crate dir, as mutmut globs them). Returns its path.
+    then also_copy and mutmut's defaults. Returns its path.
     With no diff no source is named, so each tracked top-level entry that holds a .py file and is not in also_copy
     (also_copy leaves out an entry holding a link mutmut's copytree cannot copy) is copied the way R3 copies a source:
     the most R3 ever copies of it (as a non-source it is not copied at all)."""
@@ -183,11 +182,9 @@ def sandbox(repo, head, crate, project_dir):
     tracked = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", tree).split("\0")
     skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
     srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
-    tests = sorted(n for n in os.listdir(crate) if fnmatch.fnmatchcase(n, "test*.py"))
-    for name in srcs:
-        if name not in tests:
-            _copy_source(crate, name, box)
-    for name in copied + sorted(mutants.MUTMUT_COPIES) + tests:
+    for name in srcs:  # mutmut's root test*.py default among them: tracked .py files left out of also_copy
+        _copy_source(crate, name, box)
+    for name in copied + sorted(mutants.MUTMUT_COPIES):
         _copy(os.path.join(crate, name), os.path.join(box, name))
     return box
 
@@ -195,11 +192,11 @@ def sandbox(repo, head, crate, project_dir):
 @contextlib.contextmanager
 def _import_path(box):
     """PYTHONPATH for the sandbox run, as mutmut's setup_source_paths sets sys.path before it runs pytest in-process:
-    mutants/source, mutants/src and mutants/ (those that exist) first, so the tests import the copy. They go ahead of
+    mutants/source, mutants/src and mutants/ first (one that does not exist is no harm), so the tests import the copy. They go ahead of
     an inherited PYTHONPATH and of an editable install's .pth, which would import the caller's checkout instead. The
     runner seam takes no env: the run inherits this process's, restored after."""
     old = os.environ.get("PYTHONPATH")
-    first = [p for p in (os.path.join(box, "source"), os.path.join(box, "src"), box) if os.path.isdir(p)]
+    first = [os.path.join(box, "source"), os.path.join(box, "src"), box]
     os.environ["PYTHONPATH"] = os.pathsep.join(first + ([old] if old else []))
     try:
         yield
