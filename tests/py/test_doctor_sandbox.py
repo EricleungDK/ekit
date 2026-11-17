@@ -396,11 +396,15 @@ class SandboxTrial(unittest.TestCase):
             self.assertEqual(os.environ["PYTHONPATH"], "/somewhere")
 
     def test_the_sandbox_imports_from_source_before_src_as_mutmut_puts_them_on_sys_path(self):
+        # the plain run imports an installed calc; in mutants/ the copy under source/ must win over src/ and the install
+        lib = os.path.join(os.path.dirname(self.repo), "lib")
+        write(lib, {"calc/__init__.py": "X = 'installed'\n"})
         self.commit({"pyproject.toml": "[project]\n", "source/calc/__init__.py": "X = 'source'\n",
                      "src/calc/__init__.py": "X = 'src'\n", ".github/workflows/mech-review.yml": CALLER % "",
-                     "tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
-                     "    def test_x(self):\n        self.assertEqual(calc.X, 'source')\n"})
-        env = self.doctor(runner=unittest_runner(self.calls, installed=os.path.join(self.repo, "source")))
+                     "tests/test_calc.py": "import pathlib\nimport unittest\n\nimport calc\n\n"
+                     "IN_SANDBOX = 'mutants' in pathlib.Path(__file__).parts\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_x(self):\n        self.assertEqual(calc.X, 'source' if IN_SANDBOX else 'installed')\n"})
+        env = self.doctor(runner=unittest_runner(self.calls, installed=lib))
         self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
 
     def test_a_failing_sandbox_names_the_link_that_kept_a_top_level_entry_out_of_r3s_copy(self):
