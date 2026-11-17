@@ -1,0 +1,17 @@
+name: mech-waive (ekit self)
+
+# ekit's own caller: a /mech-waive PR comment re-runs mech-review's report job. Uses the LOCAL reusable workflow; GitHub
+# runs issue_comment workflows from the default branch, so this is main's copy. Adopters call @v0: see docs/mech-review-ci.md.
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  actions: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  mech-waive:
+    uses: ./.github/workflows/mech-waive.yml
