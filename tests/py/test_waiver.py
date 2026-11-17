@@ -204,7 +204,7 @@ class TestRender(unittest.TestCase):
         self.assertNotIn("@owner", body)
 
     def test_a_failing_comment_says_how_to_waive_and_a_passing_one_does_not(self):
-        self.assertIn("/mech-waive <id> <reason>", comment.render(envelope([entry()])))
+        self.assertIn("/mech-waive R2-deadbeef <why this is OK>", comment.render(envelope([entry()])))
         self.assertNotIn("/mech-waive", comment.render(waiver.apply(envelope([entry()]), TestApply.W)))
         self.assertNotIn("/mech-waive", comment.render(envelope([entry(eid="CI-deadbeef", check="CI", cls="env")])))
 

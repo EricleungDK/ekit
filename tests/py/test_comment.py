@@ -138,11 +138,63 @@ class TestBody(unittest.TestCase):
     def test_the_waive_help_follows_the_table_after_one_blank_line(self):
         body = comment.render(envelope([entry()]))
         self.assertTrue(body.startswith(comment.MARKER + "\n## mech-review\n"))
-        self.assertIn("| removed test fn b | deleting tests |\n\n" + comment.WAIVE_HELP + "\n\n### JSON\n", body)
+        self.assertIn("| removed test fn b | deleting tests |\n\n" + comment.WAIVE_HELP + "\n\n"
+                      "R2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n"
+                      "\n### JSON\n", body)
 
     def test_the_help_names_the_command_and_the_job_to_rerun(self):
-        self.assertEqual(comment.WAIVE_HELP, "A person with write access can let a `fail` entry through: comment "
-                         "`/mech-waive <id> <reason>` on this PR, then re-run this run's failed job (`report`).")
+        self.assertEqual(comment.WAIVE_HELP, "People with write access can waive a `fail` entry: copy its line below, "
+                         "replace `<why this is OK>` with the reason, and post it as a PR comment. The check re-runs on "
+                         "its own where the mech-waive workflow is set up; otherwise re-run this run's failed job "
+                         "(`report`).")
+
+
+class TestReadyMadeWaivers(unittest.TestCase):
+    def test_one_fail_entry_gets_one_line_to_copy_and_no_all_at_once_block(self):
+        body = comment.render(envelope([entry()]))
+        self.assertIn("\nR2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n",
+                      body)
+        self.assertNotIn("All fail entries at once", body)
+
+    def test_two_fail_entries_get_a_line_each_and_one_block_for_both(self):
+        body = comment.render(envelope([entry(), entry(eid="R4-11111111", check="R4")]))
+        self.assertIn(comment.WAIVE_HELP + "\n\n"
+                      "R2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n\n"
+                      "R4-11111111 · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R4-11111111 <why this is OK>\n```\n\n"
+                      "All fail entries at once\n```\n/mech-waive R2-deadbeef <why this is OK>\n"
+                      "/mech-waive R4-11111111 <why this is OK>\n```\n\n### JSON\n", body)
+
+    def test_confirm_waived_and_ci_entries_get_no_line(self):
+        env = waiver.apply(envelope([entry(eid="R2-00000001", severity="confirm"), entry(eid="R2-00000002"),
+                                     entry(eid="CI-00000003", check="CI"), entry(eid="R2-00000004")]),
+                           {"R2-00000002": {"by": "eric", "reason": "moved"}})
+        body = comment.render(env)
+        self.assertIn("\n```\n/mech-waive R2-00000004 <why this is OK>\n```\n\n### JSON\n", body)
+        self.assertEqual(body.count("/mech-waive "), 1, body)
+        self.assertNotIn("All fail entries at once", body)
+
+    def test_a_needs_human_fail_entry_gets_a_line(self):
+        e = dict(entry(), **{"class": "needs-human"})
+        self.assertIn("\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n", comment.render(envelope([e])))
+
+    def test_the_label_cells_are_escaped_and_cut_like_the_table(self):
+        e = dict(entry(), problem="a | b\nc", file="x" * 250)
+        body = comment.render(envelope([e]))
+        self.assertIn("\nR2-deadbeef · a \\| b c (" + "x" * 199 + "…:7)\n```\n", body)
+
+    def test_the_placeholder_is_the_one_waiver_rejects(self):
+        self.assertIn("/mech-waive R2-deadbeef " + waiver.PLACEHOLDER + "\n", comment.render(envelope([entry()])))
+        self.assertEqual(waiver.collect([{"user": {"login": "o"}, "author_association": "OWNER",
+                                          "body": "/mech-waive R2-deadbeef " + waiver.PLACEHOLDER}]), {})
+
+    def test_many_entries_stay_within_the_limit_and_the_lines_give_way_to_a_note(self):
+        many = [dict(entry(eid=f"R2-{i:08x}"), problem="p" * 300, file="f" * 300, forbidden="x" * 300) for i in range(300)]
+        body = comment.render(envelope(many))
+        self.assertLessEqual(len(body), comment.COMMENT_LIMIT)
+        self.assertIn("_showing first 50 of 300 entries_\n\n" + comment.WAIVE_HELP + "\n\n"
+                      "Waiver lines left out (comment size limit): post `/mech-waive <id> <why this is OK>` with an id "
+                      "from the table.\n\nJSON omitted", body)
+        self.assertNotIn("\n/mech-waive ", body)
 
 
 if __name__ == "__main__":

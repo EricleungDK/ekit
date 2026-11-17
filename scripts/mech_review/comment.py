@@ -6,6 +6,8 @@ Stdlib only.
 import json
 import re
 
+from .waiver import PLACEHOLDER
+
 MARKER = "<!-- mech-review -->"
 COMMENT_LIMIT = 60000  # GitHub caps a comment at 65536 chars; keep headroom
 OVERSIZE_ROWS = 50
@@ -128,8 +130,27 @@ def _waiver_lines(env):
                for r in env.get("waivers_ignored") or []])
 
 
-WAIVE_HELP = ("A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, "
-              "then re-run this run's failed job (`report`).")
+WAIVE_HELP = (f"People with write access can waive a `fail` entry: copy its line below, replace `{PLACEHOLDER}` with the "
+              "reason, and post it as a PR comment. The check re-runs on its own where the mech-waive workflow is set up; "
+              "otherwise re-run this run's failed job (`report`).")
+WAIVE_OMITTED = (f"Waiver lines left out (comment size limit): post `/mech-waive <id> {PLACEHOLDER}` with an id "
+                 "from the table.")
+
+
+def _code(text):
+    fence = _fence(text)
+    return [fence, text, fence]
+
+
+def _ready_made(waivable):
+    """Per waivable entry a label and a code block holding the line to post; with 2 or more, one block for all."""
+    lines = []
+    for e in waivable:
+        lines += ["", f"{_cell(e['id'])} · {_cell(e['problem'])} ({_cell(e['file'])}:{e['line']})",
+                  *_code(f"/mech-waive {e['id']} {PLACEHOLDER}")]
+    if len(waivable) >= 2:
+        lines += ["", "All fail entries at once", *_code("\n".join(f"/mech-waive {e['id']} {PLACEHOLDER}" for e in waivable))]
+    return lines
 
 
 def _body(env, shown, json_text):
@@ -151,8 +172,11 @@ def _body(env, shown, json_text):
         lines.append(_table(shown))
         if len(shown) < len(entries):
             lines += ["", f"_showing first {len(shown)} of {len(entries)} entries_"]
-        if any(e["severity"] == "fail" and e.get("check") != "CI" for e in entries):
+        waivable = [e for e in entries if e["severity"] == "fail" and e.get("check") in CHECK_ORDER]  # never CI
+        if waivable:
             lines += ["", WAIVE_HELP]
+            # the ready-made lines go with the JSON: a comment too big for the JSON is too big for them
+            lines += ["", WAIVE_OMITTED] if json_text is None else _ready_made(waivable)
     lines.append("")
     if json_text is None:
         lines.append("JSON omitted (comment size limit). Full result: `mech-review-json` artifact of this run.")
