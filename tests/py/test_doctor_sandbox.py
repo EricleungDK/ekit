@@ -362,6 +362,21 @@ class SandboxTrial(unittest.TestCase):
                                         "mutants/ fails on `tests/pipe`", "mutmut's copy into mutants/ fails on it: "
                                         "`tests/pipe` is a named pipe; fix that in the tree, then rerun doctor")))
 
+    def test_a_named_pipe_in_a_possible_source_names_the_source_and_the_reason(self):
+        # calc/ is left out of also_copy for its absolute link, so it is copied file by file as a source: copy2 on the
+        # pipe gives a SpecialFileError with no file name of its own
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        os.makedirs(outside)
+        os.mkfifo(os.path.join(outside, "fifo"))
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[("calc/pipe", os.path.join(outside, "fifo"))])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]),
+                         ("fail", [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                         "mutants/ fails on `calc`", "mutmut's copy into mutants/ fails on it: "
+                                         "`calc/pipe` is a named pipe; fix that in the tree, then rerun doctor")]))
+
     def test_a_tracked_file_named_mutants_names_the_path_that_cannot_be_made(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      "mutants": "", ".github/workflows/mech-review.yml": CALLER % ""})

@@ -171,10 +171,10 @@ def _copy_source(crate, name, box):
 
 
 class CopyFails(Exception):
-    """mutmut's copy into mutants/ would stop or never end: .paths, relative to the project dir."""
+    """mutmut's copy into mutants/ would stop or never end: .paths, relative to the project dir (read by the handler
+    only: the exception's own args are never shown)."""
 
     def __init__(self, paths):
-        super().__init__(paths)
         self.paths = paths
 
 
@@ -290,9 +290,9 @@ def _copy_error(e, crate, name):
     """CopyError naming the paths the error names (shutil.Error's (src, dst, why) rows, or its filename), relative to
     the project dir, else the entry being copied (a copy onto itself gives shutil.Error a plain string)."""
     # a row's src or dst can be a DirEntry (copytree recursing with one): made a str before any sort
+    # copytree's rows are (src, dst, why) tuples; its args[0] is a str, or such a str split into characters, otherwise
     rows = sorted((os.fspath(a), os.fspath(b), why) for a, b, why in
-                  (r for r in e.args[0] if isinstance(r, tuple) and len(r) == 3)) \
-        if isinstance(e, shutil.Error) and isinstance(e.args[0], list) else []
+                  (r for r in e.args[0] if isinstance(r, tuple))) if isinstance(e, shutil.Error) else []
     if rows:
         why = rows[0][2]  # str(OSError) of the first row: its strerror, as for a plain OSError
         m = re.match(r"\[Errno \d+\] ([^:]+)", why)
@@ -381,13 +381,9 @@ def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
                                     "it or one into the checkout by an absolute path under tests/ (or a dangling one in "
                                     "a source dir) stops or loops R3 too; drop or fix the link (track its target, make "
                                     "it relative); rerun doctor")]
-    except CopyError as e:
+    except CopyError as e:  # the link check before it reads nothing that raises: os.walk and listdir errors are skipped
         return "fail", [_copy_entry(box, e.paths, f"mutmut's copy into {box} fails on it: {e.why}; fix that in the "
                                     "tree, then rerun doctor")]
-    except OSError as e:  # the link check could not read the tree: never a crash
-        e = _copy_error(e, crate, project_dir)
-        return "fail", [_copy_entry(box, e.paths, f"doctor could not read it to check mutmut's copy: {e.why}; fix "
-                                    "that in the tree, then rerun doctor")]
     cmd = f"{cmd} {MUTMUT_PYTEST}"
     with _import_path(where):
         brc, bout = runner(shlex.split(cmd), where)
