@@ -19,6 +19,7 @@ Verdict (per shard):
   tool not runnable or an unexpected exit -> n/a (env), never pass.
   no mutants in the diff -> pass.
 """
+import fnmatch
 import itertools
 import json
 import math
@@ -825,14 +826,45 @@ def _glob_escape(path):
     return re.sub(r"([*?\[])", lambda m: f"[{m.group(1)}]", path)
 
 
-def add_mutmut_table(text, sources, only):
-    """pyproject text with a [tool.mutmut] table (source_paths, only_mutate) appended; None when the repo already
-    configures mutmut (it is not overridden: only_mutate could not be set)."""
+# what mutmut 3.8.1 copies into mutants/ on its own (configuration.py), besides source_paths and also_copy
+MUTMUT_COPIES = {"tests", "test", "setup.cfg", "pyproject.toml", "uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock"}
+
+
+def also_copy(repo, head, project_dir, sources):
+    """the also_copy list for mutmut: the git-tracked top-level entries of the project dir at head, relative to it,
+    sorted. Left out: the sources (mutmut copies also_copy with copytree over its mutated copy, on each `mutmut run`),
+    mutants/ (it would copy into itself) and what mutmut copies anyway. From git, so nothing untracked (.venv, caches).
+    A name that is not UTF-8 is left out too: the TOML file cannot hold it."""
+    tree = head if project_dir == "." else f"{head}:{project_dir}"
+    names = [n for n in git(repo, "ls-tree", "-z", "--name-only", tree).split("\0") if n]
+    skip = set(sources) | MUTMUT_COPIES | {"mutants"}
+    return sorted(n for n in names if n not in skip and not fnmatch.fnmatchcase(n, "test*.py") and _utf8(n))
+
+
+def _utf8(name):
+    try:
+        name.encode("utf-8")
+        return True
+    except UnicodeEncodeError:  # git's bytes came back as surrogates (surrogateescape)
+        return False
+
+
+def _toml_list(items):
+    """a TOML array of strings. JSON's escapes are TOML's, except that a \\u escape must be one code point (no
+    surrogate pairs: raw text instead) and DEL must be escaped."""
+    return json.dumps(list(items), ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def add_mutmut_table(text, sources, only, also_copy=()):
+    """pyproject text with a [tool.mutmut] table (source_paths, only_mutate, also_copy when any) appended; None when the
+    repo already configures mutmut (it is not overridden: only_mutate could not be set)."""
     text = text or ""
     if re.search(r"^\s*\[tool\.mutmut[\].]", text, re.M):
         return None
     block = "[tool.mutmut]\nsource_paths = %s\nonly_mutate = %s\n" % (
         json.dumps(sources), json.dumps([_glob_escape(p) for p in only]))
+    if also_copy:
+        block += "also_copy = %s\n" % _toml_list(also_copy)
     return text + ("\n" if text.endswith("\n") else "\n\n" if text else "") + block
 
 
@@ -857,16 +889,16 @@ def _kind(status, early):
     return "other"  # timeout, suspicious, skipped, segfault, interrupted: neither caught nor missed
 
 
-def _write_config(wt, files):
-    """the [tool.mutmut] table in the worktree's pyproject.toml (the caller's checkout is never written). False when
-    the repo already configures mutmut."""
+def _write_config(wt, files, extra):
+    """the [tool.mutmut] table in the worktree's pyproject.toml (the caller's checkout is never written); extra is a
+    function of the source_paths that gives also_copy. False when the repo already configures mutmut."""
     path = os.path.join(wt, "pyproject.toml")
     text = None
     if os.path.exists(path):
         with open(path, encoding="utf-8", errors="surrogateescape") as f:
             text = f.read()
     sources = sorted({p.split("/", 1)[0] for p in files})
-    new = add_mutmut_table(text, sources, files)
+    new = add_mutmut_table(text, sources, files, extra(sources))
     if new is None:
         return False
     with open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
@@ -919,7 +951,8 @@ class Mutmut:
                 return bad
             if not files:
                 return _check("pass", "0 mutants in the diff (no changed production file in this shard)", 0, 0), []
-            if not _write_config(crate, [_crate_path(project_dir, f) for f in files]):
+            if not _write_config(crate, [_crate_path(project_dir, f) for f in files],
+                                 lambda sources: also_copy(repo, head, project_dir, sources)):
                 return _check("n/a", f"the repo already configures mutmut ([tool.mutmut]) in {project_dir} (env): "
                                      "R3 cannot set only_mutate; not overridden"), []
             rc, text = runner(shlex.split(cmd) + ["--version"], crate, PROBE_TIMEOUT)
