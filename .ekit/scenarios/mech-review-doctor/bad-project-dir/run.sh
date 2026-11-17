@@ -26,5 +26,5 @@ out=$(doctor --repo "$D"); rc=$?
 eq "no project exit" "$rc" 1
 has "no project problem" "$(jq -r '.entries[0].problem' <<<"$out")" "no project found"
 eq "no project no inputs" "$(jq -c .inputs <<<"$out")" '{}'
-eq "nothing trial-run" "$(wc -l < "$STUB_LOG")" 0
+eq "nothing trial-run" "$(lines < "$STUB_LOG")" 0
 echo "bad-project-dir ok"

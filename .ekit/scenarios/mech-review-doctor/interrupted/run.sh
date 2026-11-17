@@ -19,8 +19,8 @@ stop() { local name=$1 sig=$2 r="$PWD/$1"; rust_repo "$r"
   [[ -s "$HANG_PID" ]] || fail "$name: tests never started"
   kill -"$sig" "$pid"; wait "$pid" 2>/dev/null
   kill "$(cat "$HANG_PID")" 2>/dev/null
-  ( eq "$name worktrees" "$(git -C "$r" worktree list | wc -l)" 1
-    eq "$name temp dir" "$(ls "$TMPDIR" | wc -l)" 0 ) || bad=1; }
+  ( eq "$name worktrees" "$(git -C "$r" worktree list | lines)" 1
+    eq "$name temp dir" "$(ls "$TMPDIR" | lines)" 0 ) || bad=1; }
 stop int INT
 stop term TERM
 [[ $bad == 0 ]] || exit 1
