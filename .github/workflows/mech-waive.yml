@@ -1,0 +1,47 @@
+name: mech-waive
+
+# Reusable. A person's `/mech-waive <id> <reason>` PR comment re-runs the PR head's `mech-review report` job, which reads
+# the PR's comments and applies the waiver (no trip to Actions to re-run it by hand). Callers trigger it on
+# issue_comment, types created, edited, deleted (an edit or a deletion changes or withdraws a waiver):
+#   uses: EricleungDK/ekit/.github/workflows/mech-waive.yml@v0
+# GitHub runs issue_comment workflows from the default branch only: a caller added in a PR does nothing until it is merged.
+# It never runs PR code: the only checkout is the ekit engine at job.workflow_sha (the ref the caller called), and the
+# comment body is read by the job's `if:` alone. A run of the report job that is still going reads the comment itself.
+
+on:
+  workflow_call:
+
+permissions:
+  actions: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  rerun:
+    name: mech-waive re-run report
+    # a PR comment, from a person with write access, that waives; never the bot's sticky comment (it lists ready-made
+    # /mech-waive lines) and never a bot, or a re-run would post the sticky comment and trigger itself
+    if: >-
+      github.event.issue.pull_request
+      && contains(github.event.comment.body, '/mech-waive')
+      && github.event.comment.user.type != 'Bot'
+      && !startsWith(github.event.comment.body, '<!-- mech-review -->')
+      && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: mech-waive-pr-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: ekit engine checkout (the ref this workflow was called at)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ekit
+          persist-credentials: false
+      - name: re-run the report job
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: python3 -I ekit/scripts/mech-rerun.py --pr "$PR_NUMBER"
