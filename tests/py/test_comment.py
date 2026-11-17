@@ -101,6 +101,31 @@ class TestWaiverLines(unittest.TestCase):
         self.assertEqual(comment._waiver_lines(envelope([entry(), entry(eid="R2-11111111", severity="confirm")])), [])
 
 
+class TestIgnoredWaivers(unittest.TestCase):
+    WHY = "the comment was edited after posting; post a new comment"
+
+    def test_each_ignored_waiver_gets_a_line_under_the_headline_naming_who_without_pinging(self):
+        env = dict(envelope([entry()]), waivers_ignored=[{"id": "R2-deadbeef", "by": "eric", "why": self.WHY, "url": "u"}])
+        body = comment.render(env)
+        self.assertTrue(body.startswith(f"{comment.MARKER}\n## mech-review\n\n**{env['summary']}**\n\n"
+                                        f"Waiver ignored: R2-deadbeef by `eric`: {self.WHY}\n\nhead `{SHA}`\n"), body[:400])
+        self.assertNotIn("@eric", body)
+
+    def test_a_backtick_in_a_login_cannot_break_out_of_the_code_span(self):
+        env = dict(envelope([entry()]), waivers_ignored=[{"id": "R2-deadbeef", "by": "a`b", "why": "w", "url": "u"}])
+        self.assertIn("\nWaiver ignored: R2-deadbeef by `a'b`: w\n", comment.render(env))
+
+    def test_waived_lines_come_before_ignored_ones(self):
+        env = waiver.apply(envelope([entry(), entry(eid="R2-11111111")]), {"R2-deadbeef": {"by": "eric", "reason": "moved"}})
+        env["waivers_ignored"] = [{"id": "R2-11111111", "by": "ann", "why": self.WHY, "url": "u"}]
+        self.assertIn(f"\n\nWaived: R2-deadbeef by `eric`: moved\nWaiver ignored: R2-11111111 by `ann`: {self.WHY}\n\nhead",
+                      comment.render(env))
+
+    def test_an_ignored_waiver_keeps_the_check_red(self):
+        env = dict(envelope([entry()]), waivers_ignored=[{"id": "R2-deadbeef", "by": "eric", "why": self.WHY, "url": "u"}])
+        self.assertEqual(comment.exit_code(env), 1)
+
+
 class TestBody(unittest.TestCase):
     W = {"R2-deadbeef": {"by": "eric", "reason": "moved", "url": "u"}}
 

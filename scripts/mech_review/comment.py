@@ -113,11 +113,19 @@ def _not_run_lines(env):
     return ["Did not run: " + "; ".join(na)] if na else []
 
 
+def _login(name):
+    """A login in code style, so nobody is pinged; a backtick cannot close the span."""
+    return f"`{_cell(name).replace('`', chr(39))}`"
+
+
 def _waiver_lines(env):
-    """One line per waived entry: who let it through, and why. The login is in code style so nobody is pinged."""
-    return [f"Waived: {_cell(e['id'])} by `{_cell((e.get('waiver') or {}).get('by', '?')).replace('`', chr(39))}`: "
-            f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
-            for e in env["entries"] if e["severity"] == "waived"]
+    """One line per waived entry: who let it through, and why. Then one per ignored waiver (`waivers_ignored`, set
+    by mech-comment.py): who posted it and why it did not count."""
+    return ([f"Waived: {_cell(e['id'])} by {_login((e.get('waiver') or {}).get('by', '?'))}: "
+             f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
+             for e in env["entries"] if e["severity"] == "waived"]
+            + [f"Waiver ignored: {_cell(r['id'])} by {_login(r['by'])}: {_cell(r['why'])}"
+               for r in env.get("waivers_ignored") or []])
 
 
 WAIVE_HELP = ("A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, "
