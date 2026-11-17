@@ -862,7 +862,7 @@ def add_mutmut_table(text, sources, only, also_copy=()):
     if re.search(r"^\s*\[tool\.mutmut[\].]", text, re.M):
         return None
     block = "[tool.mutmut]\nsource_paths = %s\nonly_mutate = %s\n" % (
-        json.dumps(sources), json.dumps([_glob_escape(p) for p in only]))
+        _toml_list(sources), _toml_list(_glob_escape(p) for p in only))
     if also_copy:
         block += "also_copy = %s\n" % _toml_list(also_copy)
     return text + ("\n" if text.endswith("\n") else "\n\n" if text else "") + block

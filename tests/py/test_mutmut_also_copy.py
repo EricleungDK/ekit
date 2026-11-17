@@ -107,6 +107,11 @@ class Table(unittest.TestCase):
         text = mutants.add_mutmut_table("", ["src"], ["src/a.py"], names)
         self.assertEqual(tomllib.loads(text)["tool"]["mutmut"]["also_copy"], names)
 
+    def test_a_source_path_outside_the_bmp_stays_valid_toml(self):
+        text = mutants.add_mutmut_table("", ["😀"], ["😀/a.py", "src/😀.py"])
+        self.assertEqual(tomllib.loads(text)["tool"]["mutmut"],
+                         {"source_paths": ["😀"], "only_mutate": ["😀/a.py", "src/😀.py"]})
+
     def test_the_repos_own_mutmut_table_is_still_not_overridden(self):
         self.assertIsNone(mutants.add_mutmut_table("[tool.mutmut]\nsource_paths = ['src']\n", ["src"], ["src/a.py"],
                                                    ["docs"]))
