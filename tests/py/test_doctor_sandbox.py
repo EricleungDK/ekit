@@ -399,6 +399,26 @@ class SandboxTrial(unittest.TestCase):
             env = self.doctor()
         self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
 
+    def test_links_into_the_main_checkout_count_as_the_checkout_when_doctor_runs_from_a_linked_worktree(self):
+        # doctor run on a linked worktree (<main>/.claude/worktrees/x): absolute links into <main> dangle in CI too,
+        # and copytree through <main> reaches the linked worktree and its links again
+        main = self.repo
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     "data/fixtures/a.txt": "", ".gitignore": ".claude/\n",
+                     ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[("tests/fx", os.path.join(main, "data", "fixtures")), ("tests/repo", main)])
+        linked = os.path.join(main, ".claude", "worktrees", "x")
+        git(main, "worktree", "add", "-q", "--detach", linked)
+        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
+        signal.alarm(30)
+        try:
+            env = doctor.run(linked, stack="python", runner=unittest_runner(self.calls))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/fx`, `tests/repo`")
+
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"a.txt": ""})
