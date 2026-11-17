@@ -33,6 +33,33 @@ class Docs(unittest.TestCase):
 
 PASSES = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 1)\n"
 
+# writes tests/gen.txt at the git top of the checkout it runs in, then reads it beside the test file
+GEN = """import pathlib
+import subprocess
+import unittest
+
+HERE = pathlib.Path(__file__).parent
+
+
+class T(unittest.TestCase):
+    def test_gen(self):
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=HERE, capture_output=True, text=True)
+        out = pathlib.Path(top.stdout.strip()) / "tests" / "gen.txt"
+        if not out.exists():
+            out.write_text("x")
+        self.assertEqual((HERE / "gen.txt").read_text(), "x")
+"""
+# makes tests/out and leaves it there
+MKDIR = """import os
+import pathlib
+import unittest
+
+
+class T(unittest.TestCase):
+    def test_mk(self):
+        os.mkdir(pathlib.Path(__file__).parent / "out")
+"""
+
 
 def git(repo, *args):
     return subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
@@ -193,6 +220,22 @@ class SandboxTrial(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"PYTHONPATH": lib}):
             env = self.doctor()
         self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
+    def test_a_file_the_plain_run_leaves_behind_does_not_reach_the_sandbox(self):
+        # the test writes tests/gen.txt at the checkout's top and reads it beside itself: in R3's fresh worktree the
+        # copy in mutants/tests/ never has it
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", ".gitignore": "tests/gen.txt\n",
+                     ".github/workflows/mech-review.yml": CALLER % "", "tests/test_gen.py": GEN})
+        env = self.doctor()
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
+        self.assertEqual([e["problem"] for e in env["entries"]],
+                         ["R3's mutmut sandbox fails where the plain run passes (missing there: `tests/gen.txt`)"])
+
+    def test_a_dir_the_plain_run_leaves_behind_does_not_fail_the_sandbox(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", ".gitignore": "tests/out/\n",
+                     ".github/workflows/mech-review.yml": CALLER % "", "tests/test_mk.py": MKDIR})
+        env = self.doctor()
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"], env["entries"]), ("pass", "pass", []))
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",

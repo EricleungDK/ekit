@@ -220,7 +220,7 @@ def trial(repo, head, stack, project_dir, runner):
             verdict = adapter.outcome(rc, out)
             box, box_entries = "skipped", []
             if stack == "python" and verdict == "pass":
-                box, box_entries = _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner)
+                box, box_entries = _sandbox_trial(repo, head, project_dir, cmd, adapter, runner)
             tool = MUTATION_TOOL[stack]
             tool_rc, _ = runner(shlex.split(tool) + ["--version"], crate)
     except gitio.Die as e:  # read-only .git (sandbox): the static findings still stand
@@ -239,8 +239,15 @@ def trial(repo, head, stack, project_dir, runner):
     return result, _test_entries(verdict, cmd, out) + box_entries + entries
 
 
-def _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner):
-    """the suite once inside R3's mutmut sandbox: ("pass" | "fail", entries)."""
+def _sandbox_trial(repo, head, project_dir, cmd, adapter, runner):
+    """the suite once inside R3's mutmut sandbox: ("pass" | "fail", entries). Built in a worktree of its own, as R3 runs
+    mutmut in a fresh one: what the plain run left in its checkout (files the tests write) must not reach the copy."""
+    with red.worktree(repo, head) as wt:
+        adapter.worktree_setup(repo, wt, project_dir)
+        return _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner)
+
+
+def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
     crate = os.path.join(wt, project_dir)
     try:
         where = sandbox(repo, head, crate, project_dir)
