@@ -859,12 +859,15 @@ def also_copy(repo, head, project_dir, sources):
 def _link_ok(path, target, entries, dirs):
     """the link at path (relative to the project dir) reaches a tracked regular file inside it, walking only through
     tracked dirs: no absolute target, no step above the project dir, no other link on the way (a dir link included,
-    which is never in dirs), no trailing slash (that asks for a dir)."""
-    if target.startswith("/") or target.endswith("/"):
+    which is never in dirs). A `.` or empty step stays a step: what comes before it must be a dir, so `README.md/.`
+    and a trailing slash fail (ENOTDIR on disk)."""
+    if target.startswith("/"):
         return False
     parts = path.split("/")[:-1]
-    steps = [s for s in target.split("/") if s not in ("", ".")]
+    steps = target.split("/")
     for i, step in enumerate(steps):
+        if step in ("", "."):
+            continue
         if step == "..":
             if not parts:
                 return False

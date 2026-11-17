@@ -118,7 +118,8 @@ class Symlinks(unittest.TestCase):
 
     FILES = {"pyproject.toml": "", "src/a.py": "", "README.md": "", "docs/guide.md": "", "good/a.txt": "",
              "deep/sub/f.txt": "", "todir/a.txt": "", "abs/a.txt": "", "slash/a.txt": "", "chain/a.txt": "",
-             "viafile/a.txt": "", "vialink/a.txt": "", "loop/a.txt": "", "tool.sh": ""}
+             "viafile/a.txt": "", "vialink/a.txt": "", "loop/a.txt": "", "tool.sh": "", "dotafter/a.txt": "",
+             "dotsafter/a.txt": ""}
     LINKS = {
         "docs/latest": "../build/html",              # dangling: build/ is not tracked
         "loop/self": "..",                           # an ancestor dir
@@ -132,6 +133,9 @@ class Symlinks(unittest.TestCase):
         "slash/readme": "../README.md/",             # a trailing slash wants a dir
         "chain/readme": "../good/readme",            # a link to a link
         "viafile/readme": "../README.md/../README.md",  # through a file
+        "dotafter/readme": "../README.md/.",         # a `.` after a file: ENOTDIR on disk
+        "dotsafter/readme": "../README.md/./.",      # the same, twice
+        "good/dotdir": "../deep/./sub/f.txt",        # a `.` after a dir: kept
         "vialink/f": "../todir/d/sub/f.txt",          # through a link to a dir
         "toplink": "README.md",                      # top-level link to a tracked file: kept
         "topdangling": "nothing",                    # top-level dangling link
