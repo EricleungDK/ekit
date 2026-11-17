@@ -1,7 +1,7 @@
 source "$(dirname "$0")/lib.sh"
 # Pre-rename (ek) repos keep working: .ek/scenarios/, EK_* scenario env, EK_STATE, EricleungDK/ek callers.
 SC="$ROOT/scripts/scenarios.py"; SS="$ROOT/scripts/session-start.py"; FG="$ROOT/scripts/finish-gate.py"
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 unset EKIT_STATE; export EK_STATE="$T/state"
 
 mkrepo() { # mkrepo <dir> <layout dir> <run.sh body>

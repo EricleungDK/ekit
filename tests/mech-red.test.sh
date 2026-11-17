@@ -289,7 +289,7 @@ before=$(git -C "$R" rev-parse HEAD); st=$(git -C "$R" status --porcelain)
 red "$R" "$B" "$H" --head-branch agent/x >/dev/null
 eq "$(git -C "$R" rev-parse HEAD)" "$before" "checkout: HEAD unchanged"
 eq "$(git -C "$R" status --porcelain)" "$st" "checkout: working tree unchanged"
-eq "$(git -C "$R" worktree list | wc -l)" 1 "checkout: no worktree left behind"
+eq "$(git -C "$R" worktree list | wc -l | tr -d " ")" 1 "checkout: no worktree left behind"
 
 # ---- R4: new or changed tests run 5x at head ----
 HEAD_OUT=flaky agent_repo r4flake

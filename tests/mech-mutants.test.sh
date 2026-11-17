@@ -192,7 +192,7 @@ lacks "$(cat "$MECH_STUB_LOG")" " --timeout" "missed: per-mutant timeout auto, n
 has "$(cat "$MECH_STUB_LOG")" "--colors never" "missed: no colour codes"
 lacks "$(cat "$MECH_STUB_LOG")" "--shard" "missed: no shard flag without --shard"
 lacks "$(cat "$MECH_STUB_LOG")" "$R |" "missed: runs in a worktree, not the caller checkout"
-eq "$(git -C "$R" worktree list | wc -l)" 1 "missed: no worktree left behind"
+eq "$(git -C "$R" worktree list | wc -l | tr -d " ")" 1 "missed: no worktree left behind"
 
 # all caught -> pass, exit 0, nothing missed
 mrepo caught
@@ -436,7 +436,7 @@ RUNNER_T="$T/runner"; mkdir -p "$RUNNER_T"
 cat > "$RUNNER_T/ignores-term.sh" <<'SH'
 #!/bin/bash
 trap '' TERM
-setsid sh -c 'trap "" TERM; exec sleep 9770123' &
+python3 -c 'import os, sys; os.setsid(); os.execvp("sh", ["sh", "-c", sys.argv[1]])' 'trap "" TERM; exec sleep 9770123' &  # setsid(1) is not on macOS
 wait
 SH
 cat > "$RUNNER_T/dies-on-term.sh" <<'SH'
@@ -489,7 +489,7 @@ check("honours SIGTERM: returns timeout before the grace ends", r is not None an
 r, dt = bounded(["bash", "-c", "echo hi; exit 3"], 5)
 check("normal exit: rc and output kept", r == (3, "hi\n"), repr(r))
 
-subprocess.run(["pkill", "-f", "sleep 9770123"], capture_output=True)
+subprocess.run(["pkill", "-KILL", "-f", "sleep 9770123"], capture_output=True)  # it ignores TERM
 subprocess.run(["pkill", "-f", "sleep 9770124"], capture_output=True)
 sys.exit(1 if FAILS else 0)
 PY
