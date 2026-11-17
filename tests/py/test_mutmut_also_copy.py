@@ -77,6 +77,15 @@ class AlsoCopy(unittest.TestCase):
                          ["README.md", "back\\slash.txt", "conftest.py", "docs", 'my "odd" file.txt', "pytest.ini",
                           "scripts"])
 
+    def test_a_name_with_a_tab_or_a_leading_space_is_listed_whole(self):
+        write(self.repo, {"tab\there.txt": "", " lead.txt": "", "docs/a\tb.md": ""})
+        git(self.repo, "add", "--", "tab\there.txt", " lead.txt", "docs/a\tb.md")
+        git(self.repo, "commit", "-q", "-m", "odd")
+        head = git(self.repo, "rev-parse", "HEAD").strip()
+        self.assertEqual(mutants.also_copy(self.repo, head, ".", ["src"]),
+                         [" lead.txt", "README.md", "back\\slash.txt", "conftest.py", "docs", 'my "odd" file.txt',
+                          "pytest.ini", "scripts", "tab\there.txt"])
+
     def test_a_name_that_is_not_utf8_is_left_out_since_no_toml_file_can_hold_it(self):
         blob = git(self.repo, "hash-object", "-w", os.devnull).strip()  # empty blob; the name goes in via the index only
         subprocess.run([b"git", b"-C", self.repo.encode(), b"update-index", b"--add", b"--cacheinfo",
@@ -153,6 +162,12 @@ class Symlinks(unittest.TestCase):
                                            "good/dotdir": "../deep/./sub/f.txt"})
         self.assertEqual(mutants.also_copy(repo, head, ".", ["src"]), ["README.md", "deep", "good"])
 
+    def test_a_bad_link_deep_inside_an_entry_drops_the_whole_entry(self):
+        repo, head = self.repo_with_links({"pyproject.toml": "", "src/a.py": "", "README.md": "",
+                                           "docs/api/v1/guide.md": "", "site/a/b/c.txt": ""},
+                                          {"docs/api/v1/latest": "../../../build/html", "site/a/b/readme": "../../../README.md"})
+        self.assertEqual(mutants.also_copy(repo, head, ".", ["src"]), ["README.md", "site"])
+
     def test_a_link_that_leaves_the_project_dir_drops_its_entry(self):
         repo, head = self.repo_with_links({"README.md": "", "pkg/pyproject.toml": "", "pkg/src/a.py": "",
                                            "pkg/notes/a.txt": "", "pkg/up/a.txt": "", "pkg/NOTES.md": ""},
@@ -201,13 +216,15 @@ class ConfigMutmutReads(unittest.TestCase):
             if argv[1] == "--version":
                 return 0, "mutmut, version 3.8.1"
             with open(os.path.join(cwd, "pyproject.toml"), "rb") as f:
-                tables.append(tomllib.load(f)["tool"]["mutmut"])
+                self.pyprojects.append(tomllib.load(f))
+            tables.append(self.pyprojects[-1]["tool"]["mutmut"])
             return 1, "failed to collect stats. runner returned 1\n"  # stop at the first run: the table is all we need
 
+        self.pyprojects = []  # each pyproject.toml mutmut read, whole
         base, head, mb = merge_base(repo, "HEAD~1", "HEAD")
         rv = Review(repo, mb, head, ADAPTERS["python"](), [os.path.join(project_dir, "tests/**")], project_dir)
         with contextlib.redirect_stderr(io.StringIO()):
-            mutants.run(rv, None, 5, None, None, fake)
+            self.check, _ = mutants.run(rv, None, 5, None, None, fake)
         return tables
 
     def test_the_table_lists_the_tracked_files_tests_read_besides_the_sources(self):
@@ -223,6 +240,21 @@ class ConfigMutmutReads(unittest.TestCase):
                           "pkg/config/app.example.yaml": "", "docs/top.md": ""},
                          "pkg/src/calc/core.py", project_dir="pkg")
         self.assertEqual(tables, [{"source_paths": ["src"], "only_mutate": ["src/calc/core.py"], "also_copy": ["config"]}])
+
+    def test_the_rest_of_the_repos_pyproject_is_kept_beside_the_table(self):
+        self.r3({"pyproject.toml": "[project]\nname = 'calc'\n\n[tool.pytest.ini_options]\npythonpath = ['src']\n",
+                 "src/calc/core.py": "def add(a, b):\n    return a + b\n", "tests/test_core.py": ""}, "src/calc/core.py")
+        self.assertEqual(self.pyprojects, [{"project": {"name": "calc"},
+                                            "tool": {"pytest": {"ini_options": {"pythonpath": ["src"]}},
+                                                     "mutmut": {"source_paths": ["src"], "only_mutate": ["src/calc/core.py"]}}}])
+
+    def test_a_repo_with_its_own_mutmut_table_gets_r3_not_applicable_and_mutmut_never_runs(self):
+        tables = self.r3({"pyproject.toml": "[project]\nname = 'calc'\n\n[tool.mutmut]\nsource_paths = ['src']\n",
+                          "src/calc/core.py": "def add(a, b):\n    return a + b\n", "tests/test_core.py": "",
+                          "docs/guide.md": ""}, "src/calc/core.py")
+        self.assertEqual((self.check, tables), ({"status": "n/a", "note": "the repo already configures mutmut "
+                                                 "([tool.mutmut]) in . (env): R3 cannot set only_mutate; not overridden"},
+                                                []))
 
 
 if __name__ == "__main__":
