@@ -160,6 +160,12 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `calc/conf.yaml`")
 
+    def test_the_sandbox_run_turns_off_random_test_order_as_mutmut_does(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES})
+        self.doctor()
+        sandbox_run = self.calls[1]  # after the plain run, before the mutation tool's --version
+        self.assertEqual(sandbox_run[0], ["python3", "-m", "pytest", "-p", "no:randomly", "-p", "no:random-order"])
+
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})
 
@@ -169,7 +175,8 @@ class SandboxTrial(unittest.TestCase):
             return (1, "E   assert 1 == 2\n1 failed in 0.01s\n") if cwd.endswith("/mutants") else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
         [e] = [e for e in env["entries"] if e["check"] == "doctor" and "sandbox" in e["problem"]]
-        self.assertIn("no missing path found in the output of `python3 -m pytest` run in mutants/", e["problem"])
+        self.assertIn("no missing path found in the output of `python3 -m pytest -p no:randomly -p no:random-order` "
+                      "run in mutants/", e["problem"])
 
     def test_each_missing_path_is_named_once_relative_to_the_sandbox_or_as_printed_when_outside_the_worktree(self):
         self.commit({"app/pyproject.toml": "[project]\n", "app/calc/core.py": "X = 1\n", "app/tests/test_a.py": ""})

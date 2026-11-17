@@ -39,6 +39,7 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
 DEFAULT_TEST_PATHS = "tests/**"
+MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
 
 
@@ -254,6 +255,7 @@ def _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner):
                                      f"fails on {paths}",
                                      "a link there does not resolve in a fresh checkout (its target untracked or outside "
                                      "the project dir): track the target or drop the link; rerun doctor", NOT_SKIP)]
+    cmd = f"{cmd} {MUTMUT_PYTEST}"
     with _import_path(where):
         brc, bout = runner(shlex.split(cmd), where)
     if adapter.outcome(brc, bout) == "pass":
