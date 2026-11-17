@@ -54,7 +54,7 @@ commit "$P"
 out=$(doctor --repo "$P"); rc=$?
 eq "python detected" "$(jq -c .detected <<<"$out")" '{"stack":"python","project_dir":"."}'
 eq "python inputs" "$(jq -c .inputs <<<"$out")" '{"stack":"python","test-paths":"tests/**"}'
-eq "python trial" "$(jq -c .trial <<<"$out")" '{"tests":"pass","command":"python3 -m pytest","mutation_tool":"present"}'
+eq "python trial" "$(jq -c .trial <<<"$out")" '{"tests":"pass","command":"python3 -m pytest","mutation_tool":"present","sandbox":"pass"}'
 T="$PWD/ts"; mkdir -p "$T/web/src" "$T/web/tests"; git -C "$T" init -q -b main
 printf '{"name":"w","version":"0.0.1","devDependencies":{"vitest":"3.0.0"}}\n' > "$T/web/package.json"
 printf 'export const add = (a: number, b: number) => a + b\n' > "$T/web/src/a.ts"; printf 'it("x", () => {})\n' > "$T/web/tests/a.test.ts"
