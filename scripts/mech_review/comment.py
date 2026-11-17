@@ -6,9 +6,7 @@ Stdlib only.
 import json
 import re
 
-from .waiver import PLACEHOLDER
-
-MARKER = "<!-- mech-review -->"
+from .waiver import MARKER, PLACEHOLDER
 COMMENT_LIMIT = 60000  # GitHub caps a comment at 65536 chars; keep headroom
 OVERSIZE_ROWS = 50
 CELL_MAX = 200

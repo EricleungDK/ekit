@@ -135,6 +135,12 @@ class TestRejected(unittest.TestCase):
             dict(note("edited, no command"), **EDITED),
             {"user": None, "author_association": "OWNER", "body": None}]), [])
 
+    def test_the_sticky_comment_by_a_machine_user_waives_and_rejects_nothing(self):
+        sticky = dict(note(comment.MARKER + "\n## mech-review\n```\n/mech-waive R2-deadbeef real reason\n"
+                           "/mech-waive R3-0badc0de <why this is OK>\n```\n", login="ci-user", assoc="MEMBER"), **EDITED)
+        self.assertEqual((waiver.collect([sticky]), waiver.rejected([sticky])), ({}, []))
+        self.assertEqual(waiver.collect([dict(sticky, created_at=None)]), {})
+
     def test_the_same_id_rejected_twice_is_reported_once_with_the_later_comment(self):
         got = waiver.rejected([note("/mech-waive R2-deadbeef <why this is OK>", login="a"),
                                dict(note("/mech-waive R2-deadbeef moved", login="b", url="u2"), **EDITED)])

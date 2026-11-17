@@ -14,6 +14,8 @@ WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+(R[1-4]-[0-9a-f]{8})\b[ \t:,-]*(.*)
 # who may waive: the repo's own people. A bot, a first-time contributor or an outsider cannot.
 HUMAN = ("OWNER", "MEMBER", "COLLABORATOR")
 REASON_MAX = 300
+# the sticky comment's first line (comment.MARKER): its ready-made lines are never a waiver, whoever posts it
+MARKER = "<!-- mech-review -->"
 # what the sticky comment's ready-made lines say in place of the reason; left in, it is no reason
 PLACEHOLDER = "<why this is OK>"
 
@@ -34,11 +36,13 @@ def _edited(c):
 
 
 def _commands(comments):
-    """(comment, login, entry id, reason) per `/mech-waive` line with a reason, from comments by HUMAN authors only.
-    The reason has its whitespace collapsed and is not cut yet."""
+    """(comment, login, entry id, reason) per `/mech-waive` line with a reason, from comments by HUMAN authors only,
+    never the sticky comment (MECH_COMMENT_AUTHOR may be a machine user). The reason has its whitespace collapsed and
+    is not cut yet."""
     for c in comments:
         user = c.get("user") or {}
-        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body"):
+        if (user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body")
+                or c["body"].startswith(MARKER)):
             continue
         for m in WAIVE.finditer(c["body"]):
             reason = " ".join(m.group(2).split())
