@@ -198,6 +198,21 @@ class SandboxTrial(unittest.TestCase):
                                        "`scripts/demo.py`, `config/app.yaml`, `/nonexistent/it's.md`, `../docs/guide.md`)")
         self.assertIn("R3 copies into app/mutants/ only the project dir's tracked top-level entries", e["hint"])
 
+    def test_a_sandbox_run_that_times_out_says_so_not_that_no_path_was_found(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
+                     ".github/workflows/mech-review.yml": CALLER % ""})
+
+        def run(argv, cwd):
+            if "--version" in argv:
+                return 0, "mutmut, version 3.8.1\n"
+            return ("timeout", "") if cwd.endswith("/mutants") else (0, "1 passed in 0.01s\n")
+        env = self.doctor(runner=run)
+        self.assertEqual(env["trial"]["sandbox"], "fail")
+        [e] = env["entries"]
+        self.assertEqual((e["class"], e["severity"]), ("env", "fail"))
+        self.assertEqual(e["problem"], "R3's mutmut sandbox run timed out where the plain run passes "
+                                       "(`python3 -m pytest -p no:randomly -p no:random-order` in mutants/)")
+
     def test_a_failing_plain_run_skips_the_sandbox(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})
 

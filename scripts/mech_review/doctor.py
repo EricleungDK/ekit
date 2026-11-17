@@ -258,8 +258,15 @@ def _sandbox_trial(repo, head, wt, project_dir, cmd, adapter, runner):
     cmd = f"{cmd} {MUTMUT_PYTEST}"
     with _import_path(where):
         brc, bout = runner(shlex.split(cmd), where)
-    if adapter.outcome(brc, bout) == "pass":
+    verdict = adapter.outcome(brc, bout)
+    if verdict == "pass":
         return "pass", []
+    if verdict == "timeout":  # not a copy problem: no output to read paths from
+        return "fail", [report.entry("doctor", "", 0, "sandbox-timeout", "env", "fail",
+                                     f"R3's mutmut sandbox run timed out where the plain run passes (`{cmd}` in "
+                                     f"{_box_dir(project_dir)})",
+                                     f"the suite ran past doctor's {red.TEST_TIMEOUT} s limit there: rerun doctor; if it "
+                                     "repeats, find what in the sandbox makes the suite hang", NOT_SKIP)]
     return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
 
 
