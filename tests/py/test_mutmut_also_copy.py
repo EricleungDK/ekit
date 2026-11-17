@@ -72,6 +72,11 @@ class AlsoCopy(unittest.TestCase):
         git(self.repo, "commit", "-q", "-m", "later")
         self.assertNotIn("later", mutants.also_copy(self.repo, self.head, ".", ["src"]))
 
+    def test_a_repo_path_inside_the_repo_lists_from_the_root_all_the_same(self):
+        self.assertEqual(mutants.also_copy(os.path.join(self.repo, "docs"), self.head, ".", ["src"]),
+                         ["README.md", "back\\slash.txt", "conftest.py", "docs", 'my "odd" file.txt', "pytest.ini",
+                          "scripts"])
+
     def test_a_name_that_is_not_utf8_is_left_out_since_no_toml_file_can_hold_it(self):
         blob = git(self.repo, "hash-object", "-w", os.devnull).strip()  # empty blob; the name goes in via the index only
         subprocess.run([b"git", b"-C", self.repo.encode(), b"update-index", b"--add", b"--cacheinfo",

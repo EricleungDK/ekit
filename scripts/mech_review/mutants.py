@@ -836,7 +836,7 @@ def also_copy(repo, head, project_dir, sources):
     mutants/ (it would copy into itself) and what mutmut copies anyway. From git, so nothing untracked (.venv, caches).
     A name that is not UTF-8 is left out too: the TOML file cannot hold it."""
     tree = head if project_dir == "." else f"{head}:{project_dir}"
-    names = [n for n in git(repo, "ls-tree", "-z", "--name-only", tree).split("\0") if n]
+    names = [n for n in git(repo, "ls-tree", "-z", "--full-tree", "--name-only", tree).split("\0") if n]
     skip = set(sources) | MUTMUT_COPIES | {"mutants"}
     return sorted(n for n in names if n not in skip and not fnmatch.fnmatchcase(n, "test*.py") and _utf8(n))
 
