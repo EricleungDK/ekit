@@ -15,6 +15,9 @@ python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "runner not green"
 out=$(hook Stop sess1); has "green, no report" "$out" '"decision": "block"'; has "green, no report" "$out" "## Finish: done"
 hasnt "green, no report" "$out" "Scenarios not green"
 echo "y=2" >> "$SAMPLE/app.py"; python3 "$RUNNER" --repo "$SAMPLE" run >/dev/null || fail "runner not green"
+out=$(hook Stop sess1 false "$REPORT"); has "report, no verify command" "$out" '"decision": "block"'
+has "report, no verify command" "$out" "no verify command was declared"; has "report, no verify command" "$out" "task-verify.py"
+verify sess1
 eq "fresh PASS + report -> allow" "$(hook Stop sess1 false "$REPORT")" ""
 commit_all work
 eq "commit after PASS + report -> allow" "$(hook Stop sess1)" ""
