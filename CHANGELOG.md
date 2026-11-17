@@ -13,6 +13,11 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 - **Waivers**: a reason still reading `<why this is OK>` (or any reason wholly in `<…>`) does not waive, and a comment edited after posting does not waive: anyone with write access can edit another person's comment while the author shown stays the same. The sticky comment names each ignored waiver and why; post a new comment instead.
 
+### Fixed
+
+- **R3 (python)**: a repo whose tests read tracked files outside the sources and `tests/` (`docs/`, `config/`, `scripts/`, `README.md`) failed R3 with `baseline tests fail at head: mutants not run`, because mutmut 3.8.1 copies only the sources, `tests/` and a few root files into its `mutants/` sandbox (#7). The generated `[tool.mutmut]` now sets `also_copy` to the project dir's other git-tracked top-level entries. Source entries, `mutants/`, untracked files and mutmut's own defaults are never listed, nor is an entry holding a symlink mutmut cannot copy. Root test config (`pytest.ini`, `tox.ini`, `conftest.py`) now applies in R3 as in R1. `source_paths` and `only_mutate` stay valid TOML for names outside the BMP.
+- **doctor (python)**: the trial runs the suite once more inside a copy built the way R3's mutmut sandbox is. A suite that passes in the checkout and fails there gives an `env` entry naming the paths missing from the copy, and any link that keeps a top-level entry out of it, never `ok`. A dangling or looping link under `tests/`, which stops or hangs mutmut's copy, is named without copying. The trial gains `sandbox: pass|fail|skipped`. Known limits: with `project-dir` in a subfolder, files above it are not copied; a top-level entry holding a link mutmut cannot copy is left out whole.
+
 ## 0.4.0
 
 ### Added
