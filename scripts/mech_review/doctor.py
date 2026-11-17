@@ -183,17 +183,17 @@ def _inside(path, top):
 
 
 def _copytree_stops(top, root):
-    """the links under top that copytree (links followed, as mutmut copies tests/) stops or loops on: dangling, leaving
-    the checkout at root, or to a dir that holds a dir on the way there. Found by walking, nothing copied."""
+    """the links under top that copytree (links followed, as mutmut copies tests/) stops or loops on: dangling, or to a
+    dir that holds a dir on the way there. Found by walking, nothing copied. A link leaving the checkout at root to a
+    path that exists is copied as it is: not flagged, not walked."""
     bad = []
 
     def walk(d, seen):
         for e in os.scandir(d):
             real = os.path.realpath(e.path)
-            if e.is_symlink() and (not os.path.exists(real) or not _inside(real, root)
-                                   or any(_inside(s, real) for s in seen)):
+            if e.is_symlink() and (not os.path.exists(real) or any(_inside(s, real) for s in seen)):
                 bad.append(e.path)
-            elif e.is_dir():
+            elif e.is_dir() and _inside(real, root):
                 walk(e.path, seen | {real})
 
     root = os.path.realpath(root)  # as real is (macOS: /var is /private/var)

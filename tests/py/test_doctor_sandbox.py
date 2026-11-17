@@ -280,14 +280,26 @@ class SandboxTrial(unittest.TestCase):
         env = self.doctor()
         self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
 
-    def test_a_link_under_tests_leaving_the_checkout_is_an_entry(self):
+    def test_links_under_tests_to_an_existing_dir_or_file_outside_the_checkout_are_copied(self):
+        # copytree follows them and copies what is there, as mutmut does: no reason to stop doctor
         outside = os.path.join(os.path.dirname(self.repo), "outside")
-        write(outside, {"big.txt": ""})
+        write(outside, {"data/x.txt": "x\n", "hosts": "h\n"})
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", ".github/workflows/mech-review.yml":
+                     CALLER % "", "tests/test_a.py": "import pathlib\nimport unittest\n\nHERE = pathlib.Path(__file__).parent"
+                     "\n\n\nclass T(unittest.TestCase):\n    def test_links(self):\n"
+                     "        self.assertEqual((HERE / 'ext' / 'x.txt').read_text(), 'x\\n')\n"
+                     "        self.assertEqual((HERE / 'hosts').read_text(), 'h\\n')\n"},
+                    links=[("tests/ext", os.path.join(outside, "data")), ("tests/hosts", os.path.join(outside, "hosts"))])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
+    def test_a_link_under_tests_to_a_missing_path_outside_the_checkout_is_an_entry(self):
+        gone = os.path.join(os.path.dirname(self.repo), "gone", "x")
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
-                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/ext", outside)])
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/gone", gone)])
         env = self.doctor()
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
-                                                       "mutants/ fails on `tests/ext`")
+                                                       "mutants/ fails on `tests/gone`")
 
     def test_exactly_ten_links_are_all_named_with_no_more(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
