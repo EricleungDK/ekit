@@ -44,14 +44,18 @@ def write(root, files):
             f.write(text)
 
 
-def unittest_runner(calls):
-    """the test command (`python3 -m pytest`) as a real unittest run of tests/, in the cwd doctor picks; the mutation
-    tool's --version passes. Every (argv, cwd) is recorded."""
+def unittest_runner(calls, installed=None):
+    """the test command (`python3 -m pytest`) as a real unittest run of tests/, in the cwd doctor picks, with the
+    environment doctor gives it; the mutation tool's --version passes. Every (argv, cwd) is recorded. installed: a dir
+    on sys.path after PYTHONPATH, the way an editable install's .pth puts the caller's checkout there."""
     def run(argv, cwd):
         calls.append((argv, cwd))
         if "--version" in argv:
             return 0, "mutmut, version 3.8.1\n"
-        r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=cwd,
+        env = dict(os.environ)
+        if installed:
+            env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), installed) if p)
+        r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"], cwd=cwd, env=env,
                            capture_output=True, text=True)
         out = r.stdout + r.stderr
         # pytest's shape, which the python adapter reads
@@ -97,6 +101,19 @@ class SandboxTrial(unittest.TestCase):
         self.assertIn("R3's mutmut sandbox fails where the plain run passes", e["problem"])
         self.assertIn("`../docs/guide.md`", e["problem"])
         self.assertEqual(env["summary"], f"fail {env['head']} (1 problems)")
+
+    def test_the_sandbox_imports_its_own_copy_of_src_layout_code_not_an_installed_checkout(self):
+        # app/src/calc reads <repo>/docs/guide.md from its own __file__: found from the checkout, not from R3's copy
+        self.commit({"app/pyproject.toml": "[project]\nname = 'calc'\n", "docs/guide.md": "# guide\n",
+                     "app/src/calc/__init__.py": "import pathlib\n"
+                     "GUIDE = (pathlib.Path(__file__).resolve().parents[3] / 'docs' / 'guide.md').read_text()\n",
+                     "app/tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_guide(self):\n        self.assertEqual(calc.GUIDE, '# guide\\n')\n"})
+        runner = unittest_runner(self.calls, installed=os.path.join(self.repo, "app", "src"))
+        env = self.doctor(runner=runner, project_dir="app")
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
+        self.assertEqual(env["entries"][0]["problem"],
+                         "R3's mutmut sandbox fails where the plain run passes (missing there: `../docs/guide.md`)")
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})

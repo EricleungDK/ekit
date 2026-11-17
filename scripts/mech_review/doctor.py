@@ -4,6 +4,7 @@ Reads the tree at HEAD (manifests, .github/workflows), then trial-runs the tests
 (python: the tests once more inside R3's mutmut sandbox, <project dir>/mutants/) through the runner seam (red.default_runner: runner(argv, cwd) -> (rc, output)). Writes nothing to the checkout: CI changes are
 a human decision, so caller gaps are needs-human.
 """
+import contextlib
 import fnmatch
 import json
 import os
@@ -164,6 +165,24 @@ def sandbox(repo, head, crate, project_dir):
     return box
 
 
+@contextlib.contextmanager
+def _import_path(box):
+    """PYTHONPATH for the sandbox run, as mutmut's setup_source_paths sets sys.path before it runs pytest in-process:
+    mutants/source, mutants/src and mutants/ (those that exist) first, so the tests import the copy. They go ahead of
+    an inherited PYTHONPATH and of an editable install's .pth, which would import the caller's checkout instead. The
+    runner seam takes no env: the run inherits this process's, restored after."""
+    old = os.environ.get("PYTHONPATH")
+    first = [p for p in (os.path.join(box, "source"), os.path.join(box, "src"), box) if os.path.isdir(p)]
+    os.environ["PYTHONPATH"] = os.pathsep.join(first + ([old] if old else []))
+    try:
+        yield
+    finally:
+        if old is None:
+            del os.environ["PYTHONPATH"]
+        else:
+            os.environ["PYTHONPATH"] = old
+
+
 def trial(repo, head, stack, project_dir, runner):
     """Run the whole suite and the mutation tool's --version at head; for python, when the suite passes, the suite once
     more inside R3's mutmut sandbox. Returns (trial dict, entries)."""
@@ -178,7 +197,8 @@ def trial(repo, head, stack, project_dir, runner):
             box, box_entries = "skipped", []
             if stack == "python" and verdict == "pass":
                 where = sandbox(repo, head, crate, project_dir)
-                brc, bout = runner(shlex.split(cmd), where)
+                with _import_path(where):
+                    brc, bout = runner(shlex.split(cmd), where)
                 box = "pass" if adapter.outcome(brc, bout) == "pass" else "fail"
                 if box == "fail":
                     box_entries = [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
