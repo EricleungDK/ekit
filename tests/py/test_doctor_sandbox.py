@@ -33,6 +33,18 @@ class Docs(unittest.TestCase):
         self.assertEqual(path.read_text(), "# guide\\n")
 """
 
+# what every doctor entry of the trial carries (report.entry): ids are sha1 of check + file + key, as the spec sets them
+FORBIDDEN = "skipping or deselecting tests in the caller to get a green trial"
+LINK_HINT = ("mutmut's copy follows links: a dangling link, one to a dir above it or one into the checkout by an "
+             "absolute path under tests/ (or a dangling one in a source dir) stops or loops R3 too; drop or fix the "
+             "link (track its target, make it relative); rerun doctor")
+
+
+def entry(key_id, problem, hint):
+    return {"id": key_id, "check": "doctor", "class": "env", "severity": "fail", "file": "", "line": 0,
+            "problem": problem, "hint": hint, "forbidden": FORBIDDEN}
+
+
 PASSES = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_one(self):\n        self.assertEqual(1, 1)\n"
 
 # writes tests/gen.txt at the git top of the checkout it runs in, then reads it beside the test file
@@ -190,6 +202,8 @@ class SandboxTrial(unittest.TestCase):
         env = self.doctor()
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `calc/conf.yaml`")
+        self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
+                                                "copy into mutants/ fails on `calc/conf.yaml`", LINK_HINT)])
 
     def test_the_sandbox_run_turns_off_random_test_order_as_mutmut_does(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES})
@@ -253,6 +267,9 @@ class SandboxTrial(unittest.TestCase):
             signal.signal(signal.SIGALRM, before)
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/self`, `tests/up`")
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]),
+                         ("fail", [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                         "mutants/ fails on `tests/self`, `tests/up`", LINK_HINT)]))
         self.assertEqual([argv for argv, _ in self.calls], [["python3", "-m", "pytest"], ["mutmut", "--version"]])
 
     def test_a_chain_of_dir_links_that_comes_back_round_is_an_entry_found_before_any_copy(self):
@@ -340,6 +357,10 @@ class SandboxTrial(unittest.TestCase):
                                        "`tests/pipe`")
         self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: `tests/pipe` is a named pipe; fix that "
                                     "in the tree, then rerun doctor")
+        self.assertEqual((env["trial"]["sandbox"], e),
+                         ("fail", entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                        "mutants/ fails on `tests/pipe`", "mutmut's copy into mutants/ fails on it: "
+                                        "`tests/pipe` is a named pipe; fix that in the tree, then rerun doctor")))
 
     def test_a_tracked_file_named_mutants_names_the_path_that_cannot_be_made(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
@@ -523,6 +544,7 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(e["hint"], "a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps "
                                     "its whole top-level entry out of R3's copy: track its target or remove the link; "
                                     "rerun doctor")
+        self.assertEqual(e, entry("doctor-be15db16", e["problem"], e["hint"]))  # problem and hint pinned above
 
     def test_each_entry_kept_out_is_named_with_all_its_links(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "docs/usage.md": "# guide\n",
@@ -600,6 +622,10 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual((e["class"], e["severity"]), ("env", "fail"))
         self.assertEqual(e["problem"], "R3's mutmut sandbox run timed out where the plain run passes "
                                        "(`python3 -m pytest -p no:randomly -p no:random-order` in mutants/)")
+        self.assertEqual(e, entry("doctor-7384cffc", "R3's mutmut sandbox run timed out where the plain run passes "
+                                  "(`python3 -m pytest -p no:randomly -p no:random-order` in mutants/)",
+                                  "the suite ran past doctor's 900 s limit there: rerun doctor; if it repeats, find "
+                                  "what in the sandbox makes the suite hang"))
 
     def test_a_failing_plain_run_skips_the_sandbox(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})
@@ -610,6 +636,8 @@ class SandboxTrial(unittest.TestCase):
         env = self.doctor(runner=run)
         self.assertEqual(env["trial"]["sandbox"], "skipped")
         self.assertEqual(self.calls, [["python3", "-m", "pytest"], ["mutmut", "--version"]])
+        self.assertEqual(env["entries"][0], entry("doctor-e361183b", "tests fail at head (fail): `python3 -m pytest`",
+                                                     "fix them, or set setup-command for what they need; rerun doctor"))
 
     def test_the_sandbox_holds_the_sources_also_copy_and_mutmut_defaults_merged_over_a_tracked_mutants_dir(self):
         self.commit({"pyproject.toml": "[project]\n", "setup.cfg": "", "uv.lock": "", "test_root.py": "",
