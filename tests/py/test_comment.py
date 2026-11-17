@@ -126,6 +126,42 @@ class TestIgnoredWaivers(unittest.TestCase):
         self.assertEqual(comment.exit_code(env), 1)
 
 
+class TestLineCaps(unittest.TestCase):
+    WHY = TestIgnoredWaivers.WHY
+
+    def env(self, waived, ignored):
+        ids = [f"R2-{i:08x}" for i in range(waived + ignored)]
+        env = waiver.apply(envelope([entry(eid=i) for i in ids]), {i: {"by": "eric", "reason": "ok"} for i in ids[:waived]})
+        env["waivers_ignored"] = [{"id": i, "by": "ann", "why": self.WHY, "url": "u"} for i in ids[waived:]]
+        return env
+
+    def test_the_first_20_waived_and_20_ignored_get_a_line_and_the_rest_a_count(self):
+        body = comment.render(self.env(25, 21))
+        self.assertIn("\nWaived: R2-00000013 by `eric`: ok\n…and 5 more waived\n"
+                      f"Waiver ignored: R2-00000019 by `ann`: {self.WHY}\n", body)
+        self.assertIn(f"\nWaiver ignored: R2-0000002c by `ann`: {self.WHY}\n…and 1 more ignored\n\nhead", body)
+        self.assertEqual((body.count("\nWaived: "), body.count("\nWaiver ignored: ")), (20, 20))
+
+    def test_exactly_20_of_each_needs_no_count(self):
+        body = comment.render(self.env(20, 20))
+        self.assertEqual((body.count("\nWaived: "), body.count("\nWaiver ignored: ")), (20, 20))
+        self.assertNotIn("…and ", body)
+
+    def test_700_waived_and_700_ignored_stay_within_the_limit(self):
+        body = comment.render(self.env(700, 700))
+        self.assertLessEqual(len(body), comment.COMMENT_LIMIT)
+        self.assertIn("\n…and 680 more waived\n", body)
+        self.assertIn("\n…and 680 more ignored\n", body)
+
+    def test_a_fallback_still_too_big_is_cut_at_a_line_and_says_so(self):
+        wide = [dict(entry(eid=f"R2-{i:08x}"), problem="|" * 300, file="|" * 300, forbidden="|" * 300) for i in range(60)]
+        body = comment.render(envelope(wide))
+        self.assertLessEqual(len(body), comment.COMMENT_LIMIT)
+        self.assertTrue(body.endswith(" |\n\nComment cut at the size limit. Full result: `mech-review-json` artifact of "
+                                      "this run.\n"), body[-300:])
+        self.assertTrue(body.startswith(comment.MARKER + "\n## mech-review\n"))
+
+
 class TestBody(unittest.TestCase):
     W = {"R2-deadbeef": {"by": "eric", "reason": "moved", "url": "u"}}
 

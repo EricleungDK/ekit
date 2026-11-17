@@ -10,6 +10,8 @@ from .waiver import MARKER, PLACEHOLDER
 COMMENT_LIMIT = 60000  # GitHub caps a comment at 65536 chars; keep headroom
 OVERSIZE_ROWS = 50
 CELL_MAX = 200
+WAIVER_LINES_MAX = 20  # per kind: Waived, Waiver ignored
+CUT_NOTE = "Comment cut at the size limit. Full result: `mech-review-json` artifact of this run."
 
 
 def _line(text):
@@ -131,14 +133,20 @@ def _login(name):
     return f"`{_cell(name).replace('`', chr(39))}`"
 
 
+def _capped(lines, what):
+    """The first WAIVER_LINES_MAX lines, then one line counting the rest."""
+    more = len(lines) - WAIVER_LINES_MAX
+    return lines[:WAIVER_LINES_MAX] + ([f"…and {more} more {what}"] if more > 0 else [])
+
+
 def _waiver_lines(env):
     """One line per waived entry: who let it through, and why. Then one per ignored waiver (`waivers_ignored`, set
-    by mech-comment.py): who posted it and why it did not count."""
-    return ([f"Waived: {_cell(e['id'])} by {_login((e.get('waiver') or {}).get('by', '?'))}: "
-             f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
-             for e in env["entries"] if e["severity"] == "waived"]
-            + [f"Waiver ignored: {_cell(r['id'])} by {_login(r['by'])}: {_cell(r['why'])}"
-               for r in env.get("waivers_ignored") or []])
+    by mech-comment.py): who posted it and why it did not count. Each kind is capped, so the comment fits."""
+    return (_capped([f"Waived: {_cell(e['id'])} by {_login((e.get('waiver') or {}).get('by', '?'))}: "
+                     f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
+                     for e in env["entries"] if e["severity"] == "waived"], "waived")
+            + _capped([f"Waiver ignored: {_cell(r['id'])} by {_login(r['by'])}: {_cell(r['why'])}"
+                       for r in env.get("waivers_ignored") or []], "ignored"))
 
 
 WAIVE_HELP = (f"People with write access can waive a `fail` entry: copy its line below, replace `{PLACEHOLDER}` with the "
@@ -198,12 +206,15 @@ def _body(env, shown, json_text, ready=True):
 
 def render(env):
     """The comment, shrunk to fit COMMENT_LIMIT step by step: first the ready-made waiver lines give way, then the
-    JSON and all but the first OVERSIZE_ROWS rows."""
+    JSON and all but the first OVERSIZE_ROWS rows. Still too big (rows of wide cells): cut at a line, with a note.
+    That body has no code block, so a cut cannot leave one open."""
     json_text = json.dumps(env, indent=2)
-    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, ready=False)):
+    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, ready=False),
+                 _body(env, env["entries"][:OVERSIZE_ROWS], None, ready=False)):
         if len(body) <= COMMENT_LIMIT:
             return body
-    return _body(env, env["entries"][:OVERSIZE_ROWS], None, ready=False)
+    tail = "\n\n" + CUT_NOTE + "\n"
+    return body[:body.rindex("\n", 0, COMMENT_LIMIT - len(tail) + 1)] + tail  # a newline at index n keeps n chars
 
 
 def render_crash(head, reason):
