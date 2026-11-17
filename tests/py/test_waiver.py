@@ -85,6 +85,19 @@ class TestCollect(unittest.TestCase):
         self.assertEqual({k: v["reason"] for k, v in got.items()},
                          {"R2-deadbeef": "<T> is generic, so the test moved", "R3-0badc0de": "equivalent: a <= b here"})
 
+    def test_an_edited_comment_cannot_waive(self):
+        c = dict(note("/mech-waive R2-deadbeef moved"), created_at="2026-11-01T10:00:00Z", updated_at="2026-11-01T10:05:00Z")
+        self.assertEqual(waiver.collect([c]), {})
+
+    def test_a_comment_never_edited_waives(self):
+        c = dict(note("/mech-waive R2-deadbeef moved"), created_at="2026-11-01T10:00:00Z", updated_at="2026-11-01T10:00:00Z")
+        self.assertEqual(waiver.collect([c]), {"R2-deadbeef": {"by": "owner", "reason": "moved", "url": "https://github.test/c/1"}})
+
+    def test_a_comment_missing_either_timestamp_counts_as_unedited(self):
+        got = waiver.collect([dict(note("/mech-waive R2-deadbeef moved"), created_at="2026-11-01T10:00:00Z"),
+                              dict(note("/mech-waive R3-0badc0de dead"), updated_at="2026-11-01T10:05:00Z")])
+        self.assertEqual({k: v["reason"] for k, v in got.items()}, {"R2-deadbeef": "moved", "R3-0badc0de": "dead"})
+
     def test_a_long_reason_is_cut_and_its_whitespace_collapsed(self):
         got = waiver.collect([note("/mech-waive R2-deadbeef  a   b\t" + "x" * 400)])
         self.assertEqual(len(got["R2-deadbeef"]["reason"]), waiver.REASON_MAX)

@@ -23,13 +23,19 @@ def _no_reason(reason):
     return not reason or (reason.startswith("<") and reason.endswith(">"))
 
 
+def _edited(c):
+    """True when GitHub moved updated_at past created_at: the comment was edited. Write access lets anyone edit
+    another person's comment while the author shown stays the same. A comment missing either stamp counts as unedited."""
+    return bool(c.get("created_at") and c.get("updated_at")) and c["created_at"] != c["updated_at"]
+
+
 def collect(comments):
     """{entry id: {by, reason, url}} from issue comments (API objects, oldest first; a later comment wins).
     A waiver with no reason is ignored: the reason is the record. The placeholder, or any reason wholly in <...>, is none."""
     out = {}
     for c in comments:
         user = c.get("user") or {}
-        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body"):
+        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body") or _edited(c):
             continue
         for m in WAIVE.finditer(c["body"]):
             reason = " ".join(m.group(2).split())
