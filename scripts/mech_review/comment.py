@@ -164,7 +164,7 @@ def _ready_made(waivable):
     return lines
 
 
-def _body(env, shown, json_text):
+def _body(env, shown, json_text, ready=True):
     entries = env["entries"]
     lines = [MARKER, "## mech-review", "", f"**{headline(env)}**", ""]
     not_run = _not_run_lines(env)
@@ -186,8 +186,7 @@ def _body(env, shown, json_text):
         waivable = [e for e in entries if e["severity"] == "fail" and e.get("check") in CHECK_ORDER]  # never CI
         if waivable:
             lines += ["", WAIVE_HELP]
-            # the ready-made lines go with the JSON: a comment too big for the JSON is too big for them
-            lines += ["", WAIVE_OMITTED] if json_text is None else _ready_made(waivable)
+            lines += _ready_made(waivable) if ready else ["", WAIVE_OMITTED]
     lines.append("")
     if json_text is None:
         lines.append("JSON omitted (comment size limit). Full result: `mech-review-json` artifact of this run.")
@@ -198,11 +197,13 @@ def _body(env, shown, json_text):
 
 
 def render(env):
+    """The comment, shrunk to fit COMMENT_LIMIT step by step: first the ready-made waiver lines give way, then the
+    JSON and all but the first OVERSIZE_ROWS rows."""
     json_text = json.dumps(env, indent=2)
-    full = _body(env, env["entries"], json_text)
-    if len(full) <= COMMENT_LIMIT:
-        return full
-    return _body(env, env["entries"][:OVERSIZE_ROWS], None)
+    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, ready=False)):
+        if len(body) <= COMMENT_LIMIT:
+            return body
+    return _body(env, env["entries"][:OVERSIZE_ROWS], None, ready=False)
 
 
 def render_crash(head, reason):

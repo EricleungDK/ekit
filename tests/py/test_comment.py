@@ -198,6 +198,14 @@ class TestReadyMadeWaivers(unittest.TestCase):
         self.assertEqual(waiver.collect([{"user": {"login": "o"}, "author_association": "OWNER",
                                           "body": "/mech-waive R2-deadbeef " + waiver.PLACEHOLDER}]), {})
 
+    def test_when_only_the_lines_do_not_fit_they_give_way_and_the_full_table_and_json_stay(self):
+        body = comment.render(envelope([dict(entry(eid=f"R2-{i:08x}"), problem="p" * 150) for i in range(70)]))
+        self.assertLessEqual(len(body), comment.COMMENT_LIMIT)
+        self.assertIn("| R2-00000045 | fail |", body)  # the 70th row
+        self.assertNotIn("_showing first", body)
+        self.assertIn(comment.WAIVE_HELP + "\n\n" + comment.WAIVE_OMITTED + "\n\n### JSON\n", body)
+        self.assertNotIn("\n/mech-waive ", body)
+
     def test_many_entries_stay_within_the_limit_and_the_lines_give_way_to_a_note(self):
         many = [dict(entry(eid=f"R2-{i:08x}"), problem="p" * 300, file="f" * 300, forbidden="x" * 300) for i in range(300)]
         body = comment.render(envelope(many))
