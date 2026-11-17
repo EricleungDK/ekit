@@ -419,6 +419,29 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/fx`, `tests/repo`")
 
+    def test_a_link_to_a_dir_holding_the_checkout_is_an_entry_without_walking_it(self):
+        # tests/ws -> ws, the checkout at ws/org/P: copying ws copies the checkout and this link again; with the walk
+        # cut short at once, only the containment rule can find it
+        ws = os.path.join(os.path.dirname(self.repo), "ws")
+        repo = os.path.join(ws, "org", "P")
+        os.makedirs(repo)
+        git(repo, "init", "-q", "-b", "main")
+        write(repo, {"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""})
+        os.symlink(ws, os.path.join(repo, "tests", "ws"))
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", "head")
+        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
+        signal.alarm(30)
+        try:
+            with unittest.mock.patch.object(doctor, "OUTSIDE_WALK", 1):
+                env = doctor.run(repo, stack="python", runner=unittest_runner(self.calls))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/ws`")
+
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"a.txt": ""})

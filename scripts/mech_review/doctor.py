@@ -188,8 +188,10 @@ OUTSIDE_WALK = 10000  # entries walked outside the checkout per top-level entry:
 def _copytree_stops(top, crate, root, checkouts):
     """the links in top (a top-level entry, itself a link or not) that copytree (links followed, as mutmut copies
     tests/) stops or loops on: dangling, to a dir that holds a dir on the way there (the project dir included), into
-    one of the repo's checkouts (its worktrees: main and linked) by an absolute path. A fresh CI checkout has no such path; here copytree would copy the checkout, the link in it included, over
-    and over. Found by walking, nothing copied. A dir outside the checkout at root is walked for loops too, at most OUTSIDE_WALK entries
+    one of the repo's checkouts (its worktrees: main and linked) by an absolute path, or to a dir that holds one of
+    them. A fresh CI checkout has no such path; here copytree would copy the checkout, the link in it included, over
+    and over. Found by walking, nothing copied; the checkouts are tested before any walk, so the verdict does not
+    hang on the walk's order. A dir outside the checkout at root is walked for loops too, at most OUTSIDE_WALK entries
     (a big one stays cheap). A missing
     top-level entry is skipped, as mutmut skips it. The check sees a bare checkout: a link to something CI's
     setup-command builds reads as dangling here."""
@@ -200,7 +202,7 @@ def _copytree_stops(top, crate, root, checkouts):
         real = os.path.realpath(path)
         if not _inside(real, root):
             left[0] -= 1
-        into = any(_inside(real, c) and not _inside(real, root) for c in checkouts)
+        into = any((_inside(real, c) and not _inside(real, root)) or _inside(c, real) for c in checkouts)
         if not os.path.exists(real) or into or any(_inside(s, real) for s in seen):  # a dir never holds one on its way
             bad.append(path)
         elif os.path.isdir(path) and left[0] > 0:
