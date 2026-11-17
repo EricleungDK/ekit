@@ -17,6 +17,9 @@ case "${MECH_STUB_RESULT:-pass}" in
   pass) printf 'test a ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored\n'; exit 0 ;;
   bwrap) printf 'bwrap: setting up uid map: Permission denied\ntest a ... FAILED\n\ntest result: FAILED. 2 passed; 1 failed\n'; exit 101 ;;
   fail) printf 'test a ... FAILED\n\ntest result: FAILED. 2 passed; 1 failed\n'; exit 101 ;;
+  mutmut-sandbox)  # passes in a plain checkout, fails inside R3's mutmut sandbox (<project dir>/mutants/)
+    [[ "$PWD" != */mutants ]] && { printf '3 passed in 0.01s\n'; exit 0; }
+    printf "E   FileNotFoundError: [Errno 2] No such file or directory: '%s/../docs/guide.md'\n1 failed in 0.01s\n" "$PWD"; exit 1 ;;
 esac
 SH
 chmod +x "$STUB"
@@ -153,6 +156,18 @@ eq "$(q "d['detected']['stack']" <<<"$out")" python "python: stack"
 eq "$(q "d['detected']['project_dir']" <<<"$out")" . "python: root dir"
 eq "$(q "d['inputs']['test-paths']" <<<"$out")" "tests/**" "python: test-paths at the root"
 eq "$(q "'project-dir' in d['inputs']" <<<"$out")" False "python: default project-dir left out"
+
+# python trial: the suite also runs once in R3's mutmut sandbox; a failure only there names the missing path
+out="$(doctor --repo "$P")"
+eq "$(q "d['trial']['sandbox']" <<<"$out")" pass "python trial: sandbox pass"
+out="$(MECH_STUB_RESULT=mutmut-sandbox doctor --repo "$P")"; rc=$?
+eq "$rc" 1 "sandbox-only failure: exit 1"
+eq "$(q "d['trial']['tests']" <<<"$out")" pass "sandbox-only failure: plain run passes"
+eq "$(q "d['trial']['sandbox']" <<<"$out")" fail "sandbox-only failure: sandbox fail"
+has "$(q "d['entries'][0]['problem']" <<<"$out")" "missing there: \`../docs/guide.md\`" "sandbox-only failure: names the path"
+has "$(q "d['summary']" <<<"$out")" "fail " "sandbox-only failure: not ok"
+eq "$(git -C "$P" status --porcelain)" "" "sandbox trial: tree untouched"
+eq "$(git -C "$P" worktree list | wc -l | tr -d ' ')" 1 "sandbox trial: worktree removed"
 
 # ts nested
 J="$(mkrepo ts)"

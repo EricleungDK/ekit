@@ -1,15 +1,17 @@
 """mech-review doctor (#39): find a repo's setup without hints and report each problem with the exact caller input.
 
 Reads the tree at HEAD (manifests, .github/workflows), then trial-runs the tests and the mutation tool in a throwaway worktree
-through the runner seam (red.default_runner: runner(argv, cwd) -> (rc, output)). Writes nothing to the checkout: CI changes are
+(python: the tests once more inside R3's mutmut sandbox, <project dir>/mutants/) through the runner seam (red.default_runner: runner(argv, cwd) -> (rc, output)). Writes nothing to the checkout: CI changes are
 a human decision, so caller gaps are needs-human.
 """
+import fnmatch
 import json
 import os
 import re
 import shlex
+import shutil
 
-from . import gitio, red, report
+from . import gitio, mutants, red, report
 from .globs import any_glob
 from .mutants import DEFAULT_CMD as RUST_MUTANTS
 from .stack import ADAPTERS
@@ -36,6 +38,7 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
 DEFAULT_TEST_PATHS = "tests/**"
+MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
 
 
 def candidates(paths):
@@ -141,8 +144,29 @@ def caller_entries(callers, inputs, paths):
             for name, want in inputs.items() if _missing(name, want, have, paths)]
 
 
+def _copy(src, dst):
+    """mutmut 3.8.1's copy: a file with copy2, a dir with copytree over what is there, a missing entry skipped."""
+    if os.path.isfile(src):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+    elif os.path.isdir(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+def sandbox(repo, head, crate, project_dir):
+    """`<crate>/mutants/` filled the way R3's mutmut run fills it: its source_paths, also_copy and mutmut's defaults
+    (root test*.py from the crate dir, as mutmut globs them). Returns its path. R3 leaves its sources out of also_copy,
+    so the two together are every tracked top-level entry whichever are sources: with no diff, no source is named."""
+    box = os.path.join(crate, "mutants")  # made by the first copy: a python project dir always holds a manifest
+    tests = sorted(n for n in os.listdir(crate) if fnmatch.fnmatchcase(n, "test*.py"))
+    for name in mutants.also_copy(repo, head, project_dir, []) + sorted(mutants.MUTMUT_COPIES) + tests:
+        _copy(os.path.join(crate, name), os.path.join(box, name))
+    return box
+
+
 def trial(repo, head, stack, project_dir, runner):
-    """Run the whole suite and the mutation tool's --version at head. Returns (trial dict, entries)."""
+    """Run the whole suite and the mutation tool's --version at head; for python, when the suite passes, the suite once
+    more inside R3's mutmut sandbox. Returns (trial dict, entries)."""
     adapter = ADAPTERS[stack]()
     try:
         with red.worktree(repo, head) as wt:
@@ -151,6 +175,13 @@ def trial(repo, head, stack, project_dir, runner):
             cmd = adapter.test_cmd_in(crate)
             rc, out = runner(shlex.split(cmd), crate)
             verdict = adapter.outcome(rc, out)
+            box, box_entries = "skipped", []
+            if stack == "python" and verdict == "pass":
+                where = sandbox(repo, head, crate, project_dir)
+                brc, bout = runner(shlex.split(cmd), where)
+                box = "pass" if adapter.outcome(brc, bout) == "pass" else "fail"
+                if box == "fail":
+                    box_entries = [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
             tool = MUTATION_TOOL[stack]
             tool_rc, _ = runner(shlex.split(tool) + ["--version"], crate)
     except gitio.Die as e:  # read-only .git (sandbox): the static findings still stand
@@ -160,11 +191,45 @@ def trial(repo, head, stack, project_dir, runner):
                                                        NOT_SKIP)]
     state = "absent" if tool_rc is None else "present" if tool_rc == 0 else "broken"  # absent is fine: CI installs it
     result = {"tests": verdict, "command": cmd, "mutation_tool": state}
+    if stack == "python":
+        result["sandbox"] = box
     entries = []
     if state == "broken":
         entries.append(report.entry("doctor", "", 0, "mutation-tool", "env", "fail", f"`{tool} --version` failed ({tool_rc})",
                                     "repair the install; in CI, set setup-command", NOT_SKIP))
-    return result, _test_entries(verdict, cmd, out) + entries
+    return result, _test_entries(verdict, cmd, out) + box_entries + entries
+
+
+def missing(out, wt, box):
+    """the paths a FileNotFoundError names in the output, first seen first: relative to the sandbox dir when inside the
+    worktree (`../docs/x.md`: above the project dir), as printed otherwise."""
+    root, box = os.path.realpath(wt), os.path.realpath(box)
+    seen = []
+    for m in MISSING.finditer(out):
+        path = m.group(2)
+        if os.path.isabs(path):
+            real = os.path.realpath(path)
+            if real == root or real.startswith(root + os.sep):
+                path = os.path.relpath(real, box)
+        else:
+            path = os.path.normpath(path)
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def _sandbox_entry(cmd, project_dir, paths):
+    where = "mutants/" if project_dir == "." else f"{project_dir}/mutants/"
+    if paths:
+        found = "missing there: " + ", ".join(f"`{p}`" for p in paths)
+    else:
+        found = f"no missing path found in the output of `{cmd}` run in {where}"
+    return report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
+                        f"R3's mutmut sandbox fails where the plain run passes ({found})",
+                        f"R3 copies into {where} only the project dir's tracked top-level entries and mutmut's defaults; "
+                        "keep the files the tests read inside the project dir, or make the tests not depend on files "
+                        "above it (a project-dir in a subfolder whose tests read ../ is a known limit); rerun doctor",
+                        NOT_SKIP)
 
 
 def _test_entries(verdict, cmd, out):
