@@ -24,7 +24,10 @@ An agent "fixes" a divide-by-zero bug by returning 0, deletes the test that expe
 > | R4-4547185d | fail | tests/test_calc.py:11 | test `test_div_halves` did not run at head | retrying a test until it passes |
 > | R2-3c9ea7bc | confirm | tests/test_calc.py:12 | expected value changed in `test_div_halves`: was 2, now 2.5 | editing an expected value to match the code's current output |
 >
-> A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, then re-run this run's failed job (`report`).
+> **To waive** (people with write access): copy a line, replace `<why this is OK>` with your reason, post it as a PR comment.
+> ```
+> /mech-waive R2-55dee746 <why this is OK>
+> ```
 
 The same result is attached as JSON, which the agent reads on its next turn: each entry carries the fix that is wanted and the shortcut that is not allowed.
 
@@ -187,7 +190,7 @@ A reusable GitHub workflow. It posts one comment per PR and sets one check, `mec
 
 - **Stacks**: Rust, Python, TypeScript/JavaScript.
 - **Agent branches**: R1 runs on branches starting with `agent/`, `claude/`, `codex/`, `copilot/` or `cursor/` (configurable; `*` for all).
-- **Waivers**: a person with write access can let one entry through with `/mech-waive <id> <reason>`; it shows in the comment with their name. Nothing in the PR itself can waive.
+- **Waivers**: a person with write access can let one entry through with `/mech-waive <id> <reason>`; the comment offers the line ready to copy, and the waiver shows with their name. A placeholder reason or an edited comment does not waive. With the [re-run caller](docs/mech-review-ci.md#waiver-re-run), the check updates on its own. Nothing in the PR itself can waive.
 - **Forks**: on a read-only token the result goes to the job summary and the check still passes or fails on it.
 
 Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-review-ci.md). The testing rules behind the checks: [docs/testing-standard.md](docs/testing-standard.md).
@@ -201,6 +204,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
+| `scripts/mech-rerun.py` | `--pr N`: re-runs the PR head's finished `mech-review report` job, so a waiver comment takes effect (the `mech-waive` workflow). Exit 0 / 2 usage / 3 API error. |
 
 </details>
 

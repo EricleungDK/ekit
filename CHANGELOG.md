@@ -2,6 +2,17 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Added
+
+- **Waiver re-run** (`mech-waive.yml`, `scripts/mech-rerun.py`): a second caller, on `issue_comment`, re-runs the PR head's `mech-review report` job when a person posts, edits or deletes a `/mech-waive` comment, so the check updates in about a minute with no trip to Actions. It runs only for comments from `OWNER`, `MEMBER` or `COLLABORATOR`, never for a bot or the sticky comment, and never runs PR code. ci-doctor writes the caller.
+- **Ready-made waiver lines**: the sticky comment shows, under each `fail` entry, the line to post (`/mech-waive <id> <why this is OK>`), plus one block for all fail entries when there are several.
+
+### Changed
+
+- **Waivers**: a reason still reading `<why this is OK>` (or any reason wholly in `<…>`) does not waive, and a comment edited after posting does not waive: anyone with write access can edit another person's comment while the author shown stays the same. The sticky comment names each ignored waiver and why; post a new comment instead.
+
 ## 0.4.0
 
 ### Added

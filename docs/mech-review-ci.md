@@ -153,15 +153,41 @@ Some `fail` entries are a person's call: a protected-path change in a PR that is
 /mech-waive R3-1a2b3c4d: equivalent mutant, the branch is unreachable
 ```
 
-- One line per entry id, at the start of a line, with a reason (a waiver with no reason is ignored). Several lines may share one comment.
+- Ready-made lines: the sticky comment shows, under each `fail` entry, the line to post (`/mech-waive <id> <why this is OK>`), plus one block with every fail entry when there are several. Copy it, replace `<why this is OK>` with the reason, post it.
+- One line per entry id, at the start of a line, with a reason. A waiver with no reason, or with the placeholder `<why this is OK>` (or any reason wholly in `<…>`) left in, is ignored, and the sticky comment says so. Several lines may share one comment.
 - Who: comments whose author is `OWNER`, `MEMBER` or `COLLABORATOR` of the repo, and not a bot. The PR's own content (body, commits, files) can never waive: that is what the checks judge.
-- When: the `report` job reads the PR's comments each time it runs. After commenting, re-run the run's failed job (`report`, the only one that fails on entries), or push: the next run picks the waiver up.
+- Edited comments do not waive. Anyone with write access can edit anyone's comment while the author shown stays the same, so a comment edited after posting (`updated_at` ≠ `created_at`) is ignored, and the sticky comment says so. To change a waiver, post a new comment.
+- When: the `report` job reads the PR's comments each time it runs. With the [waiver re-run caller](#waiver-re-run) set up, posting, editing or deleting a `/mech-waive` comment re-runs `report` on its own. Without it, re-run the run's failed job (`report`, the only one that fails on entries), or push: the next run picks the waiver up.
 - Effect: the entry's `severity` becomes `waived` and it gains `waiver: {by, reason, url}`; a check whose fail entries are all waived reads `waived`; the summary counts it (`0 fail, 0 confirm, 1 waived`); the comment says who waived what and why. A waived entry does not fail the check. `all pass` is never printed over a waiver.
 - Scope: a waiver is for one entry id. Ids are stable across pushes (rule + file + test name), so it holds while that same thing stays broken and falls away when the id does. To withdraw one, delete the comment and re-run.
 - Not waivable: `CI` entries (a job with no result). Fix the run instead.
 - Agents do not waive. The skills hand a `needs-human` entry to the user as a Needs-you block; the command above is what the user posts if the answer is yes.
 
 Trust: GitHub attributes a comment to the account that posted it, so an agent that holds your token can post as you. Give agents a token of their own (a bot or app account is never a waiving author), and the waiver stays a person's act. Every waiver is visible in the PR comment with its author.
+
+### Waiver re-run
+
+A second caller makes a waiver comment re-run `report` by itself (reusable workflow `mech-waive.yml`, script `scripts/mech-rerun.py`):
+
+```yaml
+name: mech-waive
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+permissions:
+  actions: write
+  pull-requests: read
+  contents: read
+jobs:
+  mech-waive:
+    uses: EricleungDK/ekit/.github/workflows/mech-waive.yml@v0
+```
+
+- It runs only for a PR comment that contains `/mech-waive`, from an `OWNER`, `MEMBER` or `COLLABORATOR`, not from a bot, and not the sticky comment itself (its ready-made lines never trigger a loop).
+- It finds the newest `pull_request` run for the PR head with a `mech-review report` job. A finished run: that job is re-run. A run still going: nothing to do, its `report` reads the comments when it gets there. No run for the head: a notice, nothing else.
+- It never checks out or runs PR code: the ekit scripts only, at the ref you call. Its token can re-run jobs (`actions: write`) and read the PR, nothing else.
+- GitHub runs `issue_comment` workflows from the default branch only: the caller works once it is merged there.
+- A comment posted while a re-run of `report` is already in progress may be read too late by it. If the check does not change, re-run `report` by hand.
 
 ## TypeScript R3 (Stryker)
 
