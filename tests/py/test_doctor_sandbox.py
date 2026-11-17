@@ -371,6 +371,35 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: Operation not permitted; fix that in the "
                                     "tree, then rerun doctor")
 
+    def doctor_within(self, secs):
+        """doctor.run, failed if it is still running after secs (a copy without end)."""
+        before = signal.signal(signal.SIGALRM, lambda *_: self.fail(f"doctor still copying after {secs} s"))
+        signal.alarm(secs)
+        try:
+            return self.doctor()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+
+    def test_a_link_under_tests_into_the_callers_checkout_by_absolute_path_is_an_entry(self):
+        # doctor's worktree is elsewhere: copytree would copy the caller's checkout, this link in it included, over and
+        # over; in a fresh CI checkout the path does not exist at all
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/x", self.repo)])
+        env = self.doctor_within(30)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/x`")
+
+    def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        write(outside, {"a.txt": ""})
+        os.symlink(".", os.path.join(outside, "self"))
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/x", outside)])
+        env = self.doctor_within(30)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/x/self`")
+
     def test_exactly_ten_links_are_all_named_with_no_more(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""},

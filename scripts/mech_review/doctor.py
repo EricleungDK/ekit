@@ -182,23 +182,36 @@ def _inside(path, top):
     return path == top or path.startswith(top + os.sep)
 
 
-def _copytree_stops(top, crate, root):
+OUTSIDE_WALK = 10000  # entries walked outside the checkout per top-level entry: then the rest counts as fine
+
+
+def _copytree_stops(top, crate, root, caller):
     """the links in top (a top-level entry, itself a link or not) that copytree (links followed, as mutmut copies
-    tests/) stops or loops on: dangling, or to a dir that holds a dir on the way there (the project dir included).
-    Found by walking, nothing copied. A link leaving the checkout at root to a path that exists is copied as it is: not
-    flagged, not walked. A missing top-level entry is skipped, as mutmut skips it. The check sees a bare checkout: a
-    link to something CI's setup-command builds reads as dangling here."""
+    tests/) stops or loops on: dangling, to a dir that holds a dir on the way there (the project dir included), or
+    into the caller's checkout by an absolute path (a fresh CI checkout has no such path; here copytree would copy the
+    caller's checkout, the link in it included, over and over). Found by walking, nothing copied. A dir outside the
+    checkout at root is walked for loops too, at most OUTSIDE_WALK entries (a big one stays cheap). A missing
+    top-level entry is skipped, as mutmut skips it. The check sees a bare checkout: a link to something CI's
+    setup-command builds reads as dangling here."""
     bad = []
+    left = [OUTSIDE_WALK]
 
     def visit(path, seen):
         real = os.path.realpath(path)
-        if not os.path.exists(real) or any(_inside(s, real) for s in seen):  # a dir never holds one on its way
+        if not _inside(real, root):
+            left[0] -= 1
+        if not os.path.exists(real) or any(_inside(s, real) for s in seen) or \
+                (_inside(real, caller) and not _inside(real, root)):  # a dir never holds one on its way
             bad.append(path)
-        elif os.path.isdir(path) and _inside(real, root):
-            for name in os.listdir(path):
+        elif os.path.isdir(path) and left[0] > 0:
+            try:
+                names = os.listdir(path)
+            except OSError:  # unreadable: the copy names it, with its reason
+                return
+            for name in names:
                 visit(os.path.join(path, name), seen | {real})
 
-    root = os.path.realpath(root)  # as real is (macOS: /var is /private/var)
+    root, caller = os.path.realpath(root), os.path.realpath(caller)  # as real is (macOS: /var is /private/var)
     if os.path.exists(top):
         visit(top, {os.path.realpath(crate)})
     return bad
@@ -230,7 +243,8 @@ def sandbox(repo, head, crate, project_dir, root):
     srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
     held = _held_out(repo, tracked, skip | set(srcs))
     bad = [p for n in srcs for p in _dangling_files(os.path.join(crate, n))]
-    bad += [p for n in sorted(mutants.MUTMUT_COPIES) for p in _copytree_stops(os.path.join(crate, n), crate, root)]
+    caller = gitio.git(repo, "rev-parse", "--show-toplevel").strip()
+    bad += [p for n in sorted(mutants.MUTMUT_COPIES) for p in _copytree_stops(os.path.join(crate, n), crate, root, caller)]
     if bad:
         raise CopyFails(sorted({os.path.relpath(p, crate) for p in bad}))
     for name in srcs:  # mutmut's root test*.py default among them: tracked .py files left out of also_copy
@@ -359,9 +373,10 @@ def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
     try:
         where, held = sandbox(repo, head, crate, project_dir, wt)
     except CopyFails as e:  # mutmut's copy stops (or never ends) on the same links
-        return "fail", [_copy_entry(box, e.paths, "mutmut's copy follows links: a dangling link or one to a dir above "
-                                    "it under tests/ (or a dangling one in a source dir) stops or loops R3 too; drop or "
-                                    "fix the link (track its target); rerun doctor")]
+        return "fail", [_copy_entry(box, e.paths, "mutmut's copy follows links: a dangling link, one to a dir above "
+                                    "it or one into the checkout by an absolute path under tests/ (or a dangling one in "
+                                    "a source dir) stops or loops R3 too; drop or fix the link (track its target, make "
+                                    "it relative); rerun doctor")]
     except CopyError as e:
         return "fail", [_copy_entry(box, e.paths, f"mutmut's copy into {box} fails on it: {e.why}; fix that in the "
                                     "tree, then rerun doctor")]
