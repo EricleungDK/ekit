@@ -14,21 +14,63 @@ WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+(R[1-4]-[0-9a-f]{8})\b[ \t:,-]*(.*)
 # who may waive: the repo's own people. A bot, a first-time contributor or an outsider cannot.
 HUMAN = ("OWNER", "MEMBER", "COLLABORATOR")
 REASON_MAX = 300
+# the sticky comment's first line (comment.MARKER): its ready-made lines are never a waiver, whoever posts it
+MARKER = "<!-- mech-review -->"
+# what the sticky comment's ready-made lines say in place of the reason; left in, it is no reason
+PLACEHOLDER = "<why this is OK>"
+
+
+EDITED_WHY = "the comment was edited after posting; post a new comment"
+PLACEHOLDER_WHY = "the reason is still the placeholder; post a new comment with the reason"
+
+
+def _placeholder(reason):
+    """True for a reason wholly wrapped in <...>: PLACEHOLDER, or a template's `<reason>`."""
+    return reason.startswith("<") and reason.endswith(">")
+
+
+def _edited(c):
+    """True when GitHub moved updated_at past created_at: the comment was edited. Write access lets anyone edit
+    another person's comment while the author shown stays the same. A comment missing either stamp counts as unedited."""
+    return bool(c.get("created_at") and c.get("updated_at")) and c["created_at"] != c["updated_at"]
+
+
+def _commands(comments):
+    """(comment, login, entry id, reason) per `/mech-waive` line with a reason, from comments by HUMAN authors only,
+    never the sticky comment (MECH_COMMENT_AUTHOR may be a machine user). The reason has its whitespace collapsed and
+    is not cut yet."""
+    for c in comments:
+        user = c.get("user") or {}
+        if (user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body")
+                or c["body"].startswith(MARKER)):
+            continue
+        for m in WAIVE.finditer(c["body"]):
+            reason = " ".join(m.group(2).split())
+            if reason:
+                yield c, user.get("login", ""), m.group(1), reason
 
 
 def collect(comments):
     """{entry id: {by, reason, url}} from issue comments (API objects, oldest first; a later comment wins).
-    A waiver with no reason is ignored: the reason is the record."""
+    A waiver with no reason is ignored: the reason is the record. The placeholder, or any reason wholly in <...>, is
+    none. An edited comment waives nothing (see `rejected`)."""
     out = {}
-    for c in comments:
-        user = c.get("user") or {}
-        if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body"):
-            continue
-        for m in WAIVE.finditer(c["body"]):
-            reason = " ".join(m.group(2).split())[:REASON_MAX]
-            if reason:
-                out[m.group(1)] = {"by": user.get("login", ""), "reason": reason, "url": c.get("html_url", "")}
+    for c, login, eid, reason in _commands(comments):
+        if not _edited(c) and not _placeholder(reason):
+            out[eid] = {"by": login, "reason": reason[:REASON_MAX], "url": c.get("html_url", "")}
     return out
+
+
+def rejected(comments):
+    """[{id, by, why, url}]: the waivers `collect` ignored that a person with write access posted, so the comment can
+    tell them why. One per entry id, the later comment's. A waiver with no reason at all, or from an outsider or a bot,
+    is not listed: it never could waive."""
+    out = {}
+    for c, login, eid, reason in _commands(comments):
+        why = EDITED_WHY if _edited(c) else PLACEHOLDER_WHY if _placeholder(reason) else None
+        if why:
+            out[eid] = {"id": eid, "by": login, "why": why, "url": c.get("html_url", "")}
+    return list(out.values())
 
 
 def apply(env, waivers):

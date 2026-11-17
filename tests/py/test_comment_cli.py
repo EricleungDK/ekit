@@ -193,6 +193,31 @@ class TestPoster(unittest.TestCase):
             self.assertEqual(p.returncode, 1, p.stderr)
             self.assertNotIn("Waived:", api.writes[0])
 
+    def test_an_edited_waiver_keeps_the_check_red_and_the_comment_says_why(self):
+        api = Api([dict(person("/mech-waive R2-deadbeef: moved"), created_at="2026-11-01T10:00:00Z",
+                        updated_at="2026-11-01T10:05:00Z")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the comment was edited after posting; post a new comment\n",
+                      api.writes[0])
+        self.assertIn('"waivers_ignored": [', api.writes[0])
+        self.assertNotIn("Waived:", api.writes[0])
+
+    def test_a_placeholder_waiver_keeps_the_check_red_and_the_comment_says_why(self):
+        api = Api([person("/mech-waive R2-deadbeef <why this is OK>")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the reason is still the placeholder; post a new comment "
+                      "with the reason\n", api.writes[0])
+
+    def test_an_ignored_waiver_for_an_entry_no_longer_failing_is_not_shown(self):
+        api = Api([person("/mech-waive R2-deadbeef <why this is OK>"), person("/mech-waive R2-deadbeef: moved"),
+                   person("/mech-waive R2-0badc0de <why this is OK>")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("Waiver ignored", api.writes[0])
+        self.assertNotIn("waivers_ignored", api.writes[0])
+
     def test_the_bots_own_comment_cannot_waive(self):
         api = Api([{"id": 9, "user": {"login": comment.DEFAULT_AUTHOR, "type": "Bot"}, "author_association": "NONE",
                     "body": comment.MARKER + "\n/mech-waive R2-deadbeef: quoted from the PR"}])
