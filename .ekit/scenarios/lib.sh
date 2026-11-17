@@ -3,6 +3,8 @@ set -u
 fail() { echo "ASSERT FAILED: $*" >&2; exit 1; }
 eq() { [[ "$2" == "$3" ]] || fail "$1: expected [$3] got [$2]"; }
 has() { [[ "$2" == *"$3"* ]] || fail "$1: expected output to contain [$3], got [$2]"; }
+# line count of stdin; BSD wc pads it with spaces, so strip them before eq
+lines() { wc -l | tr -d '[:space:]'; }
 hasnt() { [[ "$2" != *"$3"* ]] || fail "$1: output must not contain [$3], got [$2]"; }
 export EKIT_STATE="$PWD/state"; mkdir -p "$EKIT_STATE"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -23,6 +25,11 @@ commit_all() { git -C "$SAMPLE" add -A; git -C "$SAMPLE" commit -qm "${1:-c}"; }
 # the installed hook command for an event, read from the sample's settings.json
 hook_cmd() { jq -er --arg e "$1" '.hooks[$e][0].hooks[0].command' "$SAMPLE/.claude/settings.json" || fail "no $1 hook installed"; }
 # run installed hook: hook <event> <session> [stop_hook_active] [last assistant message] [more payload fields, a JSON object]
+# what the Finish gate asks before a done report: declare a verify command for the session, then run it green
+# on the current files: verify <session> [command]
+verify() { local tv="$EKIT_REPO/scripts/task-verify.py" c="${2:-python3 app.py}"
+  (cd "$SAMPLE" && CLAUDE_CODE_SESSION_ID="$1" python3 -I "$tv" declare -- "$c" >/dev/null 2>&1) || fail "verify declare failed: $c"
+  (cd "$SAMPLE" && python3 -I "$tv" run -- "$c" >/dev/null 2>&1) || fail "verify run failed: $c"; }
 REPORT=$'## Finish: done\n| Criterion | Status | Evidence |'
 # what Claude Code puts on a Stop payload while a subagent of the session still runs
 RUNNING='{"background_tasks":[{"id":"a1","type":"subagent","status":"running","description":"unit","agent_type":"general-purpose"}]}'

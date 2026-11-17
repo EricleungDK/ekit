@@ -22,5 +22,5 @@ has "no worktree entry" "$(jq -r '.entries[0].problem' <<<"$out")" "trial could 
 eq "no worktree inputs kept" "$(jq -c .inputs <<<"$out")" "$RUST_INPUTS"
 hasnt "no worktree traceback" "$(cat "$PWD/err")" "Traceback"
 eq "git state unchanged" "$(snapshot "$R")" "$before"
-eq "no temp dir left" "$(ls "$TMPDIR" | wc -l)" 0
+eq "no temp dir left" "$(ls "$TMPDIR" | lines)" 0
 echo "trial-failure ok"

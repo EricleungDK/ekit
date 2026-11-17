@@ -59,5 +59,5 @@ eq "no toolchain: R1" "$(jq -r .checks.R1.status <<<"$out")" n/a
 eq "no toolchain: R4" "$(jq -r .checks.R4.status <<<"$out")" n/a
 has "no toolchain: summary names n/a" "$(jq -r .summary <<<"$out")" "n/a: R1 R4"
 hasnt "no toolchain: never all pass" "$(jq -r .summary <<<"$out")" "all pass"
-eq "caller checkout untouched" "$(git -C "$R" status --porcelain | wc -l)" 0
+eq "caller checkout untouched" "$(git -C "$R" status --porcelain | lines)" 0
 echo "mech-review-red ok"
