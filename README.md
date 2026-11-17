@@ -26,7 +26,7 @@ An agent "fixes" a divide-by-zero bug by returning 0, deletes the test that expe
 >
 > A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, then re-run this run's failed job (`report`).
 
-The same result is attached as JSON, which the agent reads on its next turn: each entry carries the fix that is wanted and the shortcut that is not allowed.
+The same result is attached as JSON, which your agent reads when it next works on the PR (in an `/ekit:orchestrate-agent` run, the orchestrator sends the fail entries straight back to it): each entry carries the fix that is wanted and the shortcut that is not allowed.
 
 In the session, work ends with a report like this instead of "done!":
 

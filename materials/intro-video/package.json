@@ -1,0 +1,28 @@
+{
+  "name": "ekit-intro-video",
+  "private": true,
+  "description": "ekit's intro video, made with Remotion.",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "music": "node --no-warnings music/synth.mjs",
+    "studio": "npm run music && remotion studio src/index.ts",
+    "render": "npm run music && remotion render src/index.ts ekit-intro out/ekit-intro.mp4 --codec=h264 --crf=18",
+    "stills": "node stills.mjs",
+    "check": "tsc && node --no-warnings src/check-holds.ts"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.540",
+    "@remotion/cli": "4.0.540",
+    "@remotion/google-fonts": "4.0.540",
+    "@remotion/renderer": "4.0.540",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.540"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "typescript": "5.9.3"
+  }
+}
