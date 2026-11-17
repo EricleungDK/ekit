@@ -301,6 +301,56 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/gone`")
 
+    def test_a_top_level_test_link_to_the_dir_above_is_named_as_itself(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("test", "..")])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `test`")
+
+    def test_an_unreadable_dir_behind_a_top_level_test_link_outside_is_an_entry_not_a_crash(self):
+        # test -> <outside> is not walked (it may be big); copytree then cannot read outside/locked
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        write(outside, {"locked/x.txt": "", "ok.txt": ""})
+        os.mkfifo(os.path.join(outside, "fifo"))
+        os.chmod(os.path.join(outside, "locked"), 0)
+        self.addCleanup(os.chmod, os.path.join(outside, "locked"), 0o700)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("test", outside)])
+        env = self.doctor()
+        [e] = env["entries"]
+        self.assertEqual((e["class"], e["severity"]), ("env", "fail"))
+        self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
+                                       "`test/fifo`, `test/locked`")
+        # the reason of the first path named, whatever order the filesystem lists them in
+        self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: `test/fifo` is a named pipe; fix that in "
+                                    "the tree, then rerun doctor")
+
+    def test_a_named_pipe_behind_a_link_is_named_with_the_reason_not_the_link_hint(self):
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        os.makedirs(outside)
+        os.mkfifo(os.path.join(outside, "fifo"))
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[("tests/pipe", os.path.join(outside, "fifo"))])
+        env = self.doctor()
+        [e] = env["entries"]
+        self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
+                                       "`tests/pipe`")
+        self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: `tests/pipe` is a named pipe; fix that "
+                                    "in the tree, then rerun doctor")
+
+    def test_a_tracked_file_named_mutants_names_the_path_that_cannot_be_made(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     "mutants": "", ".github/workflows/mech-review.yml": CALLER % ""})
+        env = self.doctor()
+        [e] = env["entries"]
+        # the first entry copied (also_copy, sorted: .github) is the first that cannot be made under the file
+        self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
+                                       "`mutants/.github`")
+        self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: Not a directory; fix that in the tree, "
+                                    "then rerun doctor")
+
     def test_exactly_ten_links_are_all_named_with_no_more(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""},
@@ -327,6 +377,9 @@ class SandboxTrial(unittest.TestCase):
         env = self.doctor()
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests`")
+        # shutil's own words (its src is a DirEntry on 3.8+), the checkout's temp prefix off the path
+        self.assertIn(" and 'mutants/tests/test_a.py' are the same file; fix that in the tree, then rerun doctor",
+                      env["entries"][0]["hint"])
 
     def test_doctor_leaves_no_pythonpath_behind_when_there_was_none(self):
         saved = os.environ.pop("PYTHONPATH", None)
