@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import comment, waiver
@@ -160,6 +161,43 @@ class TestLineCaps(unittest.TestCase):
         self.assertTrue(body.endswith(" |\n\nComment cut at the size limit. Full result: `mech-review-json` artifact of "
                                       "this run.\n"), body[-300:])
         self.assertTrue(body.startswith(comment.MARKER + "\n## mech-review\n"))
+
+
+class TestSizeBoundaries(unittest.TestCase):
+    """render's steps at their exact edges, with COMMENT_LIMIT set per test."""
+    TAIL = "\n\n" + comment.CUT_NOTE + "\n"
+
+    def render_at(self, env, limit):
+        with mock.patch.object(comment, "COMMENT_LIMIT", limit):
+            return comment.render(env)
+
+    def env(self):
+        return envelope([entry(eid=f"R2-{i:08x}") for i in range(5)])
+
+    def test_a_comment_exactly_at_the_limit_is_kept_whole(self):
+        full = comment.render(self.env())
+        self.assertEqual(self.render_at(self.env(), len(full)), full)
+
+    def test_one_char_over_the_limit_the_ready_made_lines_give_way_first(self):
+        full = comment.render(self.env())
+        body = self.render_at(self.env(), len(full) - 1)
+        self.assertIn("\n### JSON\n", body)
+        self.assertNotIn("/mech-waive R2-00000000 <why this is OK>", body)
+
+    def test_the_cut_keeps_everything_up_to_the_last_line_break_that_fits(self):
+        full = comment.render(self.env())
+        no_lines = self.render_at(self.env(), len(full) - 1)
+        fallback = self.render_at(self.env(), len(no_lines) - 1)
+        self.assertIn("JSON omitted (comment size limit)", fallback)
+        # a blank line (two line breaks) right where the room for the note ends: the first break is the last that fits
+        p = fallback.index("\n\n| id |")
+        body = self.render_at(self.env(), p + len(self.TAIL))
+        self.assertEqual(body, fallback[:p] + self.TAIL)
+        self.assertEqual(len(body), p + len(self.TAIL))
+
+    def test_a_pipe_in_a_table_cell_is_escaped(self):
+        body = comment.render(envelope([dict(entry(), problem="a|b")]))
+        self.assertIn("| tests/a.rs:7 | a\\|b | deleting tests |", body)
 
 
 class TestBody(unittest.TestCase):

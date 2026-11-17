@@ -172,7 +172,7 @@ def _ready_made(waivable):
     return lines
 
 
-def _body(env, shown, json_text, ready=True):
+def _body(env, shown, json_text, omit_lines=False):
     entries = env["entries"]
     lines = [MARKER, "## mech-review", "", f"**{headline(env)}**", ""]
     not_run = _not_run_lines(env)
@@ -194,7 +194,7 @@ def _body(env, shown, json_text, ready=True):
         waivable = [e for e in entries if e["severity"] == "fail" and e.get("check") in CHECK_ORDER]  # never CI
         if waivable:
             lines += ["", WAIVE_HELP]
-            lines += _ready_made(waivable) if ready else ["", WAIVE_OMITTED]
+            lines += ["", WAIVE_OMITTED] if omit_lines else _ready_made(waivable)
     lines.append("")
     if json_text is None:
         lines.append("JSON omitted (comment size limit). Full result: `mech-review-json` artifact of this run.")
@@ -209,12 +209,12 @@ def render(env):
     JSON and all but the first OVERSIZE_ROWS rows. Still too big (rows of wide cells): cut at a line, with a note.
     That body has no code block, so a cut cannot leave one open."""
     json_text = json.dumps(env, indent=2)
-    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, ready=False),
-                 _body(env, env["entries"][:OVERSIZE_ROWS], None, ready=False)):
+    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, omit_lines=True),
+                 _body(env, env["entries"][:OVERSIZE_ROWS], None, omit_lines=True)):
         if len(body) <= COMMENT_LIMIT:
             return body
     tail = "\n\n" + CUT_NOTE + "\n"
-    return body[:body.rindex("\n", 0, COMMENT_LIMIT - len(tail) + 1)] + tail  # a newline at index n keeps n chars
+    return body[:body[:COMMENT_LIMIT - len(tail) + 1].rindex("\n")] + tail  # a newline at index n keeps n chars
 
 
 def render_crash(head, reason):
