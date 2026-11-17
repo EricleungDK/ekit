@@ -338,6 +338,33 @@ class SandboxTrial(unittest.TestCase):
         env = self.doctor(runner=unittest_runner(self.calls, installed=os.path.join(self.repo, "source")))
         self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
 
+    def test_a_failing_sandbox_names_the_link_that_kept_a_top_level_entry_out_of_r3s_copy(self):
+        # also_copy leaves docs/ out for its dangling docs/html (a known limit of R3): the tests then miss docs/usage.md
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", ".gitignore": "_build/\n",
+                     "docs/usage.md": "# guide\n", ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_docs.py": READS.replace("guide.md", "usage.md") % 1},
+                    links=[("docs/html", "../_build/html")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
+        [e] = env["entries"]
+        self.assertEqual(e["problem"], "R3's mutmut sandbox fails where the plain run passes (missing there: "
+                                       "`docs/usage.md`); `docs/` is left out of R3's copy because of the link "
+                                       "`docs/html`")
+        self.assertEqual(e["hint"], "a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps "
+                                    "its whole top-level entry out of R3's copy: track its target or remove the link; "
+                                    "rerun doctor")
+
+    def test_each_entry_kept_out_is_named_with_all_its_links(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "docs/usage.md": "# guide\n",
+                     "site/index.md": "", ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_docs.py": READS.replace("guide.md", "usage.md") % 1},
+                    links=[("docs/pdf", "../_build/pdf"), ("docs/html", "../_build/html"), ("site/assets", "../docs")])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"],
+                         "R3's mutmut sandbox fails where the plain run passes (missing there: `docs/usage.md`); "
+                         "`docs/` is left out of R3's copy because of the links `docs/html`, `docs/pdf`; "
+                         "`site/` is left out of R3's copy because of the link `site/assets`")
+
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
                      ".github/workflows/mech-review.yml": CALLER % ""})

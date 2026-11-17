@@ -209,17 +209,24 @@ def _dangling_files(top):
 
 def sandbox(repo, head, crate, project_dir, root):
     """`<crate>/mutants/` filled the way R3's mutmut run fills it, at best: the entries that may be R3's source_paths,
-    then also_copy and mutmut's defaults. Returns its path; raises CopyFails when mutmut's copy would stop or loop, the
-    links checked before anything is copied (root: the checkout).
+    then also_copy and mutmut's defaults. Returns (its path, {top-level entry: [links that keep it out of R3's copy]});
+    raises CopyFails when mutmut's copy would stop or loop, the links checked before anything is copied (root: the
+    checkout). An entry kept out (also_copy's link rule, mutants._link_ok) is a known limit of R3, named not copied.
     With no diff no source is named, so each tracked top-level entry that holds a .py file and is not in also_copy
     (also_copy leaves out an entry holding a link mutmut's copytree cannot copy) is copied the way R3 copies a source:
     the most R3 ever copies of it (as a non-source it is not copied at all)."""
     box = os.path.join(crate, "mutants")  # made by the first copy: a python project dir always holds a manifest
     copied = mutants.also_copy(repo, head, project_dir, [])
     tree = head if project_dir == "." else f"{head}:{project_dir}"
-    tracked = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", tree).split("\0")
+    tracked = {}  # path under the project dir -> (mode, object), as also_copy reads it
+    for rec in gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
+        if rec:
+            meta, path = rec.split("\t", 1)
+            mode, _, obj = meta.split(" ")
+            tracked[path] = (mode, obj)
     skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
     srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
+    held = _held_out(repo, tracked, skip | set(srcs))
     bad = [p for n in srcs for p in _dangling_files(os.path.join(crate, n))]
     bad += [p for n in sorted(mutants.MUTMUT_COPIES) for p in _copytree_stops(os.path.join(crate, n), root)]
     if bad:
@@ -228,7 +235,20 @@ def sandbox(repo, head, crate, project_dir, root):
         _copy_or_fail(_copy_source, crate, name, box)
     for name in copied + sorted(mutants.MUTMUT_COPIES):
         _copy_or_fail(lambda c, n, b: _copy(os.path.join(c, n), os.path.join(b, n)), crate, name, box)
-    return box
+    return box, held
+
+
+def _held_out(repo, tracked, copied):
+    """{top-level entry: sorted links} for each entry R3's copy leaves out because of a link mutants._link_ok rejects
+    (dangling, to a dir, or leaving the project dir), of those doctor does not copy either (copied: the names it does)."""
+    dirs = {p.rsplit("/", i)[0] for p in tracked for i in range(1, p.count("/") + 1)}
+    held = {}
+    for path, (mode, obj) in sorted(tracked.items()):
+        top = path.split("/", 1)[0]
+        if mode == mutants.LINK_MODE and top not in copied \
+                and not mutants._link_ok(path, gitio.git(repo, "cat-file", "blob", obj), tracked, dirs):
+            held.setdefault(top, []).append(path)
+    return held
 
 
 def _copy_or_fail(copy, crate, name, box):
@@ -300,7 +320,7 @@ def _sandbox_trial(repo, head, project_dir, cmd, adapter, runner):
 def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
     crate = os.path.join(wt, project_dir)
     try:
-        where = sandbox(repo, head, crate, project_dir, wt)
+        where, held = sandbox(repo, head, crate, project_dir, wt)
     except CopyFails as e:  # mutmut's copy stops (or never ends) on the same paths
         return "fail", [report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
                                      f"R3's mutmut sandbox cannot be built: mutmut's copy into {_box_dir(project_dir)} "
@@ -320,7 +340,7 @@ def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
                                      f"{_box_dir(project_dir)})",
                                      f"the suite ran past doctor's {red.TEST_TIMEOUT} s limit there: rerun doctor; if it "
                                      "repeats, find what in the sandbox makes the suite hang", NOT_SKIP)]
-    return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
+    return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where), held)]
 
 
 def _listed(paths, cap=10):
@@ -351,18 +371,23 @@ def missing(out, wt, box):
     return seen
 
 
-def _sandbox_entry(cmd, project_dir, paths):
+def _sandbox_entry(cmd, project_dir, paths, held):
     where = _box_dir(project_dir)
     if paths:
         found = "missing there: " + ", ".join(f"`{p}`" for p in paths)
     else:
         found = f"no missing path found in the output of `{cmd}` run in {where}"
+    kept = "".join(f"; `{top}/` is left out of R3's copy because of the link{'s' if len(links) > 1 else ''} "
+                   f"{_listed(links)}" for top, links in sorted(held.items()))
+    if held:
+        hint = ("a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps its whole top-level "
+                "entry out of R3's copy: track its target or remove the link; rerun doctor")
+    else:
+        hint = (f"R3 copies into {where} only the project dir's tracked top-level entries and mutmut's defaults; "
+                "keep the files the tests read inside the project dir, or make the tests not depend on files above it "
+                "(a project-dir in a subfolder whose tests read ../ is a known limit); rerun doctor")
     return report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
-                        f"R3's mutmut sandbox fails where the plain run passes ({found})",
-                        f"R3 copies into {where} only the project dir's tracked top-level entries and mutmut's defaults; "
-                        "keep the files the tests read inside the project dir, or make the tests not depend on files "
-                        "above it (a project-dir in a subfolder whose tests read ../ is a known limit); rerun doctor",
-                        NOT_SKIP)
+                        f"R3's mutmut sandbox fails where the plain run passes ({found}){kept}", hint, NOT_SKIP)
 
 
 def _test_entries(verdict, cmd, out):
