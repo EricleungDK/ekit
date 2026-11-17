@@ -316,6 +316,28 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests`")
 
+    def test_doctor_leaves_no_pythonpath_behind_when_there_was_none(self):
+        saved = os.environ.pop("PYTHONPATH", None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, "PYTHONPATH", saved)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES})
+        self.doctor()
+        self.assertNotIn("PYTHONPATH", os.environ)
+
+    def test_doctor_puts_back_the_pythonpath_it_found(self):
+        with unittest.mock.patch.dict(os.environ, {"PYTHONPATH": "/somewhere"}):
+            self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES})
+            self.doctor()
+            self.assertEqual(os.environ["PYTHONPATH"], "/somewhere")
+
+    def test_the_sandbox_imports_from_source_before_src_as_mutmut_puts_them_on_sys_path(self):
+        self.commit({"pyproject.toml": "[project]\n", "source/calc/__init__.py": "X = 'source'\n",
+                     "src/calc/__init__.py": "X = 'src'\n", ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_x(self):\n        self.assertEqual(calc.X, 'source')\n"})
+        env = self.doctor(runner=unittest_runner(self.calls, installed=os.path.join(self.repo, "source")))
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
                      ".github/workflows/mech-review.yml": CALLER % ""})
