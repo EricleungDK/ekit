@@ -829,6 +829,7 @@ def _glob_escape(path):
 # what mutmut 3.8.1 copies into mutants/ on its own (configuration.py), besides source_paths and also_copy
 MUTMUT_COPIES = {"tests", "test", "setup.cfg", "pyproject.toml", "uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock"}
 LINK_MODE = "120000"  # git's mode of a symlink
+FILE_MODES = ("100644", "100755")  # git's modes of a regular file
 
 
 def also_copy(repo, head, project_dir, sources):
@@ -843,20 +844,20 @@ def also_copy(repo, head, project_dir, sources):
     for rec in git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
         if rec:
             meta, path = rec.split("\t", 1)
-            mode, _, obj = meta.split(" ")
-            entries[path] = (mode, obj)
+            entries[path] = (meta[:6], meta.rpartition(" ")[2])  # "<mode> <type> <object>": modes are 6 digits
     skip = set(sources) | MUTMUT_COPIES | {"mutants"}
-    names = {p.split("/", 1)[0] for p in entries}
+    names = {p.partition("/")[0] for p in entries}
     names = {n for n in names if n not in skip and not fnmatch.fnmatchcase(n, "test*.py") and _utf8(n)}
     dirs = {p.rsplit("/", i)[0] for p in entries for i in range(1, p.count("/") + 1)}
+    files = {p for p, (mode, _) in entries.items() if mode in FILE_MODES}
     for path, (mode, obj) in entries.items():
-        top = path.split("/", 1)[0]
-        if mode == LINK_MODE and top in names and not _link_ok(path, git(repo, "cat-file", "blob", obj), entries, dirs):
+        top = path.partition("/")[0]
+        if mode == LINK_MODE and top in names and not _link_ok(path, git(repo, "cat-file", "blob", obj), files, dirs):
             names.discard(top)
     return sorted(names)
 
 
-def _link_ok(path, target, entries, dirs):
+def _link_ok(path, target, files, dirs):
     """the link at path (relative to the project dir) reaches a tracked regular file inside it, walking only through
     tracked dirs: no absolute target, no step above the project dir, no other link on the way (a dir link included,
     which is never in dirs). A `.` or empty step stays a step: what comes before it must be a dir, so `README.md/.`
@@ -876,21 +877,26 @@ def _link_ok(path, target, entries, dirs):
             parts.append(step)
             if i < len(steps) - 1 and "/".join(parts) not in dirs:
                 return False
-    return entries.get("/".join(parts), ("",))[0] in ("100644", "100755")
+    return "/".join(parts) in files
 
 
 def _utf8(name):
     try:
-        name.encode("utf-8")
+        name.encode()  # str.encode is UTF-8 by default, whatever the locale
         return True
     except UnicodeEncodeError:  # git's bytes came back as surrogates (surrogateescape)
         return False
 
 
+# a TOML array of strings is JSON's, except that a \u escape must be one code point (no surrogate pairs: raw text
+# instead) and DEL must be escaped
+_TOML_ENCODER = json.JSONEncoder(ensure_ascii=False)
+_TOML_DEL = "\\u007f"
+
+
 def _toml_list(items):
-    """a TOML array of strings. JSON's escapes are TOML's, except that a \\u escape must be one code point (no
-    surrogate pairs: raw text instead) and DEL must be escaped."""
-    return json.dumps(list(items), ensure_ascii=False).replace("\x7f", "\\u007f")
+    """a TOML array of strings."""
+    return _TOML_ENCODER.encode(list(items)).replace("\x7f", _TOML_DEL)
 
 
 def add_mutmut_table(text, sources, only, also_copy=()):
