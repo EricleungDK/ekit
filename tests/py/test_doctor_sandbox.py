@@ -478,6 +478,32 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/ws`")
 
+    def outside_chain(self):
+        """tests/x -> outside, with outside/a/b/c/gone dangling: the walk meets gone as its fifth entry outside."""
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        os.makedirs(os.path.join(outside, "a", "b", "c"))
+        os.symlink(os.path.join(outside, "missing"), os.path.join(outside, "a", "b", "c", "gone"))
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/x", outside)])
+
+    def test_the_walk_outside_the_checkout_reaches_its_cap_and_no_further(self):
+        # five entries walked: the dangling link is the fifth, found before copying
+        self.outside_chain()
+        with unittest.mock.patch.object(doctor, "OUTSIDE_WALK", 5):
+            env = self.doctor()
+        self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
+                                                "copy into mutants/ fails on `tests/x/a/b/c/gone`", LINK_HINT)])
+
+    def test_past_its_cap_the_walk_outside_leaves_the_rest_to_the_copy(self):
+        # four entries walked: c/ is not opened, so copytree meets the dangling link and names it with its reason
+        self.outside_chain()
+        with unittest.mock.patch.object(doctor, "OUTSIDE_WALK", 4):
+            env = self.doctor()
+        self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
+                                                "copy into mutants/ fails on `tests/x/a/b/c/gone`", "mutmut's copy into "
+                                                "mutants/ fails on it: No such file or directory; fix that in the tree, "
+                                                "then rerun doctor")])
+
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"a.txt": ""})
