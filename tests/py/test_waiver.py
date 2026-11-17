@@ -68,6 +68,23 @@ class TestCollect(unittest.TestCase):
     def test_ci_entries_and_malformed_ids_are_not_matched(self):
         self.assertEqual(waiver.collect([note("/mech-waive CI-deadbeef infra\n/mech-waive R2-xyz nope\n/mech-waive R5-deadbeef no")]), {})
 
+    def test_the_placeholder_left_in_is_not_a_reason(self):
+        self.assertEqual(waiver.PLACEHOLDER, "<why this is OK>")
+        self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <why this is OK>"),
+                                         note("/mech-waive R2-deadbeef:   <why  this is\tOK>  ")]), {})
+
+    def test_a_reason_wholly_wrapped_in_angle_brackets_is_not_a_reason(self):
+        self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <reason>"), note("/mech-waive R3-0badc0de <>")]), {})
+
+    def test_a_bracketed_reason_longer_than_the_cut_is_still_not_a_reason(self):
+        self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <" + "x" * 400 + ">")]), {})
+
+    def test_angle_brackets_inside_a_real_reason_are_fine(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef <T> is generic, so the test moved"),
+                              note("/mech-waive R3-0badc0de equivalent: a <= b here")])
+        self.assertEqual({k: v["reason"] for k, v in got.items()},
+                         {"R2-deadbeef": "<T> is generic, so the test moved", "R3-0badc0de": "equivalent: a <= b here"})
+
     def test_a_long_reason_is_cut_and_its_whitespace_collapsed(self):
         got = waiver.collect([note("/mech-waive R2-deadbeef  a   b\t" + "x" * 400)])
         self.assertEqual(len(got["R2-deadbeef"]["reason"]), waiver.REASON_MAX)

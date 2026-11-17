@@ -14,20 +14,27 @@ WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+(R[1-4]-[0-9a-f]{8})\b[ \t:,-]*(.*)
 # who may waive: the repo's own people. A bot, a first-time contributor or an outsider cannot.
 HUMAN = ("OWNER", "MEMBER", "COLLABORATOR")
 REASON_MAX = 300
+# what the sticky comment's ready-made lines say in place of the reason; left in, it is no reason
+PLACEHOLDER = "<why this is OK>"
+
+
+def _no_reason(reason):
+    """True for an empty reason, or one wholly wrapped in <...>: the placeholder, or a template's `<reason>`."""
+    return not reason or (reason.startswith("<") and reason.endswith(">"))
 
 
 def collect(comments):
     """{entry id: {by, reason, url}} from issue comments (API objects, oldest first; a later comment wins).
-    A waiver with no reason is ignored: the reason is the record."""
+    A waiver with no reason is ignored: the reason is the record. The placeholder, or any reason wholly in <...>, is none."""
     out = {}
     for c in comments:
         user = c.get("user") or {}
         if user.get("type") == "Bot" or c.get("author_association") not in HUMAN or not c.get("body"):
             continue
         for m in WAIVE.finditer(c["body"]):
-            reason = " ".join(m.group(2).split())[:REASON_MAX]
-            if reason:
-                out[m.group(1)] = {"by": user.get("login", ""), "reason": reason, "url": c.get("html_url", "")}
+            reason = " ".join(m.group(2).split())
+            if not _no_reason(reason):
+                out[m.group(1)] = {"by": user.get("login", ""), "reason": reason[:REASON_MAX], "url": c.get("html_url", "")}
     return out
 
 
