@@ -441,7 +441,7 @@ def _sandbox_entry(cmd, project_dir, paths, held):
         found = f"no missing path found in the output of `{cmd}` run in {where}"
     kept = "".join(f"; `{top}/` is left out of R3's copy because of the link{'s' if len(links) > 1 else ''} "
                    f"{_listed(links)}" for top, links in sorted(held.items()))
-    if held:
+    if any(p.split("/", 1)[0] in held for p in paths):  # a missing path lies in an entry kept out
         hint = ("a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps its whole top-level "
                 "entry out of R3's copy: track its target or remove the link; rerun doctor")
     else:

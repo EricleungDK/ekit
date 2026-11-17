@@ -483,6 +483,22 @@ class SandboxTrial(unittest.TestCase):
                          "`docs/` is left out of R3's copy because of the links `docs/html`, `docs/pdf`; "
                          "`site/` is left out of R3's copy because of the link `site/assets`")
 
+    def test_an_entry_kept_out_that_no_missing_path_lies_in_keeps_the_subfolder_hint(self):
+        # the tests miss ../docs/guide.md (above project-dir app); app/site/ is kept out for an unrelated link
+        self.commit({"app/pyproject.toml": "[project]\n", "app/calc/__init__.py": "X = 1\n", "docs/guide.md": "# guide\n",
+                     "app/site/index.md": "", "app/tests/test_docs.py": READS % 2,
+                     ".github/workflows/mech-review.yml": CALLER % "      project-dir: app\n      test-paths: app/tests/**\n"},
+                    links=[("app/site/html", "../_build/html")])
+        env = self.doctor(project_dir="app")
+        [e] = env["entries"]
+        self.assertEqual(e["problem"], "R3's mutmut sandbox fails where the plain run passes (missing there: "
+                                       "`../docs/guide.md`); `site/` is left out of R3's copy because of the link "
+                                       "`site/html`")
+        self.assertEqual(e["hint"], "R3 copies into app/mutants/ only the project dir's tracked top-level entries and "
+                                    "mutmut's defaults; keep the files the tests read inside the project dir, or make "
+                                    "the tests not depend on files above it (a project-dir in a subfolder whose tests "
+                                    "read ../ is a known limit); rerun doctor")
+
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
                      ".github/workflows/mech-review.yml": CALLER % ""})
