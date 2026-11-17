@@ -67,7 +67,7 @@ printf '#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n' > "$DR/tests/a
 git -C "$DR" add -A; git -C "$DR" commit -qm docs; DH=$(git -C "$DR" rev-parse HEAD)
 : > "$PWD/calls.log"
 out=$(MUT_LOG="$PWD/calls.log" MECH_TEST_STUB="$STUB" MUT_FIXTURE=missed MUT_RC=2 python3 -I "$MR" mutants --repo "$DR" --base "$DB" --head "$DH" --stack rust --test-paths 'tests/**'); rc=$?
-eq "skipped: cargo-mutants never invoked" "$(wc -l < "$PWD/calls.log" | tr -d ' ')" 0
+eq "skipped: cargo-mutants never invoked" "$(lines < "$PWD/calls.log")" 0
 eq "skipped exit" "$rc" 0
 eq "skipped R3" "$(jq -r .checks.R3.status <<<"$out")" skipped
 has "skipped reason" "$(jq -r .checks.R3.note <<<"$out")" "no production file changed"
@@ -84,5 +84,5 @@ out=$(python3 -I "$MR" merge --repo "$R" --base "$B" --head "$H" --stack rust --
 has "merge missing shard names it" "$(jq -r '[.entries[] | select(.check=="CI")][0].problem' <<<"$out")" "shard 1/2"
 eq "merge missing shard keeps the other" "$(jq -r '[.entries[] | select(.check=="R3")] | length' <<<"$out")" 3
 
-eq "caller checkout untouched" "$(git -C "$R" status --porcelain | wc -l)" 0
+eq "caller checkout untouched" "$(git -C "$R" status --porcelain | lines)" 0
 echo "mech-review-mutants ok"

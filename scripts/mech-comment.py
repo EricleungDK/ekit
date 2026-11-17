@@ -10,6 +10,8 @@ env: GITHUB_TOKEN, GITHUB_REPOSITORY (owner/repo), GITHUB_API_URL (default https
 superseded: if the PR head is no longer this run's head, the comment is left alone (exit = own rc, 0 on crash).
 waivers: a `/mech-waive <id> <reason>` comment on the PR from a person with write access (OWNER, MEMBER or
      COLLABORATOR, never a bot) turns that fail entry into `waived`; it no longer fails the check (mech_review/waiver.py).
+     One from such a person that does not count (an edited comment, a placeholder reason) on an entry still failing
+     is listed under `waivers_ignored` in the envelope, and the comment says why.
 read-only token (a fork or Dependabot PR: GitHub answers 403 "Resource not accessible by integration"): the comment
      cannot be posted, so the result goes to the
      job summary and the log only, and the exit code is still the result's.
@@ -107,7 +109,12 @@ def main(argv):
         print(f"mech-comment: no usable result: {crash}", file=sys.stderr)
     else:
         try:
-            env = waiver.apply(env, waiver.collect(C.comments(call, api, repo, args.pr)))
+            notes = list(C.comments(call, api, repo, args.pr))
+            env = waiver.apply(env, waiver.collect(notes))
+            failing = {e["id"] for e in env["entries"] if e["severity"] == "fail"}
+            ignored = [r for r in waiver.rejected(notes) if r["id"] in failing]  # the person is told; the check stays red
+            if ignored:
+                env = dict(env, waivers_ignored=ignored)
         except C.ApiError as e:  # the result stands as it is: an unread waiver never turns a fail into a pass
             print(f"mech-comment: PR comments not read, no waiver applied: {e}", file=sys.stderr)
         body, rc = C.render(env), C.exit_code(env)

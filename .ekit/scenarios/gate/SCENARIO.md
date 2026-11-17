@@ -10,8 +10,9 @@
   3b. Same Stop with a running subagent in `background_tasks` -> allow (a wait); with the list empty -> block again.
   4. stop_hook_active=true -> allow (loop guard).
   5. Run the runner -> PASS; Stop hook with no finish report -> block, asking for `## Finish: done`.
-  6. Edit, run -> PASS; Stop hook whose last message is the finish report -> allow (no output).
+  6. Edit, run -> PASS; Stop hook whose last message is the finish report -> block (no verify command declared, naming `task-verify.py`).
+  6b. Declare a verify command for the session and run it green with `scripts/task-verify.py`; the same Stop -> allow (no output).
   7. Commit the reported tree; Stop hook -> allow (the PASS and the report still fit the tree).
   8. The installed settings register no SubagentStop gate.
-- expected: block JSON `{"decision":"block"...}` only in steps 3, 3b (empty list) and 5.
+- expected: block JSON `{"decision":"block"...}` only in steps 3, 3b (empty list), 5 and 6.
 - children: stale-after-edit, failing-scenario

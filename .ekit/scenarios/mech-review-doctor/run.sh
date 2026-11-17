@@ -14,7 +14,7 @@ eq "one entry" "$(jq -r '.entries|length' <<<"$out")" 1
 eq "entry class" "$(jq -r '.entries[0].class' <<<"$out")" needs-human
 has "entry names the caller" "$(jq -r '.entries[0].hint' <<<"$out")" "EricleungDK/ekit/.github/workflows/mech-review.yml@v0"
 has "entry repeats the inputs" "$(jq -r '.entries[0].hint' <<<"$out")" '"rust-toolchain": "1.96.0"'
-eq "--no-trial runs nothing" "$(wc -l < "$STUB_LOG")" 0
+eq "--no-trial runs nothing" "$(lines < "$STUB_LOG")" 0
 
 # 3. the caller the doctor asked for: no problems
 caller "$R" <<<"$GOOD_WITH"
@@ -33,7 +33,7 @@ tests_at=$(grep ':: test$' "$STUB_LOG" | head -1 | sed 's/ :: .*//')
 # 4. wrong caller: one exact fix per input
 W="$PWD/wrong"; rust_repo "$W"
 caller "$W" <<<"${GOOD_WITH/project-dir: crates\/app/project-dir: crates/old}"
-sed -i 's/rust-toolchain: 1.96.0/rust-toolchain: stable/' "$W/.github/workflows/mech-review.yml"; commit "$W"
+f="$W/.github/workflows/mech-review.yml"; sed 's/rust-toolchain: 1.96.0/rust-toolchain: stable/' "$f" > "$f.new" && mv "$f.new" "$f"; commit "$W"
 out=$(doctor --repo "$W"); rc=$?
 eq "wrong caller exit" "$rc" 1
 eq "wrong caller entries" "$(jq -r '.entries|length' <<<"$out")" 2
@@ -83,6 +83,6 @@ doctor --repo "$R" > "$PWD/two.json"
 eq "dirty tree does not change the verdict" "$rc" 0
 cmp -s "$PWD/one.json" "$PWD/two.json" || fail "two runs differ: $(diff "$PWD/one.json" "$PWD/two.json")"
 eq "git state unchanged" "$(snapshot "$R"; git -C "$R" diff)" "$before"
-eq "one worktree" "$(git -C "$R" worktree list | wc -l)" 1
-eq "no temp dir left" "$(ls "$TMPDIR" | wc -l)" 0
+eq "one worktree" "$(git -C "$R" worktree list | lines)" 1
+eq "no temp dir left" "$(ls "$TMPDIR" | lines)" 0
 echo "mech-review-doctor ok"

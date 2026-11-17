@@ -37,6 +37,22 @@ jobs:
         .github/**
 ```
 
+Also write `.github/workflows/mech-waive.yml`, as is: a waiver comment then re-runs `report` by itself.
+
+```yaml
+name: mech-waive
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+permissions:
+  actions: write
+  pull-requests: read
+  contents: read
+jobs:
+  mech-waive:
+    uses: EricleungDK/ekit/.github/workflows/mech-waive.yml@v0
+```
+
 Ask the user for `protected-paths` beyond `.github/**`, and whether their agent branches use a prefix outside the default `agent-branch-prefix` list (`agent/`, `claude/`, `codex/`, `copilot/`, `cursor/`); they own both.
 
 ## 4. Iterate
@@ -47,6 +63,6 @@ Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry 
 
 ## 5. Open the PR
 
-Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say the PR's own mech-review check goes red `needs-human` by design (it edits `.github/**`): the owner reads the change, comments `/mech-waive <id> <reason>` for that entry, re-runs the failed `report` job, and merges on green.
+Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say the PR's own mech-review check goes red `needs-human` by design (it edits `.github/**`): the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green.
 
 Report the PR URL via finish. Stopped before the PR (blocked, no remote, asked to) → the final report itself carries the full caller YAML and PR body.

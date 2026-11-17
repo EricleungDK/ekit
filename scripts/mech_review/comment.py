@@ -6,17 +6,32 @@ Stdlib only.
 import json
 import re
 
-MARKER = "<!-- mech-review -->"
+from .waiver import MARKER, PLACEHOLDER
 COMMENT_LIMIT = 60000  # GitHub caps a comment at 65536 chars; keep headroom
 OVERSIZE_ROWS = 50
 CELL_MAX = 200
+WAIVER_LINES_MAX = 20  # per kind: Waived, Waiver ignored
+CUT_NOTE = "Comment cut at the size limit. Full result: `mech-review-json` artifact of this run."
 
 
-def _cell(text):
+def _line(text):
+    """One line, cut to CELL_MAX like a table cell."""
     s = str(text).replace("\r", " ").replace("\n", " ")
     if len(s) > CELL_MAX:
         s = s[:CELL_MAX - 1] + "…"
-    return s.replace("|", "\\|")
+    return s
+
+
+def _cell(text):
+    return _line(text).replace("|", "\\|")
+
+
+def _span(text):
+    """A code span for text from the PR outside the table: no markdown, HTML or @-ping. Its delimiter is longer than
+    any backtick run inside; text that starts or ends with a backtick is padded with a space."""
+    d = "`" * (max((len(m) for m in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{d}{pad}{text}{pad}{d}"
 
 
 def _fence(text):
@@ -113,18 +128,51 @@ def _not_run_lines(env):
     return ["Did not run: " + "; ".join(na)] if na else []
 
 
+def _login(name):
+    """A login in code style, so nobody is pinged; a backtick cannot close the span."""
+    return f"`{_cell(name).replace('`', chr(39))}`"
+
+
+def _capped(lines, what):
+    """The first WAIVER_LINES_MAX lines, then one line counting the rest."""
+    more = len(lines) - WAIVER_LINES_MAX
+    return lines[:WAIVER_LINES_MAX] + ([f"…and {more} more {what}"] if more > 0 else [])
+
+
 def _waiver_lines(env):
-    """One line per waived entry: who let it through, and why. The login is in code style so nobody is pinged."""
-    return [f"Waived: {_cell(e['id'])} by `{_cell((e.get('waiver') or {}).get('by', '?')).replace('`', chr(39))}`: "
-            f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
-            for e in env["entries"] if e["severity"] == "waived"]
+    """One line per waived entry: who let it through, and why. Then one per ignored waiver (`waivers_ignored`, set
+    by mech-comment.py): who posted it and why it did not count. Each kind is capped, so the comment fits."""
+    return (_capped([f"Waived: {_cell(e['id'])} by {_login((e.get('waiver') or {}).get('by', '?'))}: "
+                     f"{_cell((e.get('waiver') or {}).get('reason', ''))}"
+                     for e in env["entries"] if e["severity"] == "waived"], "waived")
+            + _capped([f"Waiver ignored: {_cell(r['id'])} by {_login(r['by'])}: {_cell(r['why'])}"
+                       for r in env.get("waivers_ignored") or []], "ignored"))
 
 
-WAIVE_HELP = ("A person with write access can let a `fail` entry through: comment `/mech-waive <id> <reason>` on this PR, "
-              "then re-run this run's failed job (`report`).")
+WAIVE_HELP = (f"People with write access can waive a `fail` entry: copy its line below, replace `{PLACEHOLDER}` with the "
+              "reason, and post it as a PR comment. The check re-runs on its own where the mech-waive workflow is set up; "
+              "otherwise re-run this run's failed job (`report`).")
+WAIVE_OMITTED = (f"Waiver lines left out (comment size limit): post `/mech-waive <id> {PLACEHOLDER}` with an id "
+                 "from the table.")
 
 
-def _body(env, shown, json_text):
+def _code(text):
+    fence = _fence(text)
+    return [fence, text, fence]
+
+
+def _ready_made(waivable):
+    """Per waivable entry a label and a code block holding the line to post; with 2 or more, one block for all."""
+    lines = []
+    for e in waivable:
+        lines += ["", f"{_cell(e['id'])} · {_span(_line(e['problem']))} ({_span(_line(e['file']) + ':' + str(e['line']))})",
+                  *_code(f"/mech-waive {e['id']} {PLACEHOLDER}")]
+    if len(waivable) >= 2:
+        lines += ["", "All fail entries at once", *_code("\n".join(f"/mech-waive {e['id']} {PLACEHOLDER}" for e in waivable))]
+    return lines
+
+
+def _body(env, shown, json_text, omit_lines=False):
     entries = env["entries"]
     lines = [MARKER, "## mech-review", "", f"**{headline(env)}**", ""]
     not_run = _not_run_lines(env)
@@ -143,8 +191,10 @@ def _body(env, shown, json_text):
         lines.append(_table(shown))
         if len(shown) < len(entries):
             lines += ["", f"_showing first {len(shown)} of {len(entries)} entries_"]
-        if any(e["severity"] == "fail" and e.get("check") != "CI" for e in entries):
+        waivable = [e for e in entries if e["severity"] == "fail" and e.get("check") in CHECK_ORDER]  # never CI
+        if waivable:
             lines += ["", WAIVE_HELP]
+            lines += ["", WAIVE_OMITTED] if omit_lines else _ready_made(waivable)
     lines.append("")
     if json_text is None:
         lines.append("JSON omitted (comment size limit). Full result: `mech-review-json` artifact of this run.")
@@ -155,11 +205,16 @@ def _body(env, shown, json_text):
 
 
 def render(env):
+    """The comment, shrunk to fit COMMENT_LIMIT step by step: first the ready-made waiver lines give way, then the
+    JSON and all but the first OVERSIZE_ROWS rows. Still too big (rows of wide cells): cut at a line, with a note.
+    That body has no code block, so a cut cannot leave one open."""
     json_text = json.dumps(env, indent=2)
-    full = _body(env, env["entries"], json_text)
-    if len(full) <= COMMENT_LIMIT:
-        return full
-    return _body(env, env["entries"][:OVERSIZE_ROWS], None)
+    for body in (_body(env, env["entries"], json_text), _body(env, env["entries"], json_text, omit_lines=True),
+                 _body(env, env["entries"][:OVERSIZE_ROWS], None, omit_lines=True)):
+        if len(body) <= COMMENT_LIMIT:
+            return body
+    tail = "\n\n" + CUT_NOTE + "\n"
+    return body[:body[:COMMENT_LIMIT - len(tail) + 1].rindex("\n")] + tail  # a newline at index n keeps n chars
 
 
 def render_crash(head, reason):
@@ -248,7 +303,9 @@ def http_call(token):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
-            raise ApiError(e.code, e.read().decode(errors="replace")) from None
+            with e:  # the error is a response too: close it, or its socket leaks (ResourceWarning)
+                body = e.read().decode(errors="replace")
+            raise ApiError(e.code, body) from None
         except urllib.error.URLError as e:
             raise ApiError(0, f"unreachable: {e.reason}") from None
         return json.loads(raw) if raw else None

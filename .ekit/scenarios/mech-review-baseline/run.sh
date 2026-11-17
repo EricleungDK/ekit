@@ -99,5 +99,5 @@ printf 'notes\n' > "$DR/README.md"; git -C "$DR" add -A; git -C "$DR" commit -qm
 out=$(python3 -I "$MR" plan --repo "$DR" --base "$DB" --head "$DH" --stack rust --test-paths 'tests/**'); rc=$?
 eq "docs-only plan run" "$(jq -r .run <<<"$out")" false
 
-eq "caller checkout untouched" "$(git -C "$R" status --porcelain | wc -l)" 0
+eq "caller checkout untouched" "$(git -C "$R" status --porcelain | lines)" 0
 echo "mech-review-baseline ok"
