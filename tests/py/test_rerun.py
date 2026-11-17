@@ -1,17 +1,19 @@
-"""mech-rerun.py as a subprocess against a local stand-in for the GitHub API: which report job a /mech-waive comment re-runs."""
+"""mech-rerun.py main() against a local stand-in for the GitHub API: which report job a /mech-waive comment re-runs."""
+import contextlib
+import io
 import json
 import os
-import subprocess
-import sys
 import threading
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 import _kit
 
 SHA = "a" * 40
-SCRIPT = os.path.join(_kit.SCRIPTS, "mech-rerun.py")
+rerun_cli = _kit.load("mech-rerun")
 
 
 def run(id, status="completed", created="2026-11-17T10:00:00Z"):
@@ -80,15 +82,22 @@ class Api:
 
 
 def rerun(api, argv=("--pr", "5"), **env):
-    """mech-rerun.py as the workflow runs it (python3 -I), against the fake API."""
-    base = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
-    base.update({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url})
-    base.update(env)
+    """main() of mech-rerun.py against the fake API, in this process (so mutation testing sees it): a result with
+    returncode, stdout and stderr. An env value of None unsets that variable."""
+    want = {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "GITHUB_API_URL": api.url, **env}
+    out, err = io.StringIO(), io.StringIO()
     try:
-        return subprocess.run([sys.executable, "-I", SCRIPT, *argv], env={k: v for k, v in base.items() if v is not None},
-                              capture_output=True, text=True, timeout=30)
+        with mock.patch.dict(os.environ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            for k in [k for k in os.environ if k.startswith("GITHUB_")]:
+                del os.environ[k]
+            os.environ.update({k: v for k, v in want.items() if v is not None})
+            try:
+                rc = rerun_cli.main(list(argv))
+            except SystemExit as e:  # argparse rejects bad arguments by exiting 2
+                rc = e.code
     finally:
         api.close()
+    return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
 
 
 class TestRerun(unittest.TestCase):

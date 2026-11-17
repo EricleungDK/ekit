@@ -303,7 +303,9 @@ def http_call(token):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
-            raise ApiError(e.code, e.read().decode(errors="replace")) from None
+            with e:  # the error is a response too: close it, or its socket leaks (ResourceWarning)
+                body = e.read().decode(errors="replace")
+            raise ApiError(e.code, body) from None
         except urllib.error.URLError as e:
             raise ApiError(0, f"unreachable: {e.reason}") from None
         return json.loads(raw) if raw else None
