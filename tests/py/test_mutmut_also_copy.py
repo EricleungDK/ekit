@@ -146,6 +146,13 @@ class Symlinks(unittest.TestCase):
         repo, head = self.repo_with_links(self.FILES, self.LINKS)
         self.assertEqual(mutants.also_copy(repo, head, ".", ["src"]), ["README.md", "deep", "exec", "good", "tool.sh", "toplink"])
 
+    def test_a_dot_after_a_file_in_a_link_target_drops_its_entry(self):
+        repo, head = self.repo_with_links({"pyproject.toml": "", "src/a.py": "", "README.md": "", "docs/guide.md": "",
+                                           "site/a.txt": "", "deep/sub/f.txt": "", "good/a.txt": ""},
+                                          {"docs/bad": "../README.md/.", "site/bad": "../README.md/./.",
+                                           "good/dotdir": "../deep/./sub/f.txt"})
+        self.assertEqual(mutants.also_copy(repo, head, ".", ["src"]), ["README.md", "deep", "good"])
+
     def test_a_link_that_leaves_the_project_dir_drops_its_entry(self):
         repo, head = self.repo_with_links({"README.md": "", "pkg/pyproject.toml": "", "pkg/src/a.py": "",
                                            "pkg/notes/a.txt": "", "pkg/up/a.txt": "", "pkg/NOTES.md": ""},
