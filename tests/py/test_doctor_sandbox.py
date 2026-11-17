@@ -72,8 +72,10 @@ class SandboxTrial(unittest.TestCase):
         git(self.repo, "init", "-q", "-b", "main")
         self.calls = []
 
-    def commit(self, files):
+    def commit(self, files, links=()):
         write(self.repo, files)
+        for path, target in links:
+            os.symlink(target, os.path.join(self.repo, path))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "head")
 
@@ -114,6 +116,28 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
         self.assertEqual(env["entries"][0]["problem"],
                          "R3's mutmut sandbox fails where the plain run passes (missing there: `../docs/guide.md`)")
+
+    def test_a_source_dir_left_out_of_also_copy_for_a_dir_link_is_still_copied_as_mutmut_copies_sources(self):
+        # also_copy leaves out calc/ (it holds a link to a dir); R3 copies it as a source when the diff touches it
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "shared/data/x.txt": "x\n",
+                     ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_x(self):\n        self.assertEqual(calc.X, 1)\n"},
+                    links=[("calc/data", "../shared/data")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
+    def test_a_dir_link_inside_a_source_dir_is_not_followed_as_mutmut_does_not_follow_it(self):
+        self.commit({"pyproject.toml": "[project]\n", "shared/data/x.txt": "x\n",
+                     "calc/__init__.py": "import pathlib\n"
+                     "X = (pathlib.Path(__file__).parent / 'data' / 'x.txt').read_text()\n",
+                     "tests/test_calc.py": "import unittest\n\nimport calc\n\n\nclass T(unittest.TestCase):\n"
+                     "    def test_x(self):\n        self.assertEqual(calc.X, 'x\\n')\n"},
+                    links=[("calc/data", "../shared/data")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"]), ("pass", "fail"))
+        self.assertEqual(env["entries"][0]["problem"],
+                         "R3's mutmut sandbox fails where the plain run passes (missing there: `calc/data/x.txt`)")
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})

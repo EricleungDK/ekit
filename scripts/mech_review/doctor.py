@@ -146,7 +146,8 @@ def caller_entries(callers, inputs, paths):
 
 
 def _copy(src, dst):
-    """mutmut 3.8.1's copy: a file with copy2, a dir with copytree over what is there, a missing entry skipped."""
+    """mutmut 3.8.1's copy of an also_copy entry (and its defaults): a file with copy2, a dir with copytree over what
+    is there (links followed), a missing entry skipped."""
     if os.path.isfile(src):
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)
@@ -154,13 +155,38 @@ def _copy(src, dst):
         shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
+def _copy_source(crate, name, box):
+    """mutmut 3.8.1's copy of a source path (copy_src_dir): a file with copy2; a dir walked with os.walk, which does not
+    follow a link to a dir, and each file in it (a file link followed) copied with copy2 unless already there."""
+    top = os.path.join(crate, name)
+    if os.path.isdir(top):
+        files = [os.path.join(root, f) for root, _, fs in os.walk(top) for f in fs]
+    else:
+        files = [top] if os.path.isfile(top) else []
+    for src in files:
+        dst = os.path.join(box, os.path.relpath(src, crate))
+        if not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+
+
 def sandbox(repo, head, crate, project_dir):
-    """`<crate>/mutants/` filled the way R3's mutmut run fills it: its source_paths, also_copy and mutmut's defaults
-    (root test*.py from the crate dir, as mutmut globs them). Returns its path. R3 leaves its sources out of also_copy,
-    so the two together are every tracked top-level entry whichever are sources: with no diff, no source is named."""
+    """`<crate>/mutants/` filled the way R3's mutmut run fills it, at best: the entries that may be R3's source_paths,
+    then also_copy and mutmut's defaults (root test*.py from the crate dir, as mutmut globs them). Returns its path.
+    With no diff no source is named, so each tracked top-level entry that holds a .py file and is not in also_copy
+    (also_copy leaves out an entry holding a link mutmut's copytree cannot copy) is copied the way R3 copies a source:
+    the most R3 ever copies of it (as a non-source it is not copied at all)."""
     box = os.path.join(crate, "mutants")  # made by the first copy: a python project dir always holds a manifest
+    copied = mutants.also_copy(repo, head, project_dir, [])
+    tree = head if project_dir == "." else f"{head}:{project_dir}"
+    tracked = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", tree).split("\0")
+    skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
+    srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
     tests = sorted(n for n in os.listdir(crate) if fnmatch.fnmatchcase(n, "test*.py"))
-    for name in mutants.also_copy(repo, head, project_dir, []) + sorted(mutants.MUTMUT_COPIES) + tests:
+    for name in srcs:
+        if name not in tests:
+            _copy_source(crate, name, box)
+    for name in copied + sorted(mutants.MUTMUT_COPIES) + tests:
         _copy(os.path.join(crate, name), os.path.join(box, name))
     return box
 
