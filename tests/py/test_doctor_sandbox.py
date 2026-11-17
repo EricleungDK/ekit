@@ -167,19 +167,22 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(sandbox_run[0], ["python3", "-m", "pytest", "-p", "no:randomly", "-p", "no:random-order"])
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
-        self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})
+        self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",
+                     ".github/workflows/mech-review.yml": CALLER % ""})
 
         def run(argv, cwd):
             if "--version" in argv:
                 return 0, "mutmut, version 3.8.1\n"
             return (1, "E   assert 1 == 2\n1 failed in 0.01s\n") if cwd.endswith("/mutants") else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
-        [e] = [e for e in env["entries"] if e["check"] == "doctor" and "sandbox" in e["problem"]]
-        self.assertIn("no missing path found in the output of `python3 -m pytest -p no:randomly -p no:random-order` "
-                      "run in mutants/", e["problem"])
+        [e] = env["entries"]
+        self.assertEqual(e["problem"], "R3's mutmut sandbox fails where the plain run passes (no missing path found in "
+                                       "the output of `python3 -m pytest -p no:randomly -p no:random-order` run in "
+                                       "mutants/)")
 
     def test_each_missing_path_is_named_once_relative_to_the_sandbox_or_as_printed_when_outside_the_worktree(self):
-        self.commit({"app/pyproject.toml": "[project]\n", "app/calc/core.py": "X = 1\n", "app/tests/test_a.py": ""})
+        self.commit({"app/pyproject.toml": "[project]\n", "app/calc/core.py": "X = 1\n", "app/tests/test_a.py": "",
+                     ".github/workflows/mech-review.yml": CALLER % "      project-dir: app\n      test-paths: app/tests/**\n"})
 
         def run(argv, cwd):
             if "--version" in argv:
@@ -193,7 +196,7 @@ class SandboxTrial(unittest.TestCase):
                        f"E   FileNotFoundError: [Errno 2] No such file or directory: '{cwd}/../docs/guide.md'\n"
                        "1 failed in 0.01s\n")
         env = self.doctor(runner=run, project_dir="app")
-        [e] = [e for e in env["entries"] if e["check"] == "doctor" and "sandbox" in e["problem"]]
+        [e] = env["entries"]
         self.assertEqual(e["problem"], "R3's mutmut sandbox fails where the plain run passes (missing there: "
                                        "`scripts/demo.py`, `config/app.yaml`, `/nonexistent/it's.md`, `../docs/guide.md`)")
         self.assertIn("R3 copies into app/mutants/ only the project dir's tracked top-level entries", e["hint"])
@@ -217,29 +220,30 @@ class SandboxTrial(unittest.TestCase):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": ""})
 
         def run(argv, cwd):
-            self.calls.append(cwd)
+            self.calls.append(argv)
             return (0, "mutmut, version 3.8.1\n") if "--version" in argv else (1, "1 failed in 0.01s\n")
         env = self.doctor(runner=run)
         self.assertEqual(env["trial"]["sandbox"], "skipped")
-        self.assertEqual([c for c in self.calls if c.endswith("/mutants")], [])
+        self.assertEqual(self.calls, [["python3", "-m", "pytest"], ["mutmut", "--version"]])
 
     def test_the_sandbox_holds_the_sources_also_copy_and_mutmut_defaults_merged_over_a_tracked_mutants_dir(self):
         self.commit({"pyproject.toml": "[project]\n", "setup.cfg": "", "uv.lock": "", "test_root.py": "",
                      "tests/test_a.py": "", "test/test_b.py": "", "src/calc/core.py": "X = 1\n", "conftest.py": "",
                      "README.md": "", "docs/guide.md": "# guide\n", "mutants/docs/stale.md": ""})
-        write(self.repo, {"notes.txt": "untracked\n"})
         seen = {}
 
         def run(argv, cwd):
             if cwd.endswith("/mutants"):
                 seen["top"] = sorted(os.listdir(cwd))
+                seen["docs"] = sorted(os.listdir(os.path.join(cwd, "docs")))
                 with open(os.path.join(cwd, "docs", "guide.md")) as f:
                     seen["guide"] = f.read()
             return (0, "mutmut, version 3.8.1\n") if "--version" in argv else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
         self.assertEqual(env["trial"]["sandbox"], "pass")
         self.assertEqual(seen, {"top": ["README.md", "conftest.py", "docs", "pyproject.toml", "setup.cfg", "src", "test",
-                                        "test_root.py", "tests", "uv.lock"], "guide": "# guide\n"})
+                                        "test_root.py", "tests", "uv.lock"],
+                                "docs": ["guide.md", "stale.md"], "guide": "# guide\n"})
 
     def test_doctor_leaves_the_checkout_as_it_was_and_no_worktree(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "docs/guide.md": "# guide\n",
@@ -252,11 +256,11 @@ class SandboxTrial(unittest.TestCase):
         self.commit({"Cargo.toml": "[package]\n", "src/lib.rs": ""})
 
         def run(argv, cwd):
-            self.calls.append(cwd)
+            self.calls.append(argv)
             return 0, "test result: ok. 1 passed; 0 failed; 0 ignored\n"
         env = doctor.run(self.repo, stack="rust", runner=run)
         self.assertEqual(env["trial"], {"tests": "pass", "command": "cargo test", "mutation_tool": "present"})
-        self.assertEqual([c for c in self.calls if c.endswith("/mutants")], [])
+        self.assertEqual(self.calls, [["cargo", "test"], ["cargo", "mutants", "--version"]])
 
 
 if __name__ == "__main__":
