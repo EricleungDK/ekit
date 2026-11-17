@@ -1491,18 +1491,21 @@ out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 1 "NUL byte in source: bare allow still caught"
 
 # item 9: non-UTF-8 file name is handled, not 'path does not exist'
+# The name goes into the index, not the worktree: APFS (macOS) refuses non-UTF-8 file names.
 R=$(mkrepo r6name)
 F=$(printf 'src/bad\377.rs')
-put "$R" "$F" <<'EOF2'
+stage_blob() { git -C "$1" update-index --add --cacheinfo "100644,$(git -C "$1" hash-object -w --stdin),$2"; }
+commit_index() { git -C "$1" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm "$2"; git -C "$1" rev-parse HEAD; }
+stage_blob "$R" "$F" <<'EOF2'
 pub fn f() {}
 EOF2
-B=$(commit "$R" base)
-put "$R" "$F" <<'EOF2'
+B=$(commit_index "$R" base)
+stage_blob "$R" "$F" <<'EOF2'
 pub fn f() {}
 #[allow(dead_code)]
 fn g() {}
 EOF2
-H=$(commit "$R" bytes-name)
+H=$(commit_index "$R" bytes-name)
 out=$(mr "$R" "$B" "$H" 2>&1); rc=$?
 eq "$rc" 1 "non-utf8 file name: suppression caught (exit 1, not 2)"
 eq "$(jq -r '.entries[0].check' <<<"$out" 2>/dev/null)" R2 "non-utf8 file name: R2 entry"
