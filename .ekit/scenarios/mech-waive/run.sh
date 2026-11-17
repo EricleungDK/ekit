@@ -3,7 +3,7 @@ source "$EKIT_REPO/.ekit/scenarios/lib.sh"
 MR="$EKIT_REPO/scripts/mech-review.py"
 MC="$EKIT_REPO/scripts/mech-comment.py"
 RR="$EKIT_REPO/scripts/mech-rerun.py"
-FAKE="$EKIT_REPO/.ekit/scenarios/mech-waive/fixtures/fake_github.py"
+FAKE="$EKIT_REPO/tests/fixtures/mech-waive/fake_github.py"
 
 # a PR that deletes a test: one R2 fail entry
 R="$PWD/repo"; mkdir -p "$R/tests"; git -C "$R" init -q -b main

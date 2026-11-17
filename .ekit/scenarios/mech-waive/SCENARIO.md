@@ -4,7 +4,7 @@
 - covers: ready-made `/mech-waive <id> <why this is OK>` line in the sticky comment; placeholder reason ignored and named; edited comment ignored and named; outsider cannot waive; a real waiver turns the check green and shows who and why; `mech-rerun.py` re-runs the finished `mech-review report` job (not another job) and leaves a running run alone
 - steps:
   1. Repo whose head deletes a test; `mech-review.py r2` gives one R2 fail entry.
-  2. Fake GitHub API (fixtures/fake_github.py): the PR head, its comments, one finished run with a guard and a report job.
+  2. Fake GitHub API (tests/fixtures/mech-waive/fake_github.py): the PR head, its comments, one finished run with a guard and a report job.
   3. `mech-comment.py --pr 1 --head <sha> --envelope r2=...` → exit 1; the sticky comment has the line `/mech-waive <id> <why this is OK>`.
   4. Owner posts that line unchanged → exit 1, "Waiver ignored: <id> by `owner`".
   5. Owner's real waiver in an edited comment → exit 1, "edited after posting". An outsider's waiver → exit 1, nothing waived.
