@@ -104,6 +104,49 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(got["R2-deadbeef"]["reason"][:5], "a b x")
 
 
+EDITED = {"created_at": "2026-11-01T10:00:00Z", "updated_at": "2026-11-01T10:05:00Z"}
+
+
+class TestRejected(unittest.TestCase):
+    def test_an_edited_comment_is_reported_with_who_and_where(self):
+        got = waiver.rejected([dict(note("/mech-waive R2-deadbeef moved"), **EDITED)])
+        self.assertEqual(got, [{"id": "R2-deadbeef", "by": "owner", "url": "https://github.test/c/1",
+                                "why": "the comment was edited after posting; post a new comment"}])
+
+    def test_a_placeholder_reason_is_reported(self):
+        got = waiver.rejected([note("/mech-waive R2-deadbeef <why this is OK>"), note("/mech-waive R3-0badc0de <reason>")])
+        self.assertEqual(got, [
+            {"id": "R2-deadbeef", "by": "owner", "url": "https://github.test/c/1",
+             "why": "the reason is still the placeholder; post a new comment with the reason"},
+            {"id": "R3-0badc0de", "by": "owner", "url": "https://github.test/c/1",
+             "why": "the reason is still the placeholder; post a new comment with the reason"}])
+
+    def test_an_edited_comment_with_a_placeholder_is_reported_as_edited(self):
+        got = waiver.rejected([dict(note("/mech-waive R2-deadbeef <why this is OK>"), **EDITED)])
+        self.assertEqual([r["why"] for r in got], ["the comment was edited after posting; post a new comment"])
+
+    def test_waivers_that_count_or_never_could_are_not_reported(self):
+        self.assertEqual(waiver.rejected([
+            note("/mech-waive R2-deadbeef moved"),  # a waiver
+            note("/mech-waive R2-11111111"),  # no reason at all
+            note("please do not /mech-waive R2-22222222 <why this is OK>"),  # not a command
+            dict(note("/mech-waive R2-33333333 <why this is OK>", assoc="CONTRIBUTOR"), **EDITED),  # no write access
+            dict(note("/mech-waive R2-44444444 <why this is OK>", kind="Bot", assoc="COLLABORATOR"), **EDITED),
+            dict(note("edited, no command"), **EDITED),
+            {"user": None, "author_association": "OWNER", "body": None}]), [])
+
+    def test_the_same_id_rejected_twice_is_reported_once_with_the_later_comment(self):
+        got = waiver.rejected([note("/mech-waive R2-deadbeef <why this is OK>", login="a"),
+                               dict(note("/mech-waive R2-deadbeef moved", login="b", url="u2"), **EDITED)])
+        self.assertEqual(got, [{"id": "R2-deadbeef", "by": "b", "url": "u2",
+                                "why": "the comment was edited after posting; post a new comment"}])
+
+    def test_missing_login_and_url_are_empty_strings(self):
+        got = waiver.rejected([{"user": {}, "author_association": "OWNER", "body": "/mech-waive R2-deadbeef <x>"}])
+        self.assertEqual(got, [{"id": "R2-deadbeef", "by": "", "url": "",
+                                "why": "the reason is still the placeholder; post a new comment with the reason"}])
+
+
 class TestApply(unittest.TestCase):
     W = {"R2-deadbeef": {"by": "owner", "reason": "moved", "url": "u"}}
 
