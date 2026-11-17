@@ -211,7 +211,7 @@ def _copytree_stops(top, crate, root, caller):
             for name in names:
                 visit(os.path.join(path, name), seen | {real})
 
-    root, caller = os.path.realpath(root), os.path.realpath(caller)  # as real is (macOS: /var is /private/var)
+    root = os.path.realpath(root)  # as real is (macOS: /var is /private/var); git gives caller resolved already
     if os.path.exists(top):
         visit(top, {os.path.realpath(crate)})
     return bad

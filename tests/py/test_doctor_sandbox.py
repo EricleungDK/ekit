@@ -390,6 +390,15 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/x`")
 
+    def test_a_temp_dir_inside_the_callers_checkout_does_not_flag_the_sandbox_itself(self):
+        # TMPDIR inside the checkout puts doctor's worktree there: its own files are not links into the checkout
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".gitignore": ".scratch/\n", ".github/workflows/mech-review.yml": CALLER % ""})
+        os.makedirs(os.path.join(self.repo, ".scratch"))
+        with unittest.mock.patch("tempfile.tempdir", os.path.join(self.repo, ".scratch")):
+            env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"a.txt": ""})
