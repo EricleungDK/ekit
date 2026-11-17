@@ -243,7 +243,8 @@ def _import_path(box):
     """PYTHONPATH for the sandbox run, as mutmut's setup_source_paths sets sys.path before it runs pytest in-process:
     mutants/source, mutants/src and mutants/ first (one that does not exist is no harm), so the tests import the copy. They go ahead of
     an inherited PYTHONPATH and of an editable install's .pth, which would import the caller's checkout instead. The
-    runner seam takes no env: the run inherits this process's, restored after."""
+    runner seam takes no env: the run inherits this process's, restored after. Known difference: PYTHONPATH also reaches
+    the tests' own subprocesses, which mutmut's in-process sys.path change does not."""
     old = os.environ.get("PYTHONPATH")
     first = [os.path.join(box, "source"), os.path.join(box, "src"), box]
     os.environ["PYTHONPATH"] = os.pathsep.join(first + ([old] if old else []))
