@@ -4,6 +4,7 @@ R3 copies into `<project dir>/mutants/` only mutmut 3.8.1's defaults, the source
 of the project dir (also_copy). A suite that reads a file outside those passes a plain run and fails there, so doctor
 runs it once in the same sandbox and names the missing paths instead of reporting `ok`."""
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -350,6 +351,25 @@ class SandboxTrial(unittest.TestCase):
                                        "`mutants/.github`")
         self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: Not a directory; fix that in the tree, "
                                     "then rerun doctor")
+
+    def test_copystat_failures_on_a_dir_and_its_subdir_are_an_entry_not_a_crash(self):
+        # copytree reports the subdir by its DirEntry and the top dir by a str (as for a SIP-restricted /usr/share/vim)
+        real_copystat = shutil.copystat
+
+        def copystat(src, dst, **kw):
+            if os.fspath(dst).endswith((os.sep + os.path.join("mutants", "tests"),
+                                        os.sep + os.path.join("mutants", "tests", "sub"))):
+                raise PermissionError(1, "Operation not permitted")
+            return real_copystat(src, dst, **kw)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     "tests/sub/x.txt": "", ".github/workflows/mech-review.yml": CALLER % ""})
+        with unittest.mock.patch("shutil.copystat", copystat):
+            env = self.doctor()
+        [e] = env["entries"]
+        self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
+                                       "`tests`, `tests/sub`")
+        self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: Operation not permitted; fix that in the "
+                                    "tree, then rerun doctor")
 
     def test_exactly_ten_links_are_all_named_with_no_more(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,

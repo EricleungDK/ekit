@@ -271,7 +271,9 @@ def _copy_or_fail(copy, crate, name, box):
 def _copy_error(e, crate, name):
     """CopyError naming the paths the error names (shutil.Error's (src, dst, why) rows, or its filename), relative to
     the project dir, else the entry being copied (a copy onto itself gives shutil.Error a plain string)."""
-    rows = sorted(r for r in e.args[0] if isinstance(r, tuple) and len(r) == 3) \
+    # a row's src or dst can be a DirEntry (copytree recursing with one): made a str before any sort
+    rows = sorted((os.fspath(a), os.fspath(b), why) for a, b, why in
+                  (r for r in e.args[0] if isinstance(r, tuple) and len(r) == 3)) \
         if isinstance(e, shutil.Error) and isinstance(e.args[0], list) else []
     if rows:
         why = rows[0][2]  # str(OSError) of the first row: its strerror, as for a plain OSError
