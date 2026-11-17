@@ -4,6 +4,7 @@ R3 copies into `<project dir>/mutants/` only mutmut 3.8.1's defaults, the source
 of the project dir (also_copy). A suite that reads a file outside those passes a plain run and fails there, so doctor
 runs it once in the same sandbox and names the missing paths instead of reporting `ok`."""
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -105,6 +106,7 @@ class SandboxTrial(unittest.TestCase):
     def commit(self, files, links=()):
         write(self.repo, files)
         for path, target in links:
+            os.makedirs(os.path.dirname(os.path.join(self.repo, path)), exist_ok=True)
             os.symlink(target, os.path.join(self.repo, path))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "head")
@@ -236,6 +238,83 @@ class SandboxTrial(unittest.TestCase):
                      ".github/workflows/mech-review.yml": CALLER % "", "tests/test_mk.py": MKDIR})
         env = self.doctor()
         self.assertEqual((env["trial"]["tests"], env["trial"]["sandbox"], env["entries"]), ("pass", "pass", []))
+
+    def test_a_link_to_a_dir_above_it_or_to_its_own_dir_under_tests_is_an_entry_found_before_any_copy(self):
+        # mutmut's copytree of tests/ follows tests/up -> .. without end; doctor must not start that copy
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/up", ".."), ("tests/self", ".")])
+        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
+        signal.alarm(30)
+        try:
+            env = self.doctor()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/self`, `tests/up`")
+        self.assertEqual([argv for argv, _ in self.calls], [["python3", "-m", "pytest"], ["mutmut", "--version"]])
+
+    def test_a_chain_of_dir_links_that_comes_back_round_is_an_entry_found_before_any_copy(self):
+        # tests/a -> shared, shared/b -> other, other/c -> shared: copytree goes round shared/b/c/b/c/... for ever
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     "shared/x.txt": "", "other/y.txt": "", ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[("tests/a", "../shared"), ("shared/b", "../other"), ("other/c", "../shared")])
+        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
+        signal.alarm(30)
+        try:
+            env = self.doctor()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/a/b/c`")
+
+    def test_links_under_tests_to_tracked_files_and_dirs_inside_the_checkout_are_copied(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "docs/guide.md": "# guide\n",
+                     ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_a.py": "import pathlib\nimport unittest\n\nHERE = pathlib.Path(__file__).parent\n\n\n"
+                     "class T(unittest.TestCase):\n    def test_links(self):\n"
+                     "        self.assertEqual((HERE / 'guide.md').read_text(), '# guide\\n')\n"
+                     "        self.assertEqual((HERE / 'docs' / 'guide.md').read_text(), '# guide\\n')\n"},
+                    links=[("tests/guide.md", "../docs/guide.md"), ("tests/docs", "../docs")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
+
+    def test_a_link_under_tests_leaving_the_checkout_is_an_entry(self):
+        outside = os.path.join(os.path.dirname(self.repo), "outside")
+        write(outside, {"big.txt": ""})
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/ext", outside)])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests/ext`")
+
+    def test_exactly_ten_links_are_all_named_with_no_more(self):
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[(f"tests/l{i}", f"../build/l{i}") for i in range(10)])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                         "mutants/ fails on `tests/l0`, `tests/l1`, `tests/l2`, `tests/l3`, `tests/l4`, `tests/l5`, "
+                         "`tests/l6`, `tests/l7`, `tests/l8`, `tests/l9`")
+
+    def test_the_links_named_are_sorted_and_capped_whatever_order_the_filesystem_lists_them(self):
+        names = ["l07", "l02", "l11", "l00", "l09", "l04", "l10", "l01", "l08", "l03", "l06", "l05"]
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""},
+                    links=[(f"tests/{n}", f"../build/{n}") for n in names])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                         "mutants/ fails on `tests/l00`, `tests/l01`, `tests/l02`, `tests/l03`, `tests/l04`, "
+                         "`tests/l05`, `tests/l06`, `tests/l07`, `tests/l08`, `tests/l09` and 2 more")
+
+    def test_a_copy_onto_itself_names_the_entry_being_copied(self):
+        # a tracked mutants/tests -> ../tests: copytree copies each file onto itself (shutil.SameFileError)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
+                     ".github/workflows/mech-review.yml": CALLER % ""}, links=[("mutants/tests", "../tests")])
+        env = self.doctor()
+        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       "mutants/ fails on `tests`")
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",

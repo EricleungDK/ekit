@@ -170,9 +170,47 @@ def _copy_source(crate, name, box):
         shutil.copy2(src, dst)
 
 
-def sandbox(repo, head, crate, project_dir):
+class CopyFails(Exception):
+    """mutmut's copy into mutants/ would stop or never end: .paths, relative to the project dir."""
+
+    def __init__(self, paths):
+        super().__init__(paths)
+        self.paths = paths
+
+
+def _inside(path, top):
+    return path == top or path.startswith(top + os.sep)
+
+
+def _copytree_stops(top, root):
+    """the links under top that copytree (links followed, as mutmut copies tests/) stops or loops on: dangling, leaving
+    the checkout at root, or to a dir that holds a dir on the way there. Found by walking, nothing copied."""
+    bad = []
+
+    def walk(d, seen):
+        for e in os.scandir(d):
+            real = os.path.realpath(e.path)
+            if e.is_symlink() and (not os.path.exists(real) or not _inside(real, root)
+                                   or any(_inside(s, real) for s in seen)):
+                bad.append(e.path)
+            elif e.is_dir():
+                walk(e.path, seen | {real})
+
+    root = os.path.realpath(root)  # as real is (macOS: /var is /private/var)
+    if os.path.isdir(top):
+        walk(top, {os.path.realpath(top)})
+    return bad
+
+
+def _dangling_files(top):
+    """the dangling links mutmut's copy of a source dir stops on (it copies each file, dir links not followed)."""
+    return [os.path.join(r, f) for r, _, fs in os.walk(top) for f in fs if not os.path.exists(os.path.join(r, f))]
+
+
+def sandbox(repo, head, crate, project_dir, root):
     """`<crate>/mutants/` filled the way R3's mutmut run fills it, at best: the entries that may be R3's source_paths,
-    then also_copy and mutmut's defaults. Returns its path.
+    then also_copy and mutmut's defaults. Returns its path; raises CopyFails when mutmut's copy would stop or loop, the
+    links checked before anything is copied (root: the checkout).
     With no diff no source is named, so each tracked top-level entry that holds a .py file and is not in also_copy
     (also_copy leaves out an entry holding a link mutmut's copytree cannot copy) is copied the way R3 copies a source:
     the most R3 ever copies of it (as a non-source it is not copied at all)."""
@@ -182,11 +220,22 @@ def sandbox(repo, head, crate, project_dir):
     tracked = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", tree).split("\0")
     skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
     srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
+    bad = [p for n in srcs for p in _dangling_files(os.path.join(crate, n))]
+    bad += [p for n in sorted(mutants.MUTMUT_COPIES) for p in _copytree_stops(os.path.join(crate, n), root)]
+    if bad:
+        raise CopyFails(sorted({os.path.relpath(p, crate) for p in bad}))
     for name in srcs:  # mutmut's root test*.py default among them: tracked .py files left out of also_copy
-        _copy_source(crate, name, box)
+        _copy_or_fail(_copy_source, crate, name, box)
     for name in copied + sorted(mutants.MUTMUT_COPIES):
-        _copy(os.path.join(crate, name), os.path.join(box, name))
+        _copy_or_fail(lambda c, n, b: _copy(os.path.join(c, n), os.path.join(b, n)), crate, name, box)
     return box
+
+
+def _copy_or_fail(copy, crate, name, box):
+    try:
+        copy(crate, name, box)
+    except OSError as e:  # e.g. a copy onto itself (a tracked mutants/ link): the entry is named, not read from e
+        raise CopyFails([name]) from e
 
 
 @contextlib.contextmanager
@@ -250,15 +299,14 @@ def _sandbox_trial(repo, head, project_dir, cmd, adapter, runner):
 def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
     crate = os.path.join(wt, project_dir)
     try:
-        where = sandbox(repo, head, crate, project_dir)
-    except OSError as e:  # mutmut's copy stops on the same entry (shutil.Error: a link that does not resolve)
-        failed = [src for src, _, _ in e.args[0]] if isinstance(e, shutil.Error) else [e.filename or crate]
-        paths = ", ".join(f"`{os.path.relpath(p, crate)}`" for p in failed)
+        where = sandbox(repo, head, crate, project_dir, wt)
+    except CopyFails as e:  # mutmut's copy stops (or never ends) on the same paths
         return "fail", [report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
                                      f"R3's mutmut sandbox cannot be built: mutmut's copy into {_box_dir(project_dir)} "
-                                     f"fails on {paths}",
-                                     "a link there does not resolve in a fresh checkout (its target untracked or outside "
-                                     "the project dir): track the target or drop the link; rerun doctor", NOT_SKIP)]
+                                     f"fails on {_listed(e.paths)}",
+                                     "mutmut's copy follows links: a dangling link, one to a dir above it or one leaving "
+                                     "the checkout under tests/ (or a dangling one in a source dir) stops or loops R3 too; "
+                                     "drop or fix the link (track its target); rerun doctor", NOT_SKIP)]
     cmd = f"{cmd} {MUTMUT_PYTEST}"
     with _import_path(where):
         brc, bout = runner(shlex.split(cmd), where)
@@ -272,6 +320,12 @@ def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
                                      f"the suite ran past doctor's {red.TEST_TIMEOUT} s limit there: rerun doctor; if it "
                                      "repeats, find what in the sandbox makes the suite hang", NOT_SKIP)]
     return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where))]
+
+
+def _listed(paths, cap=10):
+    """`a`, `b` … and N more: sorted, at most cap named."""
+    named = ", ".join(f"`{p}`" for p in paths[:cap])
+    return named + (f" and {len(paths) - cap} more" if len(paths) > cap else "")
 
 
 def _box_dir(project_dir):
