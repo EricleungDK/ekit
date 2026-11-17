@@ -828,17 +828,52 @@ def _glob_escape(path):
 
 # what mutmut 3.8.1 copies into mutants/ on its own (configuration.py), besides source_paths and also_copy
 MUTMUT_COPIES = {"tests", "test", "setup.cfg", "pyproject.toml", "uv.lock", "poetry.lock", "Pipfile.lock", "pdm.lock"}
+LINK_MODE = "120000"  # git's mode of a symlink
 
 
 def also_copy(repo, head, project_dir, sources):
     """the also_copy list for mutmut: the git-tracked top-level entries of the project dir at head, relative to it,
     sorted. Left out: the sources (mutmut copies also_copy with copytree over its mutated copy, on each `mutmut run`),
     mutants/ (it would copy into itself) and what mutmut copies anyway. From git, so nothing untracked (.venv, caches).
-    A name that is not UTF-8 is left out too: the TOML file cannot hold it."""
+    A name that is not UTF-8 is left out too: the TOML file cannot hold it. So is an entry holding a link that does not
+    reach a tracked file (see _link_ok): mutmut's copytree follows links, and stops on a dangling one or loops on one
+    to an ancestor dir, before any test runs."""
     tree = head if project_dir == "." else f"{head}:{project_dir}"
-    names = [n for n in git(repo, "ls-tree", "-z", "--full-tree", "--name-only", tree).split("\0") if n]
+    entries = {}  # every tracked path under the project dir, relative to it -> (mode, object)
+    for rec in git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
+        if rec:
+            meta, path = rec.split("\t", 1)
+            mode, _, obj = meta.split(" ")
+            entries[path] = (mode, obj)
     skip = set(sources) | MUTMUT_COPIES | {"mutants"}
-    return sorted(n for n in names if n not in skip and not fnmatch.fnmatchcase(n, "test*.py") and _utf8(n))
+    names = {p.split("/", 1)[0] for p in entries}
+    names = {n for n in names if n not in skip and not fnmatch.fnmatchcase(n, "test*.py") and _utf8(n)}
+    dirs = {p.rsplit("/", i)[0] for p in entries for i in range(1, p.count("/") + 1)}
+    for path, (mode, obj) in entries.items():
+        top = path.split("/", 1)[0]
+        if mode == LINK_MODE and top in names and not _link_ok(path, git(repo, "cat-file", "blob", obj), entries, dirs):
+            names.discard(top)
+    return sorted(names)
+
+
+def _link_ok(path, target, entries, dirs):
+    """the link at path (relative to the project dir) reaches a tracked regular file inside it, walking only through
+    tracked dirs: no absolute target, no step above the project dir, no other link on the way (a dir link included,
+    which is never in dirs), no trailing slash (that asks for a dir)."""
+    if target.startswith("/") or target.endswith("/"):
+        return False
+    parts = path.split("/")[:-1]
+    steps = [s for s in target.split("/") if s not in ("", ".")]
+    for i, step in enumerate(steps):
+        if step == "..":
+            if not parts:
+                return False
+            parts.pop()
+        else:
+            parts.append(step)
+            if i < len(steps) - 1 and "/".join(parts) not in dirs:
+                return False
+    return entries.get("/".join(parts), ("",))[0] in ("100644", "100755")
 
 
 def _utf8(name):

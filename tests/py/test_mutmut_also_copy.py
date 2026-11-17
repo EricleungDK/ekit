@@ -96,6 +96,59 @@ class AlsoCopy(unittest.TestCase):
         self.assertEqual(mutants.also_copy(self.repo, head, "pkg", ["src"]), ["NOTES.md", "data"])
 
 
+class Symlinks(unittest.TestCase):
+    """mutmut copies a dir with copytree, following links: a dangling link inside raises, a link to an ancestor dir
+    recurses until ELOOP. An entry is kept only when each link in it points, inside the project dir and through no
+    other link, at a tracked regular file. The links go in through the index (a tree entry is all also_copy reads)."""
+
+    def repo_with_links(self, files, links):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = tmp.name
+        git(repo, "init", "-q")
+        write(repo, files)
+        git(repo, "add", "-A")
+        git(repo, "update-index", "--chmod=+x", "--", *[p for p in files if p.endswith(".sh")])
+        for path, target in links.items():
+            blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=target, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},{path}")
+        git(repo, "commit", "-q", "-m", "head")
+        return repo, git(repo, "rev-parse", "HEAD").strip()
+
+    FILES = {"pyproject.toml": "", "src/a.py": "", "README.md": "", "docs/guide.md": "", "good/a.txt": "",
+             "deep/sub/f.txt": "", "todir/a.txt": "", "abs/a.txt": "", "slash/a.txt": "", "chain/a.txt": "",
+             "viafile/a.txt": "", "vialink/a.txt": "", "loop/a.txt": "", "tool.sh": ""}
+    LINKS = {
+        "docs/latest": "../build/html",              # dangling: build/ is not tracked
+        "loop/self": "..",                           # an ancestor dir
+        "good/readme": "../README.md",               # a tracked file: kept
+        "good/readme2": "..//README.md",             # the same, with an empty step
+        "good/deepfile": "../deep/sub/f.txt",        # a tracked file through tracked dirs: kept
+        "exec/run": "../tool.sh",                    # a tracked executable file: kept
+        "deep/f": "./sub/f.txt",                     # a tracked file below: kept
+        "todir/d": "../deep",                        # a dir
+        "abs/root": "/a.txt",                        # absolute (abs/a.txt, the same name relative, is tracked)
+        "slash/readme": "../README.md/",             # a trailing slash wants a dir
+        "chain/readme": "../good/readme",            # a link to a link
+        "viafile/readme": "../README.md/../README.md",  # through a file
+        "vialink/f": "../todir/d/sub/f.txt",          # through a link to a dir
+        "toplink": "README.md",                      # top-level link to a tracked file: kept
+        "topdangling": "nothing",                    # top-level dangling link
+        "topdir": "docs",                            # top-level link to a dir
+    }
+
+    def test_only_entries_whose_links_all_reach_a_tracked_file_are_kept(self):
+        repo, head = self.repo_with_links(self.FILES, self.LINKS)
+        self.assertEqual(mutants.also_copy(repo, head, ".", ["src"]), ["README.md", "deep", "exec", "good", "tool.sh", "toplink"])
+
+    def test_a_link_that_leaves_the_project_dir_drops_its_entry(self):
+        repo, head = self.repo_with_links({"README.md": "", "pkg/pyproject.toml": "", "pkg/src/a.py": "",
+                                           "pkg/notes/a.txt": "", "pkg/up/a.txt": "", "pkg/NOTES.md": ""},
+                                          {"pkg/up/readme": "../../README.md", "pkg/notes/n": "../NOTES.md"})
+        self.assertEqual(mutants.also_copy(repo, head, "pkg", ["src"]), ["NOTES.md", "notes"])
+
+
 class Table(unittest.TestCase):
     def test_also_copy_goes_into_the_table_beside_source_paths_and_only_mutate(self):
         text = mutants.add_mutmut_table("[project]\nname = 'x'\n", ["src"], ["src/calc/core.py"], ["docs", "scripts"])
