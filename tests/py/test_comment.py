@@ -139,7 +139,7 @@ class TestBody(unittest.TestCase):
         body = comment.render(envelope([entry()]))
         self.assertTrue(body.startswith(comment.MARKER + "\n## mech-review\n"))
         self.assertIn("| removed test fn b | deleting tests |\n\n" + comment.WAIVE_HELP + "\n\n"
-                      "R2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n"
+                      "R2-deadbeef · `removed test fn b` (`tests/a.rs:7`)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n"
                       "\n### JSON\n", body)
 
     def test_the_help_names_the_command_and_the_job_to_rerun(self):
@@ -152,15 +152,15 @@ class TestBody(unittest.TestCase):
 class TestReadyMadeWaivers(unittest.TestCase):
     def test_one_fail_entry_gets_one_line_to_copy_and_no_all_at_once_block(self):
         body = comment.render(envelope([entry()]))
-        self.assertIn("\nR2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n",
+        self.assertIn("\nR2-deadbeef · `removed test fn b` (`tests/a.rs:7`)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n",
                       body)
         self.assertNotIn("All fail entries at once", body)
 
     def test_two_fail_entries_get_a_line_each_and_one_block_for_both(self):
         body = comment.render(envelope([entry(), entry(eid="R4-11111111", check="R4")]))
         self.assertIn(comment.WAIVE_HELP + "\n\n"
-                      "R2-deadbeef · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n\n"
-                      "R4-11111111 · removed test fn b (tests/a.rs:7)\n```\n/mech-waive R4-11111111 <why this is OK>\n```\n\n"
+                      "R2-deadbeef · `removed test fn b` (`tests/a.rs:7`)\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n\n"
+                      "R4-11111111 · `removed test fn b` (`tests/a.rs:7`)\n```\n/mech-waive R4-11111111 <why this is OK>\n```\n\n"
                       "All fail entries at once\n```\n/mech-waive R2-deadbeef <why this is OK>\n"
                       "/mech-waive R4-11111111 <why this is OK>\n```\n\n### JSON\n", body)
 
@@ -177,10 +177,21 @@ class TestReadyMadeWaivers(unittest.TestCase):
         e = dict(entry(), **{"class": "needs-human"})
         self.assertIn("\n```\n/mech-waive R2-deadbeef <why this is OK>\n```\n", comment.render(envelope([e])))
 
-    def test_the_label_cells_are_escaped_and_cut_like_the_table(self):
+    def test_the_label_text_is_cut_like_the_table_and_kept_on_one_line(self):
         e = dict(entry(), problem="a | b\nc", file="x" * 250)
         body = comment.render(envelope([e]))
-        self.assertIn("\nR2-deadbeef · a \\| b c (" + "x" * 199 + "…:7)\n```\n", body)
+        self.assertIn("\nR2-deadbeef · `a | b c` (`" + "x" * 199 + "…:7`)\n```\n", body)
+
+    def test_pr_text_in_the_label_is_inert_code_no_ping_no_html(self):
+        e = dict(entry(), problem="see `x` and @y", file="tests/@x<details>.py")
+        body = comment.render(envelope([e]))
+        self.assertIn("\nR2-deadbeef · ``see `x` and @y`` (`tests/@x<details>.py:7`)\n```\n", body)
+
+    def test_a_label_text_that_starts_or_ends_with_a_backtick_is_padded(self):
+        self.assertIn("\nR2-deadbeef · `` `x` `` (`` `a.py:7 ``)\n```\n",
+                      comment.render(envelope([dict(entry(), problem="`x`", file="`a.py")])))
+        self.assertIn("\nR2-deadbeef · `` x` `` (``a.py`b:7``)\n```\n",  # ends with one: padded; one inside: no pad
+                      comment.render(envelope([dict(entry(), problem="x`", file="a.py`b")])))
 
     def test_the_placeholder_is_the_one_waiver_rejects(self):
         self.assertIn("/mech-waive R2-deadbeef " + waiver.PLACEHOLDER + "\n", comment.render(envelope([entry()])))

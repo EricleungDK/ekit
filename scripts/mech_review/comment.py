@@ -12,11 +12,24 @@ OVERSIZE_ROWS = 50
 CELL_MAX = 200
 
 
-def _cell(text):
+def _line(text):
+    """One line, cut to CELL_MAX like a table cell."""
     s = str(text).replace("\r", " ").replace("\n", " ")
     if len(s) > CELL_MAX:
         s = s[:CELL_MAX - 1] + "…"
-    return s.replace("|", "\\|")
+    return s
+
+
+def _cell(text):
+    return _line(text).replace("|", "\\|")
+
+
+def _span(text):
+    """A code span for text from the PR outside the table: no markdown, HTML or @-ping. Its delimiter is longer than
+    any backtick run inside; text that starts or ends with a backtick is padded with a space."""
+    d = "`" * (max((len(m) for m in re.findall(r"`+", text)), default=0) + 1)
+    pad = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{d}{pad}{text}{pad}{d}"
 
 
 def _fence(text):
@@ -144,7 +157,7 @@ def _ready_made(waivable):
     """Per waivable entry a label and a code block holding the line to post; with 2 or more, one block for all."""
     lines = []
     for e in waivable:
-        lines += ["", f"{_cell(e['id'])} · {_cell(e['problem'])} ({_cell(e['file'])}:{e['line']})",
+        lines += ["", f"{_cell(e['id'])} · {_span(_line(e['problem']))} ({_span(_line(e['file']) + ':' + str(e['line']))})",
                   *_code(f"/mech-waive {e['id']} {PLACEHOLDER}")]
     if len(waivable) >= 2:
         lines += ["", "All fail entries at once", *_code("\n".join(f"/mech-waive {e['id']} {PLACEHOLDER}" for e in waivable))]
