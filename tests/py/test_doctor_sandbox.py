@@ -39,6 +39,9 @@ LINK_HINT = ("mutmut's copy follows links: a dangling link, one to a dir above i
              "absolute path under tests/ (or a dangling one in a source dir) stops or loops R3 too; drop or fix the "
              "link (track its target, make it relative); rerun doctor")
 
+HELD_HINT = ("a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps its whole top-level "
+             "entry out of R3's copy: track its target or remove the link; rerun doctor")
+
 
 def entry(key_id, problem, hint):
     return {"id": key_id, "check": "doctor", "class": "env", "severity": "fail", "file": "", "line": 0,
@@ -613,6 +616,45 @@ class SandboxTrial(unittest.TestCase):
                                     "mutmut's defaults; keep the files the tests read inside the project dir, or make "
                                     "the tests not depend on files above it (a project-dir in a subfolder whose tests "
                                     "read ../ is a known limit); rerun doctor")
+
+    def test_an_entry_kept_out_is_named_by_its_top_level_name_whatever_the_depth(self):
+        # the missing file and the link both sit two levels down in docs/
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "docs/guide/usage.md": "# guide\n",
+                     ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_docs.py": READS.replace('"guide.md"', '"guide" / "usage.md"') % 1},
+                    links=[("docs/api/html", "../../_build/html")])
+        env = self.doctor()
+        self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox fails where the plain run "
+                                                "passes (missing there: `docs/guide/usage.md`); `docs/` is left out of "
+                                                "R3's copy because of the link `docs/api/html`", HELD_HINT)])
+
+    def test_only_links_that_miss_a_tracked_file_keep_an_entry_out(self):
+        # notes/latest.md reaches notes/v1/latest.md through tracked dirs: notes/ is copied. odd/x.md steps through
+        # a file (ENOTDIR) and chain/y.md reaches a link, not a file: those two are kept out, as also_copy does
+        # site/ is kept out for site/html alone: its own site/latest.md -> v1/latest.md is fine and not named. A tracked
+        # name with a newline in it reads like any other (git ls-tree -z keeps it raw)
+        self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "site/index.md": "# guide\n",
+                     "notes/v1/latest.md": "", "odd/keep.md": "", "chain/keep.md": "", "site/v1/latest.md": "",
+                     "notes/two\nlines.md": "", ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_docs.py": READS.replace('"docs" / "guide.md"', '"site" / "index.md"') % 1},
+                    links=[("site/html", "../_build/html"), ("site/latest.md", "v1/latest.md"),
+                           ("notes/latest.md", "v1/latest.md"),
+                           ("odd/x.md", "../notes/v1/latest.md/../latest.md"), ("chain/y.md", "../notes/latest.md")])
+        env = self.doctor()
+        self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox fails where the plain run "
+                                                "passes (missing there: `site/index.md`); `chain/` is left out of R3's "
+                                                "copy because of the link `chain/y.md`; `odd/` is left out of R3's copy "
+                                                "because of the link `odd/x.md`; `site/` is left out of R3's copy "
+                                                "because of the link `site/html`", HELD_HINT)])
+
+    def test_a_possible_source_is_copied_whole_not_only_the_dirs_holding_its_py_files(self):
+        # pkg/ (left out of also_copy for its dir link) holds .py files only in pkg/sub/; pkg/conf.txt must come too
+        self.commit({"pyproject.toml": "[project]\n", "pkg/sub/mod.py": "", "pkg/conf.txt": "# guide\n",
+                     "shared/x.txt": "", ".github/workflows/mech-review.yml": CALLER % "",
+                     "tests/test_docs.py": READS.replace('"docs" / "guide.md"', '"pkg" / "conf.txt"') % 1},
+                    links=[("pkg/link", "../shared")])
+        env = self.doctor()
+        self.assertEqual((env["trial"]["sandbox"], env["entries"]), ("pass", []))
 
     def test_a_sandbox_failure_with_no_path_in_the_output_says_so_and_names_the_command(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/core.py": "X = 1\n", "tests/test_a.py": "",

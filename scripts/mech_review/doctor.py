@@ -39,6 +39,7 @@ NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
 DEFAULT_TEST_PATHS = "tests/**"
 MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
+LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
 
 
@@ -237,12 +238,11 @@ def sandbox(repo, head, crate, project_dir, root):
     tree = head if project_dir == "." else f"{head}:{project_dir}"
     tracked = {}  # path under the project dir -> (mode, object), as also_copy reads it
     for rec in gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
-        if rec:
-            meta, path = rec.split("\t", 1)
-            mode, _, obj = meta.split(" ")
+        if rec:  # "<mode> <type> <object>\t<path>": the path is everything after the first tab
+            mode, obj, path = LS_TREE.fullmatch(rec).groups()
             tracked[path] = (mode, obj)
     skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
-    srcs = sorted({p.split("/", 1)[0] for p in tracked if p.endswith(".py")} - skip)
+    srcs = sorted({p.partition("/")[0] for p in tracked if p.endswith(".py")} - skip)
     held = _held_out(repo, tracked, skip | set(srcs))
     bad = [p for n in srcs for p in _dangling_files(os.path.join(crate, n))]
     checkouts = [os.path.realpath(line[len("worktree "):]) for line in
@@ -261,12 +261,17 @@ def sandbox(repo, head, crate, project_dir, root):
 def _held_out(repo, tracked, copied):
     """{top-level entry: sorted links} for each entry R3's copy leaves out because of a link mutants._link_ok rejects
     (dangling, to a dir, or leaving the project dir), of those doctor does not copy either (copied: the names it does)."""
-    dirs = {p.rsplit("/", i)[0] for p in tracked for i in range(1, p.count("/") + 1)}
+    dirs = set()  # every dir above a tracked path
+    for path in tracked:
+        while "/" in path:
+            path = path.rpartition("/")[0]
+            dirs.add(path)
+    files = {p for p, (mode, _) in tracked.items() if mode in mutants.FILE_MODES}
     held = {}
     for path, (mode, obj) in sorted(tracked.items()):
-        top = path.split("/", 1)[0]
+        top = path.partition("/")[0]
         if mode == mutants.LINK_MODE and top not in copied \
-                and not mutants._link_ok(path, gitio.git(repo, "cat-file", "blob", obj), tracked, dirs):
+                and not mutants._link_ok(path, gitio.git(repo, "cat-file", "blob", obj), files, dirs):
             held.setdefault(top, []).append(path)
     return held
 
@@ -441,7 +446,7 @@ def _sandbox_entry(cmd, project_dir, paths, held):
         found = f"no missing path found in the output of `{cmd}` run in {where}"
     kept = "".join(f"; `{top}/` is left out of R3's copy because of the link{'s' if len(links) > 1 else ''} "
                    f"{_listed(links)}" for top, links in sorted(held.items()))
-    if any(p.split("/", 1)[0] in held for p in paths):  # a missing path lies in an entry kept out
+    if any(p.partition("/")[0] in held for p in paths):  # a missing path lies in an entry kept out
         hint = ("a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps its whole top-level "
                 "entry out of R3's copy: track its target or remove the link; rerun doctor")
     else:
