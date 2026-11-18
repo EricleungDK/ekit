@@ -9,3 +9,4 @@
   4. Head 3 is the real `head/src/calc/core.py` fixture (add and is_positive changed). Run `mutants --stack python` with a mutmut stub (MECH_TEST_STUB) that replays `tests/fixtures/mutmut/missed`. Expect exit 1, three R3 entries on the changed lines (src/calc/core.py:2 and :6), no entry for `sub` (unchanged line), summary `fail <head3> (3 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)`.
   5. Run `plan --stack python` on head 3. Expect `{"run":true}`.
 - expected: exit codes and summaries as above; the caller checkout is untouched (HEAD and status unchanged); nothing written into the kit repo.
+- children: real-mutmut

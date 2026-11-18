@@ -1,15 +1,17 @@
 """mech-review doctor (#39): find a repo's setup without hints and report each problem with the exact caller input.
 
 Reads the tree at HEAD (manifests, .github/workflows), then trial-runs the tests and the mutation tool in a throwaway worktree
-through the runner seam (red.default_runner: runner(argv, cwd) -> (rc, output)). Writes nothing to the checkout: CI changes are
+(python: the tests once more inside R3's mutmut sandbox, <project dir>/mutants/) through the runner seam (red.default_runner: runner(argv, cwd) -> (rc, output)). Writes nothing to the checkout: CI changes are
 a human decision, so caller gaps are needs-human.
 """
+import contextlib
 import json
 import os
 import re
 import shlex
+import shutil
 
-from . import gitio, red, report
+from . import gitio, mutants, red, report
 from .globs import any_glob
 from .mutants import DEFAULT_CMD as RUST_MUTANTS
 from .stack import ADAPTERS
@@ -36,6 +38,9 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
 DEFAULT_TEST_PATHS = "tests/**"
+MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
+LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
+MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
 
 
 def candidates(paths):
@@ -141,8 +146,199 @@ def caller_entries(callers, inputs, paths):
             for name, want in inputs.items() if _missing(name, want, have, paths)]
 
 
+def _copy(src, dst):
+    """mutmut 3.8.1's copy of an also_copy entry (and its defaults): a file with copy2, a dir with copytree over what
+    is there (links followed), a missing entry skipped."""
+    if os.path.isfile(src):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+    elif os.path.isdir(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+def _copy_source(crate, name, box):
+    """mutmut 3.8.1's copy of a source path (copy_src_dir): a file with copy2, a dangling link skipped; a dir walked with
+    os.walk, which does not follow a link to a dir, and each file in it (a file link followed) copied with copy2.
+    mutmut keeps a file already in mutants/ (only a tracked mutants/ holds one here): the fresh copy is R3's best case."""
+    top = os.path.join(crate, name)
+    if os.path.isdir(top):
+        files = [os.path.join(root, f) for root, _, fs in os.walk(top) for f in fs]
+    else:
+        files = [top] if os.path.isfile(top) else []
+    for src in files:
+        dst = os.path.join(box, os.path.relpath(src, crate))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+class CopyFails(Exception):
+    """mutmut's copy into mutants/ would stop or never end: .paths, relative to the project dir (read by the handler
+    only: the exception's own args are never shown)."""
+
+    def __init__(self, paths):
+        self.paths = paths
+
+
+def _inside(path, top):
+    return path == top or path.startswith(top + os.sep)
+
+
+OUTSIDE_WALK = 10000  # entries walked outside the checkout per top-level entry: then the rest counts as fine
+
+
+def _copytree_stops(top, crate, root, checkouts):
+    """the links in top (a top-level entry, itself a link or not) that copytree (links followed, as mutmut copies
+    tests/) stops or loops on: dangling, to a dir that holds a dir on the way there (the project dir included), into
+    one of the repo's checkouts (its worktrees: main and linked) by an absolute path, or to a dir that holds one of
+    them. A fresh CI checkout has no such path; here copytree would copy the checkout, the link in it included, over
+    and over. Found by walking, nothing copied; the checkouts are tested before any walk, so the verdict does not
+    hang on the walk's order. A dir outside the checkout at root is walked for loops too, at most OUTSIDE_WALK entries
+    (a big one stays cheap). A missing
+    top-level entry is skipped, as mutmut skips it. The check sees a bare checkout: a link to something CI's
+    setup-command builds reads as dangling here."""
+    bad = []
+    left = [OUTSIDE_WALK]
+
+    def visit(path, seen):
+        real = os.path.realpath(path)
+        if not _inside(real, root):
+            left[0] -= 1
+        into = any((_inside(real, c) and not _inside(real, root)) or _inside(c, real) for c in checkouts)
+        if not os.path.exists(real) or into or any(_inside(s, real) for s in seen):  # a dir never holds one on its way
+            bad.append(path)
+        elif os.path.isdir(path) and left[0] > 0:
+            try:
+                names = os.listdir(path)
+            except OSError:  # unreadable: the copy names it, with its reason
+                return
+            for name in names:
+                visit(os.path.join(path, name), seen | {real})
+
+    root = os.path.realpath(root)  # as real is (macOS: /var is /private/var)
+    if os.path.exists(top):
+        visit(top, {os.path.realpath(crate)})
+    return bad
+
+
+def _dangling_files(top):
+    """the dangling links mutmut's copy of a source dir stops on (it copies each file, dir links not followed)."""
+    return [os.path.join(r, f) for r, _, fs in os.walk(top) for f in fs if not os.path.exists(os.path.join(r, f))]
+
+
+def sandbox(repo, head, crate, project_dir, root):
+    """`<crate>/mutants/` filled the way R3's mutmut run fills it, at best: the entries that may be R3's source_paths,
+    then also_copy and mutmut's defaults. Returns (its path, {top-level entry: [links that keep it out of R3's copy]});
+    raises CopyFails when mutmut's copy would stop or loop, the links checked before anything is copied (root: the
+    checkout). An entry kept out (also_copy's link rule, mutants._link_ok) is a known limit of R3, named not copied.
+    With no diff no source is named, so each tracked top-level entry that holds a .py file and is not in also_copy
+    (also_copy leaves out an entry holding a link mutmut's copytree cannot copy) is copied the way R3 copies a source:
+    the most R3 ever copies of it (as a non-source it is not copied at all)."""
+    box = os.path.join(crate, "mutants")  # made by the first copy: a python project dir always holds a manifest
+    copied = mutants.also_copy(repo, head, project_dir, [])
+    tree = head if project_dir == "." else f"{head}:{project_dir}"
+    tracked = {}  # path under the project dir -> (mode, object), as also_copy reads it
+    for rec in gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", tree).split("\0"):
+        if rec:  # "<mode> <type> <object>\t<path>": the path is everything after the first tab
+            mode, obj, path = LS_TREE.fullmatch(rec).groups()
+            tracked[path] = (mode, obj)
+    skip = set(copied) | mutants.MUTMUT_COPIES | {"mutants"}
+    srcs = sorted({p.partition("/")[0] for p in tracked if p.endswith(".py")} - skip)
+    held = _held_out(repo, tracked, skip | set(srcs))
+    bad = [p for n in srcs for p in _dangling_files(os.path.join(crate, n))]
+    checkouts = [os.path.realpath(line[len("worktree "):]) for line in
+                 gitio.git(repo, "worktree", "list", "--porcelain").splitlines() if line.startswith("worktree ")]
+    bad += [p for n in sorted(mutants.MUTMUT_COPIES)
+            for p in _copytree_stops(os.path.join(crate, n), crate, root, checkouts)]
+    if bad:
+        raise CopyFails(sorted({os.path.relpath(p, crate) for p in bad}))
+    for name in srcs:  # mutmut's root test*.py default among them: tracked .py files left out of also_copy
+        _copy_or_fail(_copy_source, crate, name, box)
+    for name in copied + sorted(mutants.MUTMUT_COPIES):
+        _copy_or_fail(lambda c, n, b: _copy(os.path.join(c, n), os.path.join(b, n)), crate, name, box)
+    return box, held
+
+
+def _held_out(repo, tracked, copied):
+    """{top-level entry: sorted links} for each entry R3's copy leaves out because of a link mutants._link_ok rejects
+    (dangling, to a dir, or leaving the project dir), of those doctor does not copy either (copied: the names it does)."""
+    dirs = set()  # every dir above a tracked path
+    for path in tracked:
+        while "/" in path:
+            path = path.rpartition("/")[0]
+            dirs.add(path)
+    files = {p for p, (mode, _) in tracked.items() if mode in mutants.FILE_MODES}
+    held = {}
+    for path, (mode, obj) in sorted(tracked.items()):
+        top = path.partition("/")[0]
+        if mode == mutants.LINK_MODE and top not in copied \
+                and not mutants._link_ok(path, gitio.git(repo, "cat-file", "blob", obj), files, dirs):
+            held.setdefault(top, []).append(path)
+    return held
+
+
+class CopyError(Exception):
+    """a copy into mutants/ failed for a reason other than the links checked first: .paths, .why (project-relative)."""
+
+    def __init__(self, paths, why):
+        super().__init__(paths, why)
+        self.paths, self.why = paths, why
+
+
+def _copy_or_fail(copy, crate, name, box):
+    try:
+        copy(crate, name, box)
+    except OSError as e:
+        raise _copy_error(e, crate, name) from e
+
+
+def _copy_error(e, crate, name):
+    """CopyError naming the paths the error names (shutil.Error's (src, dst, why) rows, or its filename), relative to
+    the project dir, else the entry being copied (a copy onto itself gives shutil.Error a plain string)."""
+    # a row's src or dst can be a DirEntry (copytree recursing with one): made a str before any sort
+    # copytree's rows are (src, dst, why) tuples; its args[0] is a str, or such a str split into characters, otherwise
+    rows = sorted((os.fspath(a), os.fspath(b), why) for a, b, why in
+                  (r for r in e.args[0] if isinstance(r, tuple))) if isinstance(e, shutil.Error) else []
+    if rows:
+        why = rows[0][2]  # str(OSError) of the first row: its strerror, as for a plain OSError
+        m = re.match(r"\[Errno \d+\] ([^:]+)", why)
+        return CopyError(sorted({_rel(src, crate) for src, _, _ in rows}), m.group(1) if m else _scrub(why, crate))
+    if isinstance(e, shutil.Error):  # its message, or that message split into characters by copytree's errors.extend
+        return CopyError([name], _scrub("".join(map(str, e.args[0])), crate))
+    return CopyError([_rel(e.filename, crate)] if e.filename else [name], e.strerror or _scrub(str(e), crate))
+
+
+def _rel(path, crate):
+    return os.path.relpath(os.fspath(path), crate)
+
+
+def _scrub(text, crate):
+    """text with the checkout's temp prefix taken off its paths (the entry stays the same on every run): the copy
+    names them as it was given them, under crate."""
+    return text.replace(crate + os.sep, "")
+
+
+@contextlib.contextmanager
+def _import_path(box):
+    """PYTHONPATH for the sandbox run, as mutmut's setup_source_paths sets sys.path before it runs pytest in-process:
+    mutants/source, mutants/src and mutants/ first (one that does not exist is no harm), so the tests import the copy. They go ahead of
+    an inherited PYTHONPATH and of an editable install's .pth, which would import the caller's checkout instead. The
+    runner seam takes no env: the run inherits this process's, restored after. Known difference: PYTHONPATH also reaches
+    the tests' own subprocesses, which mutmut's in-process sys.path change does not."""
+    old = os.environ.get("PYTHONPATH")
+    first = [os.path.join(box, "source"), os.path.join(box, "src"), box]
+    os.environ["PYTHONPATH"] = os.pathsep.join(first + ([old] if old else []))
+    try:
+        yield
+    finally:
+        if old is None:
+            del os.environ["PYTHONPATH"]
+        else:
+            os.environ["PYTHONPATH"] = old
+
+
 def trial(repo, head, stack, project_dir, runner):
-    """Run the whole suite and the mutation tool's --version at head. Returns (trial dict, entries)."""
+    """Run the whole suite and the mutation tool's --version at head; for python, when the suite passes, the suite once
+    more inside R3's mutmut sandbox. Returns (trial dict, entries)."""
     adapter = ADAPTERS[stack]()
     try:
         with red.worktree(repo, head) as wt:
@@ -151,6 +347,9 @@ def trial(repo, head, stack, project_dir, runner):
             cmd = adapter.test_cmd_in(crate)
             rc, out = runner(shlex.split(cmd), crate)
             verdict = adapter.outcome(rc, out)
+            box, box_entries = "skipped", []
+            if stack == "python" and verdict == "pass":
+                box, box_entries = _sandbox_trial(repo, head, project_dir, cmd, adapter, runner)
             tool = MUTATION_TOOL[stack]
             tool_rc, _ = runner(shlex.split(tool) + ["--version"], crate)
     except gitio.Die as e:  # read-only .git (sandbox): the static findings still stand
@@ -160,11 +359,101 @@ def trial(repo, head, stack, project_dir, runner):
                                                        NOT_SKIP)]
     state = "absent" if tool_rc is None else "present" if tool_rc == 0 else "broken"  # absent is fine: CI installs it
     result = {"tests": verdict, "command": cmd, "mutation_tool": state}
+    if stack == "python":
+        result["sandbox"] = box
     entries = []
     if state == "broken":
         entries.append(report.entry("doctor", "", 0, "mutation-tool", "env", "fail", f"`{tool} --version` failed ({tool_rc})",
                                     "repair the install; in CI, set setup-command", NOT_SKIP))
-    return result, _test_entries(verdict, cmd, out) + entries
+    return result, _test_entries(verdict, cmd, out) + box_entries + entries
+
+
+def _sandbox_trial(repo, head, project_dir, cmd, adapter, runner):
+    """the suite once inside R3's mutmut sandbox: ("pass" | "fail", entries). Built in a worktree of its own, as R3 runs
+    mutmut in a fresh one: what the plain run left in its checkout (files the tests write) must not reach the copy."""
+    with red.worktree(repo, head) as wt:  # python only: its adapter needs no worktree_setup (that is node_modules)
+        return _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner)
+
+
+def _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner):
+    crate = os.path.join(wt, project_dir)
+    box = _box_dir(project_dir)
+    try:
+        where, held = sandbox(repo, head, crate, project_dir, wt)
+    except CopyFails as e:  # mutmut's copy stops (or never ends) on the same links
+        return "fail", [_copy_entry(box, e.paths, "mutmut's copy follows links: a dangling link, one to a dir above "
+                                    "it or one into the checkout by an absolute path under tests/ (or a dangling one in "
+                                    "a source dir) stops or loops R3 too; drop or fix the link (track its target, make "
+                                    "it relative); rerun doctor")]
+    except CopyError as e:  # the link check before it reads nothing that raises: os.walk and listdir errors are skipped
+        return "fail", [_copy_entry(box, e.paths, f"mutmut's copy into {box} fails on it: {e.why}; fix that in the "
+                                    "tree, then rerun doctor")]
+    cmd = f"{cmd} {MUTMUT_PYTEST}"
+    with _import_path(where):
+        brc, bout = runner(shlex.split(cmd), where)
+    verdict = adapter.outcome(brc, bout)
+    if verdict == "pass":
+        return "pass", []
+    if verdict == "timeout":  # not a copy problem: no output to read paths from
+        return "fail", [report.entry("doctor", "", 0, "sandbox-timeout", "env", "fail",
+                                     f"R3's mutmut sandbox run timed out where the plain run passes (`{cmd}` in "
+                                     f"{_box_dir(project_dir)})",
+                                     f"the suite ran past doctor's {red.TEST_TIMEOUT} s limit there: rerun doctor; if it "
+                                     "repeats, find what in the sandbox makes the suite hang", NOT_SKIP)]
+    return "fail", [_sandbox_entry(cmd, project_dir, missing(bout, wt, where), held)]
+
+
+def _copy_entry(box, paths, hint):
+    return report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
+                        f"R3's mutmut sandbox cannot be built: mutmut's copy into {box} fails on {_listed(paths)}",
+                        hint, NOT_SKIP)
+
+
+def _listed(paths, cap=10):
+    """`a`, `b` … and N more: sorted, at most cap named."""
+    named = ", ".join(f"`{p}`" for p in paths[:cap])
+    return named + (f" and {len(paths) - cap} more" if len(paths) > cap else "")
+
+
+def _box_dir(project_dir):
+    return "mutants/" if project_dir == "." else f"{project_dir}/mutants/"
+
+
+def missing(out, wt, box):
+    """the paths a FileNotFoundError names in the output, first seen first: relative to the sandbox dir when inside the
+    worktree (`../docs/x.md`: above the project dir), as printed otherwise."""
+    root, box = os.path.realpath(wt), os.path.realpath(box)
+    seen = []
+    for m in MISSING.finditer(out):
+        path = m.group(2)
+        if os.path.isabs(path):
+            real = os.path.realpath(path)
+            if real == root or real.startswith(root + os.sep):
+                path = os.path.relpath(real, box)
+        else:
+            path = os.path.normpath(path)
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def _sandbox_entry(cmd, project_dir, paths, held):
+    where = _box_dir(project_dir)
+    if paths:
+        found = "missing there: " + ", ".join(f"`{p}`" for p in paths)
+    else:
+        found = f"no missing path found in the output of `{cmd}` run in {where}"
+    kept = "".join(f"; `{top}/` is left out of R3's copy because of the link{'s' if len(links) > 1 else ''} "
+                   f"{_listed(links)}" for top, links in sorted(held.items()))
+    if any(p.partition("/")[0] in held for p in paths):  # a missing path lies in an entry kept out
+        hint = ("a link mutmut cannot copy (dangling, to a dir, or leaving the project dir) keeps its whole top-level "
+                "entry out of R3's copy: track its target or remove the link; rerun doctor")
+    else:
+        hint = (f"R3 copies into {where} only the project dir's tracked top-level entries and mutmut's defaults; "
+                "keep the files the tests read inside the project dir, or make the tests not depend on files above it "
+                "(a project-dir in a subfolder whose tests read ../ is a known limit); rerun doctor")
+    return report.entry("doctor", "", 0, "sandbox-copy", "env", "fail",
+                        f"R3's mutmut sandbox fails where the plain run passes ({found}){kept}", hint, NOT_SKIP)
 
 
 def _test_entries(verdict, cmd, out):

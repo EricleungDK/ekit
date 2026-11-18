@@ -173,6 +173,22 @@ eq "$(jq -c '.checks.R3.timing | keys' <<<"$out")" '["wall_s"]' "python missed: 
 # the config mutmut reads is written into the worktree: source and the changed files only
 has "$(cat "$MECH_STUB_LOG")" 'only_mutate = ["src/calc/core.py"]' "python config: only_mutate is the changed production file"
 has "$(cat "$MECH_STUB_LOG")" 'source_paths = ["src"]' "python config: source_paths is the top-level dir of the changed files"
+lacks "$(cat "$MECH_STUB_LOG")" 'also_copy' "python config: nothing tracked beyond what mutmut copies itself: no also_copy"
+
+# issue #7: tests that read tracked docs/ or load scripts/x.py by path need them in mutmut's mutants/ copy too;
+# only tracked top-level entries, never the sources (copied over the mutants on the second run), mutants/ or untracked
+mrepo alsocopy
+git -C "$R" checkout -q "$B"  # the files go in at base, so the diff still changes core.py only
+mkdir -p "$R/docs" "$R/scripts" "$R/mutants" "$R/.venv"; printf '# guide\n' > "$R/docs/guide.md"; printf 'X = 1\n' > "$R/scripts/x.py"
+printf 'old\n' > "$R/mutants/stale.txt"; printf '' > "$R/uv.lock"; printf '' > "$R/test_root.py"
+git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm files; B=$(git -C "$R" rev-parse HEAD)
+git -C "$R" -c user.name=t -c user.email=t@t cherry-pick "$H" >/dev/null; H=$(git -C "$R" rev-parse HEAD)
+printf '' > "$R/notes.txt"; printf '' > "$R/.venv/python"
+: > "$MECH_STUB_LOG"
+out=$(MUT_FIXTURE=missed mut); rc=$?
+eq "$(grep -c '^also_copy' "$MECH_STUB_LOG")" 2 "python also_copy: written for both mutmut runs (list, then the touched functions)"
+has "$(cat "$MECH_STUB_LOG")" 'also_copy = ["docs", "scripts"]' "python also_copy: the tracked top-level entries mutmut does not copy itself"
+eq "$(jq -r '[.entries[] | select(.check=="R3")] | length' <<<"$out")" 3 "python also_copy: MISSED results as before"
 
 # caught: every mutant killed
 mrepo caught

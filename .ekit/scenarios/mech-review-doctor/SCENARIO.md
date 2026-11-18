@@ -8,8 +8,8 @@
   3. Add a caller with those inputs. `doctor`: expect exit 0, summary `ok <head>`, tests pass, tool present, no entries, tests run in `crates/app` of a throwaway worktree.
   4. Caller with a wrong `project-dir` and `rust-toolchain`: expect exit 1 and hints `set project-dir: crates/app`, `set rust-toolchain: 1.96.0`.
   5. Tests fail at HEAD: expect exit 1, tests `fail`, an entry naming the command.
-  6. Python at the root, ts in `web`: expect the stack, project dir and test-paths detected with no hints.
+  6. Python at the root, ts in `web`: expect the stack, project dir and test-paths detected with no hints; the python trial also runs the tests in R3's mutmut sandbox (`sandbox: pass`).
   7. Two crates: expect exit 1, `several projects` naming both, no inputs. `--project-dir` settles it.
   8. Run twice on a repo with uncommitted changes and an untracked file: expect identical bytes, a trial at HEAD, and git state unchanged.
 - expected: exit codes and JSON as above; no leftover worktree or temp dir.
-- children: not-a-repo, bad-project-dir, trial-failure, workflow-crash, workflow-forms, caller-test-paths, broken-mutation-tool, interrupted
+- children: not-a-repo, bad-project-dir, trial-failure, workflow-crash, workflow-forms, caller-test-paths, broken-mutation-tool, interrupted, sandbox
