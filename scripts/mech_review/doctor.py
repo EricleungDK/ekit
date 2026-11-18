@@ -371,8 +371,7 @@ def trial(repo, head, stack, project_dir, runner):
 def _sandbox_trial(repo, head, project_dir, cmd, adapter, runner):
     """the suite once inside R3's mutmut sandbox: ("pass" | "fail", entries). Built in a worktree of its own, as R3 runs
     mutmut in a fresh one: what the plain run left in its checkout (files the tests write) must not reach the copy."""
-    with red.worktree(repo, head) as wt:
-        adapter.worktree_setup(repo, wt, project_dir)
+    with red.worktree(repo, head) as wt:  # python only: its adapter needs no worktree_setup (that is node_modules)
         return _run_in_sandbox(repo, head, wt, project_dir, cmd, adapter, runner)
 
 
