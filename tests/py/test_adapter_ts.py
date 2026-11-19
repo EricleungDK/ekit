@@ -205,6 +205,99 @@ class TsThroughTheFile(unittest.TestCase):
                 rc, ents = self.r2({"src/calc.ts": src}, {"src/calc.ts": line + src})
                 self.assertEqual([(e[0], e[3], e[4]) for e in ents], want)
 
+    # ---- scope, nesting, owners ----
+    def test_outside_test_paths_only_asserts_inside_tests_count(self):
+        prod = 'expect(0).toBe(0);\nit("x", () => {\n  expect(1).toBe(1);\n  expect(2).toBe(2);\n});\n'
+        rc, ents = self.r2({"src/a.ts": prod}, {"src/a.ts": prod.replace("expect(0).toBe(0);\n", "").replace("  expect(2).toBe(2);\n", "")})
+        self.assertEqual((rc, ents), (1, [("fail", "agent-fixable", "src/a.ts", 1, "assertions in test `x` dropped from 2 to 1")]))
+
+    def test_a_name_joins_only_the_groups_around_it_outermost_first(self):
+        src = ('describe("Z", () => {\n  describe("A", () => {\n    it("t", () => { expect(1).toBe(1); });\n  });\n});\n'
+               'describe("B", () => {});\nit("u", () => { expect(2).toBe(2); });\n')
+        rc, ents = self.r2({"tests/a.test.ts": src},
+                           {"tests/a.test.ts": src.replace('it("t"', 'it.skip("t"').replace('it("u"', 'xit("u"')})
+        self.assertEqual([(e[3], e[4]) for e in ents],
+                         [(3, "test `Z > A > t` marked skipped (skip, todo or x-prefixed)"),
+                          (7, "test `u` marked skipped (skip, todo or x-prefixed)")])
+
+    def test_the_innermost_function_owns_an_assert(self):
+        nested = "function outer() {\n  function inner(a) {\n    expect(a).toBe(3);\n  }\n}\n"
+        head = nested + TEST.replace("expect(add(1, 2)).toBe(3);", "inner(add(1, 2));")
+        rc, ents = self.r2({"tests/a.test.ts": "function outer() {\n  function inner(a) {}\n}\n" + TEST}, {"tests/a.test.ts": head})
+        self.assertEqual((rc, ents), (0, []))
+
+    def test_a_changed_actual_value_is_a_confirm_naming_it(self):
+        rc, ents = self.r2({"tests/a.test.ts": TEST}, {"tests/a.test.ts": TEST.replace("expect(add(1, 2))", "expect(add(2, 1))")})
+        self.assertEqual(ents, [("confirm", "agent-fixable", "tests/a.test.ts", 5,
+                                 "expected value changed in `Calc > adds`: was add(1,2), now add(2,1)")])
+
+    def test_a_changed_value_under_not_is_a_confirm(self):
+        neg = TEST.replace(".toBe(3)", ".not.toBe(3)")
+        rc, ents = self.r2({"tests/a.test.ts": neg}, {"tests/a.test.ts": neg.replace("toBe(3)", "toBe(4)")})
+        self.assertEqual([e[4] for e in ents], ["expected value changed in `Calc > adds`: was 3, now 4"])
+
+    def test_a_matcher_with_an_argument_that_is_not_eq_compares_by_text(self):
+        gt = TEST.replace(".toBe(3)", ".toBeGreaterThan(2)")
+        rc, ents = self.r2({"tests/a.test.ts": gt}, {"tests/a.test.ts": gt.replace("(2)", "(1)")})
+        self.assertEqual([e[4] for e in ents], ["assertion replaced in `Calc > adds`: `expect(add(1, 2)).toBeGreaterThan(2)` -> "
+                                                "`expect(add(1, 2)).toBeGreaterThan(1)`"])
+
+    def test_a_bare_expect_is_an_assert(self):
+        bare = TEST.replace("expect(add(1, 2)).toBe(3);", "expect(a);\n    expect(add(1, 2)).toBe(3);")
+        rc, ents = self.r2({"tests/a.test.ts": bare}, {"tests/a.test.ts": bare.replace("expect(a);", "expect(b);")})
+        self.assertEqual([e[4] for e in ents], ["assertion replaced in `Calc > adds`: `expect(a)` -> `expect(b)`"])
+        rc, ents = self.r2({"tests/a.test.ts": bare}, {"tests/a.test.ts": TEST})
+        self.assertEqual([e[4] for e in ents], ["assertions in test `Calc > adds` dropped from 2 to 1"])
+
+    def test_a_curried_each_is_not_a_test_and_does_not_stop_the_scan(self):
+        cur = "const run = it.each([[1]]);\n" + TEST
+        rc, ents = self.r2({"tests/a.test.ts": cur}, {"tests/a.test.ts": cur.replace('it("adds"', 'it.skip("adds"')})
+        self.assertEqual([e[4] for e in ents], ["test `Calc > adds` marked skipped (skip, todo or x-prefixed)"])
+
+    def test_declarations_named_like_tests_at_any_spacing_and_position(self):
+        decl = "function it(n, f) { f(); }\nfunction *test(x) { yield x; }\n"
+        rc, ents = self.r2({"tests/a.test.ts": decl + TEST}, {"tests/a.test.ts": TEST})
+        self.assertEqual((rc, ents), (0, []))
+        odd = 'unction\nit("odd", () => { expect(1).toBe(1); });\n'
+        rc, ents = self.r2({"tests/a.test.ts": odd}, {"tests/a.test.ts": odd.replace('it("odd"', 'it.skip("odd"')})
+        self.assertEqual([e[4] for e in ents], ["test `odd` marked skipped (skip, todo or x-prefixed)"])
+
+    # ---- suppression regions and texts ----
+    def test_a_suppression_counts_only_where_its_region_meets_an_added_line(self):
+        cases = {  # base text, added line at the end, want problems
+            "// eslint-disable-next-line no-x\nfoo();\nbar();\n": ("baz();\n", []),
+            "const z = 1; // eslint-disable-line no-x\nbar();\n": ("baz();\n", []),
+            "/* eslint-disable */\nbar();\n": ("baz();\n", ["`eslint-disable` added without a reason"]),
+            "// @ts-nocheck\nbar();\n": ("baz();\n", ["`@ts-nocheck` added without a reason"]),
+        }
+        for base, (added, want) in cases.items():
+            with self.subTest(base):
+                rc, ents = self.r2({"src/s.ts": base}, {"src/s.ts": base + added})
+                self.assertEqual([e[4] for e in ents], want)
+
+    def test_suppression_hints_come_from_the_file(self):
+        hints = {}
+        for line in ("// eslint-disable-next-line no-console\n", "// @ts-ignore\n"):
+            base = self.commit({"src/h.ts": "x();\n"})
+            head = self.commit({"src/h.ts": line + "x();\n"})
+            for extra in (["--adapter", TS_FILE], []):
+                rc, out, err = run(["r2", "--repo", self.repo, "--base", base, "--head", head, "--stack", "ts",
+                                    "--test-paths", "tests/**", *extra])
+                hints.setdefault(line, []).append([e["hint"] for e in json.loads(out)["entries"]])
+        self.assertEqual(hints, {
+            "// eslint-disable-next-line no-console\n": [
+                ["fix the lint, or give the suppression a reason after the rules: `// eslint-disable-next-line no-console -- why`"]] * 2,
+            "// @ts-ignore\n": [["fix the type error, or give the directive a reason after it: `// @ts-ignore: why`"]] * 2})
+
+    def test_a_ts_directive_reason_is_what_is_left_after_its_marks(self):
+        rc, ents = self.r2({"src/r.ts": "x();\n"}, {"src/r.ts": "// @ts-ignore -:\nx();\n"})
+        self.assertEqual((rc, ents), (0, []))
+
+    def test_a_stryker_marker_already_on_base_is_not_reported_for_a_later_line(self):
+        src = "// Stryker disable next-line all\nexport const f = (a: number) => a + 1;\n"
+        rc, ents = self.r2({"src/a.ts": src}, {"src/a.ts": src + "export const g = 2;\n"})
+        self.assertEqual((rc, ents), (0, []))
+
     # ---- mutation markers and config ----
     def test_stryker_markers_and_config_are_needs_human(self):
         src = "export const f = (a: number) => a + 1;\n"

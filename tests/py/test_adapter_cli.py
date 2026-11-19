@@ -128,6 +128,24 @@ class AdapterFileR2(unittest.TestCase):
         rc, ents = self.entries(self.head("def broken(:\n", "tests/test_x.py"))
         self.assertEqual((rc, ents), (0, []))
 
+    def test_a_replaced_other_assert_is_a_confirm_quoting_both_calls(self):
+        rc, ents = self.entries(self.head(BASE.replace("assertTrue(sub(3, 1) == 2)", "assertTrue(sub(3, 1) > 0)")))
+        self.assertEqual((rc, [(e["severity"], e["line"], e["problem"]) for e in ents]),
+                         (0, [("confirm", 6, "assertion replaced in `Calc / subtracts`: `assertTrue(sub(3, 1) == 2)` -> "
+                                             "`assertTrue(sub(3, 1) > 0)`")]))
+
+    def test_a_changed_actual_operand_is_a_confirm_naming_it(self):
+        rc, ents = self.entries(self.head(BASE.replace("add(1, 2))", "add(2, 1))")))
+        self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in ents],
+                         [("confirm", 3, "expected value changed in `Calc / adds`: was add(1,2), now add(2,1)")])
+
+    def test_an_eq_call_missing_an_operand_compares_by_text(self):
+        one = BASE.replace("assertEquals(3, add(1, 2))", "assertEquals(3)")
+        self.base = self.repo.commit({"tests/calc.mini": one}, "one operand")
+        rc, ents = self.entries(self.head(one.replace("assertEquals(3)", "assertEquals(4)")))
+        self.assertEqual([e["problem"] for e in ents],
+                         ["assertion replaced in `Calc / adds`: `assertEquals(3)` -> `assertEquals(4)`"])
+
 
 MINIMAL = '''format = 1
 name = "tiny"
@@ -150,28 +168,93 @@ cases = ["test"]
 [[asserts.call]]
 names = ["check"]
 kind = "other"
+
+[[asserts.chain]]
+start = "expect"
+eq = ["is"]
+'''
+
+# optional keys left out where their default is what a file means: groups without a separator, a skip without
+# skipped_text, suppressions without lints/reason/problem keys beyond one, an ne call shape
+DEFAULTS = '''format = 1
+name = "dflt"
+extensions = [".dflt"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "{}"]
+line_comments = ["#"]
+
+[[lexer.strings]]
+quote = '"'
+
+[tests]
+style = "calls"
+groups = ["suite"]
+cases = ["test", "xtest"]
+skip = ["xtest"]
+
+[[asserts.call]]
+names = ["assertNot"]
+kind = "ne"
+operands = [0, 1]
+
+[[suppressions]]
+directives = ["off", "off all"]
+covers = { "off" = "next-line", "off all" = "file" }
+problem = "bare {lints}"
 '''
 
 
-class MinimalAdapterFile(unittest.TestCase):
-    """Each table with only its required keys: the defaults (no comments, no groups, no escape, a regex literal only at
-    the start of the file, `.` as member) give a working R2."""
+class OptionalKeysLeftOut(unittest.TestCase):
+    """Each table with only its required keys (MINIMAL), or optional keys left at their default (DEFAULTS): the
+    defaults (no comments, no groups, no escape, a regex literal only at the start of the file, `.` as member,
+    ` > ` between names, the default skip and hint texts, no min_args) give a working R2."""
 
-    def test_a_file_with_only_required_keys_reads_tests_strings_and_regexes(self):
+    def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        path = os.path.join(tmp.name, "tiny.toml")
+        self.tmp = tmp.name
+        self.repo = Repo(os.path.join(tmp.name, "repo"))
+
+    def run_file(self, text, name, base_files, head_files):
+        path = os.path.join(self.tmp, name + ".toml")
         with open(path, "w") as f:
-            f.write(MINIMAL)
-        repo = Repo(os.path.join(tmp.name, "repo"))
-        base = repo.commit({"tests/a.tiny": '/test("r", {})/\ntest("a", { check(1) })\ns = "test(\\"q\\", {})"\n'
-                                            'x.test("m", { check(2) })\n'}, "base")
-        head = repo.commit({"tests/a.tiny": 's = "test(\\"q\\", {})"\n'}, "head")
-        r = r2(repo, base, head, adapter=path, stack="tiny")
-        self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]],
+            f.write(text)
+        base = self.repo.commit(base_files, "base")
+        head = self.repo.commit(head_files, "head")
+        r = r2(self.repo, base, head, adapter=path, stack=name)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return r.returncode, json.loads(r.stdout)["entries"]
+
+    def test_a_file_with_only_required_keys_reads_tests_strings_and_regexes(self):
+        rc, ents = self.run_file(MINIMAL, "tiny",
+                                 {"tests/a.tiny": '/test("r", {})/\ntest("a", { check(1) })\ns = "test(\\"q\\", {})"\n'
+                                                  'x.test("m", { check(2) })\n'},
+                                 {"tests/a.tiny": 's = "test(\\"q\\", {})"\n'})
+        self.assertEqual(rc, 1)
+        self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in ents],
                          [("fail", 2, "test fn `a` removed"),
                           ("fail", 0, "assertions outside test fns in `tests/a.tiny` dropped from 1 to 0")])
+
+    def test_a_chain_with_only_its_required_keys_and_a_test_with_no_arguments(self):
+        rc, ents = self.run_file(MINIMAL, "tiny", {"tests/b.tiny": 'test("t", { expect(v).is(1) })\n'},
+                                 {"tests/b.tiny": 'test("t", { expect(v).is(2) })\ntest()\n'})
+        self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in ents],
+                         [("confirm", 1, "expected value changed in `t`: was 1, now 2")])
+
+    def test_default_separator_skip_text_hint_and_an_ne_call(self):
+        base = 'suite("S", {\n  test("t", { assertNot(1, f()) })\n})\n'
+        rc, ents = self.run_file(DEFAULTS, "dflt", {"tests/c.dflt": base, "src/c.dflt": "f()\n"},
+                                 {"tests/c.dflt": base.replace('test("t"', 'xtest("t"').replace("assertNot(1,", "assertNot(2,"),
+                                  "src/c.dflt": "# off all\nf()\n# off\ng()\n"})
+        self.assertEqual([(e["severity"], e["file"], e["line"], e["problem"], e["hint"]) for e in ents], [
+            ("fail", "src/c.dflt", 1, "bare off all", "fix the lint, or give the suppression a reason"),
+            ("fail", "src/c.dflt", 3, "bare off", "fix the lint, or give the suppression a reason"),
+            ("confirm", "tests/c.dflt", 2, "expected value changed in `S > t`: was 1, now 2",
+             "confirm the new value is the spec'd behaviour, not the buggy output"),
+            ("fail", "tests/c.dflt", 2, "test `S > t` marked skipped",
+             "make it pass or fix the code it covers; do not mark it ignored")])
 
 
 class AdapterFileUsage(unittest.TestCase):

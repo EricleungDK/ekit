@@ -191,7 +191,7 @@ class DataAdapter(Adapter):
             if mp is not None:
                 margs = lx.args_of(text, m, mp)
                 end = lx.close_of(m, mp) + 1
-        if matcher in ch.get("eq", []) and margs:
+        if matcher in ch["eq"] and margs:
             return w.start(), end, "ne" if negated else "eq", left, norm(margs[0])
         return w.start(), end, "other", None, None
 
@@ -245,11 +245,10 @@ class DataAdapter(Adapter):
         return None
 
     def suppression_text(self, sup):
-        for s in self.sups:
-            if sup.kind in s["directives"]:
-                return (s.get("problem", DEFAULT_PROBLEM).format(lints=sup.lint_text),
-                        s.get("hint", DEFAULT_HINT).format(lints=sup.lint_text))
-        return Adapter.suppression_text(self, sup)
+        """the texts of the family whose directive made sup (suppressions() only makes them from a family)."""
+        s = next(s for s in self.sups if sup.kind in s["directives"])
+        return (s.get("problem", DEFAULT_PROBLEM).format(lints=sup.lint_text),
+                s.get("hint", DEFAULT_HINT).format(lints=sup.lint_text))
 
     def ignored_text(self, name):
         return self.tests.get("skipped_text", DEFAULT_SKIPPED).format(name=name)
