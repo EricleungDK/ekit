@@ -252,7 +252,7 @@ Top level (required unless marked):
 | Key | Value |
 |---|---|
 | `block_style` | `braces` (blocks are bracketed). `indent` and `keywords` are reserved, not supported yet: an error |
-| `brackets` | bracket pairs, e.g. `["()", "[]", "{}"]`; must include `()` (a call is `name(...)`) |
+| `brackets` | bracket pairs, e.g. `["()", "[]", "{}"]`. Each character may appear in one pair only. `()` is required (a call is `name(...)`), and so is `{}` (blocks, `block_style = "braces"`) |
 | `ident_chars` | optional: characters that are part of a word beside letters, digits and `_` (ts: `"$"`) |
 | `member` | optional, default `"."`: the member-access character. A word right after it (`a.it(`) is a member, not a call |
 | `line_comments` | optional: openers of comments that run to the line end, e.g. `["//"]` |
@@ -277,6 +277,8 @@ Top level (required unless marked):
 
 The first argument names the test: a string literal's value, or the argument's text.
 
+Only call-style tests can be described today (`style = "calls"`). Declared tests (JUnit `@Test void x()`, Go `func TestX(t *testing.T)`, C# `[Fact]`, rust `#[test] fn x()`) cannot be described yet. Not supported either: a test whose body is a trailing block after the call (`test("keeps") { ... }` in Kotest or Kotlin, Swift trailing closures). The body must be an argument inside the call's parentheses (`case("name", fn)`). With a trailing block, the test is named without its group, its asserts count as outside test fns, and a skip on a trailing-block group (`xcontext("Calc") { ... }`) gives no entry: that skip is not caught.
+
 `[functions]` (optional): named functions own the asserts inside them, so an assert moved from a test into a helper it calls is not a drop. `shapes` is a list of shape strings; each element is separated by spaces, whitespace may sit between elements, and `?` after an element makes it optional:
 
 | Element | Matches |
@@ -290,7 +292,7 @@ The first argument names the test: a string literal's value, or the argument's t
 | `...{...}` | skip to the next `{`, then its block (return types may come between) |
 | `BODY` | a `{}` block, or an expression up to `;`, the line end or a closing bracket |
 
-A shape starts with a word and ends with a group, block or `BODY`; the function spans from its first word to that end.
+A shape starts with a word and ends with a group, block or `BODY`; the function spans from its first word to that end. A function only owns its asserts for the drop count: an assert in a helper is still outside test fns, and an R2 message about it names `<module>`, not the helper (as the built-in ts adapter does).
 
 `[asserts]`: at least one shape.
 
@@ -302,6 +304,8 @@ A shape starts with a word and ends with a group, block or `BODY`; the function 
 A word starts one assert shape only: a second chain with the same `start`, or a call name listed twice, is an error.
 
 R2 compares eq/ne asserts by their operands (a changed expected value is a `confirm`) and other asserts by their text.
+
+`operands = [left, right]`: which argument is the expected value does not matter. R2 reports a change when one operand stays and the other changes, and the message names the one that changed (`was 3, now 4`). So `assertEquals(expected, actual)` takes `[0, 1]` and `assertThat(actual, expected)` takes `[0, 1]` too. An index past the call's arguments is not an error: such a call reads as kind `other`, and a changed value in it reads as `assertion replaced` (also a confirm), a weaker message. Check the indexes against the assert's real signature.
 
 `[[suppressions]]` (optional): one table per family of lint directives, read in comments only.
 
@@ -324,7 +328,7 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 
 ### Fixed, not configurable
 
-`block_style = "braces"` fixes these; an adapter file cannot change them (a Java, Kotlin or C# file can live with them, a language that differs here cannot be described yet):
+`block_style = "braces"` fixes these, and an adapter file cannot change them. A language that differs here cannot be described yet. Even a brace language needs call-style tests, as above, so Java/JUnit, Go and C# test files cannot be described today. The fixed rules:
 
 - a call opens with `(`;
 - a block (`{...}`, `...{...}`, `BODY`) opens with `{`, and a `BODY` expression ends at `;`, a line end or a closing bracket;
