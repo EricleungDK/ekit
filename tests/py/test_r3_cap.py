@@ -36,17 +36,22 @@ mo = os.path.join(args[args.index("--output") + 1], "mutants.out")
 os.makedirs(mo)
 json.dump(picked, open(os.path.join(mo, "mutants.json"), "w"))
 outcomes = []
-if "skip" not in args:
-    outcomes.append({"scenario": "Baseline", "summary": "Success", "phase_results": [
+if "skip" not in args:  # STUB_BASELINE=Failure: the unmutated tests fail (exit STUB_RC, 4 for cargo-mutants)
+    outcomes.append({"scenario": "Baseline", "summary": os.environ.get("STUB_BASELINE", "Success"), "phase_results": [
         {"phase": "Build", "duration": float(os.environ.get("STUB_BUILD_S", "1"))},
         {"phase": "Test", "duration": float(os.environ.get("STUB_TEST_S", "1"))}]})
-if "--build-timeout" not in args:
+if "--build-timeout" not in args and os.environ.get("STUB_BASELINE", "Success") == "Success":
     missed = set(filter(None, os.environ.get("STUB_MISSED", "").split("|")))  # names that survive
     outcomes += [{"scenario": {"Mutant": m}, "summary": "MissedMutant" if m["name"] in missed else "CaughtMutant",
                   "phase_results": [{"phase": "Build", "duration": 1.0}, {"phase": "Test", "duration": 1.0}]}
                  for m in picked]
+if os.environ.get("STUB_HANG"):  # the budget stops the run after its first mutant (outcomes are written as it goes)
+    outcomes = [o for o in outcomes if o["scenario"] == "Baseline"] + [o for o in outcomes if o["scenario"] != "Baseline"][:1]
 json.dump({"outcomes": outcomes, "total_mutants": len(picked)}, open(os.path.join(mo, "outcomes.json"), "w"))
-sys.exit(0)
+if os.environ.get("STUB_HANG"):
+    import time
+    time.sleep(30)
+sys.exit(int(os.environ.get("STUB_RC", "0")))
 '''
 
 
@@ -231,6 +236,16 @@ class TestRustCapNotHonoured(RustCap):
                        STUB_MISSED="|".join((GT["name"], ARM["name"])))
         self.assertEqual(env["checks"]["R3"]["status"], "n/a")
         self.assertEqual([e["problem"] for e in env["entries"] if e["check"] == "R3"], [f"MISSED mutant {GT['name']}"])
+
+    def test_a_capped_run_the_budget_stops_counts_the_mutants_past_the_cap(self):
+        r3 = self.cli("mutants", "--max-mutants", "4", "--mutation-budget", "0.02", STUB_HANG="1")["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 1, 7))
+        self.assertTrue(r3["note"].startswith("1/7 tested: budget hit"), r3["note"])
+
+    def test_a_capped_run_whose_baseline_fails_is_that_fail(self):
+        env = self.cli("mutants", "--max-mutants", "4", STUB_BASELINE="Failure", STUB_RC="4")
+        self.assertEqual(env["checks"]["R3"]["status"], "fail")
+        self.assertEqual([e["problem"] for e in env["entries"]], ["baseline tests fail at head: mutants not run"])
 
     def test_the_note_counts_what_the_status_counts(self):
         r3 = self.cli("mutants", "--max-mutants", "4", "--shard", "0/2")["checks"]["R3"]
