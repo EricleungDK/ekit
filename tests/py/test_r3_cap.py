@@ -291,6 +291,12 @@ class TestBaselineShardCount(RustCap):
         self.assertTrue(env["run"], env["checks"]["R3"])
         return env["count"]
 
+    def test_the_note_names_the_mutants_and_how_many_are_under_the_cap(self):
+        for extra, want in (((), "baseline ok: 7 mutants, 7 under max-mutants 40, in 1 shard(s)"),
+                            (("--max-mutants", "2"), "baseline ok: 7 mutants, 2 under max-mutants 2, in 1 shard(s)")):
+            env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", *extra)
+            self.assertTrue(env["checks"]["R3"]["note"].startswith(want), env["checks"]["R3"]["note"])
+
     def test_a_small_pr_gets_one_shard(self):
         self.assertEqual(self.count(0.2, 0.05), 1)  # 7 mutants x 0.25 s
 
