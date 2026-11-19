@@ -61,9 +61,9 @@ def _int(v, field):
 
 
 def _template(v, field, names):
-    _str(v, field)
     """plain `{field}` placeholders (and `{{` `}}`) only: a conversion or spec could still fail on a real value (a nested
     field in a spec takes the value's text), so none is allowed."""
+    _str(v, field)
     try:
         parts = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(v) if f is not None]
     except ValueError as e:
@@ -202,7 +202,9 @@ def _asserts(d, lexer):
     for i, c in enumerate(chains):
         cf = f"{f}.chain[{i}]"
         _table(c, cf, ("start", "negate", "pass_through", "eq"), ("start", "eq"))
-        start = _idents([_str(c["start"], cf + ".start")], cf + ".start", lexer)[0]
+        start = _str(c["start"], cf + ".start")
+        if not all(lexer.is_ident(ch) for ch in start):
+            _err(cf + ".start", f"`{start}` is not a word (letters, digits, _ and lexer.ident_chars)")
         if start in seen:
             _err(cf + ".start", f"`{start}` is already {seen[start]}")
         seen[start] = cf + ".start"

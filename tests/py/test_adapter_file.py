@@ -35,8 +35,135 @@ def with_(path, value, base=GOOD):
 
 DEL = object()
 
+# every optional table and key in use (valid): the base for the field-by-field cases below
+FULL = {
+    "format": 1,
+    "name": "full",
+    "manifests": ["full.json"],
+    "extensions": [".f"],
+    "lexer": {"block_style": "braces", "brackets": ["()", "[]", "{}"], "ident_chars": "$", "member": ".",
+              "line_comments": ["//"], "block_comments": [["/*", "*/"]],
+              "strings": [{"quote": '"', "escape": "\\"},
+                          {"quote": "`", "escape": "\\", "multiline": True, "interpolation": ["${", "}"],
+                           "name": "template"}],
+              "regex": {"delimiter": "/", "after": "(=", "after_words": ["return"]}},
+    "tests": {"style": "calls", "groups": ["describe"], "cases": ["it", "xit"], "separator": " > ", "skip": ["xit"],
+              "only": ["describe"], "skip_modifiers": ["skip"], "only_modifiers": ["only"], "table_modifiers": ["each"],
+              "min_args": 2, "not_after": ["function"], "skipped_text": "`{name}` skipped"},
+    "functions": {"shapes": ["function NAME (...) ...{...}"]},
+    "asserts": {"chain": [{"start": "expect", "eq": ["toBe"], "negate": ["not"], "pass_through": ["resolves"]}],
+                "call": [{"names": ["assertEquals"], "kind": "eq", "operands": [0, 1]},
+                         {"names": ["assertTrue"], "kind": "other"}]},
+    "suppressions": [{"directives": ["off"], "covers": {"off": "line"}, "lints": "rules", "reason_after": "--",
+                      "problem": "`{lints}` bare", "hint": "why `{lints}`"},
+                     {"directives": ["@ignore"], "covers": {"@ignore": "file"}, "reason_strip": [":"]}],
+    "mutation": {"skip_comments": ["Mut off"], "config_files": ["mut.json"], "config_name": "Mut config"},
+}
+
+FIELD_CASES = [  # (dotted path in FULL, bad value or DEL, the error)
+    ("name", "", "name: want a non-empty string"),
+    ("manifests", "full.json", "manifests: want a list of non-empty strings"),
+    ("extensions", [], "extensions: want at least one entry"),
+    ("extensions.0", ".", "extensions[0]: `.`: want a file extension such as \".ts\""),
+    ("lexer.x", 1, "lexer.x: unknown key"),
+    ("lexer.block_style", DEL, "lexer.block_style: missing"),
+    ("lexer.brackets", DEL, "lexer.brackets: missing"),
+    ("lexer.brackets", [], "lexer.brackets: want at least one entry"),
+    ("lexer.ident_chars", 3, "lexer.ident_chars: want a string"),
+    ("lexer.member", 3, "lexer.member: want a string"),
+    ("lexer.member", "::", "lexer.member: want one character or \"\""),
+    ("lexer.line_comments", "//", "lexer.line_comments: want a list of non-empty strings"),
+    ("lexer.block_comments", "/*", "lexer.block_comments: want a list of [open, close] pairs"),
+    ("lexer.block_comments", [["/*"]], "lexer.block_comments[0]: want [open, close], two non-empty strings"),
+    ("lexer.block_comments", [["/*", ""]], "lexer.block_comments[0]: want [open, close], two non-empty strings"),
+    ("lexer.strings", {}, "lexer.strings: want an array of tables ([[lexer.strings]])"),
+    ("lexer.strings.0", "\"", "lexer.strings[0]: want a table"),
+    ("lexer.strings.0.x", 1, "lexer.strings[0].x: unknown key"),
+    ("lexer.strings.0.quote", DEL, "lexer.strings[0].quote: missing"),
+    ("lexer.strings.0.quote", "", "lexer.strings[0].quote: want a non-empty string"),
+    ("lexer.strings.0.escape", 1, "lexer.strings[0].escape: want a string"),
+    ("lexer.strings.1.interpolation", ["${"], "lexer.strings[1].interpolation: want [open, close], two non-empty strings"),
+    ("lexer.strings.1.interpolation", "${", "lexer.strings[1].interpolation: want [open, close], two non-empty strings"),
+    ("lexer.strings.1.name", "", "lexer.strings[1].name: want a non-empty string"),
+    ("lexer.regex", [], "lexer.regex: want a table"),
+    ("lexer.regex.x", 1, "lexer.regex.x: unknown key"),
+    ("lexer.regex.delimiter", DEL, "lexer.regex.delimiter: missing"),
+    ("lexer.regex.delimiter", 1, "lexer.regex.delimiter: want one character"),
+    ("lexer.regex.after", 1, "lexer.regex.after: want a string"),
+    ("lexer.regex.after_words", "return", "lexer.regex.after_words: want a list of non-empty strings"),
+    ("tests", [], "tests: want a table"),
+    ("tests.x", 1, "tests.x: unknown key"),
+    ("tests.style", DEL, "tests.style: missing"),
+    ("tests.cases", DEL, "tests.cases: missing"),
+    ("tests.groups", ["a b"], "tests.groups[0]: `a b` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("tests.only", ["zz"], "tests.only[0]: `zz` is not in tests.groups or tests.cases"),
+    ("tests.only", "it", "tests.only: want a list of non-empty strings"),
+    ("tests.skip_modifiers", ["a.b"], "tests.skip_modifiers[0]: `a.b` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("tests.only_modifiers", [1], "tests.only_modifiers: want a list of non-empty strings"),
+    ("tests.table_modifiers", ["e ach"], "tests.table_modifiers[0]: `e ach` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("tests.separator", "", "tests.separator: want a non-empty string"),
+    ("tests.min_args", True, "tests.min_args: want a whole number >= 0"),
+    ("tests.min_args", "2", "tests.min_args: want a whole number >= 0"),
+    ("tests.not_after", "function", "tests.not_after: want a list of non-empty strings"),
+    ("tests.skipped_text", 3, "tests.skipped_text: want a non-empty string"),
+    ("tests.skipped_text", "{}", "tests.skipped_text: unknown placeholder `{}`: want `{name}`"),
+    ("functions", [], "functions: want a table"),
+    ("functions.x", 1, "functions.x: unknown key"),
+    ("functions.shapes", DEL, "functions.shapes: missing"),
+    ("functions.shapes", "function NAME {...}", "functions.shapes: want a list of non-empty strings"),
+    ("asserts", [], "asserts: want a table"),
+    ("asserts.x", 1, "asserts.x: unknown key"),
+    ("asserts.chain", {}, "asserts.chain: want an array of tables ([[asserts.chain]])"),
+    ("asserts.call", {}, "asserts.call: want an array of tables ([[asserts.call]])"),
+    ("asserts.chain.0.x", 1, "asserts.chain[0].x: unknown key"),
+    ("asserts.chain.0.start", DEL, "asserts.chain[0].start: missing"),
+    ("asserts.chain.0.eq", DEL, "asserts.chain[0].eq: missing"),
+    ("asserts.chain.0.start", "", "asserts.chain[0].start: want a non-empty string"),
+    ("asserts.chain.0.start", "ex pect", "asserts.chain[0].start: `ex pect` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("asserts.chain.0.eq", ["to Be"], "asserts.chain[0].eq[0]: `to Be` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("asserts.chain.0.negate", ["n ot"], "asserts.chain[0].negate[0]: `n ot` is not a word (letters, digits, _ and lexer.ident_chars)"),
+    ("asserts.chain.0.pass_through", "resolves", "asserts.chain[0].pass_through: want a list of non-empty strings"),
+    ("asserts.call.0.x", 1, "asserts.call[0].x: unknown key"),
+    ("asserts.call.0.names", DEL, "asserts.call[0].names: missing"),
+    ("asserts.call.0.names", [], "asserts.call[0].names: want at least one entry"),
+    ("asserts.call.0.names", ["expect"], "asserts.call[0].names[0]: `expect` is already an assert shape"),
+    ("asserts.call.0.kind", DEL, "asserts.call[0].kind: missing"),
+    ("asserts.call.0.kind", 3, "asserts.call[0].kind: want a non-empty string"),
+    ("asserts.call.0.kind", "ne", None),  # valid: ne takes operands too
+    ("asserts.call.0.operands", "01", "asserts.call[0].operands: want [left, right]: two different argument indexes"),
+    ("asserts.call.0.operands", [0], "asserts.call[0].operands: want [left, right]: two different argument indexes"),
+    ("asserts.call.0.operands", [0, -1], "asserts.call[0].operands[1]: want a whole number >= 0"),
+    ("asserts.call.1.operands", [0, 1], "asserts.call[1].operands: kind other has no operands"),
+    ("suppressions", {}, "suppressions: want an array of tables ([[suppressions]])"),
+    ("suppressions.0.x", 1, "suppressions[0].x: unknown key"),
+    ("suppressions.0.directives", DEL, "suppressions[0].directives: missing"),
+    ("suppressions.0.covers", DEL, "suppressions[0].covers: missing"),
+    ("suppressions.0.directives", [], "suppressions[0].directives: want at least one entry"),
+    ("suppressions.0.covers", "line", "suppressions[0].covers: want a table"),
+    ("suppressions.0.covers.extra", "line", "suppressions[0].covers.extra: unknown key"),
+    ("suppressions.0.lints", "all", "suppressions[0].lints: `all`: want rules or directive"),
+    ("suppressions.0.reason_after", "", "suppressions[0].reason_after: want a non-empty string"),
+    ("suppressions.0.reason_strip", [":"], "suppressions[0].reason_strip: not with reason_after: the reason is the text after the mark"),
+    ("suppressions.1.reason_strip", ":", "suppressions[1].reason_strip: want a list of non-empty strings"),
+    ("suppressions.0.hint", "{x}", "suppressions[0].hint: unknown placeholder `{x}`: want `{lints}`"),
+    ("mutation", [], "mutation: want a table"),
+    ("mutation.x", 1, "mutation.x: unknown key"),
+    ("mutation.skip_comments", "Mut off", "mutation.skip_comments: want a list of non-empty strings"),
+    ("mutation.config_files", "mut.json", "mutation.config_files: want a list of non-empty strings"),
+    ("mutation.config_name", "", "mutation.config_name: want a non-empty string"),
+    ("mutation.config_files", [], None),  # valid: a name with no config files is harmless
+]
+
 
 class Valid(unittest.TestCase):
+    def test_a_file_with_every_table_builds_its_adapter(self):
+        a = parse(FULL)
+        self.assertEqual((a.name, a.manifests, a.from_file), ("full", ("full.json",), True))
+
+    def test_a_top_level_value_that_is_not_a_table_is_an_error(self):
+        with self.assertRaises(AdapterFileError) as e:
+            parse(["format", 1])
+        self.assertEqual(str(e.exception), "want a table")
     def test_a_minimal_file_builds_an_adapter_named_by_the_file(self):
         a = parse(GOOD)
         self.assertEqual((a.name, a.manifests, a.from_file), ("mini", (), True))
@@ -52,6 +179,15 @@ class Invalid(unittest.TestCase):
         with self.assertRaises(AdapterFileError) as e:
             parse(data)
         return str(e.exception)
+
+    def test_every_field_names_itself_in_its_error(self):
+        for path, value, want in FIELD_CASES:
+            with self.subTest(path, value=value):
+                data = with_(path, value, FULL)
+                if want is None:
+                    self.assertEqual(parse(data).name, "full")
+                else:
+                    self.assertEqual(self.err(data), want)
 
     def test_each_required_top_level_field_is_named_when_missing(self):
         for k in ("format", "name", "extensions", "lexer", "tests", "asserts"):
