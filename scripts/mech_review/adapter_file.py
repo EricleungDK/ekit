@@ -98,11 +98,18 @@ def _lexer(d):
     if style != "braces":
         _err(f + ".block_style", f"`{style}` is not supported yet: want braces")
     brackets = _strs(d["brackets"], f + ".brackets", nonempty=True)
+    owner = {}  # each bracket char belongs to one pair: `(]` beside `[]` is a typo, not a pair
     for i, b in enumerate(brackets):
         if len(b) != 2 or b[0] == b[1]:
             _err(f"{f}.brackets[{i}]", f"`{b}`: want an opener and a closer, e.g. \"()\"")
-    if "(" not in [b[0] for b in brackets]:
+        for ch in b:
+            if ch in owner:
+                _err(f"{f}.brackets[{i}]", f"`{ch}` is already in {f}.brackets[{owner[ch]}]")
+            owner[ch] = i
+    if "()" not in brackets:
         _err(f + ".brackets", "want \"()\": calls are `name(...)`")
+    if style == "braces" and "{}" not in brackets:
+        _err(f + ".brackets", "want \"{}\": block_style braces opens blocks with `{`")
     ident = _str(d.get("ident_chars", ""), f + ".ident_chars", empty=True)
     member = _str(d.get("member", "."), f + ".member", empty=True)
     if len(member) > 1:
@@ -311,7 +318,9 @@ def load(path):
         raise AdapterFileError(f"adapter file {path}: reading an adapter file needs python 3.11 or newer (tomllib)") from None
     try:
         with open(path, "rb") as f:
-            data = tomllib.load(f)
+            raw = f.read()
+        # a UTF-8 BOM (some Windows editors write one) is not part of the TOML text
+        data = tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
     except OSError as e:
         raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
     except tomllib.TOMLDecodeError as e:

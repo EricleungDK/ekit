@@ -105,6 +105,29 @@ class Invalid(unittest.TestCase):
             with self.subTest(path):
                 self.assertEqual(self.err(with_(path, value)), want)
 
+    def test_brackets_must_be_real_pairs_each_char_once_with_calls_and_blocks(self):
+        cases = {
+            ("(]", "[]", "{}"): "lexer.brackets[1]: `]` is already in lexer.brackets[0]",
+            ("()", "{}", "(>"): "lexer.brackets[2]: `(` is already in lexer.brackets[0]",
+            ("(}", "{)"): "lexer.brackets: want \"()\": calls are `name(...)`",
+            ("()", "[]"): "lexer.brackets: want \"{}\": block_style braces opens blocks with `{`",
+        }
+        for value, want in cases.items():
+            with self.subTest(value):
+                self.assertEqual(self.err(with_("lexer.brackets", list(value))), want)
+
+    def test_a_utf8_bom_is_not_part_of_the_file(self):
+        import os
+        import tempfile
+        from scripts.mech_review.adapter_file import load
+        with open(os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.toml"), "rb") as f:
+            text = f.read()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bom.toml")
+            with open(path, "wb") as f:
+                f.write(b"\xef\xbb\xbf" + text)
+            self.assertEqual(load(path).name, "mini")
+
     def test_an_eq_call_shape_needs_its_operands(self):
         self.assertEqual(self.err(with_("asserts.call.0.operands", DEL)),
                          "asserts.call[0].operands: missing: kind eq needs [left, right] argument indexes")
