@@ -118,11 +118,11 @@ class RustCap(unittest.TestCase):
             calls = [json.loads(line) for line in f]
         return [a for a in calls if "--output" in a]
 
-    def picked(self):
-        """names the one run's --re filters select from the listing."""
+    def picked(self, listed=None):
+        """names the one run's --re filters select from the listing (LISTED unless given)."""
         (argv,) = self.runs()
         res = [argv[i + 1] for i, a in enumerate(argv) if a == "--re"]
-        return {m["name"] for m in LISTED if any(re.search(r, m["name"]) for r in res)}
+        return {m["name"] for m in listed or LISTED if any(re.search(r, m["name"]) for r in res)}
 
 
 def names(ms):
@@ -148,6 +148,22 @@ class TestRustCap(RustCap):
         for cap in (3, 5, 6):
             self.cli("mutants", "--max-mutants", str(cap))
             self.assertEqual(self.picked(), names(RISK_ORDER[:cap]), cap)
+
+    def test_ties_go_by_line_then_column_a_missing_one_first(self):
+        # one risk class (MatchArm); names sort differently from positions, so only the position tie order passes
+        def arm(name, start):
+            return {"file": "src/lib.rs", "genre": "MatchArm", "name": name, "package": "x",
+                    **({"span": {"start": start}} if start is not None else {})}
+        want = [arm("zzz: delete match arm in f", None),                   # no position: line 0, column 0
+                arm("src/lib.rs:1: delete match arm in g", {"line": 1}),   # no column: 0
+                arm("yyy: delete match arm in h", {"line": 6}),
+                arm("src/lib.rs:6:1: delete match arm in i", {"line": 6, "column": 1}),
+                arm("src/lib.rs:6:9: delete match arm in j", {"line": 6, "column": 9}),
+                arm("src/lib.rs:6:10: delete match arm in k", {"line": 6, "column": 10})]
+        self.listing(list(reversed(want)))
+        for cap in range(1, 6):
+            self.cli("mutants", "--max-mutants", str(cap))
+            self.assertEqual(self.picked(want), names(want[:cap]), cap)
 
     def test_within_the_cap_every_mutant_runs_and_a_clean_run_is_a_pass(self):
         r3 = self.cli("mutants", "--max-mutants", "7")["checks"]["R3"]
