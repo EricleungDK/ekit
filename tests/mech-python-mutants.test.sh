@@ -262,7 +262,8 @@ eq "$(jq -r .checks.R3.status <<<"$out")" n/a "python own [tool.mutmut]: R3 n/a"
 has "$(jq -r .checks.R3.note <<<"$out")" "[tool.mutmut]" "python own [tool.mutmut]: note names the table"
 eq "$(wc -l < "$MECH_STUB_LOG" | tr -d ' ')" 0 "python own [tool.mutmut]: mutmut not invoked"
 
-# shards: each shard mutates its own share of the changed production files
+# shards (#26): every shard lists the mutants of every changed production file, then runs its own share of the
+# risk-ordered list, dealt round-robin. The stub lists the fixture's 5 mutants; shard 2/3 gets the third of them.
 R="$T/shards"; mkdir -p "$R/src"; git -C "$R" init -q -b main
 printf '[project]\nname = "x"\n' > "$R/pyproject.toml"
 printf 'def a():\n    return 1\n' > "$R/src/a.py"; printf 'def b():\n    return 2\n' > "$R/src/b.py"
@@ -271,12 +272,21 @@ printf 'def a():\n    return 3\n' > "$R/src/a.py"; printf 'def b():\n    return 
 git -C "$R" add -A; git -C "$R" -c user.name=t -c user.email=t@t commit -qm head; H=$(git -C "$R" rev-parse HEAD)
 : > "$MECH_STUB_LOG"
 out=$(MUT_FIXTURE=caught mut --shard 1/2); rc=$?
-has "$(cat "$MECH_STUB_LOG")" 'only_mutate = ["src/b.py"]' "python shard 1/2: mutates the second changed file only"
-lacks "$(cat "$MECH_STUB_LOG")" '"src/a.py"' "python shard 1/2: the first file is not in this shard"
+has "$(cat "$MECH_STUB_LOG")" 'only_mutate = ["src/a.py", "src/b.py"]' "python shard 1/2: lists every changed file"
+eq "$(jq -r '.checks.R3.tested, .checks.R3.total' <<<"$out" | tr '
+' ' ')" "2 2 " "python shard 1/2: its share, 2 of the 5 mutants"
+has "$(cat "$MECH_STUB_LOG")" "run calc.core.x_is_positive__mutmut_1 calc.core.x_mul__mutmut_1" "python shard 1/2: runs its share by name"
 : > "$MECH_STUB_LOG"
 out=$(MUT_FIXTURE=caught mut --shard 2/3); rc=$?
-eq "$(jq -r .checks.R3.note <<<"$out")" "0 mutants in the diff (no changed production file in this shard)" "python shard past the files: named empty"
-eq "$(wc -l < "$MECH_STUB_LOG" | tr -d ' ')" 0 "python shard past the files: mutmut not invoked"
+eq "$(jq -r '.checks.R3.tested, .checks.R3.total' <<<"$out" | tr '
+' ' ')" "1 1 " "python shard 2/3: its share, 1 of the 5"
+: > "$MECH_STUB_LOG"
+out=$(MUT_FIXTURE=caught mut --shard 1/2 --max-mutants 2); rc=$?
+eq "$(jq -r '.checks.R3.tested, .checks.R3.total, .checks.R3.status' <<<"$out" | tr '
+' ' ')" "1 1 pass " "python shard 1/2, cap 2: one of the two"
+out=$(MUT_FIXTURE=caught mut --shard 0/2 --max-mutants 2); rc=$?
+eq "$(jq -r '.checks.R3.tested, .checks.R3.total, .checks.R3.status' <<<"$out" | tr '
+' ' ')" "1 4 partial " "python shard 0/2, cap 2: the 3 past the cap are its untested"
 
 # ids: stable when lines move, the entry's line follows the code
 mrepo ids

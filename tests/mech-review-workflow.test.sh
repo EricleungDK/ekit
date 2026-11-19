@@ -89,8 +89,10 @@ check("reusable: on is workflow_call only", child_keys(on) == {"workflow_call"},
 wc = block(on, "workflow_call") or []
 inputs = block(wc, "inputs") or []
 want_inputs = {"stack", "test-paths", "protected-paths", "agent-branch-prefix", "mutation-budget", "extra-apt-packages",
-               "project-dir", "setup-command", "mutant-timeout", "rust-toolchain"}
-check("reusable: exactly the 10 inputs", child_keys(inputs) == want_inputs, str(sorted(child_keys(inputs))))
+               "project-dir", "setup-command", "mutant-timeout", "rust-toolchain", "max-mutants"}
+check("reusable: exactly the 11 inputs", child_keys(inputs) == want_inputs, str(sorted(child_keys(inputs))))
+check("reusable: max-mutants defaults to 40 (#26)", value(block(inputs, "max-mutants") or [], "default") == "40",
+      str(block(inputs, "max-mutants")))
 check("reusable: stack defaults to auto", value(block(inputs, "stack") or [], "default") == "auto")
 check("reusable: mutant-timeout defaults to empty (auto: no --timeout, baseline unlimited)",
       value(block(inputs, "mutant-timeout") or [], "default") == "", str(block(inputs, "mutant-timeout")))
@@ -211,6 +213,8 @@ check("baseline: ekit checkout at job.workflow_sha", re.search(r"ref:\s*\$\{\{\s
 check("baseline: runs mech-review.py baseline", "mech-review.py" in bt and " baseline" in bt, bt)
 check("baseline: shard count from the shards setting (4)", "MUTATION_SHARDS" in bt or "--shards" in bt, bt)
 check("baseline: budget from the mutation-budget input", "inputs.mutation-budget" in bt and "--mutation-budget" in bt, bt)
+check("baseline: the cap from the max-mutants input, via env (#26)",
+      "MAX_MUTANTS: ${{ inputs.max-mutants }}" in bt and '--max-mutants "$MAX_MUTANTS"' in bt, bt)
 check("baseline: does not read mutant-timeout (a set value never caps the baseline)", "mutant-timeout" not in bt, bt)
 check("baseline: outputs run, count, shards and timeout",
       all(re.search(rf"^\s+{k}:\s*\$\{{\{{\s*steps\.\w+\.outputs\.{k}\s*\}}\}}", bt, re.M)
@@ -276,6 +280,8 @@ check("mutants: budget from the mutation-budget input", "inputs.mutation-budget"
 check("mutants: mutant-timeout from the input, else the baseline's derived one (#46), via env, passed only when set",
       "MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || needs.baseline.outputs.timeout }}" in mt
       and '--mutant-timeout "$MUTANT_TIMEOUT"' in rs and 'if [ -n "$MUTANT_TIMEOUT" ]' in rs, rs)
+check("mutants: the cap from the max-mutants input, via env (#26)",
+      "MAX_MUTANTS: ${{ inputs.max-mutants }}" in rs and '--max-mutants "$MAX_MUTANTS"' in rs, rs)
 check("mutants: rc above 1 is no result (crash surfaces at report)", "rc -gt 1" in rs or "-gt 1" in rs, rs)
 up = step(mu, "upload mutants result")
 check("mutants: uploads its JSON artifact per shard", "mech-review-mutants-${{ matrix.shard }}" in "\n".join(up)
@@ -368,7 +374,10 @@ if local:
     w = block(block(sjobs, local[0]) or [], "with") or []
     # ekit's own code is python: on the rust stack no file of it was production code, so R1 and R3 never ran
     check("self: stack python (the kit's own language)", value(w, "stack") == "python", str(value(w, "stack")))
-    check("self: test-paths tests/**", value(w, "test-paths") == "tests/**", str(value(w, "test-paths")))
+    # the scenarios' fixtures are test support, not production code (#26: a fake tool there took R3's 40 slots)
+    tp = [l.strip() for l in (block(w, "test-paths") or []) if l.strip()]
+    check("self: test-paths tests/** and .ekit/scenarios/**",
+          value(w, "test-paths") == "|" and tp == ["tests/**", ".ekit/scenarios/**"], str((value(w, "test-paths"), tp)))
     check("self: protected-paths .github/**", value(w, "protected-paths") == ".github/**",
           str(value(w, "protected-paths")))
 

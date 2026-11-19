@@ -149,6 +149,12 @@ for a in "$@"; do
 done
 k=${shard%%/*}
 echo "$(pwd -P) | $*" >> "$MECH_STUB_LOG"
+# --list --json (#26: R3 lists the diff's mutants first, for the cap): the fixture's mutants.json, or none
+if [[ " $* " == *" --list "* ]]; then
+  fx="${MUT_FIXTURE-}"; fx="${fx//\{k\}/0}"
+  if [[ -n "$fx" && -f "$MECH_FX/$fx/mutants.json" ]]; then cat "$MECH_FX/$fx/mutants.json"; fi
+  exit 0
+fi
 if [[ -n "${MUT_FIXTURE-}" && -n "$out" ]]; then
   fx="${MUT_FIXTURE//\{k\}/$k}"
   mkdir -p "$out/mutants.out"; cp -r "$MECH_FX/$fx/." "$out/mutants.out/"

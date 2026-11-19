@@ -35,6 +35,10 @@ on:
         description: "R3 budget in minutes per mutants shard, and for the baseline step (cargo-mutants on the diff); a budget hit is partial, not a failure; a baseline that does not finish in it is n/a"
         type: string
         default: "10"
+      max-mutants:
+        description: "R3 cap: the most mutants tested per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last); the rest are untested and R3 reads partial (tested/total). rust and python; ts does not apply it (Stryker lists no mutant before its run)"
+        type: string
+        default: "40"
       extra-apt-packages:
         description: "apt packages (space-separated) installed in red-first, mutants and (rust) baseline, before the tests run"
         type: string
@@ -409,6 +413,7 @@ jobs:
           STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           MUTATION_BUDGET: ${{ inputs.mutation-budget }}
+          MAX_MUTANTS: ${{ inputs.max-mutants }}
           PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -uo pipefail
@@ -418,9 +423,10 @@ jobs:
             export CARGO_INCREMENTAL=1
             export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
           fi
-          # the most shards: 4 (fewer when there are fewer mutants or files: no empty shard)
+          # the most shards: 4. rust: min(4, mutants under max-mutants, ceil(estimated minutes / (budget / 2))), the
+          # estimate from the measured baseline; python and ts: one per changed production file, at most 4 (#26)
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
-                --mutation-budget "$MUTATION_BUDGET" --project-dir "$PROJECT_DIR" --shards 4)
+                --mutation-budget "$MUTATION_BUDGET" --max-mutants "$MAX_MUTANTS" --project-dir "$PROJECT_DIR" --shards 4)
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
@@ -571,6 +577,7 @@ jobs:
           MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || needs.baseline.outputs.timeout }}
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.baseline.outputs.count }}
+          MAX_MUTANTS: ${{ inputs.max-mutants }}
           PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           STRYKER_BIN: ${{ runner.temp }}/stryker/node_modules/.bin/stryker
         run: |
@@ -582,7 +589,8 @@ jobs:
             export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
           fi
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
-                --shard "$SHARD/$SHARD_COUNT" --mutation-budget "$MUTATION_BUDGET" --project-dir "$PROJECT_DIR")
+                --shard "$SHARD/$SHARD_COUNT" --mutation-budget "$MUTATION_BUDGET" --max-mutants "$MAX_MUTANTS"
+                --project-dir "$PROJECT_DIR")
           if [ -n "$MUTANT_TIMEOUT" ]; then args+=(--mutant-timeout "$MUTANT_TIMEOUT"); fi
           if [ "$STACK" = "ts" ]; then args+=(--mutants-cmd "$STRYKER_BIN"); fi
           while IFS= read -r g; do

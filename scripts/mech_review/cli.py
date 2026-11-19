@@ -1,6 +1,7 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
 import json
+import math
 import re
 import signal
 import sys
@@ -32,7 +33,9 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
   R3  mutation on the diff (`mutants`): cargo-mutants `--in-diff` (rust), mutmut (python), Stryker 10.0.0 (ts: changed
       lines, `--mutate` ranges), run in a worktree at head. `baseline` (#46) runs first, once: rust measures the unmutated
       tree and counts the mutants; the shards then skip the baseline (`--baseline skip`, `--timeout` from the baseline)
-      and run round-robin over min(shards, mutants) shards. Per-mutant timeout: --mutant-timeout SEC, else derived from the
+      and run round-robin over min(shards, mutants, ceil(estimated min / (budget / 2))) shards. Cap --max-mutants N
+      (default 40; rust, python): the riskiest N run (branch conditions, returns and booleans, arithmetic, the rest,
+      strings and arguments last), dealt round-robin over the shards; the rest are untested: partial. Per-mutant timeout: --mutant-timeout SEC, else derived from the
       measured baseline (cargo-mutants' rule). Budget `--mutation-budget MIN` (default 10, per shard and for the baseline).
       MISSED in a production file -> fail (agent-fixable), one entry per mutant; TIMEOUT and UNVIABLE ignored. Budget
       hit with no MISSED -> partial (tested/total), not blocking. A baseline that fails -> fail; one that times out ->
@@ -90,6 +93,24 @@ def mutant_timeout_arg(value):
     raise argparse.ArgumentTypeError(f"{value!r}: want auto or whole seconds >= 1")
 
 
+def budget_arg(value):
+    """--mutation-budget: minutes, a finite number (nan or inf would reach the shard count and the runner's timeout)."""
+    try:
+        x = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: want minutes, a number") from None
+    if not math.isfinite(x):
+        raise argparse.ArgumentTypeError(f"{value!r}: want minutes, a finite number")
+    return x
+
+
+def max_mutants_arg(value):
+    """--max-mutants: whole number >= 1."""
+    if value.isdigit() and int(value) >= 1:
+        return int(value)
+    raise argparse.ArgumentTypeError(f"{value!r}: want a whole number >= 1")
+
+
 def project_dir_arg(value):
     """Crate dir relative to the repo root: no `..`, not absolute; `./` and trailing `/` are dropped."""
     if not value or value.startswith("/") or ".." in value.split("/"):
@@ -123,11 +144,14 @@ def build_parser():
                    help="crate dir under the repo root (default .): R1, R4 and R3 run there; paths stay repo-root")
     p.add_argument("--mutants-cmd", metavar="CMD", help="mutation tool for R3 (default: the stack's: rust cargo mutants, python "
                                                           "mutmut, ts node_modules/.bin/stryker)")
-    p.add_argument("--mutation-budget", type=float, default=10.0, metavar="MIN",
+    p.add_argument("--mutation-budget", type=budget_arg, default=10.0, metavar="MIN",
                    help="R3 budget in minutes for this run (default 10); a budget hit is partial, not a failure")
     p.add_argument("--mutant-timeout", type=mutant_timeout_arg, default=None, metavar="SEC|auto",
                    help="R3 per-mutant timeout: auto (default: cargo-mutants' own inline baseline sets it) or whole seconds "
                         "(the shards then skip the baseline: it was measured by `baseline`)")
+    p.add_argument("--max-mutants", type=max_mutants_arg, default=40, metavar="N",
+                   help="R3 (mutants, baseline): the most mutants tested per PR (default 40), riskiest first; past it R3 "
+                        "is partial (rust, python; ts: not applied)")
     p.add_argument("--shard", metavar="K/N", help="R3 only: run shard K of N (0-based, as cargo-mutants numbers them)")
     p.add_argument("--shards", type=int, default=None, metavar="N",
                    help="baseline: the most mutants shards (default 4; fewer when there are fewer mutants); merge: the number "
@@ -173,7 +197,7 @@ def _baseline(parser, args):
         parser.error("--shards N: want N >= 1")
     try:
         env = engine.baseline(args.repo, args.base, args.head, args.stack, args.test_paths, args.mutants_cmd,
-                              args.mutation_budget, shards, project_dir=args.project_dir)
+                              args.mutation_budget, shards, project_dir=args.project_dir, max_mutants=args.max_mutants)
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
@@ -306,7 +330,7 @@ def main(argv):
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
                          test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
                          mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
-                         project_dir=args.project_dir)
+                         project_dir=args.project_dir, max_mutants=args.max_mutants)
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2

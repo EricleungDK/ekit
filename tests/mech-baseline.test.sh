@@ -1,7 +1,7 @@
 #!/bin/bash
 # R3 baseline once (#46): the baseline step measures the unmutated tree once (rust: cargo-mutants on one mutant with
 # --build-timeout 0, so only the baseline runs); shards skip it and take a per-mutant timeout derived from it; the
-# shard count is min(4, mutants) so no shard is empty; combine_timing keeps sums for a shard with 0 tested.
+# shard count is min(4, mutants, ceil(estimated minutes / (budget / 2))) so no shard is empty (#26); combine_timing keeps sums for a shard with 0 tested.
 # Fixtures are real cargo-mutants 27.1.0 output (tests/fixtures/mutants/baseline-ok, skip-missed, list-15.json).
 source "$(dirname "$0")/lib.sh"
 FX="$ROOT/tests/fixtures/mutants"
@@ -163,7 +163,9 @@ f_ok = fake()
 p_ok = baseline(f_ok)
 run_check("baseline ok: run the shards", p_ok["run"] is True, str(p_ok))
 run_check("baseline ok: 15 mutants in the diff", p_ok["mutants"] == 15, str(p_ok.get("mutants")))
-run_check("baseline ok: 4 shards (min of the max and the mutant count)", p_ok["count"] == 4, str(p_ok.get("count")))
+# #26: shards = min(4, mutants, ceil(estimated minutes / (budget / 2))): 15 mutants x 0.25 s of baseline is one shard
+run_check("baseline ok: 1 shard (a small PR: the estimate is far below half the budget)", p_ok["count"] == 1,
+          str(p_ok.get("count")))
 run_check("baseline ok: per-mutant timeout derived from the measured baseline test (20 s floor here)",
           p_ok["timeout"] == 20, str(p_ok.get("timeout")))
 bt = json.load(open(os.path.join(FX, "baseline-ok", "outcomes.json")))
@@ -229,10 +231,11 @@ run_check("list failed: n/a (env), never pass", p_lf["check"]["status"] == "n/a"
 p_nt = baseline(fake(version_rc=None))
 run_check("tool missing: n/a (env), no shards", p_nt["check"]["status"] == "n/a" and p_nt["run"] is False, str(p_nt["check"]))
 
-# shard count: min(max, mutants); a max below the mutant count is the max
-run_check("shard count: the max when there are more mutants", baseline(fake(), shards=2)["count"] == 2)
+# shard count: min(max, mutants, cost); a max below the mutant count is the max. A budget of 0.001 min puts the cost
+# term (ceil(estimated minutes / (budget / 2))) far above both, so these two terms are what is checked here
+run_check("shard count: the max when there are more mutants", baseline(fake(), shards=2, budget=0.001)["count"] == 2)
 run_check("shard count: the mutant count when fewer than the max (no empty shard)",
-          baseline(fake(list_text=json.dumps([{"name": "a"}] * 3)), shards=4)["count"] == 3)
+          baseline(fake(list_text=json.dumps([{"name": "a"}] * 3)), shards=4, budget=0.001)["count"] == 3)
 
 # python: one shard per changed production file (mutmut shards by file), no toolchain
 PY_REPO = os.path.join(REPO, "py")
@@ -401,12 +404,12 @@ mrepo() {
 bl() { MECH_TEST_STUB="$MUT" python3 -I "$MR" baseline --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' "$@"; }
 mut() { MECH_TEST_STUB="$MUT" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' "$@"; }
 
-# baseline ok: runs the shards, 4 shards, derived timeout (20 s floor), one mutant run for the baseline only
+# baseline ok: runs the shards, 1 shard (#26: a small PR), derived timeout (20 s floor), one mutant run for the baseline only
 mrepo bok
 : > "$MECH_STUB_LOG"
 out=$(MUT_FIXTURE=baseline-ok MUT_RC=3 bl --shards 4); rc=$?
 eq "$rc" 0 "baseline ok CLI: exit 0"
-eq "$(jq -c '{run,count,mutants,timeout}' <<<"$out")" '{"run":true,"count":4,"mutants":15,"timeout":20}' "baseline ok CLI: run, 4 shards, 15 mutants, timeout 20"
+eq "$(jq -c '{run,count,mutants,timeout}' <<<"$out")" '{"run":true,"count":1,"mutants":15,"timeout":20}' "baseline ok CLI: run, 1 shard, 15 mutants, timeout 20"
 eq "$(jq -r .checks.R3.status <<<"$out")" skipped "baseline ok CLI: R3 left to the shards"
 has "$(cat "$MECH_STUB_LOG")" "--list --json" "baseline ok CLI: the mutant list is read first"
 has "$(cat "$MECH_STUB_LOG")" "--build-timeout 0" "baseline ok CLI: mutant builds killed at 0 s"
