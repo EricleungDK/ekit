@@ -261,8 +261,9 @@ class CopyingMutmut:
     """mutmut as R3 drives it, every mutant killed once it runs: the list-only run writes mutants/calc.py (the function
     copies) and its .meta; a run with filters runs the mutants they match; `results` lists each one's status."""
 
-    def __init__(self, list_timeout=False):
+    def __init__(self, list_timeout=False, head=PY_HEAD, orig=PY_ORIG, mutants=PY_MUTANTS):
         self.runs, self.ran, self.list_timeout = [], set(), list_timeout
+        self.head, self.orig, self.mutants = head, orig, mutants
 
     def __call__(self, argv, cwd, timeout):
         verb, args = argv[1], argv[2:]
@@ -270,23 +271,23 @@ class CopyingMutmut:
             return 0, "mutmut, version 3.8.1"
         if verb == "results":
             return 0, "".join(f"    {PY_NAME(n)}: {'killed' if PY_NAME(n) in self.ran else 'not checked'}\n"
-                              for n in sorted(PY_MUTANTS))
+                              for n in sorted(self.mutants))
         if verb != "run":
             return 2, f"unexpected {argv}"
         self.runs.append(args)
         if args == [_kit_mutants().LIST_ONLY]:
             os.makedirs(os.path.join(cwd, "mutants"), exist_ok=True)
-            copies = PY_HEAD + "\n\ndef x_f__mutmut_orig(a, b):\n" + PY_ORIG + "".join(
-                f"\n\ndef x_f__mutmut_{n}(a, b):\n" + body for n, body in sorted(PY_MUTANTS.items()))
+            copies = self.head + "\n\ndef x_f__mutmut_orig(a, b):\n" + self.orig + "".join(
+                f"\n\ndef x_f__mutmut_{n}(a, b):\n" + body for n, body in sorted(self.mutants.items()))
             with open(os.path.join(cwd, "mutants", "calc.py"), "w") as f:
                 f.write(copies)
             with open(os.path.join(cwd, "mutants", "calc.py.meta"), "w") as f:
-                json.dump({"exit_code_by_key": dict.fromkeys(PY_NAME(n) for n in PY_MUTANTS)}, f)
+                json.dump({"exit_code_by_key": dict.fromkeys(PY_NAME(n) for n in self.mutants)}, f)
             if self.list_timeout:
                 return "timeout", ""
             return 1, "Filtered for specific mutants, but nothing matches"
         import fnmatch
-        self.ran |= {PY_NAME(n) for n in PY_MUTANTS if any(fnmatch.fnmatchcase(PY_NAME(n), p) for p in args)}
+        self.ran |= {PY_NAME(n) for n in self.mutants if any(fnmatch.fnmatchcase(PY_NAME(n), p) for p in args)}
         return 0, "done"
 
 
@@ -295,7 +296,10 @@ def _kit_mutants():
     return mutants
 
 
-class TestPythonCap(unittest.TestCase):
+class PyRepo(unittest.TestCase):
+    """a python repo whose head turns calc.py from PY_BASE into HEAD."""
+    HEAD = PY_HEAD
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -307,7 +311,7 @@ class TestPythonCap(unittest.TestCase):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "base")
         with open(os.path.join(self.repo, "calc.py"), "w") as f:
-            f.write(PY_HEAD)
+            f.write(self.HEAD)
         git(self.repo, "commit", "-q", "-am", "head")
 
     def r3(self, fake, **kw):
@@ -317,6 +321,24 @@ class TestPythonCap(unittest.TestCase):
         rv = Review(self.repo, mb, head, ADAPTERS["python"](), ["tests/**"], ".")
         return _kit_mutants().run(rv, None, 5, kw.get("shard"), None, fake, max_mutants=kw.get("cap", 40))
 
+
+ML_ORIG = "    if (a > b and\n            b > 10):\n        return a - b\n    return a\n"
+ML_MUTANTS = {1: ML_ORIG.replace("a - b", "a + b"),   # arithmetic, in the body
+              2: ML_ORIG.replace("b > 10", "b > 11")}  # a number on the if's continuation line: a branch condition
+
+
+class TestPythonConditionOrder(PyRepo):
+    HEAD = "def f(a, b):\n" + ML_ORIG
+
+    def test_a_continuation_line_of_an_if_ranks_as_a_branch_condition(self):
+        # by its text alone mutant 2 is arithmetic like mutant 1, and mutant 1 would come first on the tie
+        fake = CopyingMutmut(head=self.HEAD, orig=ML_ORIG, mutants=ML_MUTANTS)
+        check, _ = self.r3(fake, cap=1)
+        self.assertEqual(fake.ran, {PY_NAME(2)})
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 1, 2))
+
+
+class TestPythonCap(PyRepo):
     def test_more_mutants_than_the_cap_runs_the_riskiest_and_reads_partial(self):
         fake = CopyingMutmut()
         check, entries = self.r3(fake, cap=3)
