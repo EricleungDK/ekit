@@ -98,8 +98,8 @@ def py_risk(removed, added, condition=False):
     the test of an if/elif/while/assert, a match or a comprehension filter (in_condition, from the function's syntax).
     Such an edit, one on an if/elif/while/assert/match/case line, or one of a comparison or logical operator, is a
     branch condition. A string literal, or an argument dropped or set to None, comes last. True/False, or a returned
-    value replaced by None, is a return. An arithmetic operator or a number is arithmetic; any other edit of a return
-    line is a return."""
+    value replaced by None, is a return. Any other value replaced by None (an assignment's) is the rest, not
+    arithmetic. An arithmetic operator or a number is arithmetic; any other edit of a return line is a return."""
     a, b = PY_TOKEN.findall(removed or ""), PY_TOKEN.findall(added or "")
     i = 0
     while i < min(len(a), len(b)) and a[i] == b[i]:
@@ -118,8 +118,10 @@ def py_risk(removed, added, condition=False):
     if any(t in ("True", "False") for t in diff) or (returning and b == ["return", "None"]):
         return RISK_RETURN  # a boolean literal, or the whole returned value replaced
     in_call = a[:i].count("(") > a[:i].count(")")  # the edit sits inside a call's parentheses
-    if (in_call and "," in da and len(b) < len(a)) or (returning and "None" in db):
+    if (in_call and (("," in da and len(b) < len(a)) or db == ["None"])) or (returning and "None" in db):
         return RISK_LAST  # an argument dropped, or set to None
+    if db == ["None"]:
+        return RISK_REST  # a whole assigned value replaced by None: no operator swap, whatever the old value held
     if any(t in ARITH_OPS or t[:1].isdigit() for t in diff):
         return RISK_ARITH
     if returning:

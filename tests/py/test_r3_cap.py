@@ -431,6 +431,8 @@ class TestPythonRisk(unittest.TestCase):
             (("return f(a, b)", "return f(a)"), M.RISK_LAST),       # an argument dropped
             (("return f(a, b)", "return f(None, b)"), M.RISK_LAST),  # an argument set to None
             (("log(a, b)", "log(a)"), M.RISK_LAST),
+            (("log(a, b)", "log(None, b)"), M.RISK_LAST),
+            (("total = n * 2 + 1", "total = None"), M.RISK_REST),  # an assigned value replaced: no operator swap
             (("return a, b", "return a"), M.RISK_RETURN),  # a tuple element, not a call's argument
             (("break", "return"), M.RISK_REST),
         ]
