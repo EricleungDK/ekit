@@ -1252,7 +1252,23 @@ class Mutmut:
             if stop:
                 return stop
             ranks = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])  # each mutant's edit: its risk
-            keep, extra = None, 0
+            keep, extra, off = None, 0, 0
+
+            def on_changed_lines(cands):
+                """(the candidates whose edit is on a changed line, or whose line mutmut's copies do not give, count of
+                the rest): only a mutant on a changed line can become a finding, so only those take a cap slot. A
+                mutant that cannot be located stays a candidate (the post-run check names it unlocated)."""
+                kept, left_out = [], 0
+                for n in cands:
+                    got = ranks.change(n)
+                    if got:
+                        f = _repo_path(project_dir, got[0])
+                        ln = line_at(sources.get(f), n, got[1], got[2])
+                        if ln is not None and ln not in {x for x, _ in changed.get(f, [])}:
+                            left_out += 1
+                            continue
+                    kept.append(n)
+                return kept, left_out
             if rc != "timeout":
                 rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
                 if rrc != 0:
@@ -1265,8 +1281,12 @@ class Mutmut:
                 if not touched:
                     return _check("pass", f"0 mutants in the diff ({len(names)} in functions the diff does not touch: "
                                           "not run)", 0, 0), []
-                # the cap (#26): the riskiest max_mutants, dealt round-robin over the shards
-                own, extra = cap_share(py_order(inside, ranks), max_mutants, shard)
+                eligible, off = on_changed_lines(inside)
+                if not eligible:
+                    return _check("pass", f"0 mutants on changed lines ({off} on unchanged lines of touched functions: "
+                                          "not run)", 0, 0), []
+                # the cap (#26): the riskiest max_mutants of those on changed lines, dealt round-robin over the shards
+                own, extra = cap_share(py_order(eligible, ranks), max_mutants, shard)
                 keep = set(own)
                 if not own:
                     check = apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra, max_mutants)
@@ -1287,7 +1307,8 @@ class Mutmut:
             inside = [(name, status) for name, status in listed if not outside_diff(name, sources, changed)]
             dealt_from_cut = keep is None and shard_index(shard)[1] > 1
             if keep is None:  # the budget ended step 1: deal what mutmut listed, so no two shards report one mutant
-                own, extra = cap_share(py_order([n for n, _ in inside], ranks), max_mutants, shard)
+                eligible, off = on_changed_lines([n for n, _ in inside])
+                own, extra = cap_share(py_order(eligible, ranks), max_mutants, shard)
                 keep = set(own)
             rows = [(name, _kind(status, early), status) for name, status in inside if name in keep]
             unrun = len(listed) - len(inside)
@@ -1362,6 +1383,8 @@ class Mutmut:
                     note += f"; {suite['caught']} more caught only by the whole suite"
                 if suite["hung"]:
                     note += f"; {suite['hung']} hung the whole suite"
+                if off:
+                    note += f"; {off} on unchanged lines of touched functions: not run"
                 if unrun:
                     note += f"; {unrun} in functions the diff does not touch: not run"
                 note += waiting + cap_note(extra, max_mutants)

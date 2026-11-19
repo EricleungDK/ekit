@@ -7,6 +7,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 ### Changed
 
 - **R3 mutant cap and risk order** (`max-mutants` input, `--max-mutants`, default 40; #26): rust and python test at most `max-mutants` mutants per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last; a fixed tie order, so every run picks the same set). The rest are untested and R3 reads `partial (tested/total)`, never `pass`. A rust run that tests mutants outside the pick (an `examine_re` in `.cargo/mutants.toml` is ORed with `--re`) is `n/a (env)`. ts (Stryker) does not apply it: Stryker lists no mutant before its run.
+- **R3 (python): the cap's slots go only to mutants on changed lines.** Before any mutant runs, the mutants on unchanged lines of a touched function are left out (they can never become a finding): not picked, not run, not in `tested`/`total`; the note counts them (`N on unchanged lines of touched functions: not run`). A mutant mutmut's copies cannot place on a line stays a candidate.
 - **R3 shard count** (rust): `min(4, mutants, ceil(estimated minutes / (budget / 2)))`, estimated from the baseline's measured build and test time, so a small PR gets one shard. Past the cap the mutants are dealt round-robin in risk order. Python shards are dealt the same way (each lists every changed file); python and ts keep one shard per changed file, at most 4 (no baseline is measured for them).
 
 ### Fixed

@@ -368,12 +368,16 @@ class TestMutmutFiles(unittest.TestCase):
         self.assertEqual(fake.shown, [])
         self.assertEqual([(e["file"], e["line"], e["problem"]) for e in entries],
                          [("calc.py", 3, "MISSED mutant calc.py:3: return c + 0 -> return c - 0")])
-        self.assertEqual(check["note"], "2/2 tested: 1 missed in the diff, 1 missed outside the diff, 0 unlocated, 0 caught")
+        # #26 follow-on: the mutant on the unchanged line takes no cap slot and is not run
+        self.assertEqual(check["note"], "1/1 tested: 1 missed in the diff, 0 missed outside the diff, 0 unlocated, 0 caught; "
+                                        "1 on unchanged lines of touched functions: not run")
 
     def test_a_miss_on_an_unchanged_line_of_the_touched_function_does_not_block(self):
         check, entries = self.r3(WritingMutmut({SUB1: "survived", SUB2: "killed"}))
         self.assertEqual((check["status"], entries), ("pass", []))
-        self.assertEqual(check["note"], "2/2 tested: 0 missed in the diff, 1 missed outside the diff, 0 unlocated, 1 caught")
+        # #26 follow-on: the mutant on the unchanged line takes no cap slot and is not run
+        self.assertEqual(check["note"], "1/1 tested: 0 missed in the diff, 0 missed outside the diff, 0 unlocated, 1 caught; "
+                                        "1 on unchanged lines of touched functions: not run")
 
     def test_a_copy_that_disagrees_with_the_source_is_not_trusted(self):
         fake = WritingMutmut({SUB2: "survived"})

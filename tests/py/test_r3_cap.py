@@ -261,17 +261,17 @@ class CopyingMutmut:
     """mutmut as R3 drives it, every mutant killed once it runs: the list-only run writes mutants/calc.py (the function
     copies) and its .meta; a run with filters runs the mutants they match; `results` lists each one's status."""
 
-    def __init__(self, list_timeout=False, head=PY_HEAD, orig=PY_ORIG, mutants=PY_MUTANTS):
+    def __init__(self, list_timeout=False, head=PY_HEAD, orig=PY_ORIG, mutants=PY_MUTANTS, reverse=False):
         self.runs, self.ran, self.list_timeout = [], set(), list_timeout
-        self.head, self.orig, self.mutants = head, orig, mutants
+        self.head, self.orig, self.mutants, self.reverse = head, orig, mutants, reverse
 
     def __call__(self, argv, cwd, timeout):
         verb, args = argv[1], argv[2:]
         if verb == "--version":
             return 0, "mutmut, version 3.8.1"
-        if verb == "results":
+        if verb == "results":  # reverse: mutmut lists them in another order
             return 0, "".join(f"    {PY_NAME(n)}: {'killed' if PY_NAME(n) in self.ran else 'not checked'}\n"
-                              for n in sorted(self.mutants))
+                              for n in sorted(self.mutants, reverse=self.reverse))
         if verb != "run":
             return 2, f"unexpected {argv}"
         self.runs.append(args)
@@ -297,15 +297,15 @@ def _kit_mutants():
 
 
 class PyRepo(unittest.TestCase):
-    """a python repo whose head turns calc.py from PY_BASE into HEAD."""
-    HEAD = PY_HEAD
+    """a python repo whose head turns calc.py from BASE into HEAD."""
+    BASE, HEAD = PY_BASE, PY_HEAD
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = self.tmp.name
         git(self.repo, "init", "-q")
-        for name, text in (("pyproject.toml", "[project]\nname = 'calc'\n"), ("calc.py", PY_BASE)):
+        for name, text in (("pyproject.toml", "[project]\nname = 'calc'\n"), ("calc.py", self.BASE)):
             with open(os.path.join(self.repo, name), "w") as f:
                 f.write(text)
         git(self.repo, "add", "-A")
@@ -320,6 +320,48 @@ class PyRepo(unittest.TestCase):
         base, head, mb = merge_base(self.repo, "HEAD~1", "HEAD")
         rv = Review(self.repo, mb, head, ADAPTERS["python"](), ["tests/**"], ".")
         return _kit_mutants().run(rv, None, 5, kw.get("shard"), None, fake, max_mutants=kw.get("cap", 40))
+
+
+OFF_ORIG = "    x = a + 1\n    y = b * 2\n    z = x - y\n    return z > 0\n"  # head: only the return line changed
+OFF_MUTANTS = {1: OFF_ORIG.replace("a + 1", "a - 1"),    # unchanged lines of the touched function
+               2: OFF_ORIG.replace("a + 1", "a + 2"),
+               3: OFF_ORIG.replace("b * 2", "b / 2"),
+               4: OFF_ORIG.replace("x - y", "x + y"),
+               5: OFF_ORIG.replace("z > 0", "z >= 0"),   # the changed line: branch
+               6: OFF_ORIG.replace("z > 0", "z > 1"),    # arithmetic (a number)
+               7: OFF_ORIG.replace("z > 0", "z < 0")}    # branch
+ON_DIFF = [PY_NAME(n) for n in (5, 7, 6)]  # risk order
+
+
+class TestPythonCapOnChangedLines(PyRepo):
+    """#26 follow-on: the cap's slots go only to mutants that can become findings, those on a changed line."""
+    BASE = "def f(a, b):\n" + OFF_ORIG.replace("return z > 0", "return z")
+    HEAD = "def f(a, b):\n" + OFF_ORIG
+
+    def fake(self, **kw):
+        return CopyingMutmut(head=self.HEAD, orig=OFF_ORIG, mutants=OFF_MUTANTS, **kw)
+
+    def test_only_mutants_on_changed_lines_are_picked_and_counted(self):
+        for reverse in (False, True):
+            fake = self.fake(reverse=reverse)
+            check, entries = self.r3(fake, cap=2)
+            self.assertEqual(fake.ran, set(ON_DIFF[:2]), reverse)
+            self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 2, 3), reverse)
+            self.assertIn("4 on unchanged lines of touched functions: not run", check["note"])
+            self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
+
+    def test_within_the_cap_only_the_changed_lines_mutants_run(self):
+        fake = self.fake()
+        check, _ = self.r3(fake)
+        self.assertEqual(fake.ran, set(ON_DIFF))
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("pass", 3, 3))
+
+    def test_shards_run_each_picked_mutant_once(self):
+        f0, f1 = self.fake(), self.fake()
+        c0, _ = self.r3(f0, cap=2, shard="0/2")
+        c1, _ = self.r3(f1, cap=2, shard="1/2")
+        self.assertEqual((f0.ran, f1.ran), ({ON_DIFF[0]}, {ON_DIFF[1]}))
+        self.assertEqual(((c0["tested"], c0["total"]), (c1["tested"], c1["total"])), ((1, 2), (1, 1)))
 
 
 ML_ORIG = "    if (a > b and\n            b > 10):\n        return a - b\n    return a\n"
