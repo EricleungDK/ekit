@@ -34,9 +34,11 @@ WHICH = {"r2": ("R2",), "red": ("R1", "R4"), "all": ("R1", "R2", "R4"), "mutants
 
 def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="r2", agent_prefix=None,
         head_branch=None, test_cmd=None, runner=None, mutants_cmd=None, mutation_budget=None, shard=None,
-        mutant_timeout=None, mutant_runner=None, project_dir=".", max_mutants=mutants.DEFAULT_MAX_MUTANTS):
+        mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None,
+        max_mutants=mutants.DEFAULT_MAX_MUTANTS):
+    """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack]."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    rv = Review(repo, mb, head, ADAPTERS[stack](), test_globs, project_dir)
+    rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_globs, project_dir)
     want = WHICH[which]
     checks = {c: {"status": "skipped", "note": f"not run by {which}"} for c in CHECKS}
     raw = []

@@ -1,0 +1,10 @@
+# mech-review-ts/adapter-file: the shipped ts.toml gives the same R2 entries as the built-in `--stack ts`; an unbalanced test file is needs-human through it
+
+- story: As a TypeScript repo owner I run R2 with `--stack ts --adapter scripts/mech_review/adapters/ts.toml` and get exactly what the built-in `--stack ts` gives on the same PR, so I can trust an adapter file as a stack.
+- covers: #16 A3 (TS through the shipped adapter file = built-in `ts`: same entries, exit code, summary, for an honest change and each cheat); A4 (a test file whose brackets do not balance is R2 `fail` class `needs-human` through the adapter file; the built-in keeps `agent-fixable`); A1 (the shipped file describes test calls, skip/only, eq/ne/other asserts, suppressions with reasons, mutation skip markers)
+- steps:
+  1. Repo on base with `package.json`, `src/calc.ts`, `tests/calc.test.ts` (`describe("Calc")` with `it("adds")` holding a `toBe` and a `not.toBe`, and `it("keeps")` holding a `toEqual` and a `toBeGreaterThan`).
+  2. One head per change, each from base: honest (adds `it("subs")`), `it.skip("keeps")`, `xit("keeps")`, `keeps` deleted, `toBe(3)` -> `toBe(4)`, the `toBeGreaterThan` dropped, an unreasoned `// eslint-disable-next-line no-unused-vars`, a reasoned one (`-- fixture`), a bare `// @ts-ignore`, `// Stryker disable all` in `src/calc.ts`, `it.only("adds")`.
+  3. For each: `mech-review.py r2 --stack ts --test-paths 'tests/**'` and the same with `--adapter <kit>/scripts/mech_review/adapters/ts.toml`.
+  4. A head with `toBe(3;` (a bracket never closed) and one with an unterminated template literal, run both ways.
+- expected: step 3 the JSON is byte-identical both ways, with exit 0 for honest and reasoned-eslint (no entries), exit 0 with one `confirm` for the changed expected value (`was 3, now 4`), exit 1 with one `fail` for every other cheat, each naming the test or directive. Step 4 through the adapter: exit 1, one `fail` entry of class `needs-human` with `file does not parse`; built-in: the same entry with class `agent-fixable`; otherwise the same. Nothing written into the kit repo.

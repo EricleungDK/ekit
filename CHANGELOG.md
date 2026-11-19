@@ -4,6 +4,10 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ## Unreleased
 
+### Added
+
+- **Adapter files** (`scripts/mech-review.py r2 --adapter <file>`, #16): a TOML file describes a stack to R2 as data: file extensions, test calls and their skip/only markers, function shapes, assert shapes (chains such as `expect(a).toBe(b)`, calls such as `assertEquals(a, b)`), lint suppressions and their reasons, mutation skip markers and config files, and a lexer table (comments, strings, regex literals, brackets). ekit's own scanner reads the source with it; the file holds no regex. `--stack` names the file's stack. A bad file is a usage error that names the field; a source file that does not balance under it is an R2 `needs-human` fail. TS ships as `scripts/mech_review/adapters/ts.toml`, with the same R2 entries as the built-in. Needs python 3.11+ (`tomllib`) only when `--adapter` is given; R2 only for now; the built-in stacks are unchanged. Format: `docs/mech-review-ci.md#adapter-file`.
+
 ### Changed
 
 - **R3 mutant cap and risk order** (`max-mutants` input, `--max-mutants`, default 40; #26): rust and python test at most `max-mutants` mutants per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last; a fixed tie order, so every run picks the same set). The rest are untested and R3 reads `partial (tested/total)`, never `pass`. A rust run that tests mutants outside the pick (an `examine_re` in `.cargo/mutants.toml` is ORed with `--re`) is `n/a (env)`. ts (Stryker) does not apply it: Stryker lists no mutant before its run.

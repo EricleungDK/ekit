@@ -16,9 +16,12 @@ commit() { git -C "$1" add -A; git -C "$1" -c user.name=t -c user.email=t@t -c c
 python3 -I - "$ROOT" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1] + "/scripts")
+import os
 from mech_review.stack import TsAdapter
+from mech_review import adapter_file
 
-A = TsAdapter()
+# MECH_ADAPTER_TS=<adapter file>: the same checks against TS described by that file (#16, tests/mech-adapter.test.sh)
+A = adapter_file.load(os.environ["MECH_ADAPTER_TS"]) if os.environ.get("MECH_ADAPTER_TS") else TsAdapter()
 FAILS = 0
 
 
@@ -154,8 +157,8 @@ PY
 eq "$?" 0 "ts adapter: classify, test fns, markers, assertions, bodies, calls, suppressions, parse errors"
 
 # ---- R2 on temp git repos (ts stack): mirrors the Rust and Python guard cases ----
-# mr <repo> <base> <head> [args]: r2 with the ts stack
-mr() { local r="$1" b="$2" h="$3"; shift 3; python3 -I "$MR" r2 --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' "$@"; }
+# mr <repo> <base> <head> [args]: r2 with the ts stack (MECH_ADAPTER_TS set: TS from that adapter file)
+mr() { local r="$1" b="$2" h="$3"; shift 3; python3 -I "$MR" r2 --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"} "$@"; }
 # tsrepo <name>: base with src/calc.ts (add) and tests/calc.test.ts (describe Calc > adds). sets R, B
 tsrepo() {
   R=$(mkrepo "$1")
@@ -462,7 +465,7 @@ has "$(jq -r '.entries[0].problem' <<<"$out")" "does not parse" "unparseable nam
 
 tsrepo protected
 mkdir -p "$R/.github/workflows"; echo "x" > "$R/.github/workflows/ci.yml"; H=$(commit "$R" ci)
-out=$(python3 -I "$MR" r2 --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --protected-paths '.github/**')
+out=$(python3 -I "$MR" r2 --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --protected-paths '.github/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"})
 eq "$(jq -r '.entries[0].class' <<<"$out")" needs-human "ts protected path: needs-human"
 
 

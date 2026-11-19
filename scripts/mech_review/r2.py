@@ -83,15 +83,19 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
 
 
 def _unparsed(adapter, path, before, after):
-    """a file the stack cannot parse is a truthful fail: one entry per side that does not parse."""
+    """a file the stack cannot parse is a truthful fail: one entry per side that does not parse. With an adapter file
+    the cause may be the file's lexer table, not the PR: a person decides (needs-human)."""
     out = []
+    cls, hint = "agent-fixable", "fix the syntax error: this file cannot be checked against base"
+    if adapter.from_file:
+        cls, hint = "needs-human", ("fix the syntax error; if the file is valid, the adapter file's lexer table cannot "
+                                    "read it: a person fixes the adapter file")
     for lab, text in (("base", before), ("head", after)):
         err = adapter.parse_error(text) if text is not None else None
         if err:
             where = "base file" if lab == "base" else "file"
-            out.append(entry("R2", path, err[0], f"unparseable:{lab}", "agent-fixable", "fail",
-                             f"{where} does not parse: {err[1]} (line {err[0]})",
-                             "fix the syntax error: this file cannot be checked against base",
+            out.append(entry("R2", path, err[0], f"unparseable:{lab}", cls, "fail",
+                             f"{where} does not parse: {err[1]} (line {err[0]})", hint,
                              "unparseable file hides test changes"))
     return out
 

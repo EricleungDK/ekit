@@ -9,3 +9,4 @@
   4. Head 3 is the real `tests/fixtures/stryker/missed/head/src/calc.ts` (add and isPositive changed). Run `mutants --stack ts` with the Stryker replay (MECH_TEST_STUB) that copies `tests/fixtures/stryker/missed/report.json` into `reports/mutation/` and prints `stdout.txt`. Expect exit 1, five R3 entries on src/calc.ts lines 2 and 6, no entry for `sub` (line 14), summary `fail <head3> (5 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)`. The same with `--max-mutants 1`: the same summary, status and entry ids, no traceback.
   5. Run `plan --stack ts` on head 3. Expect `{"run":true}`.
 - expected: exit codes and summaries as above; the caller checkout is untouched (HEAD and status unchanged); nothing written into the kit repo.
+- children: adapter-file
