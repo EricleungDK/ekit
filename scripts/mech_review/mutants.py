@@ -158,15 +158,23 @@ def cap_note(extra, max_mutants):
     return f"; {extra} past the cap (max-mutants {max_mutants}): untested" if extra else ""
 
 
+SHOWN = re.compile(r"^\d+/(?:\d+|\?) tested")  # the `tested/total` a note starts with
+
+
 def apply_cap(check, own, extra, max_mutants):
     """A capped run's check: the total is this shard's share plus the mutants past the cap it reports, and a run that
-    tested fewer than that is partial, never a pass."""
+    tested fewer than that is partial, never a pass. The note's `tested/total` is the check's. More tested than that
+    total (the tool ran mutants outside the pick) is not a result: n/a."""
     if check.get("status") not in ("pass", "partial", "fail") or check.get("tested") is None:
         return check
-    check["total"] = len(own) + extra
-    if check["status"] == "pass" and check["tested"] < check["total"]:
+    total = len(own) + extra
+    if check["tested"] > total:
+        return _check("n/a", f"{check['tested']} tested, more than the {total} this shard holds under max-mutants "
+                             f"{max_mutants} (env): the tool did not keep to the pick; see the job log")
+    check["total"] = total
+    if check["status"] == "pass" and check["tested"] < total:
         check["status"] = "partial"
-    check["note"] = check["note"] + cap_note(extra, max_mutants)
+    check["note"] = SHOWN.sub(f"{check['tested']}/{total} tested", check["note"], count=1) + cap_note(extra, max_mutants)
     return check
 
 
@@ -524,7 +532,17 @@ class CargoMutants:
             check, ents = verdict(mo, rc, text, adapter, test_globs, wall_s=wall, project_dir=project_dir,
                                   timeout_s=mutant_timeout, skipped_baseline=mutant_timeout is not None)
             if capped:
-                check = apply_cap(check, own, extra, max_mutants)
+                ran = _load(os.path.join(mo, "mutants.json"))
+                ran = {m.get("name") for m in ran if isinstance(m, dict)} if isinstance(ran, list) else set()
+                stray = ran - {m.get("name") for m in own}
+                if stray:  # cargo-mutants ORs --re with the crate config's examine_re: the pick was not kept
+                    check, ents = _check("n/a", f"cargo-mutants ran {len(stray)} mutant(s) outside this shard's pick "
+                                                f"(env): the cap was not kept; an `examine_re` in .cargo/mutants.toml "
+                                                "is ORed with --re: remove it, or raise max-mutants"), []
+                else:
+                    check = apply_cap(check, own, extra, max_mutants)
+                    if check["status"] == "n/a":
+                        ents = []
             if check["status"] != "pass":
                 _diagnose(mo, text, check["status"])
             return check, ents

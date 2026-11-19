@@ -26,7 +26,9 @@ if "--list" in args:
     print(json.dumps(listing, indent=2))
     sys.exit(0)
 res = [args[i + 1] for i, a in enumerate(args) if a == "--re"]
-picked = [m for m in listing if not res or any(re.search(r, m["name"]) for r in res)]
+# cargo-mutants ORs --re with the crate config's examine_re (STUB_CONFIG_RE stands for that config)
+conf = [os.environ["STUB_CONFIG_RE"]] if os.environ.get("STUB_CONFIG_RE") else []
+picked = [m for m in listing if not res or any(re.search(r, m["name"]) for r in res + conf)]
 if "--shard" in args:
     k, n = (int(x) for x in args[args.index("--shard") + 1].split("/"))
     picked = picked[k::n]
@@ -180,6 +182,22 @@ class TestRustShards(RustCap):
         r3 = env["checks"]["R3"]
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 4, 7))
         self.assertIn("partial: R3 (4/7)", env["summary"])
+
+
+class TestRustCapNotHonoured(RustCap):
+    """cargo-mutants unions --re with examine_re from .cargo/mutants.toml: such a run tests mutants past the cap."""
+
+    def test_a_run_that_tests_mutants_outside_the_pick_is_not_a_result(self):
+        for shard in ("0/2", "1/2"):
+            env = self.cli("mutants", "--max-mutants", "4", "--shard", shard, STUB_CONFIG_RE="src/")
+            r3 = env["checks"]["R3"]
+            self.assertEqual(r3["status"], "n/a", (shard, r3))
+            self.assertIn("examine_re", r3["note"])
+            self.assertEqual([e for e in env["entries"] if e["check"] == "R3"], [])
+
+    def test_the_note_counts_what_the_status_counts(self):
+        r3 = self.cli("mutants", "--max-mutants", "4", "--shard", "0/2")["checks"]["R3"]
+        self.assertTrue(r3["note"].startswith("2/5 tested"), r3["note"])
 
 
 class TestBaselineShardCount(RustCap):
