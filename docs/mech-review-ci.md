@@ -1,7 +1,8 @@
 # mech-review CI (adopters)
 
-Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each PR it runs up to five jobs and merges them into one sticky comment (marker `<!-- mech-review -->`) and one check result:
+Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each PR it runs up to seven jobs and merges them into one sticky comment (marker `<!-- mech-review -->`) and one check result:
 
+- `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it finds the one project from the tracked manifests; a set stack is passed through as is. Every later job reads the result from this job's outputs.
 - `guard`: R2 test-diff guard (`scripts/mech-review.py r2`), git diffs only, no toolchain.
 - `red-first`: R1 red-first and R4 determinism (`scripts/mech-review.py red`). Compiles and runs the PR's new or changed tests, so it needs the stack toolchain (rust: stable; python: a venv with pytest; ts: node 22 and the repo's installed dependencies).
 - `plan`: decides whether R3 runs (a production file changed). Git only.
@@ -35,6 +36,8 @@ jobs:
         .github/**
 ```
 
+`stack` may be left out: `auto` finds a single project by itself. Setting it keeps CI running when a second project appears.
+
 Python: the same, with `stack: python` and `test-paths: tests/**` (`tests/test_*.py` or any layout under `tests/`).
 
 TypeScript / JavaScript: `stack: ts` with `test-paths: src/**/*.test.ts` (or `tests/**`). `.ts .tsx .js .jsx .mjs .cjs` files are this stack; the project dir needs a `package.json`.
@@ -50,13 +53,13 @@ instead; then upgrading is a bump in that repo again.
 
 | Input | Default | Use |
 |---|---|---|
-| `stack` | `rust` | language adapter: `rust` (cargo test, cargo-mutants), `python` (pytest, mutmut) or `ts` (vitest or jest, Stryker). Sets up the toolchain for `red-first` and `mutants` |
+| `stack` | `auto` | language adapter: `auto`, `rust` (cargo test, cargo-mutants), `python` (pytest, mutmut) or `ts` (vitest or jest, Stryker). Sets up the toolchain for `red-first` and `mutants`. `auto` finds the one project from the tracked manifests (`Cargo.toml`; `pyproject.toml`, `setup.py` or `setup.cfg`; `package.json`; the shallowest ones, `tests/`, fixture, vendored and build dirs skipped, as `doctor` does), at the PR base and at its head, git only. Several projects, none, or a head that finds a different one than the base: no check runs, and the comment names the projects found and asks for `stack` and `project-dir`. It never guesses. With `project-dir` set, only that dir is read |
 | `test-paths` | `tests/**` | test file globs, one per line; `.rs` files here count every assert; a `.rs` file outside them is production code for R1 |
 | `protected-paths` | `.github/**` | globs, one per line; any change under them is a `needs-human` fail |
 | `agent-branch-prefix` | `agent/`, `claude/`, `codex/`, `copilot/`, `cursor/` | prefixes, one per line: R1 runs only when the PR head branch starts with one of them (`--agent-prefix`, repeatable); other branches skip R1. `*` runs R1 on every branch. A value you set replaces the default list |
 | `mutation-budget` | `10` | R3 budget in minutes, per mutants shard and for the baseline step. A budget hit is `partial` (no MISSED so far) or `fail` (a MISSED found), never a crash; a baseline that does not finish in it is `n/a`. Applies to all stacks |
 | `extra-apt-packages` | `` | apt packages (space-separated) installed in `red-first`, `mutants` and (rust) `baseline`, before the tests run |
-| `project-dir` | `.` | crate dir under the repo root (`package.json` for ts). R1, R4 and R3 run there; `test-paths` and `protected-paths` stay repo-root globs; a path with `..` or a leading `/` is a usage error |
+| `project-dir` | `.` | crate dir under the repo root (`package.json` for ts). With `stack: auto` and `project-dir` left at `.`, the dir found is used; a dir you set is never replaced (`.` set by hand reads as left at the default). R1, R4 and R3 run there; `test-paths` and `protected-paths` stay repo-root globs; a path with `..` or a leading `/` is a usage error |
 | `setup-command` | `` | shell command (run with bash) in `red-first`, `mutants` and (rust) `baseline`, after `extra-apt-packages`, before the tests. A non-zero exit stops that job, which then reports a CI entry |
 | `mutant-timeout` | `` (derived) | R3 per-mutant timeout in seconds. Empty is the timeout derived from the measured baseline: 5× its test time, at least 20 s (cargo-mutants' own rule; `timeout_multiplier` and `minimum_test_timeout` are read from the crate dir's `.cargo/mutants.toml`, not a workspace root above it). A set value is used as is. Neither caps the baseline: it runs once, in the `baseline` job, bounded by `mutation-budget`. Stryker's `timeoutMS` is 120 s when unset |
 | `rust-toolchain` | `stable` | Rust toolchain for `red-first` and `mutants` (rust stack), passed to the toolchain action, e.g. `1.96.0` to pin a repo |
@@ -242,5 +245,7 @@ In ekit's own code, most python string and argument mutants that survived were r
 - R3 measures test strength on the changed production code only. A MISSED mutant can be an equivalent mutant (no observable change): the fix is then to assert the behaviour the code really has, and a person may decide the mutant is not worth a test: that is a [waiver](#waivers). Without one a MISSED mutant stays `fail` until a test kills it or the code changes.
 - `partial` (budget hit, nothing MISSED so far) does not block, so part of the diff was not mutated. The reviewer reads the `tested/total` note; a bigger `mutation-budget` (or fewer changed lines) is the fix. A budget hit with a MISSED found is `fail`.
 - Shard results are merged by `mech-review.py merge`. A missing or stale shard is a CI `fail` entry that names the shard; the other shards' entries are kept.
+
+With `stack: auto` the stack and project dir come from the PR's tree, so the `stack` job reads them at the base too and stops when the head finds something else: a PR cannot switch the stack its own checks run with. The job runs no PR code, and its outputs (`stack`, `project-dir`, `error`) reach later jobs only through `env` and `if:` conditions, never a `run:` script. A dir name with a control character is an error, not an output.
 
 The `baseline` job runs PR code too (rust), and its outputs decide whether the shards run, so a malicious test can forge them and skip R3. The outputs reach later jobs only through `env` and the matrix, never a `run:` script. R2 stays the hard guard.

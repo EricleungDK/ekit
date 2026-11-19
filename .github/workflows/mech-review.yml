@@ -9,9 +9,9 @@ on:
   workflow_call:
     inputs:
       stack:
-        description: "language adapter: rust (cargo test, cargo-mutants), python (pytest, mutmut 3.8.1 in a venv) or ts (vitest or jest from package.json, Stryker 10.0.0; node 22)"
+        description: "language adapter: auto (the one project found from the tracked manifests at base and head; several, none, or a PR that changes it fails and asks for stack and project-dir), rust (cargo test, cargo-mutants), python (pytest, mutmut 3.8.1 in a venv) or ts (vitest or jest from package.json, Stryker 10.0.0; node 22)"
         type: string
-        default: rust
+        default: auto
       test-paths:
         description: "test file globs, one per line (** any depth, * one segment)"
         type: string
@@ -40,7 +40,7 @@ on:
         type: string
         default: ""
       project-dir:
-        description: "crate dir under the repo root (default .): R1, R4 and R3 run there; test-paths and protected-paths stay repo-root globs"
+        description: "crate dir under the repo root (default .; with stack auto, the dir found): R1, R4 and R3 run there; test-paths and protected-paths stay repo-root globs. A dir you set is never replaced"
         type: string
         default: "."
       setup-command:
@@ -61,8 +61,70 @@ permissions:
   pull-requests: write
 
 jobs:
+  stack:
+    name: mech-review stack (auto)
+    runs-on: ubuntu-latest
+    # git only, no PR code: settles stack and project-dir once. Every later job reads them from these outputs, through
+    # env or an if: condition, never interpolated into a run: line (the values come from the PR's tree).
+    outputs:
+      stack: ${{ steps.resolve.outputs.stack }}
+      project-dir: ${{ steps.resolve.outputs.project-dir }}
+      error: ${{ steps.resolve.outputs.error }}
+    steps:
+      - name: caller checkout (full history, PR head)
+        if: inputs.stack == 'auto'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: caller
+          persist-credentials: false
+      - name: ekit engine checkout (the ref this workflow was called at)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ekit
+          persist-credentials: false
+      - name: resolve stack and project-dir
+        id: resolve
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STACK: ${{ inputs.stack }}
+          PROJECT_DIR: ${{ inputs.project-dir }}
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" resolve --repo "$GITHUB_WORKSPACE/caller" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR" > stack.json || rc=$?
+          # exit 1 = no stack (the error is the result, reported by the report job). exit 2+ = usage or git error.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::mech-review resolve exit $rc (usage or git error): no stack"
+            exit "$rc"
+          fi
+          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          r = json.load(open("stack.json"))
+          values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": r["error"] or ""}
+          assert not any(c in v for v in values.values() for c in "\r\n"), values  # one line each: an output per line
+          with open(sys.argv[1], "a") as out:
+              for k, v in values.items():
+                  out.write(f"{k}={v}\n")
+          PY
+      - name: no stack (set stack and project-dir)
+        if: steps.resolve.outputs.error != ''
+        env:
+          ERROR: ${{ steps.resolve.outputs.error }}
+        run: |
+          echo "::error::$ERROR"
+          exit 1
+
   guard:
     name: mech-review guard (R2)
+    needs: [stack]
     runs-on: ubuntu-latest
     steps:
       - name: caller checkout (full history, PR head)
@@ -83,7 +145,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           PROTECTED_PATHS: ${{ inputs.protected-paths }}
         run: |
@@ -115,6 +177,7 @@ jobs:
 
   red-first:
     name: mech-review red-first (R1, R4)
+    needs: [stack]
     runs-on: ubuntu-latest
     # runs PR code (cargo test): read-only token, so a PR test cannot edit the comment or PR content
     permissions:
@@ -135,14 +198,14 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Rust toolchain
-        if: inputs.stack == 'rust'
+        if: needs.stack.outputs.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: Python toolchain
-        if: inputs.stack == 'python'
+        if: needs.stack.outputs.stack == 'python'
         env:
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -159,16 +222,16 @@ jobs:
           done
           echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: TypeScript toolchain
-        if: inputs.stack == 'ts'
+        if: needs.stack.outputs.stack == 'ts'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: TypeScript dependencies
         # lockfile-aware: npm ci for package-lock.json, the repo's own pnpm or yarn (pinned) for theirs. The install runs
         # the dependencies' install scripts, like the test code does: the job's token is read-only. No lockfile is a stop.
-        if: inputs.stack == 'ts'
+        if: needs.stack.outputs.stack == 'ts'
         env:
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -205,9 +268,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.head_ref }}
           AGENT_PREFIX: ${{ inputs.agent-branch-prefix }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -uo pipefail
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
@@ -238,6 +301,7 @@ jobs:
 
   plan:
     name: mech-review plan (R3 runs?)
+    needs: [stack]
     runs-on: ubuntu-latest
     # git only, no PR code: the write token stays here, away from the jobs that run PR code (#46)
     outputs:
@@ -262,7 +326,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -eu
@@ -282,7 +346,7 @@ jobs:
 
   baseline:
     name: mech-review baseline (R3, once)
-    needs: [plan]
+    needs: [stack, plan]
     if: ${{ needs.plan.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     # rust: runs PR code (cargo-mutants lists the mutants and runs the unmutated tests once): read-only token, as the
@@ -310,12 +374,12 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Rust toolchain
-        if: inputs.stack == 'rust'
+        if: needs.stack.outputs.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: extra apt packages
-        if: inputs.stack == 'rust' && inputs.extra-apt-packages != ''
+        if: needs.stack.outputs.stack == 'rust' && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -324,14 +388,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq "${pkgs[@]}"
       - name: setup command
-        if: inputs.stack == 'rust' && inputs.setup-command != ''
+        if: needs.stack.outputs.stack == 'rust' && inputs.setup-command != ''
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         shell: bash
         run: bash -c "$SETUP_COMMAND"
       - name: install cargo-mutants (pinned)
         # a failed install is not a stop: the engine reports n/a (env) when the tool is missing
-        if: inputs.stack == 'rust'
+        if: needs.stack.outputs.stack == 'rust'
         continue-on-error: true
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
         with:
@@ -342,10 +406,10 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           MUTATION_BUDGET: ${{ inputs.mutation-budget }}
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -uo pipefail
           # rust: the toolchain action exports CARGO_INCREMENTAL=0, so each mutant rebuilt the whole crate from scratch.
@@ -391,7 +455,7 @@ jobs:
 
   mutants:
     name: mech-review mutants (R3 shard ${{ matrix.shard }})
-    needs: [plan, baseline]
+    needs: [stack, plan, baseline]
     if: ${{ needs.baseline.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     # runs PR code (cargo mutants runs its tests): read-only token, same as red-first
@@ -417,14 +481,14 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Rust toolchain
-        if: inputs.stack == 'rust'
+        if: needs.stack.outputs.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: Python toolchain
-        if: inputs.stack == 'python'
+        if: needs.stack.outputs.stack == 'python'
         env:
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -441,16 +505,16 @@ jobs:
           done
           echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: TypeScript toolchain
-        if: inputs.stack == 'ts'
+        if: needs.stack.outputs.stack == 'ts'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: TypeScript dependencies
         # lockfile-aware: npm ci for package-lock.json, the repo's own pnpm or yarn (pinned) for theirs. The install runs
         # the dependencies' install scripts, like the test code does: the job's token is read-only. No lockfile is a stop.
-        if: inputs.stack == 'ts'
+        if: needs.stack.outputs.stack == 'ts'
         env:
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -484,14 +548,14 @@ jobs:
       - name: Stryker (pinned)
         # isolated from the repo's node_modules: its own prefix in the runner temp dir. A failed install is not a stop:
         # the engine reports n/a (env) when the binary is missing. The test runner plugin is loaded from the project.
-        if: inputs.stack == 'ts'
+        if: needs.stack.outputs.stack == 'ts'
         continue-on-error: true
         run: |
           set -u
           npm install --prefix "$RUNNER_TEMP/stryker" --no-audit --no-fund --legacy-peer-deps "@stryker-mutator/core@10.0.0" "@stryker-mutator/jest-runner@10.0.0"
       - name: install cargo-mutants (pinned)
         # a failed install is not a stop: the engine reports n/a (env) when the tool is missing
-        if: inputs.stack == 'rust'
+        if: needs.stack.outputs.stack == 'rust'
         id: install
         continue-on-error: true
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
@@ -501,13 +565,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           MUTATION_BUDGET: ${{ inputs.mutation-budget }}
           MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || needs.baseline.outputs.timeout }}
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.baseline.outputs.count }}
-          PROJECT_DIR: ${{ inputs.project-dir }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           STRYKER_BIN: ${{ runner.temp }}/stryker/node_modules/.bin/stryker
         run: |
           set -uo pipefail
@@ -544,7 +608,7 @@ jobs:
 
   report:
     name: mech-review report
-    needs: [guard, red-first, plan, baseline, mutants]
+    needs: [stack, guard, red-first, plan, baseline, mutants]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -580,12 +644,12 @@ jobs:
           pattern: "mech-review-mutants-*"
           path: mutants-result
       - name: merge mutants (R3, baseline and shards)
-        if: ${{ needs.plan.outputs.run == 'true' || needs.plan.result != 'success' }}
+        if: ${{ needs.stack.result == 'success' && (needs.plan.outputs.run == 'true' || needs.plan.result != 'success') }}
         env:
           COUNT: ${{ needs.baseline.outputs.count }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ inputs.stack }}
+          STACK: ${{ needs.stack.outputs.stack }}
         run: |
           set -u
           # no baseline result (its job crashed, or never ran): R3 fails with a CI entry; a missing shard file is one too
@@ -613,7 +677,15 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN: ${{ needs.plan.outputs.run }}
           PLAN_RESULT: ${{ needs.plan.result }}
+          STACK_RESULT: ${{ needs.stack.result }}
+          STACK_ERROR: ${{ needs.stack.outputs.error }}
         run: |
+          # no stack: no check ran; the comment says why (the projects found and the inputs to set)
+          if [ "$STACK_RESULT" != "success" ]; then
+            python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+              --reason "${STACK_ERROR:-the stack job produced no stack (see its log)}"
+            exit $?
+          fi
           extra=()
           if [ "$RUN" = "true" ] || [ "$PLAN_RESULT" != "success" ]; then
             extra+=(--envelope mutants=mutants-merged.json)
