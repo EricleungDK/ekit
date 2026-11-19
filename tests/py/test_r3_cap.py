@@ -264,6 +264,13 @@ class TestRustCapNotHonoured(RustCap):
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 1, 7))
         self.assertTrue(r3["note"].startswith("1/7 tested: budget hit"), r3["note"])
 
+    def test_a_capped_run_with_a_missed_mutant_fails_and_counts_the_mutants_past_the_cap(self):
+        env = self.cli("mutants", "--max-mutants", "4", STUB_MISSED=GT["name"])
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("fail", 4, 7))
+        self.assertTrue(r3["note"].startswith("4/7 tested: 1 missed"), r3["note"])
+        self.assertIn("3 past the cap (max-mutants 4): untested", r3["note"])
+
     def test_a_capped_run_whose_baseline_fails_is_that_fail(self):
         env = self.cli("mutants", "--max-mutants", "4", STUB_BASELINE="Failure", STUB_RC="4")
         self.assertEqual(env["checks"]["R3"]["status"], "fail")
