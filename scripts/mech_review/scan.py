@@ -280,6 +280,8 @@ class Lexer:
                 raise ShapeError(f"unknown element `{t}`")
         if sum(1 for e in elems if e.kind == "name") != 1:
             raise ShapeError("want exactly one NAME")
+        if any(e.kind == "name" and e.opt for e in elems):
+            raise ShapeError("NAME cannot be optional")
         if not elems or elems[-1].kind not in ("group", "block", "body") or elems[-1].opt:
             raise ShapeError("must end with a body: `{...}`, `...{...}` or BODY")
         first = next((e for e in elems if not e.opt), None)

@@ -69,6 +69,10 @@ def _template(v, field, names):
     for f in used:
         if f not in names:
             _err(field, f"unknown placeholder `{{{f}}}`: want " + " or ".join(f"`{{{n}}}`" for n in names))
+    try:  # conversions and format specs fail only when formatted: format once now, not on the first PR that needs it
+        v.format(**{n: "x" for n in names})
+    except (ValueError, IndexError, KeyError) as e:
+        _err(field, f"bad template: {e}")
     return v
 
 
@@ -135,6 +139,19 @@ def _lexer(d):
         rx = {"delimiter": rx["delimiter"], "after": rx.get("after", ""), "after_words": set(rx.get("after_words", []))}
     else:
         rx = None
+    bracket_chars = "".join(brackets)
+    quotes = {s["quote"][0] for s in strings}
+    openers = {c[0] for c in d.get("line_comments", [])} | {b[0][0] for b in blocks}
+    if member:
+        why = ("a word character" if member.isalnum() or member == "_" else "whitespace" if member.isspace()
+               else "a bracket" if member in bracket_chars else None)
+        if why:
+            _err(f + ".member", f"`{member}` is {why}: want punctuation such as \".\"")
+    for ch in ident:
+        why = ("whitespace" if ch.isspace() else "a bracket" if ch in bracket_chars else "a string quote" if ch in quotes
+               else "a comment opener" if ch in openers else "the member character" if ch == member else None)
+        if why:
+            _err(f + ".ident_chars", f"`{ch}` cannot be part of a word ({why})")
     return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx), rx
 
 
@@ -170,16 +187,24 @@ def _asserts(d, lexer):
         _err(f + ".call", "want an array of tables ([[asserts.call]])")
     if not chains and not calls:
         _err(f, "no assert shape: want [[asserts.chain]] or [[asserts.call]]")
+    seen = {}  # a word starts one assert shape only: a second one would silently win
     for i, c in enumerate(chains):
         cf = f"{f}.chain[{i}]"
         _table(c, cf, ("start", "negate", "pass_through", "eq"), ("start", "eq"))
-        _idents([_str(c["start"], cf + ".start")], cf + ".start", lexer)
-        for k in ("negate", "pass_through", "eq"):
+        start = _idents([_str(c["start"], cf + ".start")], cf + ".start", lexer)[0]
+        if start in seen:
+            _err(cf + ".start", f"`{start}` is already {seen[start]}")
+        seen[start] = cf + ".start"
+        _idents(c["eq"], cf + ".eq", lexer, nonempty=True)
+        for k in ("negate", "pass_through"):
             _idents(c.get(k, []), f"{cf}.{k}", lexer)
     for i, c in enumerate(calls):
         cf = f"{f}.call[{i}]"
         _table(c, cf, ("names", "kind", "operands"), ("names", "kind"))
-        _idents(c["names"], cf + ".names", lexer, True)
+        for j, n in enumerate(_idents(c["names"], cf + ".names", lexer, True)):
+            if n in seen:
+                _err(f"{cf}.names[{j}]", f"`{n}` is already an assert shape")
+            seen[n] = f"{cf}.names[{j}]"
         kind = _str(c["kind"], cf + ".kind")
         if kind not in KINDS:
             _err(cf + ".kind", f"`{kind}`: want eq, ne or other")
@@ -250,15 +275,18 @@ def parse(data, source="<adapter file>"):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "lexer", "tests", "functions", "asserts",
                       "suppressions", "mutation"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
-    if data["format"] != FORMAT or isinstance(data["format"], bool):
+    if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
     if not all(ch.isalnum() or ch in "_-" for ch in name):
         _err("name", f"`{name}`: want letters, digits, _ or -")
     _strs(data.get("manifests", []), "manifests")
-    for i, e in enumerate(_strs(data["extensions"], "extensions", nonempty=True)):
+    exts = _strs(data["extensions"], "extensions", nonempty=True)
+    for i, e in enumerate(exts):
         if not e.startswith(".") or len(e) < 2:
             _err(f"extensions[{i}]", f"`{e}`: want a file extension such as \".ts\"")
+        if e in exts[:i]:
+            _err(f"extensions[{i}]", f"`{e}` is listed twice")
     lexer, rx = _lexer(data["lexer"])
     _tests(data["tests"], lexer)
     shapes = _functions(data["functions"], lexer) if "functions" in data else []
@@ -284,6 +312,10 @@ def load(path):
         raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
     except tomllib.TOMLDecodeError as e:
         raise AdapterFileError(f"adapter file {path}: not valid TOML: {e}") from None
+    except UnicodeDecodeError as e:  # tomllib decodes the bytes as UTF-8 and lets this through
+        raise AdapterFileError(f"adapter file {path}: not valid TOML: not UTF-8 ({e.reason} at byte {e.start})") from None
+    except RecursionError:  # tomllib nests one python frame per array or inline table
+        raise AdapterFileError(f"adapter file {path}: not valid TOML: arrays or tables nested too deep") from None
     try:
         return parse(data, path)
     except AdapterFileError as e:

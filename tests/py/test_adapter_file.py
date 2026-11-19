@@ -145,6 +145,59 @@ class Invalid(unittest.TestCase):
         self.assertEqual(self.err(with_("mutation", {"config_files": ["mut.toml"]})),
                          "mutation.config_name: missing: config_files needs a name for the entry")
 
+    def test_ident_chars_that_would_change_what_a_word_is_are_rejected(self):
+        cases = {
+            " ": "lexer.ident_chars: ` ` cannot be part of a word (whitespace)",
+            "$(": "lexer.ident_chars: `(` cannot be part of a word (a bracket)",
+            '"': "lexer.ident_chars: `\"` cannot be part of a word (a string quote)",
+            "#": "lexer.ident_chars: `#` cannot be part of a word (a comment opener)",
+            ".": "lexer.ident_chars: `.` cannot be part of a word (the member character)",
+        }
+        for value, want in cases.items():
+            with self.subTest(value):
+                self.assertEqual(self.err(with_("lexer.ident_chars", value)), want)
+
+    def test_a_member_char_that_is_a_word_char_bracket_or_space_is_rejected(self):
+        cases = {
+            "a": "lexer.member: `a` is a word character: want punctuation such as \".\"",
+            "_": "lexer.member: `_` is a word character: want punctuation such as \".\"",
+            " ": "lexer.member: ` ` is whitespace: want punctuation such as \".\"",
+            "(": "lexer.member: `(` is a bracket: want punctuation such as \".\"",
+        }
+        for value, want in cases.items():
+            with self.subTest(value):
+                self.assertEqual(self.err(with_("lexer.member", value)), want)
+
+    def test_a_chain_needs_eq_matchers_and_a_start_of_its_own(self):
+        chain = {"start": "expect", "eq": []}
+        self.assertEqual(self.err(with_("asserts", {"chain": [chain]})), "asserts.chain[0].eq: want at least one entry")
+        two = [{"start": "expect", "eq": ["toBe"]}, {"start": "expect", "eq": ["toEqual"]}]
+        self.assertEqual(self.err(with_("asserts", {"chain": two})),
+                         "asserts.chain[1].start: `expect` is already asserts.chain[0].start")
+
+    def test_a_call_name_in_two_call_shapes_is_rejected(self):
+        calls = [{"names": ["check"], "kind": "other"}, {"names": ["check"], "kind": "eq", "operands": [0, 1]}]
+        self.assertEqual(self.err(with_("asserts", {"call": calls})),
+                         "asserts.call[1].names[0]: `check` is already an assert shape")
+
+    def test_a_template_that_would_fail_to_format_is_rejected_at_load(self):
+        # the reason after `bad template:` is python's own wording, which changes between versions
+        for value in ("{lints!z}", "{lints:>>>}", "{"):
+            with self.subTest(value):
+                sup = {"directives": ["lint-off"], "covers": {"lint-off": "line"}, "problem": value}
+                got = self.err(with_("suppressions", [sup]))
+                self.assertTrue(got.startswith("suppressions[0].problem: bad template: "), got)
+
+    def test_format_must_be_a_whole_number(self):
+        self.assertEqual(self.err(with_("format", 1.0)), "format: `1.0`: want 1")
+
+    def test_a_function_shape_name_cannot_be_optional(self):
+        self.assertEqual(self.err(with_("functions", {"shapes": ["fn NAME? (...) {...}"]})),
+                         "functions.shapes[0]: `fn NAME? (...) {...}`: NAME cannot be optional")
+
+    def test_an_extension_listed_twice_is_rejected(self):
+        self.assertEqual(self.err(with_("extensions", [".mini", ".mini"])), "extensions[1]: `.mini` is listed twice")
+
     def test_a_regex_delimiter_is_one_character(self):
         self.assertEqual(self.err(with_("lexer.regex", {"delimiter": "//"})), "lexer.regex.delimiter: want one character")
 

@@ -144,6 +144,21 @@ class AdapterFileUsage(unittest.TestCase):
         self.assertIn("not valid TOML", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_a_file_that_is_not_utf8_is_a_usage_error_not_a_traceback(self):
+        path = os.path.join(self.tmp, "latin1.toml")
+        with open(path, "wb") as f:
+            f.write(b'name = "caf\xe9"\n')
+        r = r2(self.repo, self.base, self.base, adapter=path)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("not valid TOML", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_deeply_nested_file_is_a_usage_error_not_a_traceback(self):
+        r = r2(self.repo, self.base, self.base, adapter=self.write("x = " + "[" * 3000 + "]" * 3000 + "\n"))
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("not valid TOML", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_a_missing_file_is_a_usage_error(self):
         r = r2(self.repo, self.base, self.base, adapter=os.path.join(self.tmp, "none.toml"))
         self.assertEqual(r.returncode, 2)

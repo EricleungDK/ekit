@@ -296,8 +296,10 @@ A shape starts with a word and ends with a group, block or `BODY`; the function 
 
 | Key | Value |
 |---|---|
-| `[[asserts.chain]]` | `start(actual).matcher(expected)`: `start` (the word), `eq` (matchers that compare equal: kind `eq`, operands `actual` and `expected`), `negate` (members that flip eq to `ne`, e.g. `not`), `pass_through` (members skipped, e.g. `resolves`). Any other matcher is kind `other` |
+| `[[asserts.chain]]` | `start(actual).matcher(expected)`: `start` (the word, required), `eq` (required, at least one: matchers that compare equal: kind `eq`, operands `actual` and `expected`), `negate` (members that flip eq to `ne`, e.g. `not`), `pass_through` (members skipped, e.g. `resolves`). Any other matcher is kind `other` |
 | `[[asserts.call]]` | `name(a, b)`: `names`, `kind` (`eq`, `ne` or `other`), `operands` (`[left, right]` argument indexes, required for `eq`/`ne`) |
+
+A word starts one assert shape only: a second chain with the same `start`, or a call name listed twice, is an error.
 
 R2 compares eq/ne asserts by their operands (a changed expected value is a `confirm`) and other asserts by their text.
 
@@ -319,6 +321,16 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 | `skip_comments` | comment bodies that start with these words (whitespace between words free): a mutation skip marker |
 | `config_files` | file names (any dir) of the mutation tool's config |
 | `config_name` | the tool config's name in the entry, required with `config_files` |
+
+### Fixed, not configurable
+
+`block_style = "braces"` fixes these; an adapter file cannot change them (a Java, Kotlin or C# file can live with them, a language that differs here cannot be described yet):
+
+- a call opens with `(`;
+- a block (`{...}`, `...{...}`, `BODY`) opens with `{`, and a `BODY` expression ends at `;`, a line end or a closing bracket;
+- inside a regex literal, `\` escapes, `[...]` is a class (the delimiter does not end it there), and flags after it are letters, digits and `_`;
+- a suppression directive ends at a character that is not a letter, digit, `_` or `-`;
+- `ident_chars` may not hold whitespace, a bracket, a string quote, a comment opener or the `member` character, and `member` may not be a word character, whitespace or a bracket.
 
 ### Worked example
 
