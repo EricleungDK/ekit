@@ -60,23 +60,23 @@ def _int(v, field):
     return v
 
 
-def _template(v, field, names):
-    """plain `{field}` placeholders (and `{{` `}}`) only: a conversion or spec could still fail on a real value (a nested
-    field in a spec takes the value's text), so none is allowed."""
+def _template(v, field, name):
+    """plain `{name}` placeholders (and `{{` `}}`) only: a conversion or spec could still fail on a real value (a nested
+    field in a spec takes the value's text), so none is allowed. Each template has one placeholder name."""
     _str(v, field)
     try:
         parts = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(v) if f is not None]
     except ValueError as e:
         _err(field, f"bad template: {e}")
     for f, _, _ in parts:
-        if f not in names:
-            _err(field, f"unknown placeholder `{{{f}}}`: want " + " or ".join(f"`{{{n}}}`" for n in names))
+        if f != name:
+            _err(field, f"unknown placeholder `{{{f}}}`: want `{{{name}}}`")
     try:
-        v.format(**{n: "x" for n in names})
+        v.format(**{name: "x"})
     except (ValueError, IndexError, KeyError) as e:
         _err(field, f"bad template: {e}")
     if any(spec or conv for _, spec, conv in parts):
-        _err(field, f"`{v}`: want plain " + " or ".join(f"`{{{n}}}`" for n in names) + " (no `!` conversion or `:` spec)")
+        _err(field, f"`{v}`: want plain `{{{name}}}` (no `!` conversion or `:` spec)")
     return v
 
 
@@ -182,10 +182,11 @@ def _tests(d, lexer):
         _idents(d.get(k, []), f"{f}.{k}", lexer)
     if "separator" in d:
         _str(d["separator"], f + ".separator")
-    _int(d.get("min_args", 0), f + ".min_args")
+    if "min_args" in d:
+        _int(d["min_args"], f + ".min_args")
     _strs(d.get("not_after", []), f + ".not_after")
     if "skipped_text" in d:
-        _template(d["skipped_text"], f + ".skipped_text", ("name",))
+        _template(d["skipped_text"], f + ".skipped_text", "name")
 
 
 def _asserts(d, lexer):
@@ -217,7 +218,7 @@ def _asserts(d, lexer):
         for j, n in enumerate(_idents(c["names"], cf + ".names", lexer, True)):
             if n in seen:
                 _err(f"{cf}.names[{j}]", f"`{n}` is already an assert shape")
-            seen[n] = f"{cf}.names[{j}]"
+            seen[n] = cf
         kind = _str(c["kind"], cf + ".kind")
         if kind not in KINDS:
             _err(cf + ".kind", f"`{kind}`: want eq, ne or other")
@@ -270,7 +271,7 @@ def _suppressions(v):
         _strs(s.get("reason_strip", []), sf + ".reason_strip")
         for k in ("problem", "hint"):
             if k in s:
-                _template(s[k], f"{sf}.{k}", ("lints",))
+                _template(s[k], f"{sf}.{k}", "lints")
 
 
 def _mutation(d):

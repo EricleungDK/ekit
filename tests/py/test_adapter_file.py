@@ -152,6 +152,13 @@ FIELD_CASES = [  # (dotted path in FULL, bad value or DEL, the error)
     ("mutation.config_files", "mut.json", "mutation.config_files: want a list of non-empty strings"),
     ("mutation.config_name", "", "mutation.config_name: want a non-empty string"),
     ("mutation.config_files", [], None),  # valid: a name with no config files is harmless
+    ("lexer.block_style", 3, "lexer.block_style: want a non-empty string"),
+    ("tests.style", 3, "tests.style: want a non-empty string"),
+    ("lexer.strings.1.interpolation", ["${", ""], "lexer.strings[1].interpolation: want [open, close], two non-empty strings"),
+    ("lexer.strings", DEL, None),  # valid: a stack with no string literals
+    ("lexer.regex.after_words", DEL, None),  # valid: a regex literal after the `after` characters only
+    ("lexer.regex.after", DEL, None),
+    ("tests.min_args", DEL, None),
 ]
 
 
@@ -188,6 +195,11 @@ class Invalid(unittest.TestCase):
                     self.assertEqual(parse(data).name, "full")
                 else:
                     self.assertEqual(self.err(data), want)
+
+    def test_a_block_comment_opener_cannot_be_a_word_char(self):
+        data = with_("lexer.line_comments", [], FULL)
+        data["lexer"]["ident_chars"] = "/"
+        self.assertEqual(self.err(data), "lexer.ident_chars: `/` cannot be part of a word (a comment opener)")
 
     def test_each_required_top_level_field_is_named_when_missing(self):
         for k in ("format", "name", "extensions", "lexer", "tests", "asserts"):

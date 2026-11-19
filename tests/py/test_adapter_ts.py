@@ -286,7 +286,42 @@ class TsThroughTheFile(unittest.TestCase):
         rc, ents = self.r2({"tests/a.test.ts": q}, {"tests/a.test.ts": q.replace("it(", "it.skip(")})
         self.assertEqual([e[4] for e in ents], ['test `Calc > says "hi"` marked skipped (skip, todo or x-prefixed)'])
 
+    def test_a_declaration_word_must_stand_alone_and_unbroken(self):
+        cases = ['xfunction it("t", () => { expect(1).toBe(1); });\n',
+                 'func tion\nit("t", () => { expect(1).toBe(1); });\n']
+        for src in cases:
+            with self.subTest(src):
+                rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace('it("t"', 'it.skip("t"')})
+                self.assertEqual([e[4] for e in ents], ["test `t` marked skipped (skip, todo or x-prefixed)"])
+
+    def test_a_test_named_by_a_variable_is_a_test(self):
+        src = 'it(title, () => { expect(1).toBe(1); });\n'
+        rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace("it(", "it.skip(")})
+        self.assertEqual([e[4] for e in ents], ["test `title` marked skipped (skip, todo or x-prefixed)"])
+
+    def test_an_expect_without_arguments_is_read(self):
+        rc, ents = self.r2({"tests/a.test.ts": TEST + "expect();\n"}, {"tests/a.test.ts": TEST})
+        self.assertEqual([e[4] for e in ents], ["assertions outside test fns in `tests/a.test.ts` dropped from 1 to 0"])
+
+    def test_unparseable_hints_differ_by_where_the_stack_comes_from(self):
+        base = self.commit({"tests/u.test.ts": TEST})
+        head = self.commit({"tests/u.test.ts": TEST + "(\n"})
+        got = []
+        for extra in (["--adapter", TS_FILE], []):
+            rc, out, err = run(["r2", "--repo", self.repo, "--base", base, "--head", head, "--stack", "ts",
+                                "--test-paths", "tests/**", *extra])
+            got.append([(e["check"], e["class"], e["hint"]) for e in json.loads(out)["entries"]])
+        self.assertEqual(got, [
+            [("R2", "needs-human", "fix the syntax error; if the file is valid, the adapter file's lexer table cannot "
+                                   "read it: a person fixes the adapter file")],
+            [("R2", "agent-fixable", "fix the syntax error: this file cannot be checked against base")]])
+
     # ---- suppression regions and texts ----
+    def test_a_next_line_directive_does_not_reach_two_lines_down(self):
+        base = "// eslint-disable-next-line no-x\nfoo();\nbar();\n"
+        rc, ents = self.r2({"src/n.ts": base}, {"src/n.ts": base.replace("bar();", "bar(1);")})
+        self.assertEqual(ents, [])
+
     def test_a_block_directive_covers_the_line_after_its_end(self):
         base = "/* eslint-disable-next-line no-x\n*/\nfoo();\nbar();\n"
         rc, ents = self.r2({"src/b.ts": base}, {"src/b.ts": base.replace("foo();", "foo(1);")})

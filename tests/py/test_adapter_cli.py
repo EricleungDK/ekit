@@ -139,6 +139,32 @@ class AdapterFileR2(unittest.TestCase):
         self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in ents],
                          [("confirm", 3, "expected value changed in `Calc / adds`: was add(1,2), now add(2,1)")])
 
+    def test_an_unparseable_file_from_an_adapter_file_says_a_person_fixes_the_adapter(self):
+        r = r2(self.repo, self.base, self.head(BASE.replace("add(1, 2))", "add(1, 2)")))
+        self.assertEqual([(e["check"], e["id"].startswith("R2-"), e["hint"]) for e in json.loads(r.stdout)["entries"]],
+                         [("R2", True, "fix the syntax error; if the file is valid, the adapter file's lexer table cannot "
+                                       "read it: a person fixes the adapter file")])
+
+    def test_a_modifier_the_file_does_not_list_is_neither_skip_nor_only(self):
+        rc, ents = self.entries(self.head(BASE.replace("})\n# test", '  test.only("new", { assertTrue(1) })\n})\n# test')))
+        self.assertEqual((rc, ents), (0, []))
+
+    def test_a_replaced_call_is_quoted_up_to_its_closing_paren(self):
+        semi = BASE.replace("assertTrue(sub(3, 1) == 2)", "assertTrue(a);")
+        self.base = self.repo.commit({"tests/calc.mini": semi}, "semicolon")
+        rc, ents = self.entries(self.head(semi.replace("assertTrue(a);", "assertTrue(b);")))
+        self.assertEqual([e["problem"] for e in ents], ["assertion replaced in `Calc / subtracts`: `assertTrue(a)` -> `assertTrue(b)`"])
+
+    def test_a_file_without_suppressions_reads_comments_as_comments_only(self):
+        with open(MINI) as f:
+            text = f.read().split("[[suppressions]]")[0]
+        path = os.path.join(self.repo.path, "nosup.toml")  # committed with head: not a file of the stack
+        with open(path, "w") as f:
+            f.write(text)
+        head = self.head("# lint-off unused\nfn add(a, b) { a + b }\n", "src/calc.mini")
+        r = r2(self.repo, self.base, head, adapter=path)
+        self.assertEqual((r.returncode, json.loads(r.stdout)["entries"]), (0, []), r.stderr)
+
     def test_an_eq_call_missing_an_operand_compares_by_text(self):
         one = BASE.replace("assertEquals(3, add(1, 2))", "assertEquals(3)")
         self.base = self.repo.commit({"tests/calc.mini": one}, "one operand")
@@ -252,6 +278,11 @@ class OptionalKeysLeftOut(unittest.TestCase):
         self.assertEqual([(e["class"], e["line"], e["problem"]) for e in ents],
                          [("needs-human", 1, "file does not parse: unterminated string (line 1)")])
 
+    def test_a_test_with_no_arguments_has_an_empty_name(self):
+        rc, ents = self.run_file(MINIMAL, "tiny", {"tests/e.tiny": 'test()\ntest("k", { check(1) })\n'},
+                                 {"tests/e.tiny": 'test("k", { check(1) })\n'})
+        self.assertEqual([(e["line"], e["problem"]) for e in ents], [(1, "test fn `` removed")])
+
     def test_default_separator_skip_text_hint_and_an_ne_call(self):
         base = 'suite("S", {\n  test("t", { assertNot(1, f()) })\n})\n'
         rc, ents = self.run_file(DEFAULTS, "dflt", {"tests/c.dflt": base, "src/c.dflt": "f()\n"},
@@ -321,6 +352,7 @@ class AdapterFileUsage(unittest.TestCase):
         r = r2(self.repo, self.base, self.base, adapter=os.path.join(self.tmp, "none.toml"))
         self.assertEqual(r.returncode, 2)
         self.assertIn("cannot read", r.stderr)
+        self.assertIn("none.toml: cannot read: No such file or directory\n", r.stderr)
 
     def test_the_stack_name_must_match_the_files_name(self):
         r = r2(self.repo, self.base, self.base, stack="ts")
