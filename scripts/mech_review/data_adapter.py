@@ -16,38 +16,28 @@ DEFAULT_HINT = "fix the lint, or give the suppression a reason"
 class DataAdapter(Adapter):
     from_file = True
 
-    def __init__(self, cfg, source="<adapter file>"):
-        """cfg: the adapter file's tables, validated by adapter_file.parse (shapes already parsed)."""
-        self.cfg = cfg
-        self.source = source
+    def __init__(self, cfg):
+        """cfg: the adapter file's tables, validated by adapter_file.parse (regex table and shapes already built)."""
         self.name = cfg["name"]
         self.manifests = tuple(cfg.get("manifests", ()))
         self.extensions = tuple(cfg["extensions"])
         lx = cfg["lexer"]
         self.lexer = Lexer(lx["brackets"], lx.get("ident_chars", ""), lx.get("member", "."), lx.get("line_comments", ()),
-                           lx.get("block_comments", ()), lx.get("strings", ()), lx.get("regex"))
+                           lx.get("block_comments", ()), lx.get("strings", ()), lx["regex"])
         self.tests = cfg["tests"]
         self.chains = cfg["asserts"].get("chain", [])
         self.call_shapes = cfg["asserts"].get("call", [])
-        self.fn_shapes = cfg.get("functions", {}).get("shapes", [])
+        self.fn_shapes = cfg["functions"]["shapes"]
         self.sups = cfg.get("suppressions", [])
         self.mutation = cfg.get("mutation", {})
-        skip_words = [w for w in self.mutation.get("skip_comments", [])]
         self._skip_res = [re.compile(r"\s*" + r"\s+".join(re.escape(w) for w in phrase.split()) + r"(?![\w])")
-                          for phrase in skip_words]
-        self._cache = {}
+                          for phrase in self.mutation.get("skip_comments", [])]
 
-    # ---- parsing, once per text ----
+    # ---- parsing ----
     def _parse(self, text):
-        hit = self._cache.get(text)
-        if hit is None:
-            m, comments, errors = self.lexer.mask(text)
-            calls = self._calls(text, m)
-            hit = (m, comments, errors, calls, self._scoped(calls), self.lexer.find_shapes(m, self.fn_shapes))
-            if len(self._cache) > 64:
-                self._cache.clear()
-            self._cache[text] = hit
-        return hit
+        m, comments, errors = self.lexer.mask(text)
+        calls = self._calls(text, m)
+        return m, comments, errors, calls, self._scoped(calls), self.lexer.find_shapes(m, self.fn_shapes)
 
     def _not_after(self, m, start):
         """the name at start follows a word that makes it a declaration (`function it(`): not a call. Read backwards on

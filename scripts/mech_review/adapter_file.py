@@ -284,7 +284,7 @@ def _mutation(d):
         _str(d["config_name"], f + ".config_name")
 
 
-def parse(data, source="<adapter file>"):
+def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "lexer", "tests", "functions", "asserts",
                       "suppressions", "mutation"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
@@ -309,7 +309,7 @@ def parse(data, source="<adapter file>"):
     cfg = dict(data)
     cfg["lexer"] = dict(data["lexer"], regex=rx)
     cfg["functions"] = {"shapes": shapes}
-    return DataAdapter(cfg, source)
+    return DataAdapter(cfg)
 
 
 def load(path):
@@ -332,6 +332,6 @@ def load(path):
     except RecursionError:  # tomllib nests one python frame per array or inline table
         raise AdapterFileError(f"adapter file {path}: not valid TOML: arrays or tables nested too deep") from None
     try:
-        return parse(data, path)
+        return parse(data)
     except AdapterFileError as e:
         raise AdapterFileError(f"adapter file {path}: {e}") from None

@@ -28,15 +28,15 @@ def line_of(text, pos):
 class Lexer:
     """The lexer table of one adapter file, validated (see adapter_file)."""
 
-    def __init__(self, brackets, ident_chars="", member=".", line_comments=(), block_comments=(), strings=(), regex=None):
+    def __init__(self, brackets, ident_chars, member, line_comments, block_comments, strings, regex):
         self.pairs = {b[0]: b[1] for b in brackets}
         self.opens = "".join(b[0] for b in brackets)
         self.closes = "".join(b[1] for b in brackets)
         self.ident_chars = ident_chars
         self.member = member
-        self.line_comments = list(line_comments)
-        self.block_comments = [tuple(b) for b in block_comments]
-        self.strings = list(strings)
+        self.line_comments = line_comments
+        self.block_comments = block_comments
+        self.strings = strings
         self.regex = regex
         self.word_re = re.compile(r"[\w%s]+" % re.escape(ident_chars))
 
