@@ -61,6 +61,9 @@ class TestRust(Repo):
         def cargo_mutants(argv, cwd, timeout):
             if "--version" in argv:
                 return 0, "cargo-mutants 27.1.0"
+            if "--list" in argv:  # the diff's mutants, listed before the run (#26: the cap)
+                with open(os.path.join(FIXTURES, "mutants", "missed", "mutants.json")) as f:
+                    return 0, f.read()
             out = argv[argv.index("--output") + 1]  # what the real tool leaves behind for a run with MISSED mutants
             shutil.copytree(os.path.join(FIXTURES, "mutants", "missed"), os.path.join(out, "mutants.out"))
             return 2, ""

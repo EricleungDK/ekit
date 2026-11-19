@@ -49,6 +49,126 @@ MIN_TEST_TIMEOUT = 20.0  # cargo-mutants' minimum_test_timeout when the config h
 
 RE_POS = re.compile(r"^[^\s:]+:\d+:\d+: ")  # "src/lib.rs:2:11: replace + with - in add" -> "replace + with - in add"
 
+DEFAULT_MAX_MUTANTS = 40  # the most mutants R3 tests per PR (#26); the rest are untested: partial
+
+# risk classes, riskiest first (#26): branch conditions, returns and boolean literals, arithmetic, the rest, then string
+# and argument mutants. The tie order inside a class is fixed (file, position, name), so every run picks the same set.
+RISK_BRANCH, RISK_RETURN, RISK_ARITH, RISK_REST, RISK_LAST = range(5)
+BRANCH_OPS = {"==", "!=", "<", ">", "<=", ">=", "&&", "||", "!", "and", "or", "not", "is", "in"}
+ARITH_OPS = {"+", "-", "*", "/", "//", "%", "**", "&", "|", "^", "<<", ">>", "@"}
+ARITH_OPS |= {op + "=" for op in ARITH_OPS}
+
+
+def rust_risk(m):
+    """risk class of a cargo-mutants mutant (an entry of `--list --json`), from its genre and the operator its name
+    replaces or deletes: `replace > with >= in f` is a branch condition, `replace + with - in f` arithmetic."""
+    genre = m.get("genre")
+    if genre == "MatchArmGuard":
+        return RISK_BRANCH
+    if genre == "FnValue":
+        return RISK_RETURN
+    if genre in ("BinaryOperator", "UnaryOperator"):
+        op = re.match(r"(?:replace|delete) (\S+)", _desc(m.get("name")))
+        op = op.group(1) if op else ""
+        if op in BRANCH_OPS:
+            return RISK_BRANCH
+        if op in ARITH_OPS:
+            return RISK_ARITH
+    return RISK_REST
+
+
+def _span_start(m):
+    start = (m.get("span") or {}).get("start") or {}
+    line, col = start.get("line"), start.get("column")
+    return (line if isinstance(line, int) else 0, col if isinstance(col, int) else 0)
+
+
+def rust_order(listed):
+    """the listed mutants, riskiest first; ties by file, line, column, name."""
+    return sorted(listed, key=lambda m: (rust_risk(m), str(m.get("file", "")), _span_start(m), str(m.get("name", ""))))
+
+
+PY_TOKEN = re.compile(r"[rbuf]*'[^']*'|[rbuf]*\"[^\"]*\"|\d+(?:\.\d+)?|\w+|\*\*=?|//=?|<<=?|>>=?|[=!<>]=|[-+*/%&|^@]=?|\S")
+PY_HEADERS = ("if ", "elif ", "while ", "assert ")
+
+
+def py_risk(removed, added):
+    """risk class of a mutmut mutant from its edit (the changed lines, before and after): a change on an if/elif/while
+    line or of a comparison or logical operator is a branch condition; a string literal or a dropped or None argument
+    comes last; True/False or a return line is a return; an arithmetic operator or a number is arithmetic."""
+    a, b = PY_TOKEN.findall(removed or ""), PY_TOKEN.findall(added or "")
+    i = 0
+    while i < min(len(a), len(b)) and a[i] == b[i]:
+        i += 1
+    j = 0
+    while j < min(len(a), len(b)) - i and a[len(a) - 1 - j] == b[len(b) - 1 - j]:
+        j += 1
+    diff = a[i:len(a) - j] + b[i:len(b) - j]
+    head = (removed or "").lstrip()
+    if head.startswith(PY_HEADERS) or any(t in BRANCH_OPS for t in diff):
+        return RISK_BRANCH
+    if any(t[-1:] in "'\"" for t in diff):
+        return RISK_LAST
+    returning = head.startswith("return")
+    if any(t in ("True", "False") for t in diff) or (returning and b[i:len(b) - j] == ["None"]):
+        return RISK_RETURN  # a boolean literal, or the returned value replaced
+    if any(t in ARITH_OPS or t[:1].isdigit() for t in diff):
+        return RISK_ARITH
+    if returning:
+        return RISK_RETURN
+    if "None" in diff or len(b) < len(a):
+        return RISK_LAST  # an argument replaced by None, or dropped
+    return RISK_REST
+
+
+def py_order(names, files):
+    """mutmut names riskiest first; ties by the function and the mutant's number. files: MutantFiles (the edits)."""
+    def key(name):
+        got = files.change(name)
+        fn, _, num = name.rpartition("__mutmut_")
+        return (py_risk(got[2], got[3]) if got else RISK_REST, fn, int(num) if num.isdigit() else 0, name)
+    return sorted(names, key=key)
+
+
+def shard_index(shard):
+    """(k, n) of `K/N`, (0, 1) for no shard."""
+    if not shard:
+        return 0, 1
+    k, n = (int(x) for x in shard.split("/"))
+    return k, n
+
+
+def cap_share(ordered, max_mutants, shard):
+    """(this shard's mutants, untested past the cap that this shard reports). The capped list is dealt round-robin over
+    the shards; shard 0 reports the ones past the cap, so the merged tested/total counts each mutant once."""
+    picked = ordered[:max_mutants]
+    k, n = shard_index(shard)
+    return picked[k::n], (len(ordered) - len(picked) if k == 0 else 0)
+
+
+RUST_META = set("\\.+*?()|[]{}^$#&-~")
+
+
+def rust_regex_escape(text):
+    """text as a literal for the regex crate (cargo-mutants' --re): a backslash before each meta character only."""
+    return "".join("\\" + c if c in RUST_META else c for c in text)
+
+
+def cap_note(extra, max_mutants):
+    return f"; {extra} past the cap (max-mutants {max_mutants}): untested" if extra else ""
+
+
+def apply_cap(check, own, extra, max_mutants):
+    """A capped run's check: the total is this shard's share plus the mutants past the cap it reports, and a run that
+    tested fewer than that is partial, never a pass."""
+    if check.get("status") not in ("pass", "partial", "fail") or check.get("tested") is None:
+        return check
+    check["total"] = len(own) + extra
+    if check["status"] == "pass" and check["tested"] < check["total"]:
+        check["status"] = "partial"
+    check["note"] = check["note"] + cap_note(extra, max_mutants)
+    return check
+
 
 def _load(path):
     try:
@@ -354,7 +474,10 @@ class CargoMutants:
     baseline runs unlimited. A number sends --timeout N, which also caps the baseline (cargo-mutants 27.1.0)."""
     default_cmd = DEFAULT_CMD
 
-    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner):
+    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
+        """max_mutants: the cap (#26). The diff's mutants are listed first; within the cap cargo-mutants runs them all
+        (its own round-robin shards). Past it, the riskiest max_mutants are dealt round-robin over the shards and each
+        shard names its own with one `--re` per mutant; the rest are untested (partial)."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         rc, text = runner(shlex.split(cmd) + ["--version"], repo, PROBE_TIMEOUT)
@@ -372,25 +495,43 @@ class CargoMutants:
             # a per-mutant timeout means the baseline was measured by the baseline step: skip it here (#46)
             limit = [] if mutant_timeout is None else ["--baseline", "skip", "--timeout", str(mutant_timeout)]
             argv = shlex.split(cmd) + ["--in-diff", diff_path] + limit + ["--colors", "never", "--output", out_parent]
-            if shard:
-                argv += ["--sharding", "round-robin", "--shard", shard]
             with red.worktree(repo, head) as wt:
                 crate, bad = crate_check(rv, wt)
                 if bad:
                     return bad
+                lrc, ltext = runner(shlex.split(cmd) + ["--list", "--json", "--in-diff", diff_path, "--colors", "never"],
+                                    crate, PROBE_TIMEOUT)
+                try:
+                    listed = listed_mutants(ltext) if lrc == 0 else None
+                except ValueError as e:
+                    return _check("n/a", f"cargo-mutants --list output is not a mutant list (env): {e}"), []
+                if listed is None:
+                    return _check("n/a", f"cargo-mutants --list failed (env): {_first_line(ltext) or f'exit {lrc}'}; "
+                                         "see the job log"), []
+                capped = len(listed) > max_mutants
+                if capped:
+                    own, extra = cap_share(rust_order(listed), max_mutants, shard)
+                    if not own:
+                        return apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra, max_mutants), []
+                    for m in own:
+                        argv += ["--re", "^" + rust_regex_escape(str(m.get("name", ""))) + "$"]
+                elif shard:
+                    argv += ["--sharding", "round-robin", "--shard", shard]
                 t0 = time.monotonic()
                 rc, text = runner(argv, crate, budget)
                 wall = time.monotonic() - t0
             mo = os.path.join(out_parent, "mutants.out")
             check, ents = verdict(mo, rc, text, adapter, test_globs, wall_s=wall, project_dir=project_dir,
                                   timeout_s=mutant_timeout, skipped_baseline=mutant_timeout is not None)
+            if capped:
+                check = apply_cap(check, own, extra, max_mutants)
             if check["status"] != "pass":
                 _diagnose(mo, text, check["status"])
             return check, ents
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def baseline(self, rv, cmd, budget_min, shards, runner=None):
+    def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
         """The baseline step (rust, once per PR, #46): cargo-mutants' own unmutated run, which the shards then skip. The
         mutant list comes from `--list --json`. One mutant is run with `--build-timeout 0`, so its build is killed at once
         and the baseline is the only work (the build limit does not reach the baseline). No --timeout: the baseline is
@@ -434,7 +575,7 @@ class CargoMutants:
                 wall = time.monotonic() - t0
                 cfg = cargo_config(crate)  # read while the worktree exists
             mo = os.path.join(out_parent, "mutants.out")
-            result = _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall)
+            result = _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall, max_mutants)
             if result["check"]["status"] in ("fail", "n/a"):
                 _diagnose(mo, text, result["check"]["status"])
             return result
@@ -468,17 +609,22 @@ def derive_timeout(base_test_s, multiplier=TIMEOUT_MULTIPLIER, minimum=MIN_TEST_
     return int(t) if t == int(t) else t
 
 
-def listed_count(text):
-    """Mutants in `cargo mutants --list --json` output. The runner merges stderr into the output, so log lines may come
-    before the array; the array starts on a line of its own (nested arrays are indented). No array at all is no mutant
-    (cargo-mutants prints nothing for an empty list). ValueError when the array does not parse."""
+def listed_mutants(text):
+    """The mutants (dicts) in `cargo mutants --list --json` output. The runner merges stderr into the output, so log
+    lines may come before the array; the array starts on a line of its own (nested arrays are indented). No array at all
+    is no mutant (cargo-mutants prints nothing for an empty list). ValueError when the array does not parse."""
     m = re.search(r"^\[", text or "", re.M)
     if m is None:
-        return 0
+        return []
     doc, _ = json.JSONDecoder().raw_decode(text[m.start():])
     if not isinstance(doc, list):
         raise ValueError("not a JSON list")
-    return len(doc)
+    return [x if isinstance(x, dict) else {} for x in doc]
+
+
+def listed_count(text):
+    """Mutants in `cargo mutants --list --json` output (see listed_mutants)."""
+    return len(listed_mutants(text))
 
 
 def _payload(run, count, mutants, timeout, check, ents):
@@ -488,12 +634,21 @@ def _payload(run, count, mutants, timeout, check, ents):
     return {"run": run, "count": count, "mutants": mutants, "timeout": timeout, "check": check, "entries": ents}
 
 
+def shard_count(shards, mutants, est_min, budget_min):
+    """#26: min(shards, mutants, ceil(estimated minutes / (budget / 2))), at least 1: each shard aims at half its budget,
+    so a small PR gets one shard and no shard is empty. No budget: no time term."""
+    n = min(max(1, shards), max(1, mutants))
+    if budget_min:
+        n = min(n, math.ceil(est_min / (budget_min / 2)))
+    return max(1, n)
+
+
 def _baseline_budget_note(budget_min):
     return (f"baseline timed out: it did not finish within mutation-budget ({budget_min:g} min): mutants and shards not "
             "run; raise mutation-budget")
 
 
-def _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall):
+def _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall, max_mutants=DEFAULT_MAX_MUTANTS):
     """The baseline step's payload from cargo-mutants' Baseline outcome. Fail (tests fail at head) and n/a (timed out by the
     budget, or the tool did not write a baseline) end the R3 check here; Success derives the per-mutant timeout and lets the
     shards run."""
@@ -520,12 +675,16 @@ def _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall):
                                                                "see the job log"), [])
     mult, minimum = cfg
     timeout = derive_timeout(test_s, mult, minimum)
-    count = min(max(1, shards), mutants)
     timing = {"wall_s": round(wall, 2), "baseline_test_s": round(test_s, 2)}
     build_s = _phase(phases, "Build", absent=None)
     if build_s is not None:
         timing["baseline_build_s"] = round(build_s, 2)
-    chk = _check("skipped", f"baseline ok: {mutants} mutants in {count} shard(s), per-mutant timeout {timeout:g}s "
+    tested = min(mutants, max_mutants)
+    est_min = tested * (test_s + (build_s or 0.0)) / 60
+    count = shard_count(shards, tested, est_min, budget_min)
+    capped = f", {tested} under max-mutants {max_mutants}" if tested < mutants else ""
+    chk = _check("skipped", f"baseline ok: {mutants} mutants{capped} in {count} shard(s) (estimated {est_min:.1f} min: "
+                            f"build and test of the baseline per mutant), per-mutant timeout {timeout:g}s "
                             f"({mult:g}x the baseline test time, at least {minimum:g}s)")
     chk["timing"] = timing
     return _payload(True, count, mutants, timeout, chk, [])
@@ -645,23 +804,28 @@ def whole_suite(runner, base, crate, project_dir, found, left):
     runner count it. So each mutant still missed on a changed line gets one more try: `mutmut apply` writes it into
     the worktree, the whole suite runs once, and a suite that fails has caught it. The file is put back each time.
     found: [(name, repo file, line, desc, status)]; left(): seconds of budget left, or None.
-    Returns (still missed, {caught, hung, passed}): passed holds the names the whole suite ran against and passed."""
-    state = {"caught": 0, "hung": 0, "passed": set()}
+    Returns (still missed, {caught, hung, passed, unreached}): passed holds the names the whole suite ran against and
+    passed; unreached counts the mutants whose retry the budget did not reach or cut short (#26): untested, not missed."""
+    state = {"caught": 0, "hung": 0, "passed": set(), "unreached": 0}
     spare = left()
     if spare is not None and spare <= 0:
-        return found, state
+        state["unreached"] = len(found)
+        return [], state
     t0 = time.monotonic()
     rc, _ = runner(SUITE, crate, spare)
     if rc != 0:  # not runnable here, or red without any mutant: it can say nothing about one
         print(f"mech-review: R3: whole suite not used for {len(found)} missed mutant(s): `{' '.join(SUITE)}` "
               f"ends with {rc} on the unmutated tree", file=sys.stderr)
+        if rc == "timeout":  # the budget ended the clean run: no retry was reached
+            state["unreached"] = len(found)
+            return [], state
         return found, state
     limit = max(SUITE_FLOOR, SUITE_FACTOR * (time.monotonic() - t0))
     missed = []
     for turn, item in enumerate(found, 1):
         spare = left()
         if spare is not None and spare <= 0:
-            missed.append(item)  # out of budget: what mutmut said stands
+            state["unreached"] += 1  # out of budget: the retry is not reached, so the mutant is untested
             continue
         path = os.path.join(crate, _crate_path(project_dir, item[1]))
         with open(path, "rb") as f:
@@ -682,6 +846,8 @@ def whole_suite(runner, base, crate, project_dir, found, left):
             os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         if rc == "timeout" and not cut:
             state["hung"] += 1  # as mutmut and cargo-mutants treat a timeout: neither caught nor missed
+        elif rc == "timeout":
+            state["unreached"] += 1  # the budget cut the retry short: untested
         elif isinstance(rc, int) and rc != 0:
             state["caught"] += 1
         else:
@@ -978,15 +1144,15 @@ class Mutmut:
     in its output); the per-mutant timeout is mutmut's own (timeout_multiplier), so --mutant-timeout is not applied."""
     default_cmd = "mutmut"
 
-    def baseline(self, rv, cmd, budget_min, shards, runner=None):
+    def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
         return _files_baseline(rv, shards)
 
-    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner):
+    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
-        prod = sorted({ch.new for ch in red.prod_changes(rv)
-                       if ch.new and _under(ch.new, project_dir)})
-        files = shard_files(prod, shard)
+        # every shard lists the mutants of all changed files and runs its own share of the capped, risk-ordered list
+        files = sorted({ch.new for ch in red.prod_changes(rv)
+                        if ch.new and _under(ch.new, project_dir)})
         changed = added_lines(repo, mb, head)
         budget = None if budget_min is None else budget_min * 60
         with red.worktree(repo, head) as wt:
@@ -1012,6 +1178,8 @@ class Mutmut:
             stop = _run_stopped(rc, text, (EARLY, NO_MATCH))
             if stop:
                 return stop
+            ranks = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])  # each mutant's edit: its risk
+            keep, extra = None, 0
             if rc != "timeout":
                 rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
                 if rrc != 0:
@@ -1019,13 +1187,21 @@ class Mutmut:
                 names = [name for name, _ in parse_results(rtext)]
                 if not names:
                     return _check("pass", "0 mutants in the diff", 0, 0), []
-                touched = sorted({function_glob(n) for n in names if not outside_diff(n, sources, changed)})
+                inside = [n for n in names if not outside_diff(n, sources, changed)]
+                touched = sorted({function_glob(n) for n in inside})
                 if not touched:
                     return _check("pass", f"0 mutants in the diff ({len(names)} in functions the diff does not touch: "
                                           "not run)", 0, 0), []
-                # step 2: only the mutants of the touched functions run
+                # the cap (#26): the riskiest max_mutants, dealt round-robin over the shards
+                own, extra = cap_share(py_order(inside, ranks), max_mutants, shard)
+                keep = set(own)
+                if not own:
+                    check = apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra, max_mutants)
+                    return check, []
+                # step 2: only the mutants of the touched functions run (this shard's share, when that is not all)
+                filters = touched if len(own) == len(inside) else [_glob_escape(n) for n in own]
                 left = None if budget is None else max(1.0, budget - (time.monotonic() - t0))
-                rc, text = runner(base + ["run"] + touched, crate, left)
+                rc, text = runner(base + ["run"] + filters, crate, left)
                 stop = _run_stopped(rc, text, (EARLY,))
                 if stop:
                     return stop
@@ -1035,11 +1211,14 @@ class Mutmut:
             if rrc != 0:
                 return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
             listed = parse_results(rtext)
-            rows = [(name, _kind(status, early), status) for name, status in listed
-                    if not outside_diff(name, sources, changed)]
-            unrun = len(listed) - len(rows)
+            inside = [(name, status) for name, status in listed if not outside_diff(name, sources, changed)]
+            if keep is None:  # the budget ended step 1: deal what mutmut listed, so no two shards count one mutant
+                own, extra = cap_share(py_order([n for n, _ in inside], ranks), max_mutants, shard)
+                keep = set(own)
+            rows = [(name, _kind(status, early), status) for name, status in inside if name in keep]
+            unrun = len(listed) - len(inside)
             tested = sum(1 for _, k, _ in rows if k != "untested")
-            total = None if rc == "timeout" and not rows else len(rows)
+            total = None if rc == "timeout" and not rows else len(rows) + extra
             caught = sum(1 for _, k, _ in rows if k == "caught")
             found, outside, unlocated = [], 0, 0
             copies = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])
@@ -1068,11 +1247,16 @@ class Mutmut:
                     outside += 1
                     continue
                 found.append((name, file, line, f"{removed} -> {after}", status))
-            suite = {"caught": 0, "hung": 0, "passed": set()}
-            if found and rc != "timeout":
+            suite = {"caught": 0, "hung": 0, "passed": set(), "unreached": 0}
+            if found and rc == "timeout":  # the budget ended mutmut's run: no whole-suite retry is reached
+                suite["unreached"], found = len(found), []
+            elif found:
                 found, suite = whole_suite(runner, base, crate, project_dir, found,
                                            lambda: None if budget is None else budget - (time.monotonic() - t0))
                 wall = time.monotonic() - t0
+            tested -= suite["unreached"]
+            waiting = (f"; {suite['unreached']} missed by mutmut, whole-suite retry not reached at budget: untested"
+                       if suite["unreached"] else "")
             ents = finalize([
                 entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
                       (f"add an assert that fails for this mutant: {desc}." if status == "survived" else
@@ -1095,6 +1279,7 @@ class Mutmut:
                     check = _check("fail", f"{shown} tested: budget hit, {len(fails)} missed", tested, total)
                 else:
                     check = _check("partial", f"{shown} tested: budget hit, no MISSED so far", tested, total)
+                check["note"] += waiting + cap_note(extra, max_mutants)
             else:
                 note = (f"{shown} tested: {len(fails)} missed in the diff, {outside} missed outside the diff, "
                         f"{unlocated} unlocated, {caught} caught")
@@ -1104,8 +1289,9 @@ class Mutmut:
                     note += f"; {suite['hung']} hung the whole suite"
                 if unrun:
                     note += f"; {unrun} in functions the diff does not touch: not run"
-                # a mutant of a touched function that mutmut left unrun is not a pass: the run is partial
-                status = "fail" if fails else "partial" if tested < len(rows) else "pass"
+                note += waiting + cap_note(extra, max_mutants)
+                # a mutant of a touched function that mutmut left unrun, or one past the cap, is not a pass: partial
+                status = "fail" if fails else "partial" if tested < total else "pass"
                 check = _check(status, note, tested, total)
             check["timing"] = timing
             return check, ents
@@ -1220,10 +1406,11 @@ class Stryker:
     no report, so a budget hit is partial with the mutant count from Stryker's log and no tested count."""
     default_cmd = "node_modules/.bin/stryker"
 
-    def baseline(self, rv, cmd, budget_min, shards, runner=None):
+    def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
         return _files_baseline(rv, shards)
 
-    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner):
+    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
+        """max_mutants is not applied: Stryker lists no mutant before its run and selects none by name (#26)."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         prod = sorted({ch.new for ch in red.prod_changes(rv)
@@ -1343,23 +1530,23 @@ class Stryker:
 TOOLS = {"rust": CargoMutants(), "python": Mutmut(), "ts": Stryker()}
 
 
-def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None):
+def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
     """The baseline step for mb..head (#46): run the shards or not, how many, the per-mutant timeout derived from the
     measured baseline, and R3 when it ends the check (fail, n/a, or no mutant). Skipped without a production change.
     Returns {run, count, mutants, timeout, check, entries}."""
     if not red.prod_changes(rv):
         return _payload(False, 0, 0, None, _check("skipped", "no production file changed"), [])
-    return TOOLS[rv.adapter.name].baseline(rv, cmd, budget_min, shards, runner)
+    return TOOLS[rv.adapter.name].baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
 
 
-def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None):
+def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
     """R3 for mb..head. Returns (check, entries). Skipped without a production change; n/a without the tool.
-    mutant_timeout None is auto (see CargoMutants). The stack's tool runs in the crate dir of a worktree at head
-    (the caller's checkout does not move)."""
+    mutant_timeout None is auto (see CargoMutants). max_mutants: the cap per PR (#26). The stack's tool runs in the
+    crate dir of a worktree at head (the caller's checkout does not move)."""
     runner = runner or default_runner()
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner)
+    check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check)]
     return check, ents

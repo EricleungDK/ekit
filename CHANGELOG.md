@@ -2,6 +2,17 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Changed
+
+- **R3 mutant cap and risk order** (`max-mutants` input, `--max-mutants`, default 40; #26): rust and python test at most `max-mutants` mutants per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last; a fixed tie order, so every run picks the same set). The rest are untested and R3 reads `partial (tested/total)`, never `pass`. ts (Stryker) does not apply it: Stryker lists no mutant before its run.
+- **R3 shard count** (rust): `min(4, mutants, ceil(estimated minutes / (budget / 2)))`, estimated from the baseline's measured build and test time, so a small PR gets one shard. Past the cap the mutants are dealt round-robin in risk order. Python shards are dealt the same way (each lists every changed file); python and ts keep one shard per changed file, at most 4 (no baseline is measured for them).
+
+### Fixed
+
+- **R3 (python)**: a mutant the budget never reached, including one still waiting for its whole-suite retry, read MISSED, so a PR with real tests could read as many failures. It is now untested: R3 is `partial`, with no MISSED entry. A mutant that ran and survived its retry is still MISSED.
+
 ## 0.5.0
 
 ### Added
