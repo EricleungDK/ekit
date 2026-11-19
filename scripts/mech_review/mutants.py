@@ -748,8 +748,8 @@ def _baseline_outcome(mo, rc, text, budget_min, mutants, shards, cfg, wall, max_
     tested = min(mutants, max_mutants)
     est_min = tested * (test_s + (build_s or 0.0)) / 60
     count = shard_count(shards, tested, est_min, budget_min)
-    capped = f", {tested} under max-mutants {max_mutants}" if tested < mutants else ""
-    chk = _check("skipped", f"baseline ok: {mutants} mutants{capped} in {count} shard(s) (estimated {est_min:.1f} min: "
+    chk = _check("skipped", f"baseline ok: {mutants} mutants, {tested} under max-mutants {max_mutants}, in {count} "
+                            f"shard(s) (estimated {est_min:.1f} min: "
                             f"build and test of the baseline per mutant), per-mutant timeout {timeout:g}s "
                             f"({mult:g}x the baseline test time, at least {minimum:g}s)")
     chk["timing"] = timing
