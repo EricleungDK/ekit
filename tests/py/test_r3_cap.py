@@ -160,6 +160,11 @@ class TestRustCap(RustCap):
     def test_max_mutants_below_one_is_a_usage_error(self):
         self.cli("mutants", "--max-mutants", "0", rc=(2,))
 
+    def test_a_budget_that_is_not_a_finite_number_is_a_usage_error(self):
+        for sub in ("baseline", "mutants"):
+            for value in ("nan", "inf"):
+                self.cli(sub, "--mutation-budget", value, rc=(2,))
+
 
 class TestRustShards(RustCap):
     def test_the_capped_mutants_are_dealt_round_robin_in_risk_order(self):

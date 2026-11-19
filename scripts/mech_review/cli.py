@@ -1,6 +1,7 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
 import json
+import math
 import re
 import signal
 import sys
@@ -92,6 +93,17 @@ def mutant_timeout_arg(value):
     raise argparse.ArgumentTypeError(f"{value!r}: want auto or whole seconds >= 1")
 
 
+def budget_arg(value):
+    """--mutation-budget: minutes, a finite number (nan or inf would reach the shard count and the runner's timeout)."""
+    try:
+        x = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r}: want minutes, a number") from None
+    if not math.isfinite(x):
+        raise argparse.ArgumentTypeError(f"{value!r}: want minutes, a finite number")
+    return x
+
+
 def max_mutants_arg(value):
     """--max-mutants: whole number >= 1."""
     if value.isdigit() and int(value) >= 1:
@@ -132,7 +144,7 @@ def build_parser():
                    help="crate dir under the repo root (default .): R1, R4 and R3 run there; paths stay repo-root")
     p.add_argument("--mutants-cmd", metavar="CMD", help="mutation tool for R3 (default: the stack's: rust cargo mutants, python "
                                                           "mutmut, ts node_modules/.bin/stryker)")
-    p.add_argument("--mutation-budget", type=float, default=10.0, metavar="MIN",
+    p.add_argument("--mutation-budget", type=budget_arg, default=10.0, metavar="MIN",
                    help="R3 budget in minutes for this run (default 10); a budget hit is partial, not a failure")
     p.add_argument("--mutant-timeout", type=mutant_timeout_arg, default=None, metavar="SEC|auto",
                    help="R3 per-mutant timeout: auto (default: cargo-mutants' own inline baseline sets it) or whole seconds "
