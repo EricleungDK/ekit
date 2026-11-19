@@ -17,6 +17,36 @@ done
 MECH_ADAPTER_TS="$T/none.toml" bash "$ROOT/tests/mech-ts.test.sh" >/dev/null 2>&1; rc=$?
 eq "$rc" 1 "mech-ts fails when MECH_ADAPTER_TS names no file (the hook reaches the suite)"
 
+# ...and reaches each suite's CLI cases: a copy of the file that words a skip differently fails mech-ts's CLI skip case
+# (its unit section does not read that text); one that does not know Stryker's marker fails mech-mutation-skip's ts case
+sed 's/^skipped_text = .*/skipped_text = "test `{name}` parked"/' "$TS_FILE" > "$T/reworded.toml"
+out=$(MECH_ADAPTER_TS="$T/reworded.toml" bash "$ROOT/tests/mech-ts.test.sh" 2>&1)
+has "$out" "FAIL it.skip says skipped" "mech-ts CLI cases read the adapter file (skip wording)"
+has "$out" "ok   ts adapter: classify" "mech-ts unit section still passes on the reworded file"
+grep -v '^skip_comments' "$TS_FILE" > "$T/no-stryker.toml"
+out=$(MECH_ADAPTER_TS="$T/no-stryker.toml" bash "$ROOT/tests/mech-mutation-skip.test.sh" 2>&1)
+has "$out" "FAIL ts Stryker disable: exit 1" "mech-mutation-skip ts cases read the adapter file (Stryker marker)"
+has "$out" "ok   rust skip: exit 1" "mech-mutation-skip rust cases stay on the built-in"
+
+# parity: a function named like a test call (`function test(`, `function it(`) declares, it is not a test
+R="$T/decl"; mkdir -p "$R/tests"; git -C "$R" init -q -b main
+cat > "$R/tests/a.test.ts" <<'EOF'
+export async function test(a, b) {
+  expect(a).toBe(b)
+}
+export function it(n, f) { f() }
+it("x", () => { test(1, 1) })
+EOF
+git -C "$R" add -A; git -C "$R" commit -qm base; B=$(git -C "$R" rev-parse HEAD)
+printf 'it("x", () => { expect(1).toBe(1) })\n' > "$R/tests/a.test.ts"
+git -C "$R" commit -qam head; H=$(git -C "$R" rev-parse HEAD)
+ents() { python3 -I "$MR" r2 --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' "$@" \
+  | jq -r '[.entries[] | [.severity, .line, .problem] | join("|")] | join(";")'; }
+built=$(ents); file=$(ents --adapter "$TS_FILE")
+lacks "$built" 'test fn `a` removed' "declared fns, built-in: \`function test(a, b)\` is not a test"
+lacks "$built" 'test fn `n` removed' "declared fns, built-in: \`function it(n, f)\` is not a test"
+eq "$file" "$built" "declared fns: the adapter file gives the built-in's entries"
+
 # unbalanced file: needs-human from the adapter file, agent-fixable from the built-in
 R="$T/unbalanced"; mkdir -p "$R/tests"; git -C "$R" init -q -b main
 printf 'it("a", () => {\n  expect(1).toBe(1);\n});\n' > "$R/tests/a.test.ts"

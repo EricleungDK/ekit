@@ -50,22 +50,22 @@ class DataAdapter(Adapter):
         return hit
 
     def _not_after(self, m, start):
-        """the name at start follows a word that makes it a declaration (`function it(`): not a call."""
-        words = self.tests.get("not_after", [])
-        if not words:
-            return False
-        longest = max(len(w) for w in words)
-        got, j = [], start - 1
-        while j >= 0 and len(got) <= longest:
-            if not m[j].isspace():
-                got.append(m[j])
-            j -= 1
-        before = "".join(reversed(got))
-        for w in words:
-            if before.endswith(w):
-                k = len(before) - len(w) - 1
-                if k < 0 or not self.lexer.is_ident(before[k]):
-                    return True
+        """the name at start follows a word that makes it a declaration (`function it(`): not a call. Read backwards on
+        the masked text as it is: whitespace may sit before the name and between a word and punctuation (`function *`),
+        and the char before the matched entry must not be a word char (`asyncfunction` is not `function`)."""
+        is_ident = self.lexer.is_ident
+        for w in self.tests.get("not_after", []):
+            j, k = start - 1, len(w) - 1
+            while k >= 0:
+                # whitespace is skipped only at a token edge: before the name, or beside punctuation
+                if k == len(w) - 1 or not is_ident(w[k]) or not is_ident(w[k + 1]):
+                    while j >= 0 and m[j].isspace():
+                        j -= 1
+                if j < 0 or m[j] != w[k]:
+                    break
+                j, k = j - 1, k - 1
+            if k < 0 and (j < 0 or not is_ident(m[j])):
+                return True
         return False
 
     def _calls(self, text, m):
