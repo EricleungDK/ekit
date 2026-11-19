@@ -382,5 +382,46 @@ class TestPythonCap(unittest.TestCase):
                                                        [], []))
 
 
+class TestPythonRisk(unittest.TestCase):
+    """the risk class of a mutmut edit (removed line, added line); expected classes are the spec's order."""
+
+    def test_each_kind_of_edit(self):
+        M = _kit_mutants()
+        table = [
+            (("if a > b:", "if a >= b:"), M.RISK_BRANCH),
+            (("x = a and b", "x = a or b"), M.RISK_BRANCH),
+            (("match cmd:", "match None:"), M.RISK_BRANCH),
+            (("case 1:", "case 2:"), M.RISK_BRANCH),
+            (("x = True", "x = False"), M.RISK_RETURN),
+            (("return a - b", "return None"), M.RISK_RETURN),
+            (("return a", "return b"), M.RISK_RETURN),
+            (("c = a - b", "c = a + b"), M.RISK_ARITH),
+            (("n = 10", "n = 11"), M.RISK_ARITH),
+            (('return "x"', 'return "XXxXX"'), M.RISK_LAST),
+            (("return f(a, b)", "return f(a)"), M.RISK_LAST),       # an argument dropped
+            (("return f(a, b)", "return f(None, b)"), M.RISK_LAST),  # an argument set to None
+            (("log(a, b)", "log(a)"), M.RISK_LAST),
+            (("break", "return"), M.RISK_REST),
+        ]
+        for (removed, added), want in table:
+            self.assertEqual(M.py_risk(removed, added), want, (removed, added))
+
+    def test_a_number_on_a_continuation_line_of_an_if_is_a_branch_condition(self):
+        M = _kit_mutants()
+        orig = ["def f(n):", "    if (n > 0 and", "            n > 10):", "        return 1", "    return 0"]
+        self.assertEqual([M.in_condition(orig, k) for k in range(5)], [False, True, True, False, False])
+        self.assertEqual(M.py_risk("n > 10):", "n > 11):", condition=True), M.RISK_BRANCH)
+        self.assertEqual(M.py_risk("n > 10):", "n > 11):"), M.RISK_ARITH)
+
+    def test_a_while_assert_and_guard_test_are_conditions_a_body_is_not(self):
+        M = _kit_mutants()
+        orig = ["def f(xs):", "    while xs:", "        x = xs.pop() + 1", "    assert (", "        x)",
+                "    return [y for y in xs", "            if y]"]
+        self.assertEqual([M.in_condition(orig, k) for k in range(7)], [False, True, False, True, True, False, True])
+
+    def test_a_copy_that_does_not_parse_is_not_a_condition(self):
+        self.assertFalse(_kit_mutants().in_condition(["def f(:", "    pass"], 1))
+
+
 if __name__ == "__main__":
     unittest.main()

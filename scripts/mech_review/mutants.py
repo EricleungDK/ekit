@@ -19,6 +19,7 @@ Verdict (per shard):
   tool not runnable or an unexpected exit -> n/a (env), never pass.
   no mutants in the diff -> pass.
 """
+import ast
 import fnmatch
 import itertools
 import json
@@ -32,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 
 from . import red
@@ -89,13 +91,16 @@ def rust_order(listed):
 
 
 PY_TOKEN = re.compile(r"[rbuf]*'[^']*'|[rbuf]*\"[^\"]*\"|\d+(?:\.\d+)?|\w+|\*\*=?|//=?|<<=?|>>=?|[=!<>]=|[-+*/%&|^@]=?|\S")
-PY_HEADERS = ("if ", "elif ", "while ", "assert ")
+PY_HEADERS = ("if ", "elif ", "while ", "assert ", "match ", "case ")
 
 
-def py_risk(removed, added):
-    """risk class of a mutmut mutant from its edit (the changed lines, before and after): a change on an if/elif/while
-    line or of a comparison or logical operator is a branch condition; a string literal or a dropped or None argument
-    comes last; True/False or a return line is a return; an arithmetic operator or a number is arithmetic."""
+def py_risk(removed, added, condition=False):
+    """risk class of a mutmut mutant from its edit (the changed lines, before and after). condition: the edit lies in
+    the test of an if/elif/while/assert, a match or a comprehension filter (in_condition, from the function's syntax).
+    Such an edit, one on an if/elif/while/assert/match/case line, or one of a comparison or logical operator, is a
+    branch condition. A string literal, or an argument dropped or set to None, comes last. True/False, or a returned
+    value replaced by None, is a return. An arithmetic operator or a number is arithmetic; any other edit of a return
+    line is a return."""
     a, b = PY_TOKEN.findall(removed or ""), PY_TOKEN.findall(added or "")
     i = 0
     while i < min(len(a), len(b)) and a[i] == b[i]:
@@ -103,15 +108,18 @@ def py_risk(removed, added):
     j = 0
     while j < min(len(a), len(b)) - i and a[len(a) - 1 - j] == b[len(b) - 1 - j]:
         j += 1
-    diff = a[i:len(a) - j] + b[i:len(b) - j]
+    da, db = a[i:len(a) - j], b[i:len(b) - j]
+    diff = da + db
     head = (removed or "").lstrip()
-    if head.startswith(PY_HEADERS) or any(t in BRANCH_OPS for t in diff):
+    returning = head.startswith("return")
+    if condition or head.startswith(PY_HEADERS) or any(t in BRANCH_OPS for t in diff):
         return RISK_BRANCH
     if any(t[-1:] in "'\"" for t in diff):
         return RISK_LAST
-    returning = head.startswith("return")
-    if any(t in ("True", "False") for t in diff) or (returning and b[i:len(b) - j] == ["None"]):
-        return RISK_RETURN  # a boolean literal, or the returned value replaced
+    if any(t in ("True", "False") for t in diff) or (returning and b == ["return", "None"]):
+        return RISK_RETURN  # a boolean literal, or the whole returned value replaced
+    if ("," in da and len(b) < len(a)) or (returning and "None" in db):
+        return RISK_LAST  # an argument dropped, or set to None
     if any(t in ARITH_OPS or t[:1].isdigit() for t in diff):
         return RISK_ARITH
     if returning:
@@ -121,12 +129,38 @@ def py_risk(removed, added):
     return RISK_REST
 
 
+def in_condition(lines, offset):
+    """True when line `offset` (0-based from the def line) of a function's source lies in a branch condition: from an
+    if/elif/while/assert line to the end of its test, a conditional expression's test, a comprehension's `if`, or a
+    match subject, pattern or guard. False when the source does not parse (e.g. `match` before python 3.10)."""
+    try:
+        tree = ast.parse(textwrap.dedent("\n".join(lines)))
+    except (SyntaxError, ValueError):
+        return False
+    target = offset + 1
+    for node in ast.walk(tree):
+        spans = []
+        if isinstance(node, (ast.If, ast.While, ast.Assert)):
+            spans = [(node.lineno, node.test.end_lineno)]
+        elif isinstance(node, ast.IfExp):
+            spans = [(node.test.lineno, node.test.end_lineno)]
+        elif isinstance(node, ast.comprehension):
+            spans = [(t.lineno, t.end_lineno) for t in node.ifs]
+        elif hasattr(ast, "Match") and isinstance(node, ast.Match):
+            parts = [node.subject] + [c.pattern for c in node.cases] + [c.guard for c in node.cases if c.guard]
+            spans = [(t.lineno, t.end_lineno) for t in parts]
+        if any(lo <= target <= (hi or lo) for lo, hi in spans):
+            return True
+    return False
+
+
 def py_order(names, files):
     """mutmut names riskiest first; ties by the function and the mutant's number. files: MutantFiles (the edits)."""
     def key(name):
         got = files.change(name)
+        risk = py_risk(got[2], got[3], files.condition(name, got[1])) if got else RISK_REST
         fn, _, num = name.rpartition("__mutmut_")
-        return (py_risk(got[2], got[3]) if got else RISK_REST, fn, int(num) if num.isdigit() else 0, name)
+        return (risk, fn, int(num) if num.isdigit() else 0, name)
     return sorted(names, key=key)
 
 
@@ -943,6 +977,13 @@ class MutantFiles:
             self._blocks[path] = mutant_blocks(_read(os.path.join(self.crate, "mutants", path)))
         got = mutant_change(self._blocks[path], name)
         return got and (path,) + got
+
+    def condition(self, name, offset):
+        """the mutant's edit (offset lines below the def line) lies in a branch condition of its function."""
+        path = self._owner(name)
+        fn = name.split(".")[-1].rpartition("__mutmut_")[0]
+        orig = self._blocks.get(path, {}).get(f"{fn}__mutmut_orig")
+        return bool(orig) and in_condition(orig, offset)
 
 
 RESULTS = ["results", "--all", "True"]  # every mutant with its status, the caught ones included
