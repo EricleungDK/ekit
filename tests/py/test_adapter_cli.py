@@ -188,6 +188,10 @@ line_comments = ["#"]
 [[lexer.strings]]
 quote = '"'
 
+[[lexer.strings]]
+quote = "'"
+multiline = true
+
 [tests]
 style = "calls"
 groups = ["suite"]
@@ -242,6 +246,11 @@ class OptionalKeysLeftOut(unittest.TestCase):
                                  {"tests/b.tiny": 'test("t", { expect(v).is(2) })\ntest()\n'})
         self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in ents],
                          [("confirm", 1, "expected value changed in `t`: was 1, now 2")])
+
+    def test_an_unterminated_multiline_string_without_a_name_is_named_string(self):
+        rc, ents = self.run_file(DEFAULTS, "dflt", {"src/d.dflt": "f()\n"}, {"src/d.dflt": "f('open\n"})
+        self.assertEqual([(e["class"], e["line"], e["problem"]) for e in ents],
+                         [("needs-human", 1, "file does not parse: unterminated string (line 1)")])
 
     def test_default_separator_skip_text_hint_and_an_ne_call(self):
         base = 'suite("S", {\n  test("t", { assertNot(1, f()) })\n})\n'
@@ -327,6 +336,21 @@ class AdapterFileUsage(unittest.TestCase):
         r = r2(self.repo, self.base, self.base, check="red")
         self.assertEqual(r.returncode, 2)
         self.assertIn("--adapter applies to r2 only", r.stderr)
+
+    def test_usage_errors_name_the_choices_and_what_is_not_built(self):
+        r = r2(self.repo, self.base, self.base, adapter=None)
+        self.assertIn("error: argument --stack: invalid choice: 'mini' (choose from 'python', 'rust', 'ts')\n", r.stderr)
+        r = r2(self.repo, self.base, self.base, check="mutants")
+        self.assertIn("error: --adapter applies to r2 only (the run side of an adapter file: R1, R3, R4 is not built yet)\n",
+                      r.stderr)
+
+    def test_stack_is_still_required(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as e:
+                cli.main(["r2", "--repo", self.repo.path, "--base", self.base, "--head", self.base, "--adapter", MINI])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("the following arguments are required: --stack", err.getvalue())
 
     def test_without_tomllib_an_adapter_file_is_a_stated_error_and_built_ins_still_run(self):
         # a python without tomllib, as the engine sees it: only imports made by mech_review fail. Hiding it from the

@@ -262,7 +262,38 @@ class TsThroughTheFile(unittest.TestCase):
         rc, ents = self.r2({"tests/a.test.ts": odd}, {"tests/a.test.ts": odd.replace('it("odd"', 'it.skip("odd"')})
         self.assertEqual([e[4] for e in ents], ["test `odd` marked skipped (skip, todo or x-prefixed)"])
 
+    def test_array_arguments_are_split_at_top_level_commas_only(self):
+        arr = TEST.replace("expect(add(1, 2)).toBe(3);", "expect([1, 2]).toEqual([1, 2]);")
+        rc, ents = self.r2({"tests/a.test.ts": arr}, {"tests/a.test.ts": arr.replace("toEqual([1, 2])", "toEqual([1, 3])")})
+        self.assertEqual([e[4] for e in ents], ["expected value changed in `Calc > adds`: was [1,2], now [1,3]"])
+
+    def test_every_literal_and_comment_edge_hides_the_calls_inside_it(self):
+        noise = ('/it\\("r0"/.test(s);\n'
+                 '/* a */ x(); /* it("c1", () => {}) */ const c2 = "it(\\"c2\\", () => {})";\n'
+                 'const s1 = "a\\"b it(\\"x1\\", () => {})";\n'
+                 'const s2 = "\\\\"; const s3 = \'it("x2", () => {})\';\n'
+                 'const t1 = `plain`; const t0 = `it("x0", () => {})`;\n'
+                 'const t2 = `a \\` it("x3", () => {})`;\n'
+                 'const r1 = /[/]it\\("x4"/g, r2 = /a\\/it\\("x5"/i;\n'
+                 'function f() { return /it\\("x6"/; }\n'
+                 'const q = total / count / 2;\n'
+                 "const j = <p>Don't</p>;\n")
+        rc, ents = self.r2({"tests/a.test.ts": noise + TEST}, {"tests/a.test.ts": TEST + "foo"})
+        self.assertEqual((rc, ents), (0, []))
+
+    def test_a_test_name_keeps_its_escaped_quotes(self):
+        q = TEST.replace('it("adds"', 'it("says \\"hi\\""')
+        rc, ents = self.r2({"tests/a.test.ts": q}, {"tests/a.test.ts": q.replace("it(", "it.skip(")})
+        self.assertEqual([e[4] for e in ents], ['test `Calc > says "hi"` marked skipped (skip, todo or x-prefixed)'])
+
     # ---- suppression regions and texts ----
+    def test_a_block_directive_covers_the_line_after_its_end(self):
+        base = "/* eslint-disable-next-line no-x\n*/\nfoo();\nbar();\n"
+        rc, ents = self.r2({"src/b.ts": base}, {"src/b.ts": base.replace("foo();", "foo(1);")})
+        self.assertEqual([(e[3], e[4]) for e in ents], [(1, "`eslint-disable-next-line no-x` added without a reason")])
+        rc, ents = self.r2({"src/b.ts": base}, {"src/b.ts": base.replace("bar();", "bar(1);")})
+        self.assertEqual(ents, [])
+
     def test_a_suppression_counts_only_where_its_region_meets_an_added_line(self):
         cases = {  # base text, added line at the end, want problems
             "// eslint-disable-next-line no-x\nfoo();\nbar();\n": ("baz();\n", []),
