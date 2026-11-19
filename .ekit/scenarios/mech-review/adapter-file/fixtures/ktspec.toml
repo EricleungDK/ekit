@@ -1,0 +1,60 @@
+# A Kotest-like brace language, written by a user from docs/mech-review-ci.md#adapter-file alone.
+# Tests read: context("Calc", { test("adds", { assertEquals(3, add(1, 2)) }) })
+format = 1
+name = "ktspec"
+extensions = [".kt"]
+manifests = ["build.gradle.kts"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+
+[[lexer.strings]]
+quote = '"""'
+multiline = true
+interpolation = ["${", "}"]
+name = "raw string"
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[[lexer.strings]]
+quote = "'"
+escape = '\'
+
+[tests]
+style = "calls"
+groups = ["context", "xcontext"]
+cases = ["test", "xtest"]
+skip = ["xtest", "xcontext"]
+separator = " / "
+skipped_text = "test `{name}` disabled with an x prefix"
+
+[functions]
+shapes = ["fun NAME (...) ...{...}"]
+
+[[asserts.call]]
+names = ["assertEquals"]
+kind = "eq"
+operands = [1, 0]
+
+[[asserts.call]]
+names = ["assertNotEquals"]
+kind = "ne"
+operands = [1, 0]
+
+[[asserts.call]]
+names = ["assertTrue", "assertThrows"]
+kind = "other"
+
+[[suppressions]]
+directives = ["ktlint-disable-next-line", "ktlint-disable"]
+covers = { "ktlint-disable-next-line" = "next-line", "ktlint-disable" = "file" }
+lints = "rules"
+reason_after = "--"
+
+[mutation]
+skip_comments = ["pitest off"]
