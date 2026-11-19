@@ -1230,13 +1230,15 @@ class Mutmut:
                 return _check("n/a", f"mutmut results failed (env): {_first_line(rtext)}"), []
             listed = parse_results(rtext)
             inside = [(name, status) for name, status in listed if not outside_diff(name, sources, changed)]
-            if keep is None:  # the budget ended step 1: deal what mutmut listed, so no two shards count one mutant
+            dealt_from_cut = keep is None and shard_index(shard)[1] > 1
+            if keep is None:  # the budget ended step 1: deal what mutmut listed, so no two shards report one mutant
                 own, extra = cap_share(py_order([n for n, _ in inside], ranks), max_mutants, shard)
                 keep = set(own)
             rows = [(name, _kind(status, early), status) for name, status in inside if name in keep]
             unrun = len(listed) - len(inside)
             tested = sum(1 for _, k, _ in rows if k != "untested")
-            total = None if rc == "timeout" and not rows else len(rows) + extra
+            # a shard dealt from a listing the budget cut may hold a list the others do not: its total is unknown
+            total = None if rc == "timeout" and (not rows or dealt_from_cut) else len(rows) + extra
             caught = sum(1 for _, k, _ in rows if k == "caught")
             found, outside, unlocated = [], 0, 0
             copies = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])

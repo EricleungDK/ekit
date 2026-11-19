@@ -248,8 +248,8 @@ class CopyingMutmut:
     """mutmut as R3 drives it, every mutant killed once it runs: the list-only run writes mutants/calc.py (the function
     copies) and its .meta; a run with filters runs the mutants they match; `results` lists each one's status."""
 
-    def __init__(self):
-        self.runs, self.ran = [], set()
+    def __init__(self, list_timeout=False):
+        self.runs, self.ran, self.list_timeout = [], set(), list_timeout
 
     def __call__(self, argv, cwd, timeout):
         verb, args = argv[1], argv[2:]
@@ -269,6 +269,8 @@ class CopyingMutmut:
                 f.write(copies)
             with open(os.path.join(cwd, "mutants", "calc.py.meta"), "w") as f:
                 json.dump({"exit_code_by_key": dict.fromkeys(PY_NAME(n) for n in PY_MUTANTS)}, f)
+            if self.list_timeout:
+                return "timeout", ""
             return 1, "Filtered for specific mutants, but nothing matches"
         import fnmatch
         self.ran |= {PY_NAME(n) for n in PY_MUTANTS if any(fnmatch.fnmatchcase(PY_NAME(n), p) for p in args)}
@@ -329,6 +331,14 @@ class TestPythonCap(unittest.TestCase):
         self.assertEqual((fake0.ran, fake1.ran), ({PY_RISK_ORDER[0], PY_RISK_ORDER[2]}, {PY_RISK_ORDER[1]}))
         self.assertEqual(((c0["status"], c0["tested"], c0["total"]), (c1["status"], c1["tested"], c1["total"])),
                          (("partial", 2, 4), ("pass", 1, 1)))
+
+    def test_a_listing_cut_by_the_budget_leaves_a_shards_total_unknown(self):
+        # each shard's listing may be partial, so a dealt count could count a mutant twice or not at all. Unsharded,
+        # the listed count stands (test_mutmut_run: 0/2 tested when the budget ends the listing)
+        for shard in ("0/2", "1/2"):
+            check, entries = self.r3(CopyingMutmut(list_timeout=True), cap=3, shard=shard)
+            self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 0, None), shard)
+            self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
 
 
 if __name__ == "__main__":
