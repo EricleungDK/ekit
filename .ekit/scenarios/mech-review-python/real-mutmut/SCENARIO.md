@@ -9,4 +9,4 @@
   4. From base, a head that changes `add` only. Same command.
   5. A flat-layout repo (`calc/` at the root, a test reading `docs/about.md`), head changes `add`. Same command.
 - expected: step 3 exit 1, R3 fail (not the baseline), entries only on `src/calc/core.py:6` (`return 0 < n -> return 0 <= n` among them), none on line 2, summary `fail <head> (2 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)`, the text format's first line the same and naming `src/calc/core.py:6`. Steps 4 and 5 exit 0, R3 pass, no entries, summary `pass <head> (0 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)`. The caller checkout is untouched.
-- children: untracked, symlinks, own-config
+- children: untracked, symlinks, own-config, cap

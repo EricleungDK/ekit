@@ -2,18 +2,24 @@
 source "$EKIT_REPO/.ekit/scenarios/lib.sh"
 MR="$EKIT_REPO/scripts/mech-review.py"
 FX="$EKIT_REPO/tests/fixtures/mutants"
-# fake cargo-mutants (argv[0] replaced via MECH_TEST_STUB): `mutants --version`, or a run with --output DIR and --shard k/n.
-# MUT_FIXTURE names a real cargo-mutants 27.1.0 output dir under tests/fixtures/mutants ({k} = shard index);
-# MUT_RC is the exit code; MUT_HANG=1 sleeps so the budget kills the run.
+# fake cargo-mutants (argv[0] replaced via MECH_TEST_STUB): `mutants --version`; `--list --json` prints the mutant
+# list the real tool printed for that run (the fixture's own mutants.json, or MUT_LIST, a file); or a run with
+# --output DIR and --shard k/n. MUT_FIXTURE names a real cargo-mutants 27.1.0 output dir under tests/fixtures/mutants
+# ({k} = shard index); MUT_RC is the exit code; MUT_HANG=1 sleeps so the budget kills the run.
 STUB="$PWD/fake-cargo-mutants.sh"
 cat > "$STUB" <<'SH'
 #!/bin/bash
 if [[ "$1" == mutants && "$2" == --version ]]; then echo "cargo-mutants 27.1.0"; exit 0; fi
-out=""; shard=""; prev=""
+out=""; shard=""; prev=""; list=""
 for a in "$@"; do
   case "$prev" in -o|--output) out="$a" ;; --shard) shard="$a" ;; esac
+  [[ "$a" == --list ]] && list=1
   prev="$a"
 done
+if [[ -n "$list" ]]; then
+  [[ -n "${MUT_LOG-}" ]] && echo "$*" >> "$MUT_LOG"
+  cat "${MUT_LIST:-$MECH_FX/$MUT_FIXTURE/mutants.json}"; exit 0
+fi
 k=${shard%%/*}
 if [[ -n "${MUT_FIXTURE-}" && -n "$out" ]]; then
   fx="${MUT_FIXTURE//\{k\}/$k}"
@@ -75,8 +81,12 @@ eq "skipped summary" "$(jq -r .summary <<<"$out")" "pass $DH (0 fail, 0 confirm;
 
 # 5. shards: 0/2 and 1/2 run separately, merged into one result; a missing shard is a CI fail that keeps the other
 S0="$PWD/shard0.json"; S1="$PWD/shard1.json"
+# the listing both shards see: the whole run's mutants (each shard fixture's mutants.json holds its own share)
+jq -s add "$FX/shard-0-of-2/mutants.json" "$FX/shard-1-of-2/mutants.json" > "$PWD/list-2-shards.json"
+export MUT_LIST="$PWD/list-2-shards.json"
 MUT_FIXTURE='shard-{k}-of-2' MUT_RC=2 mut --shard 0/2 > "$S0"
 MUT_FIXTURE='shard-{k}-of-2' MUT_RC=2 mut --shard 1/2 > "$S1"
+unset MUT_LIST
 out=$(python3 -I "$MR" merge --repo "$R" --base "$B" --head "$H" --stack rust --shards 2 --envelope 0="$S0" --envelope 1="$S1"); rc=$?
 eq "merge exit" "$rc" 1
 eq "merge summary" "$(jq -r .summary <<<"$out")" "fail $H (11 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)"

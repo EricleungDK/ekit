@@ -284,9 +284,13 @@ class TestMutmutCheck(DiffOfSub):
         self.assertEqual((check["status"], check["note"]), ("partial", "0/2 tested: budget hit, no MISSED so far"))
 
     def test_the_budget_ending_mid_run_keeps_what_was_tested(self):
+        # name predates #26: unreached mutants are now untested (partial), not MISSED
+        # #26: a mutant still waiting for its whole-suite retry counts as untested, not MISSED
         fake = FakeMutmut({SUB1: "survived", SUB2: "killed"}, timeout_run=2)
         check, entries, _ = self.r3(fake)
-        self.assertEqual((check["status"], check["note"]), ("fail", "1/2 tested: budget hit, 1 missed"))
+        self.assertEqual((check["status"], check["note"]),
+                         ("partial", "0/2 tested: budget hit, no MISSED so far; 1 missed by mutmut, whole-suite retry not reached at budget: untested"))
+        self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
 
     def test_any_other_mutmut_error_is_not_run_not_a_pass(self):
         def broken(argv, cwd, timeout):
@@ -364,12 +368,16 @@ class TestMutmutFiles(unittest.TestCase):
         self.assertEqual(fake.shown, [])
         self.assertEqual([(e["file"], e["line"], e["problem"]) for e in entries],
                          [("calc.py", 3, "MISSED mutant calc.py:3: return c + 0 -> return c - 0")])
-        self.assertEqual(check["note"], "2/2 tested: 1 missed in the diff, 1 missed outside the diff, 0 unlocated, 0 caught")
+        # #26 follow-on: the mutant on the unchanged line takes no cap slot and is not run
+        self.assertEqual(check["note"], "1/1 tested: 1 missed in the diff, 0 missed outside the diff, 0 unlocated, 0 caught; "
+                                        "1 on unchanged lines of touched functions: not run")
 
     def test_a_miss_on_an_unchanged_line_of_the_touched_function_does_not_block(self):
         check, entries = self.r3(WritingMutmut({SUB1: "survived", SUB2: "killed"}))
         self.assertEqual((check["status"], entries), ("pass", []))
-        self.assertEqual(check["note"], "2/2 tested: 0 missed in the diff, 1 missed outside the diff, 0 unlocated, 1 caught")
+        # #26 follow-on: the mutant on the unchanged line takes no cap slot and is not run
+        self.assertEqual(check["note"], "1/1 tested: 0 missed in the diff, 0 missed outside the diff, 0 unlocated, 1 caught; "
+                                        "1 on unchanged lines of touched functions: not run")
 
     def test_a_copy_that_disagrees_with_the_source_is_not_trusted(self):
         fake = WritingMutmut({SUB2: "survived"})
@@ -397,6 +405,15 @@ class TestMutmutFiles(unittest.TestCase):
             check, entries = self.r3(fake)
         self.assertEqual(fake.shown, [SUB2])
         self.assertEqual([e["line"] for e in entries], [3])
+
+    def test_a_miss_mutmut_places_on_an_unchanged_line_after_the_run_does_not_block(self):
+        # the files do not place SUB1 before the run, so it runs; `mutmut show` then places it on line 2, unchanged
+        fake = WritingMutmut({SUB1: "survived"})
+        fake.listed = [SUB2]
+        check, entries = self.r3(fake)
+        self.assertEqual(fake.shown, [SUB1])
+        self.assertEqual((check["status"], [e for e in entries if e["severity"] == "fail"]), ("pass", []))
+        self.assertIn("0 missed in the diff, 1 missed outside the diff", check["note"])
 
 
 class TestWholeSuite(DiffOfSub):
@@ -450,7 +467,7 @@ class TestWholeSuite(DiffOfSub):
                                         "1 more caught only by the whole suite")
 
     def test_a_suite_that_is_red_without_any_mutant_says_nothing_about_one(self):
-        for rc in (1, 5, None, "timeout"):
+        for rc in (1, 5, None):
             fake = self.fake({SUB1: "no tests"}, clean_rc=rc, suite_fails_on=["c = a + b"])
             check, entries, err = self.r3(fake)
             self.assertEqual((check["status"], fake.applied, len(fake.suite_runs)), ("fail", [], 1), rc)
@@ -458,6 +475,14 @@ class TestWholeSuite(DiffOfSub):
                                   f"-p no:cacheprovider --ignore=mutants` ends with {rc} on the unmutated tree\n")
             self.assertEqual(entries[0]["hint"], "no test reaches this line: add a test that calls it and asserts the result."
                              + mutants.HOW)
+
+    def test_a_clean_suite_run_cut_by_the_budget_leaves_the_mutants_untested(self):
+        # #26: the budget ended before the retry: untested (partial), no MISSED entry
+        fake = self.fake({SUB1: "no tests"}, clean_rc="timeout", suite_fails_on=["c = a + b"])
+        check, entries, _ = self.r3(fake)
+        self.assertEqual((check["status"], check["tested"], check["total"], fake.applied), ("partial", 0, 1, []))
+        self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
+        self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
 
     def test_a_mutant_mutmut_cannot_apply_stays_missed_without_a_suite_run(self):
         fake = self.fake({SUB1: "no tests"}, apply_rc=1, suite_fails_on=["c = a - b"])
@@ -505,10 +530,14 @@ class TestWholeSuite(DiffOfSub):
         self.assertEqual(entries, [])
 
     def test_the_budget_gone_after_the_clean_run_keeps_every_mutant_missed(self):
+        # name predates #26: unreached mutants are now untested (partial), not MISSED
         fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
         with self.clock(100, 130, 140, 150, 150, 151, 220):  # the clean run fits; then exactly nothing is left
             check, entries, _ = self.r3(fake, budget_min=2)
-        self.assertEqual(([e["line"] for e in entries], fake.applied, len(fake.suite_runs)), ([6, 7], [], 1))
+        self.assertEqual(([e["line"] for e in entries if e["severity"] == "fail"], fake.applied, len(fake.suite_runs)),
+                         ([], [], 1))
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 0, 2))
+        self.assertIn("2 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
 
     def test_a_run_given_exactly_its_limit_that_times_out_is_a_hang(self):
         fake = self.fake({SUB1: "survived"}, suite_hangs_on=["c = a + b"])
@@ -524,33 +553,50 @@ class TestWholeSuite(DiffOfSub):
         self.assertIn("2 hung the whole suite", check["note"])
 
     def test_a_spent_budget_leaves_what_mutmut_said(self):
+        # name predates #26: unreached mutants are now untested (partial), not MISSED
         fake = self.fake({SUB1: "survived"}, suite_fails_on=["c = a + b"])
         with self.clock(100, 130, 140, 700):
             check, entries, _ = self.r3(fake, budget_min=2)
-        self.assertEqual((check["status"], len(entries), fake.suite_runs, fake.applied), ("fail", 1, [], []))
+        self.assertEqual((check["status"], [e["severity"] for e in entries], fake.suite_runs, fake.applied),
+                         ("partial", ["confirm"], [], []))
 
     def test_the_budget_running_out_between_mutants_keeps_the_rest_missed(self):
+        # name predates #26: unreached mutants are now untested (partial), not MISSED
         fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
         with self.clock(100, 130, 140, 150, 150, 151, 160, 300):  # the second mutant finds the budget gone
             check, entries, _ = self.r3(fake, budget_min=2)
-        self.assertEqual(([e["line"] for e in entries], fake.applied), ([7], [SUB1]))
+        self.assertEqual(([e["line"] for e in entries if e["severity"] == "fail"], fake.applied), ([], [SUB1]))
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 1, 2))
         self.assertIn("1 more caught only by the whole suite", check["note"])
+        self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
+
+    def test_a_retry_that_ran_and_passed_stays_missed_beside_one_the_budget_never_reached(self):
+        # #26: a mutant that really ran and survived (its retry too) is MISSED; the next, never retried, is untested
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["nothing"])
+        with self.clock(100, 130, 140, 150, 150, 151, 160, 300):  # the second mutant finds the budget gone
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual(([e["line"] for e in entries if e["severity"] == "fail"], fake.applied), ([6], [SUB1]))
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("fail", 1, 2))
+        self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
 
     def test_a_suite_run_cut_short_by_the_budget_is_not_a_hang(self):
         fake = self.fake({SUB1: "no tests"}, suite_hangs_on=["c = a + b"])
         with self.clock(100, 130, 140, 195):  # 25 s of the 120 left: less than one suite run may take
             check, entries, _ = self.r3(fake, budget_min=2)
         self.assertEqual([t for t, _ in fake.suite_runs], [25, 25])
-        self.assertEqual((check["status"], len(entries)), ("fail", 1))
+        # #26: a retry the budget cut short never finished: untested, not MISSED
+        self.assertEqual((check["status"], [e["severity"] for e in entries]), ("partial", ["confirm"]))
         self.assertNotIn("hung", check["note"])
-        self.assertTrue(entries[0]["hint"].startswith("no test reaches this line:"), entries[0]["hint"])
+        self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
 
     def test_the_budget_ending_during_mutmuts_run_skips_the_suite(self):
         fake = self.fake({SUB1: "no tests", SUB2: "killed"}, timeout_run=2, suite_fails_on=["c = a + b"])
         check, entries, _ = self.r3(fake)
         self.assertEqual((fake.suite_runs, fake.applied), ([], []))
-        self.assertEqual((check["status"], check["note"]), ("fail", "1/2 tested: budget hit, 1 missed"))
-        self.assertTrue(entries[0]["hint"].startswith("no test reaches this line:"), entries[0]["hint"])
+        # #26: the missed mutant never had its whole-suite retry: untested, not MISSED
+        self.assertEqual((check["status"], check["note"]),
+                         ("partial", "0/2 tested: budget hit, no MISSED so far; 1 missed by mutmut, whole-suite retry not reached at budget: untested"))
+        self.assertEqual([e["severity"] for e in entries], ["confirm"])
 
     def test_the_suite_is_pytest_fresh_bytecode_and_without_mutmuts_copy_of_the_tests(self):
         self.assertEqual(mutants.SUITE, ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider",

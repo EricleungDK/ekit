@@ -37,12 +37,13 @@ git -C "$R" add -A; git -C "$R" commit -qm head; H=$(git -C "$R" rev-parse HEAD)
 bl() { MECH_TEST_STUB="$STUB" python3 -I "$MR" baseline --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' "$@"; }
 mut() { MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' "$@"; }
 
-# 2. baseline once: run, 4 shards, derived timeout (20 s floor), baseline-only run (one mutant, build killed at 0 s)
+# 2. baseline once: run, derived timeout (20 s floor), baseline-only run (one mutant, build killed at 0 s).
+#    A small PR (15 mutants x 0.25 s measured, budget 10 min) gets 1 shard, even with --shards 4 (#26 B3).
 : > "$PWD/calls.log"
 BL="$PWD/bl-ok.json"
 out=$(MUT_LOG="$PWD/calls.log" MUT_FIXTURE=baseline-ok MUT_RC=3 bl --shards 4); rc=$?
 eq "baseline exit" "$rc" 0
-eq "baseline ok" "$(jq -c '{run,count,mutants,timeout}' <<<"$out")" '{"run":true,"count":4,"mutants":15,"timeout":20}'
+eq "baseline ok" "$(jq -c '{run,count,mutants,timeout}' <<<"$out")" '{"run":true,"count":1,"mutants":15,"timeout":20}'
 eq "baseline R3 left to shards" "$(jq -r .checks.R3.status <<<"$out")" skipped
 has "baseline lists first" "$(cat "$PWD/calls.log")" "--list --json"
 has "baseline kills mutant builds at 0 s" "$(cat "$PWD/calls.log")" "--build-timeout 0"

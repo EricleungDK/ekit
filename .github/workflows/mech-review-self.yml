@@ -16,7 +16,10 @@ jobs:
     with:
       # the engine and the hooks are python; their unit tests are tests/py (the *.test.sh files are smokes R1 cannot run)
       stack: python
-      test-paths: 'tests/**'
+      # scenario fixtures are test support too: counted as production code, a fake tool there took R3's 40 slots (#26)
+      test-paths: |
+        tests/**
+        .ekit/scenarios/**
       protected-paths: '.github/**'
       # a PR that touches the large functions of the engine has thousands of mutants in them, and each missed one
       # costs a whole-suite run: more than the default 10 minutes

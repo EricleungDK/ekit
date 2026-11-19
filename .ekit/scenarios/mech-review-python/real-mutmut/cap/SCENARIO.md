@@ -1,0 +1,10 @@
+# mech-review-python/real-mutmut/cap: real mutmut over `--max-mutants`: the branch conditions run first, the same set every run, shards split it; a retry the budget never reached is untested, not MISSED
+
+- story: As a Python repo owner whose PR makes more mutants than the cap, R3 runs the riskiest (branch conditions) with real mutmut, picks the same ones every run and on shards, still fails on the ones that survived, and never reports MISSED for a mutant whose whole-suite retry the budget did not reach.
+- covers: #26 B1 python (cap: `3/14 tested`, `11 past the cap (max-mutants 3): untested`; risk order: cap 3 is the `if` condition, cap 6 adds the comparison operator of `return total > 5`; at cap 10 the string mutants are still left out; same pick twice); B2 python (a mutant still waiting for its whole-suite retry when the budget ends is untested: partial, no MISSED; mutants that ran and survived stay MISSED); B3 python declared limit (one shard per changed file from `baseline`; a shard with an empty share reads `0 mutants in this shard`; the merge counts each mutant once)
+- steps:
+  1. Parent's venv install (real pytest 9.2.0, mutmut 3.8.1) and sample repo; head adds `classify` (`if n > 10 and n < 100`, `return "mid"`, `total = n * 2 + 1`, `return total > 5`) and a test that calls it without asserting.
+  2. `mutants --max-mutants 3`: exit 1, 3 MISSED, all on line 10, note `3/14 tested` and `11 past the cap (max-mutants 3): untested`. Again: same entries. `--max-mutants 6`: 6 MISSED on lines 10 and 13 only, line 13's being `return total > 5 -> return total >= 5`. `--max-mutants 10`: 10 MISSED, none on line 11 (strings last).
+  3. `--max-mutants 3 --shard k/4` for k = 0..3: shard 3 reads `0 mutants in this shard`; `merge --shards 4`: exit 1, the same 3 MISSED as unsharded. `baseline --stack python --shards 4`: `count` 1 (one changed file).
+  4. A head adding a test that sleeps 90 s when `core.py` on disk is mutated (what the whole-suite retry sees). `--max-mutants 3 --mutation-budget 0.5`: exit 0, R3 partial, no MISSED, note `whole-suite retry not reached at budget: untested`.
+- expected: as above; no `all pass`; the checkout untouched.

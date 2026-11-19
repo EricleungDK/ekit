@@ -13,13 +13,14 @@ def plan(repo, base_ref, head_ref, stack, test_globs):
     return {"run": bool(red.prod_changes(Review(repo, mb, head, ADAPTERS[stack](), test_globs)))}
 
 
-def baseline(repo, base_ref, head_ref, stack, test_globs, mutants_cmd=None, mutation_budget=None, shards=4, project_dir="."):
+def baseline(repo, base_ref, head_ref, stack, test_globs, mutants_cmd=None, mutation_budget=None, shards=4, project_dir=".",
+             max_mutants=mutants.DEFAULT_MAX_MUTANTS):
     """The baseline step (#46): the mutants job's plan and its one baseline run. Envelope with the R3 check and the
     run decision: run, count (shards), mutants, timeout (the derived per-mutant seconds). Git only for the file-sharded
     stacks; rust runs cargo-mutants' unmutated baseline once."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
     p = mutants.baseline(Review(repo, mb, head, ADAPTERS[stack](), test_globs, project_dir), mutants_cmd, mutation_budget,
-                         shards)
+                         shards, max_mutants=max_mutants)
     checks = {c: {"status": "skipped", "note": "not run by baseline"} for c in CHECKS}
     checks["R3"] = p["check"]
     env = envelope(base, head, p["entries"], checks)
@@ -33,7 +34,8 @@ WHICH = {"r2": ("R2",), "red": ("R1", "R4"), "all": ("R1", "R2", "R4"), "mutants
 
 def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="r2", agent_prefix=None,
         head_branch=None, test_cmd=None, runner=None, mutants_cmd=None, mutation_budget=None, shard=None,
-        mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None):
+        mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None,
+        max_mutants=mutants.DEFAULT_MAX_MUTANTS):
     """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack]."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
     rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_globs, project_dir)
@@ -57,6 +59,7 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job mutants)"}
     r3 = []
     if "R3" in want:
-        checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner)
+        checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
+                                       max_mutants=max_mutants)
     entries = sorted(finalize(raw) + r3, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return envelope(base, head, entries, checks)
