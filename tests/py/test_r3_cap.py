@@ -237,6 +237,28 @@ class TestRustCapNotHonoured(RustCap):
         self.assertEqual(env["checks"]["R3"]["status"], "n/a")
         self.assertEqual([e["problem"] for e in env["entries"] if e["check"] == "R3"], [f"MISSED mutant {GT['name']}"])
 
+    def test_a_missed_mutant_inside_the_pick_is_reported_from_the_repo_root_under_project_dir(self):
+        repo = os.path.join(self.tmp.name, "nested")
+        os.makedirs(os.path.join(repo, "sub", "src"))
+        with open(os.path.join(repo, "sub", "Cargo.toml"), "w") as f:
+            f.write('[package]\nname = "x"\nversion = "0.1.0"\n')
+        git(repo, "init", "-q")
+        for text, msg in (("pub fn a() {}\n", "base"), ("pub fn a() {} // head\n", "head")):
+            with open(os.path.join(repo, "sub", "src", "lib.rs"), "w") as f:
+                f.write(text)
+            git(repo, "add", "-A")
+            git(repo, "commit", "-q", "-m", msg)
+        self.repo = repo
+        # a name that does not start with its file keeps its own text (verdict writes it so)
+        weird = {"file": "src/lib.rs", "genre": "MatchArmGuard", "name": "weird: replace match guard with true in w",
+                 "package": "x", "span": {"start": {"line": 20, "column": 1}}}
+        self.listing(LISTED + [weird])
+        env = self.cli("mutants", "--max-mutants", "4", "--project-dir", "sub", STUB_CONFIG_RE="src/",
+                       STUB_MISSED="|".join((GT["name"], weird["name"], ARM["name"])))
+        self.assertEqual(env["checks"]["R3"]["status"], "n/a")
+        self.assertEqual(sorted(e["problem"] for e in env["entries"] if e["check"] == "R3"),
+                         [f"MISSED mutant sub/{GT['name']}", f"MISSED mutant {weird['name']}"])
+
     def test_a_capped_run_the_budget_stops_counts_the_mutants_past_the_cap(self):
         r3 = self.cli("mutants", "--max-mutants", "4", "--mutation-budget", "0.02", STUB_HANG="1")["checks"]["R3"]
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 1, 7))
