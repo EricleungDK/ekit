@@ -294,6 +294,23 @@ class TsThroughTheFile(unittest.TestCase):
                 rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace('it("t"', 'it.skip("t"')})
                 self.assertEqual([e[4] for e in ents], ["test `t` marked skipped (skip, todo or x-prefixed)"])
 
+    def test_a_dangling_member_access_does_not_end_the_scan(self):
+        pre = "const a = it.\n  skip;\n"
+        src = pre + 'it("b", () => { expect(1).toBe(1) });\n'
+        rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace('it("b"', 'it.skip("b"')})
+        self.assertEqual([e[4] for e in ents], ["test `b` marked skipped (skip, todo or x-prefixed)"])
+
+    def test_an_arrow_body_ends_at_its_own_close_not_at_a_semicolon_inside_a_call(self):
+        base = 'const h = (a) => X(a);\nit("t", () => { expect(1).toBe(1); h(1) });\n'
+        head = 'const h = (a) => X(expect(a).toBe(1));\nit("t", () => { h(1) });\n'
+        rc, ents = self.r2({"tests/a.test.ts": base}, {"tests/a.test.ts": head})
+        self.assertEqual((rc, ents), (0, []))
+
+    def test_an_escaped_backslash_ends_a_regex_literal(self):
+        src = "const r = /\\\\/; const s = '/'; it(\"a\", () => { expect(1).toBe(1) });\n"
+        rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace('it("a"', 'it.skip("a"')})
+        self.assertEqual([e[4] for e in ents], ["test `a` marked skipped (skip, todo or x-prefixed)"])
+
     def test_a_test_named_by_a_variable_is_a_test(self):
         src = 'it(title, () => { expect(1).toBe(1); });\n'
         rc, ents = self.r2({"tests/a.test.ts": src}, {"tests/a.test.ts": src.replace("it(", "it.skip(")})
