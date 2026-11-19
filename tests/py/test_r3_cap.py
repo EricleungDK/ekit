@@ -167,6 +167,14 @@ class TestRustCap(RustCap):
                 self.cli(sub, "--mutation-budget", value, rc=(2,))
 
 
+class TestMaxMutantsFlag(unittest.TestCase):
+    def test_a_cap_of_one_is_accepted(self):
+        from scripts.mech_review import cli
+        args = cli.build_parser().parse_args(["mutants", "--base", "a", "--head", "b", "--stack", "python",
+                                              "--max-mutants", "1"])
+        self.assertEqual(args.max_mutants, 1)
+
+
 class TestRustShards(RustCap):
     def test_the_capped_mutants_are_dealt_round_robin_in_risk_order(self):
         r3 = self.cli("mutants", "--max-mutants", "4", "--shard", "0/2")["checks"]["R3"]
