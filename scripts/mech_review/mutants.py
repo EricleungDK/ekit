@@ -33,7 +33,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 
 from . import red
@@ -135,7 +134,10 @@ def in_condition(lines, offset):
     if/elif/while/assert line to the end of its test, a conditional expression's test, a comprehension's `if`, or a
     match subject, pattern or guard. False when the source does not parse (e.g. `match` before python 3.10)."""
     try:
-        tree = ast.parse(textwrap.dedent("\n".join(lines)))
+        # strip the def line's own indent from the lines that have it: a string's line at column 0 stays as it is
+        # (textwrap.dedent would strip nothing then, and the copy would not parse)
+        pad = lines[0][:len(lines[0]) - len(lines[0].lstrip())] if lines else ""
+        tree = ast.parse("\n".join(ln[len(pad):] if ln.startswith(pad) else ln for ln in lines))
     except (SyntaxError, ValueError):
         return False
     target = offset + 1

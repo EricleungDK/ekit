@@ -428,6 +428,12 @@ class TestPythonRisk(unittest.TestCase):
                 "    return [y for y in xs", "            if y]"]
         self.assertEqual([M.in_condition(orig, k) for k in range(7)], [False, True, False, True, True, False, True])
 
+    def test_a_method_whose_docstring_has_a_line_at_column_0_still_parses(self):
+        orig = ["    def m(self, n):", '        """doc', "at column 0", '        """', "        if (n > 0 and",
+                "                n > 10):", "            return 1"]
+        self.assertEqual([_kit_mutants().in_condition(orig, k) for k in range(7)],
+                         [False, False, False, False, True, True, False])
+
     def test_a_copy_that_does_not_parse_is_not_a_condition(self):
         self.assertFalse(_kit_mutants().in_condition(["def f(:", "    pass"], 1))
 
