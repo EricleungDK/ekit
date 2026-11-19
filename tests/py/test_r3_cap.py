@@ -329,8 +329,9 @@ class CopyingMutmut:
     """mutmut as R3 drives it, every mutant killed once it runs: the list-only run writes mutants/calc.py (the function
     copies) and its .meta; a run with filters runs the mutants they match; `results` lists each one's status."""
 
-    def __init__(self, list_timeout=False, head=PY_HEAD, orig=PY_ORIG, mutants=PY_MUTANTS, reverse=False):
-        self.runs, self.ran, self.list_timeout = [], set(), list_timeout
+    def __init__(self, list_timeout=False, head=PY_HEAD, orig=PY_ORIG, mutants=PY_MUTANTS, reverse=False,
+                 run_timeout=False):
+        self.runs, self.ran, self.list_timeout, self.run_timeout = [], set(), list_timeout, run_timeout
         self.head, self.orig, self.mutants, self.reverse = head, orig, mutants, reverse
 
     def __call__(self, argv, cwd, timeout):
@@ -356,7 +357,7 @@ class CopyingMutmut:
             return 1, "Filtered for specific mutants, but nothing matches"
         import fnmatch
         self.ran |= {PY_NAME(n) for n in self.mutants if any(fnmatch.fnmatchcase(PY_NAME(n), p) for p in args)}
-        return 0, "done"
+        return ("timeout", "") if self.run_timeout else (0, "done")  # run_timeout: the budget ends the run, all done
 
 
 def _kit_mutants():
@@ -423,6 +424,16 @@ class TestPythonCapOnChangedLines(PyRepo):
         check, _ = self.r3(fake)
         self.assertEqual(fake.ran, set(ON_DIFF))
         self.assertEqual((check["status"], check["tested"], check["total"]), ("pass", 3, 3))
+
+    def test_a_budget_hit_still_counts_the_mutants_on_unchanged_lines(self):
+        check, _ = self.r3(self.fake(run_timeout=True), cap=2)
+        self.assertEqual(check["status"], "partial")
+        self.assertIn("4 on unchanged lines of touched functions: not run", check["note"])
+
+    def test_an_empty_shard_still_counts_the_mutants_on_unchanged_lines(self):
+        check, entries = self.r3(self.fake(), cap=1, shard="1/2")
+        self.assertEqual((check["status"], check["tested"], check["total"], entries), ("pass", 0, 0, []))
+        self.assertEqual(check["note"], "0 mutants in this shard; 4 on unchanged lines of touched functions: not run")
 
     def test_shards_run_each_picked_mutant_once(self):
         f0, f1 = self.fake(), self.fake()

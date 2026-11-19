@@ -197,6 +197,11 @@ def cap_note(extra, max_mutants):
     return f"; {extra} past the cap (max-mutants {max_mutants}): untested" if extra else ""
 
 
+def off_note(off):
+    """python: the mutants left out before the cap, on unchanged lines of a touched function."""
+    return f"; {off} on unchanged lines of touched functions: not run" if off else ""
+
+
 SHOWN = re.compile(r"^\d+/(?:\d+|\?) tested")  # the `tested/total` a note starts with
 
 
@@ -1289,7 +1294,8 @@ class Mutmut:
                 own, extra = cap_share(py_order(eligible, ranks), max_mutants, shard)
                 keep = set(own)
                 if not own:
-                    check = apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra, max_mutants)
+                    check = apply_cap(_check("pass", "0 mutants in this shard" + off_note(off), 0, 0), own, extra,
+                                      max_mutants)
                     return check, []
                 # step 2: only the mutants of the touched functions run (this shard's share, when that is not all)
                 filters = touched if len(own) == len(inside) else [_glob_escape(n) for n in own]
@@ -1375,7 +1381,7 @@ class Mutmut:
                     check = _check("fail", f"{shown} tested: budget hit, {len(fails)} missed", tested, total)
                 else:
                     check = _check("partial", f"{shown} tested: budget hit, no MISSED so far", tested, total)
-                check["note"] += waiting + cap_note(extra, max_mutants)
+                check["note"] += off_note(off) + waiting + cap_note(extra, max_mutants)
             else:
                 note = (f"{shown} tested: {len(fails)} missed in the diff, {outside} missed outside the diff, "
                         f"{unlocated} unlocated, {caught} caught")
@@ -1383,8 +1389,7 @@ class Mutmut:
                     note += f"; {suite['caught']} more caught only by the whole suite"
                 if suite["hung"]:
                     note += f"; {suite['hung']} hung the whole suite"
-                if off:
-                    note += f"; {off} on unchanged lines of touched functions: not run"
+                note += off_note(off)
                 if unrun:
                     note += f"; {unrun} in functions the diff does not touch: not run"
                 note += waiting + cap_note(extra, max_mutants)
