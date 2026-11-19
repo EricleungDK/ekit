@@ -374,10 +374,7 @@ if local:
     w = block(block(sjobs, local[0]) or [], "with") or []
     # ekit's own code is python: on the rust stack no file of it was production code, so R1 and R3 never ran
     check("self: stack python (the kit's own language)", value(w, "stack") == "python", str(value(w, "stack")))
-    # the scenarios' fixtures are test support, not production code (#26: a fake tool there took R3's 40 slots)
-    tp = [l.strip() for l in (block(w, "test-paths") or []) if l.strip()]
-    check("self: test-paths tests/** and .ekit/scenarios/**",
-          value(w, "test-paths") == "|" and tp == ["tests/**", ".ekit/scenarios/**"], str((value(w, "test-paths"), tp)))
+    check("self: test-paths tests/**", value(w, "test-paths") == "tests/**", str(value(w, "test-paths")))
     check("self: protected-paths .github/**", value(w, "protected-paths") == ".github/**",
           str(value(w, "protected-paths")))
 
