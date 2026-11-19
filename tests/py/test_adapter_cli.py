@@ -1,6 +1,9 @@
 """R2 through an adapter file (#16): `mech-review.py r2 --stack <name> --adapter <file>` on a fixture git repo.
 
 The stack is a made-up language described only by tests/fixtures/adapters/mini.toml: no built-in adapter knows it."""
+import collections
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -9,8 +12,8 @@ import tempfile
 import unittest
 
 import _kit
+from scripts.mech_review import cli
 
-MR = os.path.join(_kit.SCRIPTS, "mech-review.py")
 MINI = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.toml")
 
 BASE = '''suite("Calc", {
@@ -46,12 +49,22 @@ class Repo:
         return self.git("rev-parse", "HEAD").strip()
 
 
+Result = collections.namedtuple("Result", "returncode stdout stderr")
+
+
 def r2(repo, base, head, *extra, adapter=MINI, stack="mini", check="r2"):
-    argv = [sys.executable, "-I", MR, check, "--repo", repo.path, "--base", base, "--head", head, "--stack", stack,
-            "--test-paths", "tests/**"]
+    """`mech-review.py <check> ...` through cli.main in this process (what the script runs), stdout and stderr captured.
+    A usage error is argparse's SystemExit; its code is the exit code. Any other exception fails the test."""
+    argv = [check, "--repo", repo.path, "--base", base, "--head", head, "--stack", stack, "--test-paths", "tests/**"]
     if adapter:
         argv += ["--adapter", adapter]
-    return subprocess.run(argv + list(extra), capture_output=True, text=True)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rc = cli.main(argv + list(extra))
+        except SystemExit as e:
+            rc = e.code
+    return Result(rc, out.getvalue(), err.getvalue())
 
 
 class AdapterFileR2(unittest.TestCase):
