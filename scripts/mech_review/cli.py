@@ -5,7 +5,7 @@ import re
 import signal
 import sys
 
-from . import doctor, engine, gitio, merge, red
+from . import doctor, engine, gitio, merge, red, resolve
 from .stack import ADAPTERS
 
 
@@ -55,6 +55,10 @@ doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base 
   reads .github/workflows, trial-runs the tests and the mutation tool at HEAD in a throwaway worktree, and prints
   {ekit, head, detected, inputs, trial, entries, summary}: `inputs` is what the caller needs, each entry names one exact fix.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
+
+resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D]`): the workflow's `stack` job. An explicit
+  --stack is printed as given; auto finds the one project at base and at head (doctor's detection, tracked files, git only).
+  Prints {stack, project_dir, error}. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
 
 envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summary.
 
@@ -248,9 +252,41 @@ def _doctor(argv):
     return 1 if env["entries"] else 0
 
 
+def _tracked(repo, ref):
+    """The tracked paths at ref, raw (-z: a name is never quoted or split)."""
+    return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", gitio.resolve(repo, ref)).split("\0") if p]
+
+
+def _resolve(argv):
+    """`stack: auto` (the workflow's stack job): print {stack, project_dir, error}. Exit 0, 1 on error, 2 usage or git."""
+    p = argparse.ArgumentParser(prog="mech-review.py resolve",
+                                description="settle the stack and project dir: an explicit --stack is used as given; auto "
+                                            "finds the one project at base and at head (doctor's detection), never guesses")
+    p.add_argument("--repo", default=".", help="git repo (default .)")
+    p.add_argument("--base", required=True, help="base ref")
+    p.add_argument("--head", required=True, help="head ref")
+    p.add_argument("--stack", default=resolve.AUTO, help="auto (default) or a language adapter: " + ", ".join(sorted(ADAPTERS)))
+    p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
+                   help="project dir (default .: auto may find it; a set dir is kept)")
+    args = p.parse_args(argv)
+    try:
+        if args.stack == resolve.AUTO:
+            got = resolve.pick_pr(_tracked(args.repo, args.base), _tracked(args.repo, args.head), args.stack,
+                                  args.project_dir)
+        else:
+            got = resolve.pick_pr([], [], args.stack, args.project_dir)
+    except gitio.Die as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(got))
+    return 1 if got["error"] else 0
+
+
 def main(argv):
     if argv[:1] == ["doctor"]:
         return _doctor(argv[1:])
+    if argv[:1] == ["resolve"]:
+        return _resolve(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.check == "merge":

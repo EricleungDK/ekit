@@ -14,6 +14,7 @@ import shutil
 from . import gitio, mutants, red, report
 from .globs import any_glob
 from .mutants import DEFAULT_CMD as RUST_MUTANTS
+from .resolve import candidates, pick
 from .stack import ADAPTERS
 
 CALLER = "EricleungDK/ekit/.github/workflows/mech-review.yml@"
@@ -23,7 +24,6 @@ CALLERS = (CALLER, "EricleungDK/ek/.github/workflows/mech-review.yml@")  # + pre
 def is_caller(text):
     return any(c in text for c in CALLERS)
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
-SKIP_DIRS = {"node_modules", "vendor", "target", "tests", "test", "fixtures", "testdata", "examples", "third_party", "dist", "build"}
 APT = re.compile(r"\bapt(?:-get)?\s+install\s+([^\n#|&;]*)")
 EXPR = re.compile(r"\$\{\{.*?\}\}")
 PACKAGE = re.compile(r"^[a-z0-9][a-z0-9+.:=~\-]*$")
@@ -41,22 +41,6 @@ DEFAULT_TEST_PATHS = "tests/**"
 MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
 LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
-
-
-def candidates(paths):
-    """[(stack, dir)] of the shallowest manifests, sorted; fixture, vendored and build dirs do not count."""
-    found = {}
-    for path in paths:
-        parts = path.split("/")
-        if SKIP_DIRS & set(parts[:-1]):
-            continue
-        for stack, adapter in ADAPTERS.items():
-            if parts[-1] in adapter.manifests:
-                found[(stack, "/".join(parts[:-1]) or ".")] = len(parts)
-    if not found:
-        return []
-    depth = min(found.values())
-    return sorted(k for k, v in found.items() if v == depth)
 
 
 def read_ci(texts):
@@ -126,7 +110,10 @@ def _missing(name, want, have, paths):
         globs = have.get(name, DEFAULT_TEST_PATHS).split()
         return not any(any_glob(p, globs) for p in paths) and any(any_glob(p, [want]) for p in paths)
     if name not in have:
-        return name != "stack" or want != "rust"  # rust is the workflow's default
+        if name in ("stack", "project-dir"):  # the workflow's default is `stack: auto`: missing is fine when auto finds it
+            got = pick(paths, have.get("stack", "auto"), have.get("project-dir", "."))
+            return got["error"] is not None or got["stack" if name == "stack" else "project_dir"] != want
+        return True
     if name == "extra-apt-packages":
         return not set(want.split()) <= set(have[name].split())
     if name == "setup-command":

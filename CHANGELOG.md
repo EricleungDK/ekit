@@ -6,11 +6,13 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Added
 
+- **`stack: auto`** (`mech-review.yml`, `scripts/mech-review.py resolve`): the reusable workflow's `stack` input defaults to `auto`. A new `stack` job, git only, finds the one project from the tracked manifests with doctor's detection, at the PR base and head, and every later job (each toolchain `if:` included) reads the stack from its outputs through `env` or `if:`. `project-dir` left at `.` takes the dir found; a dir the caller set is never replaced. Several projects, none, or a head that finds a different project than its base: no check runs and the comment names the projects found and the inputs to set. `rust`, `python` and `ts` work as before. doctor no longer asks for `stack` or `project-dir` when `auto` finds the same.
 - **Waiver re-run** (`mech-waive.yml`, `scripts/mech-rerun.py`): a second caller, on `issue_comment`, re-runs the PR head's `mech-review report` job when a person posts, edits or deletes a `/mech-waive` comment, so the check updates in about a minute with no trip to Actions. It runs only for comments from `OWNER`, `MEMBER` or `COLLABORATOR`, never for a bot or the sticky comment, and never runs PR code. ci-doctor writes the caller.
 - **Ready-made waiver lines**: the sticky comment shows, under each `fail` entry, the line to post (`/mech-waive <id> <why this is OK>`), plus one block for all fail entries when there are several.
 
 ### Changed
 
+- **`stack` default**: was `rust`. A caller that leaves `stack` out now gets the stack its repo has; a repo with several projects (or none) and no `stack` input now fails with a message instead of running as rust. Set `stack` (and `project-dir`) to keep the old behaviour.
 - **Waivers**: a reason still reading `<why this is OK>` (or any reason wholly in `<…>`) does not waive, and a comment edited after posting does not waive: anyone with write access can edit another person's comment while the author shown stays the same. The sticky comment names each ignored waiver and why; post a new comment instead.
 
 ### Fixed

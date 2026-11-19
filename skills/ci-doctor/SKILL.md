@@ -32,7 +32,7 @@ jobs:
   mech-review:
     uses: EricleungDK/ekit/.github/workflows/mech-review.yml@v0
     with:
-      # every key in doctor's `inputs`
+      # every key in doctor's `inputs`, `stack` too: `auto` is the default, a set stack survives a second project
       protected-paths: |
         .github/**
 ```

@@ -91,7 +91,7 @@ inputs = block(wc, "inputs") or []
 want_inputs = {"stack", "test-paths", "protected-paths", "agent-branch-prefix", "mutation-budget", "extra-apt-packages",
                "project-dir", "setup-command", "mutant-timeout", "rust-toolchain"}
 check("reusable: exactly the 10 inputs", child_keys(inputs) == want_inputs, str(sorted(child_keys(inputs))))
-check("reusable: stack defaults to rust", value(block(inputs, "stack") or [], "default") == "rust")
+check("reusable: stack defaults to auto", value(block(inputs, "stack") or [], "default") == "auto")
 check("reusable: mutant-timeout defaults to empty (auto: no --timeout, baseline unlimited)",
       value(block(inputs, "mutant-timeout") or [], "default") == "", str(block(inputs, "mutant-timeout")))
 check("reusable: rust-toolchain defaults to stable", value(block(inputs, "rust-toolchain") or [], "default") == "stable",
@@ -111,8 +111,8 @@ mut_has_perm = any(l.strip() == "permissions:" for l in mut_job)
 base_has_perm = any(l.strip() == "permissions:" for l in (block(jobs, "baseline") or []))
 check("reusable: job-level permissions only on red-first, baseline and mutants (PR code jobs; guard, plan, report inherit top-level)",
       red_has_perm and mut_has_perm and base_has_perm and len(job_perm_lines) == 3, f"job-level permissions lines: {job_perm_lines}")
-check("reusable: jobs are exactly guard + red-first + report + plan + baseline + mutants (#46)",
-      child_keys(jobs) == {"guard", "red-first", "report", "plan", "baseline", "mutants"}, str(child_keys(jobs)))
+check("reusable: jobs are exactly stack + guard + red-first + report + plan + baseline + mutants (#46)",
+      child_keys(jobs) == {"stack", "guard", "red-first", "report", "plan", "baseline", "mutants"}, str(child_keys(jobs)))
 guard = block(jobs, "guard") or []
 red = block(jobs, "red-first") or []
 report = block(jobs, "report") or []
@@ -153,7 +153,7 @@ check("red-first: one --agent-prefix per line of the input", 'args+=(--agent-pre
 _pref = " ".join(block(inputs, "agent-branch-prefix") or [])
 check("inputs: agent-branch-prefix defaults to the harness prefixes",
       all(p in _pref for p in ("agent/", "claude/", "codex/", "copilot/", "cursor/")), _pref)
-check("red-first: toolchain set up for the rust stack", "rust-toolchain" in rt and "inputs.stack == 'rust'" in rt)
+check("red-first: toolchain set up for the rust stack", "rust-toolchain" in rt and "needs.stack.outputs.stack == 'rust'" in rt)
 # the step is a list item: its lines run from "- name: Rust toolchain" to the next "- name:"
 _i = next((n for n, l in enumerate(red) if l.strip() == "- name: Rust toolchain"), None)
 tc = []
@@ -199,7 +199,7 @@ check("plan: no --shards (no mutant count in git)", "--shards" not in pt, pt)
 bl = block(jobs, "baseline") or []
 bt = text(bl)
 check("baseline: job present", bool(bl))
-check("baseline: needs plan", (value(bl, "needs") or "").strip("[]") == "plan", str(value(bl, "needs")))
+check("baseline: needs stack and plan", (value(bl, "needs") or "").strip("[]") == "stack, plan", str(value(bl, "needs")))
 check("baseline: runs only when the plan says so", "needs.plan.outputs.run == 'true'" in (value(bl, "if") or ""),
       str(value(bl, "if")))
 check("baseline: job-level permissions exactly contents read (it runs PR code for rust)",
@@ -216,7 +216,7 @@ check("baseline: outputs run, count, shards and timeout",
       all(re.search(rf"^\s+{k}:\s*\$\{{\{{\s*steps\.\w+\.outputs\.{k}\s*\}}\}}", bt, re.M)
           for k in ("run", "count", "shards", "timeout")), bt)
 check("baseline: rust toolchain pinned to a full SHA, for the rust stack",
-      "dtolnay/rust-toolchain@" in bt and "inputs.stack == 'rust'" in bt, bt)
+      "dtolnay/rust-toolchain@" in bt and "needs.stack.outputs.stack == 'rust'" in bt, bt)
 check("baseline: cargo-mutants pinned to 27.1.0, install failure is not a stop", "cargo-mutants@27.1.0" in bt
       and "continue-on-error: true" in bt, bt)
 check("baseline: uploads its JSON artifact", "mech-review-baseline-json" in bt and "upload-artifact" in bt, bt)
@@ -309,12 +309,36 @@ check("project-dir and setup-command: never interpolated into a run: line",
       all(("inputs.setup-command" not in l or "if:" in l or "SETUP_COMMAND:" in l)
           and ("inputs.project-dir" not in l or "PROJECT_DIR:" in l) for l in W),
       str([l for l in W if "inputs.setup-command" in l or "inputs.project-dir" in l]))
+# ---- stack: auto (the default) settled once, git only; later jobs read it through env or if:, never a run: line ----
+st = block(jobs, "stack") or []
+stt = text(st)
+check("stack: runs mech-review.py resolve with the stack and project-dir inputs via env",
+      "mech-review.py\" resolve" in stt and "STACK: ${{ inputs.stack }}" in stt
+      and "PROJECT_DIR: ${{ inputs.project-dir }}" in stt and '--project-dir "$PROJECT_DIR"' in stt, stt)
+check("stack: no language toolchain, no PR code (git only)", re.search(r"setup-|toolchain|cargo|rustup|\bnpm\b|\bpip\b", stt) is None, stt)
+check("stack: caller checkout only for auto", "if: inputs.stack == 'auto'" in stt, stt)
+check("stack: exposes stack, project-dir and error outputs",
+      child_keys(block(st, "outputs")) == {"stack", "project-dir", "error"}, str(block(st, "outputs")))
+check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
+check("stack: inputs.stack and inputs.project-dir are read in the stack job only",
+      "inputs.stack" not in text(W[W.index("  guard:"):]) and "inputs.project-dir" not in text(W[W.index("  guard:"):]))
+for job_name in ("guard", "red-first", "plan", "baseline", "mutants", "report"):
+    check(f"{job_name}: needs stack", "stack" in re.split(r"[\s,\[\]]+", value(block(jobs, job_name) or [], "needs") or ""),
+          str(value(block(jobs, job_name) or [], "needs")))
+check("stack outputs: only in env values or if: conditions, never interpolated into a run: line",
+      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:|\w[\w-]*: \$\{\{ steps\.resolve)", l) for l in W if "needs.stack.outputs" in l
+          or "steps.resolve.outputs" in l),
+      str([l for l in W if "needs.stack.outputs" in l or "steps.resolve.outputs" in l]))
+check("report: no stack posts the stack job's error as the reason",
+      "STACK_ERROR: ${{ needs.stack.outputs.error }}" in text(report) and '--reason "${STACK_ERROR:-' in text(report),
+      text(report))
+check("report: mutants merge only when a stack was settled", "needs.stack.result == 'success'" in text(report), text(report))
 for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("mutants", "R3 mutation on the diff (shard)")):
     jl = block(jobs, job_name) or []
     names = [l.strip()[len("- name: "):] for l in jl if l.strip().startswith("- name: ")]
     run_st = step(jl, run_name)
     check(f"{job_name}: passes --project-dir from the input via env",
-          '--project-dir "$PROJECT_DIR"' in text(run_st) and "PROJECT_DIR: ${{ inputs.project-dir }}" in text(run_st),
+          '--project-dir "$PROJECT_DIR"' in text(run_st) and "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in text(run_st),
           str(run_st))
     sc = step(jl, "setup command")
     check(f"{job_name}: setup-command step runs only when set", "if: inputs.setup-command != ''" in sc, str(sc))

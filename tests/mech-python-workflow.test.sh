@@ -79,13 +79,13 @@ plan = block(jobs, "plan") or []
 
 stack_desc = " ".join(block(inputs, "stack") or [])
 check("input: stack description names python", "python" in stack_desc and "rust" in stack_desc, stack_desc)
-check("input: stack default still rust", value(block(inputs, "stack") or [], "default") == "rust")
+check("input: stack default is auto", value(block(inputs, "stack") or [], "default") == "auto")
 
 for job_name, job in (("red-first", red), ("mutants", mut)):
     py = step(job, "Python toolchain")
     txt = "\n".join(py)
     check(f"{job_name}: a Python toolchain step exists", bool(py), str(py))
-    check(f"{job_name}: python step runs only for the python stack", value(py, "if") == "inputs.stack == 'python'",
+    check(f"{job_name}: python step runs only for the python stack", value(py, "if") == "needs.stack.outputs.stack == 'python'",
           str(value(py, "if")))
     check(f"{job_name}: python step uses no third-party action (runner python, venv)", not any(l.startswith("uses:") for l in py),
           str([l for l in py if l.startswith("uses:")]))
@@ -105,11 +105,11 @@ check("mutants: mutmut installed pinned to 3.8.1", "mutmut==3.8.1" in mutmut_ste
 check("red-first: mutmut is not installed (R1/R4 run tests only)", "mutmut" not in "\n".join(step(red, "Python toolchain")))
 
 cm = step(mut, "install cargo-mutants (pinned)")
-check("mutants: cargo-mutants install only for the rust stack", "inputs.stack == 'rust'" in " ".join(cm)
-      or any(l == "if: inputs.stack == 'rust'" for l in cm), str(cm))
+check("mutants: cargo-mutants install only for the rust stack", "needs.stack.outputs.stack == 'rust'" in " ".join(cm)
+      or any(l == "if: needs.stack.outputs.stack == 'rust'" for l in cm), str(cm))
 check("mutants: cargo-mutants install still continues on error", any(l == "continue-on-error: true" for l in cm), str(cm))
 check("red-first: the rust toolchain is still for the rust stack only",
-      any(l == "if: inputs.stack == 'rust'" for l in step(red, "Rust toolchain")), str(step(red, "Rust toolchain")))
+      any(l == "if: needs.stack.outputs.stack == 'rust'" for l in step(red, "Rust toolchain")), str(step(red, "Rust toolchain")))
 
 check("plan job has no toolchain step (git only)", not any("toolchain" in l.lower() for l in plan))
 check("python steps: no PR code run outside the test and mutation jobs", "mech-review.py" not in "\n".join(step(red, "Python toolchain")))
@@ -117,7 +117,7 @@ check("python steps: no PR code run outside the test and mutation jobs", "mech-r
 for job_name, job in (("red-first", red), ("mutants", mut)):
     py = "\n".join(step(job, "Python toolchain"))
     check(f"{job_name}: python toolchain reads project-dir from the input, not a literal",
-          "inputs.project-dir" in py and "PROJECT_DIR" in py, py)
+          "needs.stack.outputs.project-dir" in py and "PROJECT_DIR" in py, py)
     check(f"{job_name}: requirements come from the project dir (caller/<project-dir>)",
           'caller/$PROJECT_DIR' in py, py)
 
