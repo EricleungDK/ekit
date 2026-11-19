@@ -406,6 +406,15 @@ class TestMutmutFiles(unittest.TestCase):
         self.assertEqual(fake.shown, [SUB2])
         self.assertEqual([e["line"] for e in entries], [3])
 
+    def test_a_miss_mutmut_places_on_an_unchanged_line_after_the_run_does_not_block(self):
+        # the files do not place SUB1 before the run, so it runs; `mutmut show` then places it on line 2, unchanged
+        fake = WritingMutmut({SUB1: "survived"})
+        fake.listed = [SUB2]
+        check, entries = self.r3(fake)
+        self.assertEqual(fake.shown, [SUB1])
+        self.assertEqual((check["status"], [e for e in entries if e["severity"] == "fail"]), ("pass", []))
+        self.assertIn("0 missed in the diff, 1 missed outside the diff", check["note"])
+
 
 class TestWholeSuite(DiffOfSub):
     """A mutant mutmut reports missed is tried once more against the whole suite, which also holds the tests mutmut
