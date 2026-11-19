@@ -1,0 +1,98 @@
+# ekit adapter file: TypeScript / JavaScript, the R2 side (#16). It describes what the built-in `ts` adapter
+# (scripts/mech_review/stack.py, TsAdapter) reads, and R2 through it gives the same entries.
+# Use: mech-review.py r2 --stack ts --adapter scripts/mech_review/adapters/ts.toml
+# Format: docs/mech-review-ci.md#adapter-file
+format = 1
+name = "ts"
+manifests = ["package.json"]
+extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+ident_chars = "$"
+member = "."
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+
+# "..." and '...' end at the line end with no error (JSX text holds apostrophes)
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[[lexer.strings]]
+quote = "'"
+escape = '\'
+
+[[lexer.strings]]
+quote = "`"
+escape = '\'
+multiline = true
+interpolation = ["${", "}"]
+name = "template literal"
+
+# /re/flags where an operand cannot be a division: after these characters, these words, or at the start of the file
+[lexer.regex]
+delimiter = "/"
+after = "(,=:[!&|?{};+-*%<>~^"
+after_words = ["return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield",
+               "await", "instanceof"]
+
+[tests]
+style = "calls"
+groups = ["describe", "xdescribe", "fdescribe"]
+cases = ["it", "test", "xit", "xtest", "fit", "ftest"]
+separator = " > "
+skip = ["xit", "xdescribe", "xtest"]
+only = ["fit", "fdescribe", "ftest"]
+skip_modifiers = ["skip", "todo"]
+only_modifiers = ["only"]
+table_modifiers = ["each"]
+min_args = 2
+not_after = ["function", "function*"]
+skipped_text = "test `{name}` marked skipped (skip, todo or x-prefixed)"
+
+# named functions own the asserts in them (helpers a test calls)
+[functions]
+shapes = [
+  "function *? NAME (...) ...{...}",
+  "export? const|let|var NAME :...? = async? (...) => BODY",
+  "export? const|let|var NAME :...? = async? function *? ID? (...) ...{...}",
+  "export? const|let|var NAME :...? = async? ID => BODY",
+]
+
+[[asserts.chain]]
+start = "expect"
+negate = ["not"]
+pass_through = ["resolves", "rejects"]
+eq = ["toBe", "toEqual", "toStrictEqual"]
+
+[[suppressions]]
+directives = ["eslint-disable-next-line", "eslint-disable-line", "eslint-disable"]
+covers = { "eslint-disable-next-line" = "next-line", "eslint-disable-line" = "line", "eslint-disable" = "file" }
+lints = "rules"
+reason_after = "--"
+problem = "`{lints}` added without a reason"
+hint = "fix the lint, or give the suppression a reason after the rules: `// {lints} -- why`"
+
+[[suppressions]]
+directives = ["@ts-ignore", "@ts-expect-error", "@ts-nocheck"]
+covers = { "@ts-ignore" = "next-line", "@ts-expect-error" = "next-line", "@ts-nocheck" = "file" }
+lints = "directive"
+reason_strip = [":", "-–— "]
+problem = "`{lints}` added without a reason"
+hint = "fix the type error, or give the directive a reason after it: `// {lints}: why`"
+
+[mutation]
+skip_comments = ["Stryker disable"]
+config_name = "Stryker config"
+config_files = [
+  "stryker.conf.js", "stryker.conf.mjs", "stryker.conf.cjs", "stryker.conf.ts", "stryker.conf.mts", "stryker.conf.cts",
+  "stryker.conf.json",
+  "stryker.config.js", "stryker.config.mjs", "stryker.config.cjs", "stryker.config.ts", "stryker.config.mts",
+  "stryker.config.cts", "stryker.config.json",
+  ".stryker.conf.js", ".stryker.conf.mjs", ".stryker.conf.cjs", ".stryker.conf.ts", ".stryker.conf.mts",
+  ".stryker.conf.cts", ".stryker.conf.json",
+  ".stryker.config.js", ".stryker.config.mjs", ".stryker.config.cjs", ".stryker.config.ts", ".stryker.config.mts",
+  ".stryker.config.cts", ".stryker.config.json",
+]

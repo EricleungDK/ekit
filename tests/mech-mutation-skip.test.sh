@@ -8,7 +8,12 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkrepo() { local r="$T/$1"; mkdir -p "$r"; git -C "$r" init -q -b main; echo "$r"; }
 put() { mkdir -p "$(dirname "$1/$2")"; cat > "$1/$2"; }
 commit() { git -C "$1" add -A; git -C "$1" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm "$2"; git -C "$1" rev-parse HEAD; }
-mr() { local r="$1" b="$2" h="$3" s="$4"; shift 4; python3 -I "$MR" r2 --repo "$r" --base "$b" --head "$h" --stack "$s" --test-paths 'tests/**' "$@"; }
+# MECH_ADAPTER_TS=<adapter file>: the ts cases read TS from that file (#16, tests/mech-adapter.test.sh)
+mr() {
+  local r="$1" b="$2" h="$3" s="$4" a=(); shift 4
+  [[ $s == ts && -n $MECH_ADAPTER_TS ]] && a=(--adapter "$MECH_ADAPTER_TS")
+  python3 -I "$MR" r2 --repo "$r" --base "$b" --head "$h" --stack "$s" --test-paths 'tests/**' "${a[@]}" "$@"
+}
 first() { jq -r --arg k "$2" '[.entries[] | select(.problem | contains($k))][0] // {} | '"$3" <<<"$1"; }
 
 # rust: #[mutants::skip] added on a production fn
