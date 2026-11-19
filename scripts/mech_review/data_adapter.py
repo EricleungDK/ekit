@@ -5,7 +5,7 @@ import os
 import re
 
 from .globs import any_glob
-from .scan import Call, Lexer, line_of, norm
+from .scan import Call, line_of, norm
 from .stack import Adapter, Assertion, Suppression, TestFn
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -16,18 +16,16 @@ DEFAULT_HINT = "fix the lint, or give the suppression a reason"
 class DataAdapter(Adapter):
     from_file = True
 
-    def __init__(self, cfg):
-        """cfg: the adapter file's tables, validated by adapter_file.parse (regex table and shapes already built)."""
+    def __init__(self, cfg, lexer, fn_shapes):
+        """cfg: the adapter file's tables, validated by adapter_file.parse; lexer and fn_shapes: built there from them."""
         self.name = cfg["name"]
         self.manifests = tuple(cfg.get("manifests", ()))
         self.extensions = tuple(cfg["extensions"])
-        lx = cfg["lexer"]
-        self.lexer = Lexer(lx["brackets"], lx.get("ident_chars", ""), lx.get("member", "."), lx.get("line_comments", ()),
-                           lx.get("block_comments", ()), lx.get("strings", ()), lx["regex"])
+        self.lexer = lexer
         self.tests = cfg["tests"]
         self.chains = cfg["asserts"].get("chain", [])
         self.call_shapes = cfg["asserts"].get("call", [])
-        self.fn_shapes = cfg["functions"]["shapes"]
+        self.fn_shapes = fn_shapes
         self.sups = cfg.get("suppressions", [])
         self.mutation = cfg.get("mutation", {})
         self._skip_res = [re.compile(r"\s*" + r"\s+".join(re.escape(w) for w in phrase.split()) + r"(?![\w])")

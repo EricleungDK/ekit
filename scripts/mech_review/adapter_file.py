@@ -163,7 +163,7 @@ def _lexer(d):
                else "a comment opener" if ch in openers else "the member character" if ch == member else None)
         if why:
             _err(f + ".ident_chars", f"`{ch}` cannot be part of a word ({why})")
-    return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx), rx
+    return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx)
 
 
 def _tests(d, lexer):
@@ -300,16 +300,13 @@ def parse(data):
             _err(f"extensions[{i}]", f"`{e}`: want a file extension such as \".ts\"")
         if e in exts[:i]:
             _err(f"extensions[{i}]", f"`{e}` is listed twice")
-    lexer, rx = _lexer(data["lexer"])
+    lexer = _lexer(data["lexer"])
     _tests(data["tests"], lexer)
     shapes = _functions(data["functions"], lexer) if "functions" in data else []
     _asserts(data["asserts"], lexer)
     _suppressions(data.get("suppressions", []))
     _mutation(data.get("mutation", {}))
-    cfg = dict(data)
-    cfg["lexer"] = dict(data["lexer"], regex=rx)
-    cfg["functions"] = {"shapes": shapes}
-    return DataAdapter(cfg)
+    return DataAdapter(data, lexer, shapes)
 
 
 def load(path):

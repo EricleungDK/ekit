@@ -129,6 +129,51 @@ class AdapterFileR2(unittest.TestCase):
         self.assertEqual((rc, ents), (0, []))
 
 
+MINIMAL = '''format = 1
+name = "tiny"
+extensions = [".tiny"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "{}"]
+
+[[lexer.strings]]
+quote = '"'
+
+[lexer.regex]
+delimiter = "/"
+
+[tests]
+style = "calls"
+cases = ["test"]
+
+[[asserts.call]]
+names = ["check"]
+kind = "other"
+'''
+
+
+class MinimalAdapterFile(unittest.TestCase):
+    """Each table with only its required keys: the defaults (no comments, no groups, no escape, a regex literal only at
+    the start of the file, `.` as member) give a working R2."""
+
+    def test_a_file_with_only_required_keys_reads_tests_strings_and_regexes(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "tiny.toml")
+        with open(path, "w") as f:
+            f.write(MINIMAL)
+        repo = Repo(os.path.join(tmp.name, "repo"))
+        base = repo.commit({"tests/a.tiny": '/test("r", {})/\ntest("a", { check(1) })\ns = "test(\\"q\\", {})"\n'
+                                            'x.test("m", { check(2) })\n'}, "base")
+        head = repo.commit({"tests/a.tiny": 's = "test(\\"q\\", {})"\n'}, "head")
+        r = r2(repo, base, head, adapter=path, stack="tiny")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual([(e["severity"], e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]],
+                         [("fail", 2, "test fn `a` removed"),
+                          ("fail", 0, "assertions outside test fns in `tests/a.tiny` dropped from 1 to 0")])
+
+
 class AdapterFileUsage(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
