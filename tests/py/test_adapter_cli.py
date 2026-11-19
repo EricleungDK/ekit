@@ -188,8 +188,18 @@ class AdapterFileUsage(unittest.TestCase):
         self.assertIn("--adapter applies to r2 only", r.stderr)
 
     def test_without_tomllib_an_adapter_file_is_a_stated_error_and_built_ins_still_run(self):
-        code = ("import sys; sys.modules['tomllib'] = None; sys.path.insert(0, sys.argv[1]); "
-                "from mech_review.cli import main; sys.exit(main(sys.argv[2:]))")
+        # a python without tomllib, as the engine sees it: only imports made by mech_review fail. Hiding it from the
+        # whole process would also break other importers (mutmut's trampoline reads its config with tomllib).
+        code = ("import builtins, sys\n"
+                "real = builtins.__import__\n"
+                "def imp(name, globals=None, *a, **k):\n"
+                "    if name == 'tomllib' and (globals or {}).get('__name__', '').startswith('mech_review'):\n"
+                "        raise ImportError('No module named tomllib')\n"
+                "    return real(name, globals, *a, **k)\n"
+                "builtins.__import__ = imp\n"
+                "sys.path.insert(0, sys.argv[1])\n"
+                "from mech_review.cli import main\n"
+                "sys.exit(main(sys.argv[2:]))\n")
         common = ["r2", "--repo", self.repo.path, "--base", self.base, "--head", self.base, "--test-paths", "tests/**"]
         r = subprocess.run([sys.executable, "-I", "-c", code, _kit.SCRIPTS, *common, "--stack", "mini", "--adapter", MINI],
                            capture_output=True, text=True)
