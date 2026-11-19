@@ -1,6 +1,7 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
 scanner (scan.py). R2 side only: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
 The run side (test command, outcomes) is #18; R2 is all `--adapter` drives for now."""
+import functools
 import os
 import re
 
@@ -30,9 +31,11 @@ class DataAdapter(Adapter):
         self.mutation = cfg.get("mutation", {})
         self._skip_res = [re.compile(r"\s*" + r"\s+".join(re.escape(w) for w in phrase.split()) + r"(?![\w])")
                           for phrase in self.mutation.get("skip_comments", [])]
+        # R2 asks several methods about the same text (base and head of each file): scan each text once
+        self._parse = functools.lru_cache(maxsize=8)(self._scan)
 
     # ---- parsing ----
-    def _parse(self, text):
+    def _scan(self, text):
         m, comments, errors = self.lexer.mask(text)
         calls = self._calls(text, m)
         return m, comments, errors, calls, self._scoped(calls), self.lexer.find_shapes(m, self.fn_shapes)
