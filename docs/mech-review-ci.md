@@ -329,7 +329,10 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 - a call opens with `(`;
 - a block (`{...}`, `...{...}`, `BODY`) opens with `{`, and a `BODY` expression ends at `;`, a line end or a closing bracket;
 - inside a regex literal, `\` escapes, `[...]` is a class (the delimiter does not end it there), and flags after it are letters, digits and `_`;
+- a regex literal must close on its own line; otherwise its delimiter is read as division;
 - a suppression directive ends at a character that is not a letter, digit, `_` or `-`;
+- a `skip_comments` phrase ends at a character that is not a letter, digit or `_` (`Stryker disabled` is not `Stryker disable`);
+- a template (`skipped_text`, `problem`, `hint`) takes plain `{field}` placeholders and `{{` / `}}` only: a `!` conversion or `:` spec is an error;
 - `ident_chars` may not hold whitespace, a bracket, a string quote, a comment opener or the `member` character, and `member` may not be a word character, whitespace or a bracket.
 
 ### Worked example

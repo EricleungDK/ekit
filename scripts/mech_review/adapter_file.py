@@ -62,17 +62,21 @@ def _int(v, field):
 
 def _template(v, field, names):
     _str(v, field)
+    """plain `{field}` placeholders (and `{{` `}}`) only: a conversion or spec could still fail on a real value (a nested
+    field in a spec takes the value's text), so none is allowed."""
     try:
-        used = [f for _, f, _, _ in string.Formatter().parse(v) if f is not None]
+        parts = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(v) if f is not None]
     except ValueError as e:
         _err(field, f"bad template: {e}")
-    for f in used:
+    for f, _, _ in parts:
         if f not in names:
             _err(field, f"unknown placeholder `{{{f}}}`: want " + " or ".join(f"`{{{n}}}`" for n in names))
-    try:  # conversions and format specs fail only when formatted: format once now, not on the first PR that needs it
+    try:
         v.format(**{n: "x" for n in names})
     except (ValueError, IndexError, KeyError) as e:
         _err(field, f"bad template: {e}")
+    if any(spec or conv for _, spec, conv in parts):
+        _err(field, f"`{v}`: want plain " + " or ".join(f"`{{{n}}}`" for n in names) + " (no `!` conversion or `:` spec)")
     return v
 
 

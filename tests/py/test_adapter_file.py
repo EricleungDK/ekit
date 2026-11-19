@@ -180,6 +180,18 @@ class Invalid(unittest.TestCase):
         self.assertEqual(self.err(with_("asserts", {"call": calls})),
                          "asserts.call[1].names[0]: `check` is already an assert shape")
 
+    def test_a_template_takes_plain_fields_only(self):
+        sup = {"directives": ["lint-off"], "covers": {"lint-off": "line"}, "problem": "{lints:{lints}<5}"}
+        self.assertEqual(self.err(with_("suppressions", [sup])),
+                         "suppressions[0].problem: `{lints:{lints}<5}`: want plain `{lints}` (no `!` conversion or `:` spec)")
+        self.assertEqual(self.err(with_("tests.skipped_text", "{name:{name}<5}")),
+                         "tests.skipped_text: `{name:{name}<5}`: want plain `{name}` (no `!` conversion or `:` spec)")
+        self.assertEqual(self.err(with_("tests.skipped_text", "{name!r}")),
+                         "tests.skipped_text: `{name!r}`: want plain `{name}` (no `!` conversion or `:` spec)")
+
+    def test_a_template_with_plain_fields_and_escaped_braces_loads(self):
+        self.assertEqual(parse(with_("tests.skipped_text", "test {{x}} `{name}` off")).ignored_text("a"), "test {x} `a` off")
+
     def test_a_template_that_would_fail_to_format_is_rejected_at_load(self):
         # the reason after `bad template:` is python's own wording, which changes between versions
         for value in ("{lints!z}", "{lints:>>>}", "{"):
