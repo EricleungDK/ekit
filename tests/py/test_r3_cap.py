@@ -340,6 +340,42 @@ class TestPythonCap(unittest.TestCase):
             self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 0, None), shard)
             self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
 
+    def test_a_shard_with_no_share_of_the_capped_list_is_empty_and_merges_counting_each_mutant_once(self):
+        from scripts.mech_review import merge
+        fake1 = CopyingMutmut()
+        c1, e1 = self.r3(fake1, cap=1, shard="1/2")
+        self.assertEqual((c1["status"], c1["tested"], c1["total"], e1), ("pass", 0, 0, []))
+        self.assertEqual(c1["note"], "0 mutants in this shard")
+        self.assertEqual(fake1.runs, [[_kit_mutants().LIST_ONLY]])  # listed, nothing of its own to run
+        c0, e0 = self.r3(CopyingMutmut(), cap=1, shard="0/2")
+        self.assertEqual((c0["status"], c0["tested"], c0["total"]), ("partial", 1, 5))
+        env = {"base": "b" * 40, "head": "h" * 40, "summary": "", "checks": {}}
+        shards = {0: dict(env, entries=e0, checks={"R3": c0}), 1: dict(env, entries=e1, checks={"R3": c1})}
+        r3 = merge.combine_shards("b" * 40, "h" * 40, 2, shards, {})["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 1, 5))
+
+    def test_a_production_change_only_outside_project_dir_is_no_mutant(self):
+        from scripts.mech_review.gitio import Review, merge_base
+        from scripts.mech_review.stack import ADAPTERS
+        os.makedirs(os.path.join(self.repo, "pkg"))
+        os.makedirs(os.path.join(self.repo, "other"))
+        with open(os.path.join(self.repo, "pkg", "pyproject.toml"), "w") as f:
+            f.write("[project]\nname = 'pkg'\n")
+        with open(os.path.join(self.repo, "other", "x.py"), "w") as f:
+            f.write("def x():\n    return 1\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "pkg")
+        with open(os.path.join(self.repo, "other", "x.py"), "w") as f:
+            f.write("def x():\n    return 2\n")
+        git(self.repo, "commit", "-q", "-am", "outside")
+        base, head, mb = merge_base(self.repo, "HEAD~1", "HEAD")
+        fake = CopyingMutmut()
+        check, entries = _kit_mutants().run(Review(self.repo, mb, head, ADAPTERS["python"](), ["tests/**"], "pkg"),
+                                            None, 5, None, None, fake)
+        self.assertEqual((check, entries, fake.runs), ({"status": "pass", "note": "0 mutants in the diff (no changed "
+                                                        "production file under project-dir)", "tested": 0, "total": 0},
+                                                       [], []))
+
 
 if __name__ == "__main__":
     unittest.main()

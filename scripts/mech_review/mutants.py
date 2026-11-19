@@ -1178,7 +1178,7 @@ class Mutmut:
             if bad:
                 return bad
             if not files:
-                return _check("pass", "0 mutants in the diff (no changed production file in this shard)", 0, 0), []
+                return _check("pass", "0 mutants in the diff (no changed production file under project-dir)", 0, 0), []
             if not _write_config(crate, [_crate_path(project_dir, f) for f in files],
                                  lambda sources: also_copy(repo, head, project_dir, sources)):
                 return _check("n/a", f"the repo already configures mutmut ([tool.mutmut]) in {project_dir} (env): "
