@@ -182,6 +182,7 @@ class Adapter:
     name = ""
     default_test_cmd = ""
     manifests = ()  # files that make a directory a project of this stack (a missing one is named by a hint)
+    from_file = False  # True: described by an adapter file (data_adapter); a file it cannot read is needs-human
 
     def classify(self, path, test_globs):
         raise NotImplementedError

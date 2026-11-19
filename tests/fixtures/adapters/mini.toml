@@ -1,0 +1,37 @@
+# A made-up language for the adapter-file CLI tests: `suite("S", { test("t", { assertEquals(want, got) }) })`.
+format = 1
+name = "mini"
+manifests = ["mini.json"]
+extensions = [".mini"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+line_comments = ["#"]
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[tests]
+style = "calls"
+groups = ["suite"]
+cases = ["test", "xtest"]
+skip = ["xtest"]
+separator = " / "
+skipped_text = "test `{name}` marked xtest"
+
+[[asserts.call]]
+names = ["assertEquals"]
+kind = "eq"
+operands = [0, 1]
+
+[[asserts.call]]
+names = ["assertTrue"]
+kind = "other"
+
+[[suppressions]]
+directives = ["lint-off"]
+covers = { "lint-off" = "next-line" }
+lints = "rules"
+reason_after = "--"
