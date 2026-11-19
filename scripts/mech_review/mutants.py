@@ -357,6 +357,12 @@ def _repo_path(project_dir, path):
     return path if project_dir == "." else posixpath.join(project_dir, path)
 
 
+def _repo_name(project_dir, m):
+    """a cargo-mutants mutant's name with its file named from the repo root, as verdict() writes it into a problem."""
+    raw, name = str(m.get("file", "")), str(m.get("name", ""))
+    return _repo_path(project_dir, raw) + name[len(raw):] if name.startswith(raw + ":") else name
+
+
 def _baseline_timeout_note(timeout_s):
     """n/a note for a baseline that timed out: names the seconds and the budget. The baseline runs once, before the shards,
     and no per-mutant setting caps it (#46), so the budget is the input to raise."""
@@ -570,9 +576,12 @@ class CargoMutants:
                 ran = {m.get("name") for m in ran if isinstance(m, dict)} if isinstance(ran, list) else set()
                 stray = ran - {m.get("name") for m in own}
                 if stray:  # cargo-mutants ORs --re with the crate config's examine_re: the pick was not kept
-                    check, ents = _check("n/a", f"cargo-mutants ran {len(stray)} mutant(s) outside this shard's pick "
-                                                f"(env): the cap was not kept; an `examine_re` in .cargo/mutants.toml "
-                                                "is ORed with --re: remove it, or raise max-mutants"), []
+                    check = _check("n/a", f"cargo-mutants ran {len(stray)} mutant(s) outside this shard's pick "
+                                          f"(env): the cap was not kept; an `examine_re` in .cargo/mutants.toml "
+                                          "is ORed with --re: remove it, or raise max-mutants")
+                    # a MISSED mutant of the shard's own pick is still a finding: its entry stays
+                    mine = {f"MISSED mutant {_repo_name(project_dir, m)}" for m in own}
+                    ents = [e for e in ents if e["problem"] in mine]
                 else:
                     check = apply_cap(check, own, extra, max_mutants)
                     if check["status"] == "n/a":

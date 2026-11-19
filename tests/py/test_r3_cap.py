@@ -41,7 +41,8 @@ if "skip" not in args:
         {"phase": "Build", "duration": float(os.environ.get("STUB_BUILD_S", "1"))},
         {"phase": "Test", "duration": float(os.environ.get("STUB_TEST_S", "1"))}]})
 if "--build-timeout" not in args:
-    outcomes += [{"scenario": {"Mutant": m}, "summary": "CaughtMutant",
+    missed = set(filter(None, os.environ.get("STUB_MISSED", "").split("|")))  # names that survive
+    outcomes += [{"scenario": {"Mutant": m}, "summary": "MissedMutant" if m["name"] in missed else "CaughtMutant",
                   "phase_results": [{"phase": "Build", "duration": 1.0}, {"phase": "Test", "duration": 1.0}]}
                  for m in picked]
 json.dump({"outcomes": outcomes, "total_mutants": len(picked)}, open(os.path.join(mo, "outcomes.json"), "w"))
@@ -199,6 +200,13 @@ class TestRustCapNotHonoured(RustCap):
             self.assertEqual(r3["status"], "n/a", (shard, r3))
             self.assertIn("examine_re", r3["note"])
             self.assertEqual([e for e in env["entries"] if e["check"] == "R3"], [])
+
+    def test_a_missed_mutant_inside_the_pick_is_still_reported(self):
+        # shard 0/2 of the 4 picked holds GT and NOT; ARM is past the cap but runs through the config regex
+        env = self.cli("mutants", "--max-mutants", "4", "--shard", "0/2", STUB_CONFIG_RE="src/",
+                       STUB_MISSED="|".join((GT["name"], ARM["name"])))
+        self.assertEqual(env["checks"]["R3"]["status"], "n/a")
+        self.assertEqual([e["problem"] for e in env["entries"] if e["check"] == "R3"], [f"MISSED mutant {GT['name']}"])
 
     def test_the_note_counts_what_the_status_counts(self):
         r3 = self.cli("mutants", "--max-mutants", "4", "--shard", "0/2")["checks"]["R3"]
