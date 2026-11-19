@@ -557,6 +557,15 @@ class TestWholeSuite(DiffOfSub):
         self.assertIn("1 more caught only by the whole suite", check["note"])
         self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
 
+    def test_a_retry_that_ran_and_passed_stays_missed_beside_one_the_budget_never_reached(self):
+        # #26: a mutant that really ran and survived (its retry too) is MISSED; the next, never retried, is untested
+        fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["nothing"])
+        with self.clock(100, 130, 140, 150, 150, 151, 160, 300):  # the second mutant finds the budget gone
+            check, entries, _ = self.r3(fake, budget_min=2)
+        self.assertEqual(([e["line"] for e in entries if e["severity"] == "fail"], fake.applied), ([6], [SUB1]))
+        self.assertEqual((check["status"], check["tested"], check["total"]), ("fail", 1, 2))
+        self.assertIn("1 missed by mutmut, whole-suite retry not reached at budget: untested", check["note"])
+
     def test_a_suite_run_cut_short_by_the_budget_is_not_a_hang(self):
         fake = self.fake({SUB1: "no tests"}, suite_hangs_on=["c = a + b"])
         with self.clock(100, 130, 140, 195):  # 25 s of the 120 left: less than one suite run may take
