@@ -409,6 +409,7 @@ class TestPythonRisk(unittest.TestCase):
             (("return f(a, b)", "return f(a)"), M.RISK_LAST),       # an argument dropped
             (("return f(a, b)", "return f(None, b)"), M.RISK_LAST),  # an argument set to None
             (("log(a, b)", "log(a)"), M.RISK_LAST),
+            (("return a, b", "return a"), M.RISK_RETURN),  # a tuple element, not a call's argument
             (("break", "return"), M.RISK_REST),
         ]
         for (removed, added), want in table:

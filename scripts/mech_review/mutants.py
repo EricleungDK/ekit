@@ -118,7 +118,8 @@ def py_risk(removed, added, condition=False):
         return RISK_LAST
     if any(t in ("True", "False") for t in diff) or (returning and b == ["return", "None"]):
         return RISK_RETURN  # a boolean literal, or the whole returned value replaced
-    if ("," in da and len(b) < len(a)) or (returning and "None" in db):
+    in_call = a[:i].count("(") > a[:i].count(")")  # the edit sits inside a call's parentheses
+    if (in_call and "," in da and len(b) < len(a)) or (returning and "None" in db):
         return RISK_LAST  # an argument dropped, or set to None
     if any(t in ARITH_OPS or t[:1].isdigit() for t in diff):
         return RISK_ARITH
