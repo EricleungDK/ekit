@@ -2,6 +2,12 @@
 
 Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`; each one moves the floating `v0` tag that CI callers follow.
 
+## Unreleased
+
+### Added
+
+- **Adapter files** (`scripts/mech-review.py r2 --adapter <file>`, #16): a TOML file describes a stack to R2 as data: file extensions, test calls and their skip/only markers, function shapes, assert shapes (chains such as `expect(a).toBe(b)`, calls such as `assertEquals(a, b)`), lint suppressions and their reasons, mutation skip markers and config files, and a lexer table (comments, strings, regex literals, brackets). ekit's own scanner reads the source with it; the file holds no regex. `--stack` names the file's stack. A bad file is a usage error that names the field; a source file that does not balance under it is an R2 `needs-human` fail. TS ships as `scripts/mech_review/adapters/ts.toml`, with the same R2 entries as the built-in. Needs python 3.11+ (`tomllib`) only when `--adapter` is given; R2 only for now; the built-in stacks are unchanged. Format: `docs/mech-review-ci.md#adapter-file`.
+
 ## 0.5.0
 
 ### Added

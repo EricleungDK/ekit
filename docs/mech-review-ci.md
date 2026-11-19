@@ -10,7 +10,7 @@ Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each
 - `mutants`: R3 mutation on the diff (`scripts/mech-review.py mutants`), one job per shard. Runs cargo-mutants 27.1.0 (`--in-diff`, round-robin shards, baseline skipped) on the PR's code (rust), mutmut 3.8.1 on the functions the diff touches in the changed files (python), or Stryker 10.0.0 on the changed lines (ts). Skipped when `baseline` says no shard runs.
 - `report`: merges the results (the baseline's R3, or the shards' R3), edits the comment, sets the check.
 
-Rules: [testing standard](testing-standard.md).
+Rules: [testing standard](testing-standard.md). A stack described as data, not code: [adapter file](#adapter-file).
 
 Adopting or repairing: `/ekit:ci-doctor` runs `mech-review.py doctor` and opens the caller PR. A person merges it.
 
@@ -219,6 +219,146 @@ The three tools do not make the same mutants, so R3 is not equally strict across
 | A repo can switch a mutator off | config (an R2 `needs-human` change) | `excludedMutations` in the repo's Stryker config (same) | no: there is no such option |
 
 In ekit's own code, most python string and argument mutants that survived were real gaps (a dictionary key, a git flag, an environment variable name), so they block like any other. The ones that are not gaps are equivalent mutants: see the R3 row of the [forbidden cheats](testing-standard.md#3-forbidden-cheats) for what to do with one.
+
+## Adapter file
+
+An adapter file is a TOML file that describes one stack to R2 as data: which files are this stack's, how tests are written and named, what an assert looks like, how a lint is silenced and with what reason, and what hides code from R3. ekit's own scanner reads the source with it (comments and strings masked, brackets matched, arguments split), so the file holds tables and words, never a regex over the file.
+
+```
+python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts \
+  --adapter scripts/mech_review/adapters/ts.toml --test-paths 'tests/**'
+```
+
+- `--adapter FILE` takes the stack from the file in place of the built-in of that name. `--stack` must equal the file's `name`; a name that is not built in is allowed only with `--adapter`. Without `--adapter`, `rust`, `python` and `ts` run as before.
+- R2 only for now (`r2`): the run side of the file (test command, outcomes, mutation tool: R1, R3, R4) is not built yet, and `--adapter` with another subcommand is a usage error. The workflow does not pass `--adapter` yet.
+- Reading the file needs python 3.11 or newer (`tomllib`); on an older python `--adapter` is a usage error that says so, and the built-in stacks keep working.
+- A file that is unreadable, not TOML, or invalid is a usage error (exit 2, nothing on stdout) that names the field: `adapter file x.toml: tests.cases: want at least one entry`. An unknown key is an error too, so a misspelt key never passes silently.
+- A source file whose masked text does not balance (a bracket never closed, an unterminated block comment or multiline string) is an R2 `fail` of class `needs-human`: the cause may be the file's lexer table, not the PR. The built-in stacks keep `agent-fixable`.
+- Reference: [`scripts/mech_review/adapters/ts.toml`](../scripts/mech_review/adapters/ts.toml) describes TypeScript/JavaScript and gives the same R2 entries as the built-in `ts` adapter (`tests/mech-adapter.test.sh` runs the TS suites through it).
+
+### Keys
+
+Top level (required unless marked):
+
+| Key | Value |
+|---|---|
+| `format` | `1` |
+| `name` | the stack name (`--stack`): letters, digits, `_`, `-` |
+| `extensions` | file extensions of this stack, e.g. `[".ts", ".js"]`. A file of the stack is test code when it matches a `--test-paths` glob, production code otherwise |
+| `manifests` | optional: files that mark a project dir of this stack, e.g. `["package.json"]` |
+
+`[lexer]`: how source is masked.
+
+| Key | Value |
+|---|---|
+| `block_style` | `braces` (blocks are bracketed). `indent` and `keywords` are reserved, not supported yet: an error |
+| `brackets` | bracket pairs, e.g. `["()", "[]", "{}"]`; must include `()` (a call is `name(...)`) |
+| `ident_chars` | optional: characters that are part of a word beside letters, digits and `_` (ts: `"$"`) |
+| `member` | optional, default `"."`: the member-access character. A word right after it (`a.it(`) is a member, not a call |
+| `line_comments` | optional: openers of comments that run to the line end, e.g. `["//"]` |
+| `block_comments` | optional: `[open, close]` pairs, e.g. `[["/*", "*/"]]`. Not nested; an unterminated one is a parse error |
+| `[[lexer.strings]]` | optional, one table per string form: `quote` (the delimiter), `escape` (one character, optional), `multiline` (default `false`: the string ends at its closing quote or the line end, with no error), `interpolation` (`[open, close]`, multiline only: a closing quote inside does not end the string), `name` (for the error, e.g. `template literal`: an unterminated multiline string is a parse error) |
+| `[lexer.regex]` | optional: a regex literal form. `delimiter` (one character), `after` (characters after which it starts a literal, not a division), `after_words` (words after which it does). Also at the start of the file |
+
+`[tests]`: test cases are calls.
+
+| Key | Value |
+|---|---|
+| `style` | `calls`: a test is a call `case("name", fn)`, grouped by calls `group("name", fn)` |
+| `cases` | names of the calls that declare a test |
+| `groups` | optional: names of the calls that group tests. A test's name is its groups' names and its own, joined by `separator` |
+| `separator` | optional, default `" > "` |
+| `skip` / `only` | optional: call names that skip or focus (`xit`, `fit`). A skip on a group skips the tests in it |
+| `skip_modifiers` / `only_modifiers` | optional: `name.modifier(` words that skip or focus (`it.skip(`, `it.only(`) |
+| `table_modifiers` | optional: `name.modifier(table)(name, fn)`: the call after the table is the test (`it.each`) |
+| `min_args` | optional, default `0`: a case with fewer arguments is skipped (ts: `it.todo("x")` has no function) |
+| `not_after` | optional: a name right after one of these (whitespace ignored) declares, not calls: `function it(` |
+| `skipped_text` | optional: the R2 problem for a newly skipped test, `{name}` is the test |
+
+The first argument names the test: a string literal's value, or the argument's text.
+
+`[functions]` (optional): named functions own the asserts inside them, so an assert moved from a test into a helper it calls is not a drop. `shapes` is a list of shape strings; each element is separated by spaces, whitespace may sit between elements, and `?` after an element makes it optional:
+
+| Element | Matches |
+|---|---|
+| `word`, `a\|b` | that word (one of them) |
+| `NAME` | a word: the function's name (exactly one per shape) |
+| `ID` | any word |
+| punctuation, e.g. `=`, `=>`, `*` | that text |
+| `:...` | that text, then the rest of the line up to the next element's literal (a type annotation) |
+| `(...)` | a bracket group starting here (any pair from `brackets`) |
+| `...{...}` | skip to the next `{`, then its block (return types may come between) |
+| `BODY` | a `{}` block, or an expression up to `;`, the line end or a closing bracket |
+
+A shape starts with a word and ends with a group, block or `BODY`; the function spans from its first word to that end.
+
+`[asserts]`: at least one shape.
+
+| Key | Value |
+|---|---|
+| `[[asserts.chain]]` | `start(actual).matcher(expected)`: `start` (the word), `eq` (matchers that compare equal: kind `eq`, operands `actual` and `expected`), `negate` (members that flip eq to `ne`, e.g. `not`), `pass_through` (members skipped, e.g. `resolves`). Any other matcher is kind `other` |
+| `[[asserts.call]]` | `name(a, b)`: `names`, `kind` (`eq`, `ne` or `other`), `operands` (`[left, right]` argument indexes, required for `eq`/`ne`) |
+
+R2 compares eq/ne asserts by their operands (a changed expected value is a `confirm`) and other asserts by their text.
+
+`[[suppressions]]` (optional): one table per family of lint directives, read in comments only.
+
+| Key | Value |
+|---|---|
+| `directives` | comment bodies that start with one of these (longest first, ending at a character that is not a letter, digit, `_` or `-`) |
+| `covers` | for each directive: `line`, `next-line` or `file`: the lines it silences (an added line among them counts) |
+| `lints` | optional, default `directive`: the entry names the directive; `rules`: the directive and the words after it |
+| `reason_after` | optional: the reason is the text after this mark (`-- why`) |
+| `reason_strip` | optional, without `reason_after`: the reason is the text after the directive, with these characters stripped from its start, set by set (`[":", "-–— "]`) |
+| `problem` / `hint` | optional: the R2 text; `{lints}` is the directive and its rules |
+
+`[mutation]` (optional): what hides code from R3 (an R2 `needs-human` fail).
+
+| Key | Value |
+|---|---|
+| `skip_comments` | comment bodies that start with these words (whitespace between words free): a mutation skip marker |
+| `config_files` | file names (any dir) of the mutation tool's config |
+| `config_name` | the tool config's name in the entry, required with `config_files` |
+
+### Worked example
+
+A made-up language where tests read `suite("Calc", { test("adds", { assertEquals(3, add(1, 2)) }) })`, comments start with `#`, and `# lint-off rule -- why` silences a lint on the next line:
+
+```toml
+format = 1
+name = "mini"
+extensions = [".mini"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+line_comments = ["#"]
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[tests]
+style = "calls"
+groups = ["suite"]
+cases = ["test", "xtest"]
+skip = ["xtest"]
+separator = " / "
+skipped_text = "test `{name}` marked xtest"
+
+[[asserts.call]]
+names = ["assertEquals"]
+kind = "eq"
+operands = [0, 1]
+
+[[suppressions]]
+directives = ["lint-off"]
+covers = { "lint-off" = "next-line" }
+lints = "rules"
+reason_after = "--"
+```
+
+With it, R2 reports ``test fn `Calc / adds` removed`` for a deleted test, ``test `Calc / adds` marked xtest`` for a newly skipped one, ``expected value changed in `Calc / adds`: was 3, now 4`` (confirm) for `assertEquals(4, ...)`, and `` `lint-off unused` added without a reason `` for a bare `# lint-off unused`. `tests/fixtures/adapters/mini.toml` is this file plus a manifest and an `other` assert, used by `tests/py/test_adapter_cli.py`.
 
 ## Limits
 
