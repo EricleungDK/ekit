@@ -21,9 +21,13 @@ def git(repo, *args):
     return r.stdout if r.returncode == 0 else ""
 
 
+# Python bytecode is the interpreter's cache, never a scenario's output: left out even where no .gitignore names it
+BYTECODE = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.py[co]")
+
+
 def tree_hash(repo):
     """Content id of the working tree: the git tree `git add -A` would write (tracked + untracked, ignore rules
-    honoured). A commit, amend or rebase that keeps the files keeps the hash, so a PASS survives the commit that
+    honoured, untracked Python bytecode left out). A commit, amend or rebase that keeps the files keeps the hash, so a PASS survives the commit that
     follows it. Read-only for the repo: a copy of its index and a throwaway object dir take the writes, and the repo's
     own objects are read through an alternate. Files git cannot add (unreadable, fifo, socket, device) are left out."""
     gd = git(repo, "rev-parse", "--absolute-git-dir").strip()
@@ -45,7 +49,8 @@ def tree_hash(repo):
             os.unlink(index)  # no index yet (fresh repo): git starts from none, an empty file is an error
         alt = os.pathsep.join(x for x in (objects, os.environ.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")) if x)
         genv = dict(os.environ, GIT_INDEX_FILE=index, GIT_OBJECT_DIRECTORY=tmp, GIT_ALTERNATE_OBJECT_DIRECTORIES=alt)
-        subprocess.run(["git", "-C", repo, "add", "-A", "--ignore-errors"], env=genv, capture_output=True)
+        subprocess.run(["git", "-C", repo, "add", "-A", "--ignore-errors", "--", ":/", *BYTECODE], env=genv,
+                       capture_output=True)
         r = subprocess.run(["git", "-C", repo, "write-tree"], env=genv, capture_output=True)
         if r.returncode:
             print(f"cannot hash the working tree: {r.stderr.decode(errors='replace').strip()}", file=sys.stderr)
@@ -96,9 +101,9 @@ def timeout():
         return 300.0
 
 
-def run_one(repo, sid, ids, tdir):
+def run_one(repo, sid, ids, tdir, kept=None):
     """ids: every scenario in the repo, not only the ones this run was filtered to: a child run alone still gets its
-    parent's dir."""
+    parent's dir. kept: the dir that holds each scenario's last failed transcript (none: not kept)."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
     if not os.path.isfile(os.path.join(d, "SCENARIO.md")):
@@ -113,7 +118,8 @@ def run_one(repo, sid, ids, tdir):
         shutil.rmtree(art, ignore_errors=True)  # a rerun on the same tree lists only its own files
         os.makedirs(art)
         env = dict(os.environ, EKIT_REPO=repo, EKIT_SCENARIO_DIR=d, EKIT_PARENT_DIR=pdir, EKIT_ARTIFACT_DIR=art,
-                   EK_REPO=repo, EK_SCENARIO_DIR=d, EK_PARENT_DIR=pdir)  # EK_*: pre-rename scenarios
+                   EK_REPO=repo, EK_SCENARIO_DIR=d, EK_PARENT_DIR=pdir,  # EK_*: pre-rename scenarios
+                   PYTHONDONTWRITEBYTECODE="1")  # a scenario writes nothing into a checkout, bytecode included
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()
@@ -139,6 +145,12 @@ def run_one(repo, sid, ids, tdir):
     with open(res["transcript"], "wb") as f:
         f.write(f"command: bash run.sh\nscenario: {d}\ncwd: {cwd}\n--- stdout ---\n".encode() + out
                 + b"\n--- stderr ---\n" + err + f"\n--- exit: {res['exit'] if res['exit'] is not None else 'timeout'} ---\n".encode())
+    if res.get("reason") and kept:
+        # a flake's evidence: the next run on this tree (a pass) rewrites the transcript, so a copy stays until the
+        # same scenario fails again
+        os.makedirs(kept, exist_ok=True)
+        res["failed_transcript"] = os.path.join(kept, os.path.basename(res["transcript"]))
+        shutil.copyfile(res["transcript"], res["failed_transcript"])
     return res
 
 
@@ -158,7 +170,7 @@ def cmd_run(repo, only=None):
     out = outdir(repo)
     tdir = os.path.join(out, th)
     os.makedirs(tdir, exist_ok=True)
-    results = [run_one(repo, sid, known, tdir) for sid in ids]
+    results = [run_one(repo, sid, known, tdir, os.path.join(out, FAILED)) for sid in ids]
     for r in results:
         print(f"FAIL {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}
@@ -175,14 +187,16 @@ def cmd_run(repo, only=None):
 
 
 KEEP_DAYS = 14
+FAILED = "failed"  # <out>/failed/<id>.log: each scenario's last failed transcript, whatever its age
 
 
 def prune(out, keep):
-    """Drop transcript dirs of other trees once they are older than KEEP_DAYS; the current tree's stay."""
+    """Drop transcript dirs of other trees once they are older than KEEP_DAYS; the current tree's and the kept
+    failures stay."""
     cutoff = time.time() - KEEP_DAYS * 86400
     for name in os.listdir(out):
         d = os.path.join(out, name)
-        if name != keep and os.path.isdir(d) and not os.path.islink(d) and os.path.getmtime(d) < cutoff:
+        if name not in (keep, FAILED) and os.path.isdir(d) and not os.path.islink(d) and os.path.getmtime(d) < cutoff:
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -248,8 +262,8 @@ def usage():
     sys.exit(2)
 
 
-def main():
-    a = sys.argv[1:]
+def main(argv=None):
+    a = list(sys.argv[1:] if argv is None else argv)
     repo = "."
     if "--repo" in a:
         i = a.index("--repo")

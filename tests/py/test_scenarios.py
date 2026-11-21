@@ -372,6 +372,61 @@ class TestRun(unittest.TestCase):
         self.assertEqual(doc["reason"], "scenarios modified the repo: run in the temp cwd")
         self.assertIn("FAIL: scenarios modified the repo: run in the temp cwd\n", out)
 
+    def main(self, script, *args):
+        """the runner's entry, in-process: (exit code, stdout, results.json)"""
+        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")  # a rerun of the same script: same tree
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "run", *args])
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            return int(e.exception.code or 0), out.getvalue(), json.load(f)
+
+    def test_python_bytecode_left_in_the_repo_is_not_a_repo_change(self):
+        # the repo has no .gitignore: bytecode is untracked like any file, yet it is the interpreter's, not the scenario's
+        code, out, doc = self.main('mkdir -p "$EKIT_REPO/pkg/__pycache__"\n'
+                                   'echo b > "$EKIT_REPO/pkg/__pycache__/m.cpython-312.pyc"; echo b > "$EKIT_REPO/m.pyc"\n')
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+
+    def test_a_real_untracked_file_beside_bytecode_still_fails_the_run(self):
+        code, out, doc = self.main('mkdir -p "$EKIT_REPO/__pycache__"; echo b > "$EKIT_REPO/__pycache__/m.pyc"\n'
+                                   'echo x > "$EKIT_REPO/stray.txt"\n')
+        self.assertEqual((code, doc["reason"]), (1, "scenarios modified the repo: run in the temp cwd"))
+
+    def test_scenarios_run_with_bytecode_writes_off(self):
+        with mock.patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": ""}):
+            code, out, _ = self.main('[ "$PYTHONDONTWRITEBYTECODE" = 1 ] || { echo "bytecode on" >&2; exit 1; }\n')
+        self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+
+    def test_a_failed_transcript_stays_until_the_same_scenario_fails_again(self):
+        # fails on the 1st and 3rd run, passes on the 2nd: a pass on the same tree rewrites one.log, not the failure kept
+        script = ('n=$(cat "$EKIT_STATE/n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$EKIT_STATE/n"\n'
+                  'echo "run $n"; [ $n = 2 ]\n')
+        self.main(script)
+        code, _, doc = self.main(script)
+        self.assertEqual((code, doc["verdict"]), (0, "PASS"))
+        kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
+        with open(kept) as f:
+            self.assertIn("--- stdout ---\nrun 1\n", f.read())
+        code, _, doc = self.main(script)
+        self.assertEqual((code, doc["scenarios"][0]["failed_transcript"]), (1, kept))
+        with open(kept) as f:
+            text = f.read()
+        self.assertIn("--- stdout ---\nrun 3\n", text)
+        self.assertNotIn("run 1\n", text)
+
+    def test_the_kept_failures_outlive_the_transcript_window(self):
+        self.main("echo boom; exit 1\n")
+        kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
+        ahead = time.time() + 30 * 86400
+        write(self.repo, "other.txt", "a new tree\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "next")
+        with mock.patch.object(scenarios.time, "time", lambda: ahead), contextlib.redirect_stdout(io.StringIO()):
+            scenarios.cmd_run(self.repo)
+        self.assertTrue(os.path.isfile(kept))
+
 
 class TestPrune(unittest.TestCase):
     NOW = 1_800_000_000
