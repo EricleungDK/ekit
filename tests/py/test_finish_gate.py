@@ -427,6 +427,41 @@ class TestVerifyCommands(GateCase):
         self.runner.tree = (0, "T3")
         self.assertIsNone(self.stop(BLOCKED))
 
+    def test_a_blocked_report_on_a_tree_does_not_make_a_later_done_on_it_true(self):
+        """done blocked (a real red) → blocked accepted → done on the same tree: verify runs again, still red"""
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.verifier.result = (1, "`npm test`: the run exited 1")
+        self.assertEqual(self.stop(DONE)["decision"], "block")
+        self.assertIsNone(self.stop(BLOCKED))
+        out = self.stop(DONE)
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("`npm test`: the run exited 1", out["reason"])
+        self.verifier.result = (0, "")
+        self.assertIsNone(self.stop(DONE))
+        self.assertIsNone(self.stop("later"))  # a reported done tree stays allowed
+
+    def test_a_change_of_files_re_derives_the_debt_it_does_not_drop_it(self):
+        self.owe_pytest()
+        self.runner.tree = (0, "T2")  # a file touched; pytest -q still cannot run here
+        self.assertIn("`pytest -q`", self.stop(BLOCKED)["reason"])
+        self.assertEqual(self.stop(DONE)["decision"], "block")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `pytest -q` → no zsh here → a host with zsh"))
+        self.verifier.result = (0, "")  # the debt gone on a later tree: nothing to name
+        self.runner.tree = (0, "T3")
+        self.assertIsNone(self.stop(BLOCKED))
+
+    def test_the_debt_block_is_one_item_per_line_and_none_never_names_it(self):
+        self.owe_pytest()
+        head = "## Finish: blocked\nBlocker: x\n"
+        for msg in (head + "Verification debt: none (`pytest -q` passed)",
+                    head + "Verification debt:\n```\npytest -q\n```",
+                    head + "Verification debt:\n> pytest -q → no zsh",
+                    head + "Verification debt: none\nOpen: `pytest -q` later"):
+            with self.subTest(msg=msg):
+                self.assertEqual(self.stop(msg)["decision"], "block")
+        self.assertIsNone(self.stop(head + "Verification debt:\n- Pytest -Q: no zsh → rerun where zsh is\nOpen: none"))
+
     def test_one_real_red_among_the_n_a_ones_is_fixed_not_reported_blocked(self):
         self.start()
         self.runner.tree = (0, "T1")
