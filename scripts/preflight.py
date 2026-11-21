@@ -19,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
 
 import launcher  # noqa: E402 - the sys.path line above has to run first
-import shells  # noqa: E402
+import shells  # noqa: E402 - imported after the sys.path line above, like the one before it
 
 # tool: (macOS, Windows, Linux) install line
 INSTALL = {
@@ -135,9 +135,17 @@ def uses(files, word):
 def checks(d, quiet=False):
     """The report's lines for the project at `d`."""
     lines = [f"os: {os_name()}"]
-    warn = lambda msg: lines.append(f"⚠ {msg}")  # noqa: E731
-    good = lambda name: None if quiet else lines.append(f"ok {name}")  # noqa: E731
-    missing = lambda tool, rest: warn(f"{tool}: missing → {rest}; install: {install(tool)}")  # noqa: E731
+
+    def warn(msg):
+        lines.append(f"⚠ {msg}")
+
+    def good(name):
+        if not quiet:
+            lines.append(f"ok {name}")
+
+    def missing(tool, rest):
+        warn(f"{tool}: missing → {rest}; install: {install(tool)}")
+
     py = launcher.command()
 
     good("python") if launcher.version_of(["python"]) else missing("python", f"use {py}")

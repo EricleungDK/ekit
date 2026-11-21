@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
 
 import launcher  # noqa: E402 - the sys.path line above has to run first
-import preflight  # noqa: E402
+import preflight  # noqa: E402 - imported after the sys.path line above, like the one before it
 
 RULES = """[ekit] Working rules:
 - A test or check goes red → classify it with the failure-triage skill before editing code.

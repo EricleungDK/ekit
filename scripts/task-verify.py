@@ -46,8 +46,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
 
 import launcher  # noqa: E402 - the sys.path line above has to run first
-import scenarios  # noqa: E402
-import shells  # noqa: E402
+import scenarios  # noqa: E402 - imported after the sys.path line above, like the one before it
+import shells  # noqa: E402 - imported after the sys.path line above, like the one before it
 
 STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.join(
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
