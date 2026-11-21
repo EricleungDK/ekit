@@ -16,7 +16,7 @@ out="$(python3 -I "$SC" --repo "$L" run 2>&1)"; rc=$?
 eq "$rc" 0 "legacy .ek/scenarios: run exit 0"
 has "$out" "PASS x" "legacy .ek/scenarios: PASS"
 eq "$(cat "$T/env.out")" "$L|$L|$L/.ek/scenarios/x|$L/.ek/scenarios/x" "legacy: EK_* and EKIT_* both set"
-key="$(printf %s "$(realpath "$L")" | sha1sum | cut -c1-12)"
+key="$(printf %s "$(realpath "$L")" | sha1 | cut -c1-12)"
 [[ -f "$EK_STATE/scenarios/$key/results.json" ]] && ok "EK_STATE honoured" || fail "EK_STATE honoured"
 
 # both layouts: .ekit wins

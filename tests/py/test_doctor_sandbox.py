@@ -3,6 +3,7 @@
 R3 copies into `<project dir>/mutants/` only mutmut 3.8.1's defaults, the source dirs and the tracked top-level entries
 of the project dir (also_copy). A suite that reads a file outside those passes a plain run and fails there, so doctor
 runs it once in the same sandbox and names the missing paths instead of reporting `ok`."""
+import errno
 import os
 import shutil
 import signal
@@ -13,6 +14,7 @@ import unittest
 import unittest.mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
+from _kit import symlink
 from scripts.mech_review import doctor
 
 CALLER = """jobs:
@@ -123,7 +125,7 @@ class SandboxTrial(unittest.TestCase):
         write(self.repo, files)
         for path, target in links:
             os.makedirs(os.path.dirname(os.path.join(self.repo, path)), exist_ok=True)
-            os.symlink(target, os.path.join(self.repo, path))
+            symlink(self, target, os.path.join(self.repo, path))
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "head")
 
@@ -467,7 +469,7 @@ class SandboxTrial(unittest.TestCase):
         git(repo, "init", "-q", "-b", "main")
         write(repo, {"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""})
-        os.symlink(ws, os.path.join(repo, "tests", "ws"))
+        symlink(self, ws, os.path.join(repo, "tests", "ws"))
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "head")
         before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
@@ -485,7 +487,7 @@ class SandboxTrial(unittest.TestCase):
         """tests/x -> outside, with outside/a/b/c/gone dangling: the walk meets gone as its fifth entry outside."""
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         os.makedirs(os.path.join(outside, "a", "b", "c"))
-        os.symlink(os.path.join(outside, "missing"), os.path.join(outside, "a", "b", "c", "gone"))
+        symlink(self, os.path.join(outside, "missing"), os.path.join(outside, "a", "b", "c", "gone"))
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/x", outside)])
 
@@ -510,7 +512,7 @@ class SandboxTrial(unittest.TestCase):
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"a.txt": ""})
-        os.symlink(".", os.path.join(outside, "self"))
+        symlink(self, ".", os.path.join(outside, "self"))
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/x", outside)])
         env = self.doctor_within(30)
@@ -758,6 +760,49 @@ class SandboxTrial(unittest.TestCase):
         env = doctor.run(self.repo, stack="rust", runner=run)
         self.assertEqual(env["trial"], {"tests": "pass", "command": "cargo test", "mutation_tool": "present"})
         self.assertEqual(self.calls, [["cargo", "test"], ["cargo", "mutants", "--version"]])
+
+
+class RefusedSymlink(unittest.TestCase):
+    """A host that refuses links (Windows without Developer Mode) skips the link tests with the reason: never ok,
+    never a failure. Run through unittest, as the suite runs them."""
+
+    LINK_TESTS = ("test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry",  # a link made before commit()
+                  "test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash")  # commit(links=) only
+
+    def run_with(self, error):
+        def refuse(*_a, **_kw):
+            raise error
+        result = unittest.TestResult()
+        with unittest.mock.patch.object(os, "symlink", refuse):
+            unittest.TestSuite(SandboxTrial(name) for name in self.LINK_TESTS).run(result)
+        return result
+
+    def test_a_windows_privilege_refusal_skips_with_the_reason(self):
+        err = OSError(22, "A required privilege is not held by the client")
+        err.winerror = 1314
+        r = self.run_with(err)
+        self.assertEqual((r.testsRun, r.failures, r.errors), (2, [], []))
+        self.assertEqual([reason[:27] for _, reason in r.skipped], ["the OS refused a symlink: ["] * 2)
+
+    def test_a_filesystem_without_links_skips_with_the_reason(self):
+        r = self.run_with(PermissionError(errno.EPERM, "Operation not permitted"))
+        self.assertEqual((r.failures, r.errors), ([], []))
+        self.assertEqual([reason for _, reason in r.skipped],
+                         ["the OS refused a symlink: [Errno 1] Operation not permitted"] * 2)
+
+    def test_commits_links_skip_with_the_reason_when_refused(self):
+        trial = SandboxTrial("test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash")
+        trial.setUp()
+        self.addCleanup(trial.doCleanups)
+        err = PermissionError(errno.EPERM, "Operation not permitted")
+        with unittest.mock.patch.object(os, "symlink", side_effect=err), \
+                self.assertRaises(unittest.SkipTest) as skip:
+            trial.commit({"tests/test_a.py": PASSES}, links=[("tests/data", "../build/data")])
+        self.assertEqual(str(skip.exception), "the OS refused a symlink: [Errno 1] Operation not permitted")
+
+    def test_any_other_link_error_is_still_an_error(self):
+        r = self.run_with(FileExistsError(errno.EEXIST, "File exists"))
+        self.assertEqual((len(r.errors), r.skipped), (2, []))
 
 
 if __name__ == "__main__":

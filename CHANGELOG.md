@@ -18,6 +18,9 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 - **R3 (python)**: a mutant the budget never reached, including one still waiting for its whole-suite retry, read MISSED, so a PR with real tests could read as many failures. It is now untested: R3 is `partial`, with no MISSED entry. A mutant that ran and survived its retry is still MISSED.
 - **`--mutation-budget nan` / `inf`**: crashed `baseline` with a traceback; now a usage error (exit 2).
+- **Scenario runner and Python bytecode** (#43): `__pycache__/` and `*.pyc` no longer count as a scenario writing into the repo, and scenarios run with `PYTHONDONTWRITEBYTECODE=1`, so `mech-review-python/real-mutmut/untracked` passes on a plain run.
+- **Scenario runner keeps a failed transcript** (#44): a failure is copied to `<git dir>/ekit/failed/<id>.log` (results.json: `failed_transcript`) and stays there until the same scenario fails again, whatever runs in between.
+- **ekit's own suites** (#46 items 1–3): `.gitattributes` checks every file out with LF; `tests/lib.sh` has a python `sha1` helper in place of `sha1sum`; a symlink test skips with the reason when the OS refuses links.
 
 ## 0.5.0
 

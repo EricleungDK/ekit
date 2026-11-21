@@ -15,6 +15,9 @@ fakebin() {
   done
 }
 
+# sha1: hex SHA-1 of stdin, on python3 (stock macOS has no sha1sum). Suites use no `timeout` either: absent there too.
+sha1() { python3 -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest())'; }
+
 # stub <dir> <name> <script body>: fake executable
 stub() { printf '#!/bin/bash\n%s\n' "$3" > "$1/$2"; chmod +x "$1/$2"; }
 
