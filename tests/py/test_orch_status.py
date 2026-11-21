@@ -127,18 +127,41 @@ class Processes(Repos):
             {"pid": 14, "age": None, "cwd": None,
              "cmd": "python3 -m mutmut run --max-children 4 in /home/u/.cache/ekit-verify/wt-agent-7"},
             {"pid": 15, "age": "2m", "cwd": self.wt, "cmd": "vim a.py"},
+            {"pid": 16, "age": None, "cwd": None, "cmd": "python3 -m pytest " + os.path.join(self.wt, "tests")},
         ]
         out = self.status().stdout.splitlines()
         i = out.index("  processes: 3 live")
         self.assertEqual(out[i + 1:i + 4], [
             "    pid 11 (4m) python3 -m pytest tests/py",
             f"    pid 13 (9m) bash verify-wsl.sh {self.wt} 'bash tests/run.sh'",
-            "    pid 14 python3 -m mutmut run --max-children 4 in /home/u/.cache/ekit-verify/wt-agent-7",
+            "    pid 16 python3 -m pytest " + os.path.join(self.wt, "tests"),
         ])
 
-    def test_a_worktree_name_inside_a_longer_name_is_not_a_match(self):
-        self.procs = [{"pid": 1, "age": "1m", "cwd": None, "cmd": "pytest /x/wt-agent-77/tests"}]
+    def test_a_worktree_path_inside_a_longer_name_is_not_a_match(self):
+        self.procs = [{"pid": 1, "age": "1m", "cwd": self.wt + "7", "cmd": f"pytest {self.wt}7/tests"}]
         self.assertIn("  processes: none", self.status().stdout.splitlines())
+
+    def test_a_process_belongs_to_the_deepest_worktree_only(self):
+        nested = os.path.join(self.wt, ".claude", "worktrees", "n1")
+        git(self.wt, "worktree", "add", "-q", "-b", "agent/n1", nested)
+        self.procs = [{"pid": 21, "age": "1m", "cwd": nested, "cmd": "python3 -m pytest"},
+                      {"pid": 22, "age": "1m", "cwd": None, "cmd": f"mutmut run {nested}"},
+                      {"pid": 23, "age": "1m", "cwd": self.wt, "cmd": "python3 -m pytest"}]
+        out = self.status(self.wt, nested).stdout.splitlines()
+        i, j = out.index(f"{self.wt} [agent/x]"), out.index(f"{nested} [agent/n1]")
+        self.assertEqual([x for x in out[i:j] if x.startswith("    pid")], ["    pid 23 (1m) python3 -m pytest"])
+        self.assertEqual([x for x in out[j:] if x.startswith("    pid")],
+                         ["    pid 21 (1m) python3 -m pytest", f"    pid 22 (1m) mutmut run {nested}"])
+
+    def test_path_forms_cover_windows_git_bash_and_wsl(self):
+        self.assertEqual(st.path_forms("C:\\Users\\e\\wt"),
+                         ["C:\\Users\\e\\wt", "C:/Users/e/wt", "/c/Users/e/wt", "/mnt/c/Users/e/wt"])
+        self.assertEqual(st.path_forms("/home/e/wt"), ["/home/e/wt"])
+
+    def test_a_windows_worktree_named_in_git_bash_form_is_a_match(self):
+        p = {"pid": 5, "age": None, "cwd": None, "cmd": "bash verify-wsl.sh /c/Users/e/wt-agent-7 'bash tests/run.sh'"}
+        self.assertTrue(st.names(p, "C:\\Users\\e\\wt-agent-7"))
+        self.assertFalse(st.names(p, "C:\\Users\\e\\wt-agent"))
 
     def test_a_long_command_is_cut(self):
         self.procs = [{"pid": 1, "age": "1m", "cwd": self.wt, "cmd": "pytest " + "x" * 300}]
@@ -171,7 +194,28 @@ class Ci(Repos):
 
     def test_gh_missing(self):
         self.gh_rc, self.gh_err = 127, "gh: not found\n"
-        self.assertIn("  CI: no PR (gh: not found)", self.status().stdout.splitlines())
+        self.assertIn("  CI: gh unavailable (gh: not found)", self.status().stdout.splitlines())
+
+    def test_detached_head_says_so_and_looks_up_no_pr(self):
+        self.commit("one")
+        git(self.wt, "checkout", "-q", "--detach")
+        short = git(self.wt, "rev-parse", "--short", "HEAD")
+        out = self.status().stdout.splitlines()
+        self.assertEqual(out[0], f"{self.wt} [detached at {short}]")
+        self.assertIn("  commits: detached HEAD (no branch to compare)", out)
+        self.assertIn("  CI: no PR lookup (detached HEAD)", out)
+        self.assertEqual(self.gh_calls, [])
+
+
+class Index(Repos):
+    def test_the_index_is_not_rewritten(self):
+        """git status refreshes a stale index and takes index.lock: it could collide with the agent's own commit."""
+        later = os.path.getmtime(os.path.join(self.wt, "a.py")) + 100
+        os.utime(os.path.join(self.wt, "a.py"), (later, later))  # stat data stale: a plain status rewrites the index
+        index = os.path.join(self.wt, ".git", "index")
+        before = (os.path.getmtime(index), open(index, "rb").read())
+        self.status()
+        self.assertEqual((os.path.getmtime(index), open(index, "rb").read()), before)
 
 
 class Args(Repos):
@@ -183,6 +227,12 @@ class Args(Repos):
         out = r.stdout.splitlines()
         self.assertEqual(out[0], f"{self.wt} [agent/x]")
         self.assertTrue(any(x.startswith(f"{bad}: not a git worktree (") for x in out), out)
+
+    def test_a_subdir_gets_a_note_naming_the_top_level(self):
+        sub = os.path.join(self.wt, "src")
+        os.makedirs(sub)
+        out = self.status(sub).stdout.splitlines()
+        self.assertIn(f"  note: not a worktree's top level (top: {self.wt})", out)
 
     def test_no_worktree_is_a_usage_error(self):
         r = _kit.run_cli([], main=lambda a: st.main(a, run=self.fake_run, procs=lambda: []))
@@ -205,7 +255,7 @@ class Readers(unittest.TestCase):
         self.addCleanup(t.cleanup)
         self.root = t.name
 
-    def proc(self, pid, cmd, start_ticks, cwd=None):
+    def proc(self, pid, cmd, start_ticks):
         d = os.path.join(self.root, str(pid))
         os.makedirs(d)
         with open(os.path.join(d, "cmdline"), "wb") as f:
@@ -213,8 +263,6 @@ class Readers(unittest.TestCase):
         fields = [str(pid), "(x y)", "S"] + ["0"] * 18 + [str(start_ticks)] + ["0"] * 10
         with open(os.path.join(d, "stat"), "w") as f:
             f.write(" ".join(fields))
-        if cwd:
-            os.symlink(cwd, os.path.join(d, "cwd"))
 
     def test_proc_reads_cmdline_age_and_cwd(self):
         with open(os.path.join(self.root, "uptime"), "w") as f:
@@ -227,13 +275,20 @@ class Readers(unittest.TestCase):
         self.assertEqual([(p["pid"], p["age"], p["cmd"]) for p in got],
                          [(42, "5m", "python3 -m pytest"), (43, "5s", "mutmut run")])
 
-    def test_proc_cwd(self):
-        if os.name == "nt":
-            self.skipTest("symlinks")
+    def test_proc_cwd_is_the_cwd_link_or_none(self):
         with open(os.path.join(self.root, "uptime"), "w") as f:
             f.write("10 1\n")
-        self.proc(7, ["pytest"], 0, cwd=self.root)
-        self.assertEqual(st.proc_list(self.root, ticks=100)[0]["cwd"], self.root)
+        self.proc(7, ["pytest"], 0)
+        self.proc(8, ["mutmut"], 0)
+        links = {os.path.join(self.root, "7", "cwd"): "/work/wt"}
+
+        def readlink(path):
+            if path not in links:
+                raise OSError("no link")
+            return links[path]
+
+        got = {p["pid"]: p["cwd"] for p in st.proc_list(self.root, ticks=100, readlink=readlink)}
+        self.assertEqual(got, {7: "/work/wt", 8: None})
 
     def test_ages(self):
         self.assertEqual([st.age(s) for s in (0, 59, 60, 3599, 3600, 3725, 90000)],
