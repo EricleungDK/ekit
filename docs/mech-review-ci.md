@@ -123,6 +123,23 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 - Timing is wall time only (`checks.R3.timing.wall_s`): mutmut prints no per-phase durations, so the cargo-mutants phase fields are left out, not guessed. `--mutant-timeout` does not apply: mutmut's own timeout (its `timeout_multiplier` times the test time) decides.
 - A budget hit reads the results mutmut kept: `partial (tested/total)`. A mutant mutmut reports missed before the budget ended its run has had no whole-suite retry, so it is untested too.
 
+## R3 locally
+
+`scripts/r3-local.py` runs the R3 jobs of this workflow on your machine, so a MISSED mutant shows before the review request, not after CI:
+
+```bash
+python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 'tests/**' --mutation-budget 20 --env-dir ~/.cache/ekit-r3env
+```
+
+- Setup: the stack's R3 tool with the workflow's pins (the adapter's `r3_tool`): python a venv with `pytest==9.2.0` and `mutmut==3.8.1`, then the project dir's `requirements*.txt`, the venv first on `PATH`; ts `@stryker-mutator/core@10.0.0` and `jest-runner` in their own npm prefix, passed as `--mutants-cmd`; rust `cargo install cargo-mutants@27.1.0` and the workflow's cargo env. `--env-dir` keeps it and reuses it while the pins match; without it a temp dir is removed after the run. `setup-command` and `extra-apt-packages` are not run: install those yourself.
+- Steps: `plan`, `baseline --shards 4`, every shard at the same time (`mutants --shard K/N`, the CI budget and `max-mutants` each, the baseline's timeout), `merge`. Pass your caller's inputs: `--test-paths` (repeat), `--mutation-budget`, `--max-mutants`, `--project-dir`.
+- Output: the merged summary, R3's status (`tested/total`), each shard's note and wall time, the fail entries; the results are in `<env-dir>/out/`. It tests the head commit: uncommitted changes are not in it.
+- Exit 0 no fail, 1 a fail entry, 2 setup failed, usage or git error, or a step gave no result.
+
+## Reading a run
+
+`scripts/mech-summary.py <run-id | PR number | #N | PR URL> [--repo OWNER/NAME]` downloads a run's artifacts (`gh run download`; a PR resolves to the run of its newest `mech-review report` check) and prints the summary line, each check's status and note, each shard's note, and the fail entries grouped by file, merged as the report job merges them. Waivers are not applied. `--dir DIR` reads artifacts already downloaded. Artifacts: `mech-review-json` (R2), `mech-review-red-json` (R1, R4), `mech-review-baseline-json`, `mech-review-mutants-K` (one per shard); a `mech-review-mutants-merged-json` (the merged R3) is used when the run has one.
+
 ## R3 timing and partial
 
 `checks.R3.timing` (JSON, additive) says where the R3 time went. Per shard it comes from cargo-mutants' own `outcomes.json` phase durations (`Build`, `Test`, in seconds) and the runner's clock:
