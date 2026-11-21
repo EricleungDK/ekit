@@ -28,6 +28,5 @@ cat > AGENTS.md <<'MD'
 # Agents
 
 - Full suite: `python3 -m unittest discover -s tests`
-- `.github/**` is a protected path: agents never edit it; the owner makes that edit.
 MD
 git add -A; git commit -qm "calc + ci"

@@ -3,7 +3,7 @@
 Fill every `<…>`; the text around them goes in as written. Black box: the brief holds no source, diff, or implementer reasoning. The taster follows the taste-it skill; this brief is its input.
 
 ```
-Worktree: <absolute path>, branch `<branch>` (HEAD <sha>). It is yours to write scenarios in: enter it before your first write (the harness's enter-worktree tool, else `cd <path>` at the start of every shell call). A hook blocks writes into any other worktree.
+Worktree: <absolute path of the implementer's worktree>, branch `<branch>` (HEAD <sha>). The implementer is idle while you taste; you write scenarios here. Enter it before your first write: EnterWorktree with `path: <that path>`. A hook blocks writes into any other worktree.
 Read list: <user-facing docs only: README sections, CLI `--help`, every existing `.ekit/scenarios/**/SCENARIO.md`>. Nothing else in the repo.
 Criteria: <acceptance criteria, id and text, as the user saw them>.
 Install: <steps as a user gets them: real install from the repo into a fresh temp dir, never the source tree, never global>.

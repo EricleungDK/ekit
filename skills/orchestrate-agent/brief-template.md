@@ -3,7 +3,7 @@
 Fill every `<…>`; the text around them goes in as written. The agent sees nothing but this brief.
 
 ```
-Repo: <absolute path of your worktree>, branch `<branch>` (HEAD <sha>, pushed: yes/no; PR #<n> if any). Enter it before your first write (the harness's enter-worktree tool, else `cd <path>` at the start of every shell call): a hook blocks writes into any other worktree.
+Repo: <absolute path of your worktree>, branch `<branch>` (HEAD <sha>, pushed: yes/no; PR #<n> if any). Enter it before your first write: EnterWorktree with `path: <absolute path of your worktree>` (without `path` it makes a new worktree on a new branch). A hook blocks writes into any other worktree.
 Spec: <issue link, or "free-form task"> — checklist items this unit owns: <items>.
 Unit: <name>; files you own: <paths>; do not edit: <other units' files>; depends on: <unit / interface or none>.
 Read first: <AGENTS.md, repo docs index, the specific docs/reports for this area>.
@@ -21,13 +21,13 @@ Tasks:
    Fix: reproduce and capture the actual error; classify it with the failure-triage skill; check new vs pre-existing on the parent commit in a temp worktree (remove it after; flaky: failure-triage's flaky protocol); fix the root cause red first (test-only fix only when the test is wrong).
 2. Stay in your files; a needed change elsewhere goes in your report, not your diff.
 3. Keep guards and checks at full strength. Forbidden: delete, skip or weaken a test; change an expected value to match output; suppress a lint without reason; edit protected paths; pass a test before the fix. Full table: testing standard §3. No waivers.
-4. Verify: <the unit's verify command, as `python3 -I <kit>/scripts/task-verify.py --repo <checkout> run -- <command>` with both paths filled in; other commands, and how many runs>. Then, before the review request, R3 as CI runs it: `python3 -I <kit>/scripts/r3-local.py` over base..head (arguments: its `--help`), at the CI budget, shards in parallel; a MISSED on a changed line is fixed before review. <Stack without mech checks: drop this sentence.>
+4. Verify: <the unit's verify command, as `python3 -I <kit>/scripts/task-verify.py --repo <checkout> run -- <command>` with both paths filled in; other commands, and how many runs>. Then, before the review request, R3 as CI runs it: `python3 -I <kit>/scripts/r3-local.py` over base..head (arguments: its `--help`), at the CI budget (<mutation budget, minutes>), shards in parallel; a MISSED on a changed line is fixed before review. <Stack without mech checks: drop this sentence.>
 5. Docs: <task log entry, report section, SOP rule if reusable>.
-6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (rounds count per id). Commit message ends with:
+6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (the 3-strike stop counts per id). Commit message ends with:
    <attribution trailer>
 7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and send your report (task 10) as a REVIEW REQUEST. Wait; findings arrive by message. Fix the real ones red-first, each in a new commit, re-verify, then report again.
 8. Push: <yes after review passes, then watch `gh pr checks <n> --watch` / no>.
-9. Fix rounds: 3 per source (review, taste, CI), counted apart; rounds left: <review n, taste n, CI n>. The same mech `id` or the same finding failing a 3rd time: stop and report, whatever is left.
+9. Fix rounds: 3 per source (review, taste, CI), counted apart; rounds left: <review n, taste n, CI n>. The same mech `id` or the same finding (its key: file plus a short title, as the orchestrator names it) failing a 3rd time: stop and report, whatever is left.
 10. Report: load the finish skill; every report you send (review request, after a fix round, blocked) is its report, done or blocked branch, one row per checklist item you own. Add: branch, base SHA, head SHA, files changed, focus areas, commits; for a fix, the error, its cause, and new vs pre-existing. The issue and the PR stay with the orchestrator.
 
 Do not merge. A step that spawns agents, in these tasks or in a skill you loaded: hand it to the orchestrator the same way as review.
