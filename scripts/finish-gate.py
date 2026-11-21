@@ -148,6 +148,32 @@ def block(reason):
     print(json.dumps({"decision": "block", "reason": f"[ekit] {reason}"}))
 
 
+NA_LINE = re.compile(r"`(.*)`: n/a \(env\): [^`]*")  # task-verify.py check: a command this host cannot run
+
+
+def owe(p, items):
+    """Keep the debt a blocked report must name: [(how it is named to the agent, a regex the report must match)];
+    none: no file."""
+    if items:
+        write(p, json.dumps(items))
+    elif os.path.exists(p):
+        os.remove(p)
+
+
+def unnamed(p, msg):
+    """The debt items the report `msg` does not name ([] when none is owed)."""
+    try:
+        items = json.loads(read(p) or "[]")
+    except ValueError:
+        items = []
+    return [shown for shown, pattern in items if not re.search(pattern, msg, re.I)]
+
+
+def named(text):
+    """a regex for `text` as a whole token: a scenario id or a command, not a part of a longer word"""
+    return r"(?<![\w/.-])" + re.escape(text) + r"(?![\w/.-])"
+
+
 HOST = "It cannot run on this host → `## Finish: blocked`, naming it as verification debt. "
 NOT_HERE = "cannot run here: "  # scenarios.py check: the last run failed only on what this host lacks
 ASK = ("Give the finish report (finish skill): it opens with `## Finish: done` or `## Finish: blocked`, then each "
@@ -175,7 +201,7 @@ def main():
     if not baseline and waiting(data):
         return
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
-    base, reported, gated = (path(session, f"{k}-{key}") for k in ("sbase", "reported", "gated"))
+    base, reported, gated, debt = (path(session, f"{k}-{key}") for k in ("sbase", "reported", "gated", "debt"))
     rc, cur = runner(top, "tree-hash")
     if baseline:
         prune()
@@ -185,15 +211,22 @@ def main():
     run_hint = (f"Run `{launcher.line(SCEN, '--repo', launcher.shown(top), 'run')}` and follow the taste-it skill "
                 "(ekit:taste-it). ")
     kind = report_kind(data)
+    if kind == "blocked":
+        missing = unnamed(debt, last_message(data))
+        if missing:  # the gate said what cannot run here: the way out names it
+            return block(f"A blocked report names its verification debt: {', '.join(missing)}. Name them, then stop.")
     if rc != 0:
         if kind == "blocked":
-            return  # the runner cannot run here: a blocked report that names it is the way out
+            return
+        owe(debt, [("the scenarios (the scenario runner cannot run on this host)", r"\bscenario")])
         return block(f"scenario runner error: {cur.splitlines()[-1] if cur else f'exit {rc}'}. {run_hint}{HOST}{ASK}")
     if cur in (read(base), read(reported)):
         return
     if kind != "blocked" and any(os.path.isdir(os.path.join(top, d, "scenarios")) for d in (".ekit", ".ek")):
         rc, why = runner(top, "check")
         if rc == 1 and why.startswith(NOT_HERE):
+            ids = [part.split(": ", 1)[0] for part in why[len(NOT_HERE):].split("; ")]
+            owe(debt, [(f"`{i}`", named(i)) for i in ids])
             return block(f"Scenarios cannot run on this host: {why[len(NOT_HERE):]}. Give `## Finish: blocked`, "
                          f"naming the scenarios as verification debt. {ASK}")
         if rc == 1:
@@ -203,7 +236,9 @@ def main():
     if kind == "done":
         rc, why = verifier(top, session)
         tool = f"{launcher.line(VERIFY)} --repo {launcher.shown(top)}"
-        if rc == 1 and "n/a (env)" in why:
+        na = [m.group(1) for m in map(NA_LINE.fullmatch, why.splitlines()) if m]
+        if rc == 1 and na and len(na) == len(why.splitlines()):  # every red one only lacks this host
+            owe(debt, [(f"`{c}`", named(c)) for c in na])
             return block(f"A verify command cannot run on this host: {why}. Give `## Finish: blocked`, naming it as "
                          f"verification debt. {ASK}")
         if rc == 4:
@@ -217,6 +252,7 @@ def main():
                          "`## Finish: blocked`.")
     if kind:
         write(reported, cur)
+        owe(debt, [])
         return
     if cur == read(gated):
         return

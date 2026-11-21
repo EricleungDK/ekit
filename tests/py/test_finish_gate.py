@@ -341,7 +341,10 @@ class TestScenarios(GateCase):
         out = self.stop(DONE)
         self.assertIn("It cannot run on this host → `## Finish: blocked`, naming it as verification debt.",
                       out["reason"])
-        self.assertIsNone(self.stop(BLOCKED))
+        out = self.stop(BLOCKED)
+        self.assertEqual(out["reason"], "[ekit] A blocked report names its verification debt: the scenarios (the "
+                                        "scenario runner cannot run on this host). Name them, then stop.")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: the scenarios, the runner cannot run here"))
 
     def test_scenarios_this_host_cannot_run_say_so_and_take_a_blocked_report(self):
         self.scenarios()
@@ -351,7 +354,18 @@ class TestScenarios(GateCase):
         self.assertTrue(out["reason"].startswith(
             "[ekit] Scenarios cannot run on this host: one: bash is not on this machine (env). Give `## Finish: "
             "blocked`, naming the scenarios as verification debt. "), out["reason"])
-        self.assertIsNone(self.stop(BLOCKED))
+        self.assertIn("`one`", self.stop(BLOCKED)["reason"])
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: scenario one (no bash here)"))
+
+    def test_each_scenario_this_host_cannot_run_is_to_be_named(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree, self.runner.check = (0, "T1"), (1, "cannot run here: a/b: bash is not on this machine (env); "
+                                                             "c: bash is not on this machine (env)")
+        self.stop(DONE)
+        self.assertEqual(self.stop(BLOCKED + "\nDebt: a/b")["reason"],
+                         "[ekit] A blocked report names its verification debt: `c`. Name them, then stop.")
+        self.assertIsNone(self.stop(BLOCKED + "\nDebt: a/b and c"))
 
     def test_a_check_error_is_a_runner_error_not_a_red_scenario(self):
         self.scenarios()
@@ -374,7 +388,25 @@ class TestVerifyCommands(GateCase):
         out = self.stop(DONE)
         self.assertIn("A verify command cannot run on this host: `npm test`: n/a (env): its shell zsh is not on this "
                       "machine. Give `## Finish: blocked`, naming it as verification debt.", out["reason"])
-        self.assertIsNone(self.stop(BLOCKED))
+        self.assertIn("`npm test`", self.stop(BLOCKED)["reason"])
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `npm test` (no zsh here)"))
+
+    def test_one_real_red_among_the_n_a_ones_is_fixed_not_reported_blocked(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.verifier.result = (1, "`exit 3`: the run exited 3\n`npm test`: n/a (env): its shell zsh is not on this "
+                                   "machine")
+        out = self.stop(DONE)
+        self.assertTrue(out["reason"].startswith("[ekit] Verify commands not green for the current files: "),
+                        out["reason"])
+        self.assertIn("fix what it shows", out["reason"])
+        self.assertIsNone(self.stop(BLOCKED))  # no debt asked for: a blocked report is the agent's call
+
+    def test_n_a_in_a_commands_own_text_is_not_n_a(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.verifier.result = (1, "`echo n/a (env)`: the run exited 1")
+        self.assertIn("fix what it shows", self.stop(DONE)["reason"])
 
     def work(self):
         self.start()
