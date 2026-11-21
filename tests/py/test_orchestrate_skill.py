@@ -177,6 +177,17 @@ class TestLocalTools(unittest.TestCase):
         self.assertIn("shards in parallel", t)
         self.assertIn("<mutation budget, minutes>", t)
 
+    def test_r3_local_call_names_stack_test_paths_and_budget(self):
+        # r3-local's --test-paths default is only tests/**; --stack is required
+        t = flat(read("brief-template.md"))
+        for arg in ("--stack <stack>", "--test-paths <glob>", "--mutation-budget <mutation budget, minutes>"):
+            self.assertIn(arg, t)
+
+    def test_r3_local_runs_on_a_commit_and_on_posix(self):
+        t = flat(read("brief-template.md"))
+        self.assertIn("commit first: it tests the head commit", t)
+        self.assertIn("POSIX only (WSL on Windows)", t)
+
     def test_changelog_says_the_orchestrator_runs_mech_summary(self):
         with open(os.path.join(_kit.ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
             log = f.read()
