@@ -14,6 +14,7 @@ import unittest
 import unittest.mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
+from _kit import symlink
 from scripts.mech_review import doctor
 
 CALLER = """jobs:
@@ -90,17 +91,6 @@ def write(root, files):
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w") as f:
             f.write(text)
-
-
-def symlink(test, target, path):
-    """os.symlink, or a skip naming the refusal when the OS will not make links (Windows without Developer Mode or
-    admin: winerror 1314; a filesystem without links: EPERM/ENOTSUP). Any other error is the test's own."""
-    try:
-        os.symlink(target, path)
-    except OSError as e:
-        if getattr(e, "winerror", None) == 1314 or e.errno in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
-            test.skipTest(f"the OS refused a symlink: {e}")
-        raise
 
 
 def unittest_runner(calls, installed=None):
@@ -776,8 +766,8 @@ class RefusedSymlink(unittest.TestCase):
     """A host that refuses links (Windows without Developer Mode) skips the link tests with the reason: never ok,
     never a failure. Run through unittest, as the suite runs them."""
 
-    LINK_TESTS = ("test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry",  # via symlink() directly
-                  "test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash")  # via commit(links=)
+    LINK_TESTS = ("test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry",  # a link made before commit()
+                  "test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash")  # commit(links=) only
 
     def run_with(self, error):
         def refuse(*_a, **_kw):
@@ -799,6 +789,16 @@ class RefusedSymlink(unittest.TestCase):
         self.assertEqual((r.failures, r.errors), ([], []))
         self.assertEqual([reason for _, reason in r.skipped],
                          ["the OS refused a symlink: [Errno 1] Operation not permitted"] * 2)
+
+    def test_commits_links_skip_with_the_reason_when_refused(self):
+        trial = SandboxTrial("test_a_dangling_link_mutmut_cannot_copy_is_an_entry_naming_it_not_a_crash")
+        trial.setUp()
+        self.addCleanup(trial.doCleanups)
+        err = PermissionError(errno.EPERM, "Operation not permitted")
+        with unittest.mock.patch.object(os, "symlink", side_effect=err), \
+                self.assertRaises(unittest.SkipTest) as skip:
+            trial.commit({"tests/test_a.py": PASSES}, links=[("tests/data", "../build/data")])
+        self.assertEqual(str(skip.exception), "the OS refused a symlink: [Errno 1] Operation not permitted")
 
     def test_any_other_link_error_is_still_an_error(self):
         r = self.run_with(FileExistsError(errno.EEXIST, "File exists"))
