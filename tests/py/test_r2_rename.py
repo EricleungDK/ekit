@@ -77,6 +77,92 @@ def test_runs_without_error():
 NO_ASSERT_HEAD = NO_ASSERT_BASE.replace("test_runs_without_error", "test_runs_quietly")
 
 
+KEEP = """
+
+def test_keep():
+    fake = calc.fake({"a": "survived"})
+    with calc.clock(100, 130):
+        check = calc.run(fake, budget=2)
+    assert check["status"] == "fail"
+"""
+
+ONE_LINER_BASE = """import calc
+
+
+def test_refund_cap(): assert calc.refund_cap(10) == 10
+""" + KEEP
+ONE_LINER_HEAD = """import calc
+
+
+def test_other(): assert True
+""" + KEEP
+
+TS_KEEP = """
+it('keeps', () => {
+  const fake = makeFake(['a'])
+  const check = run(fake, 2)
+  expect(check.status).toBe('fail')
+})
+"""
+TS_BASE = """it('caps the refund', () =>
+  expect(refundCap(10)).toBe(10))
+""" + TS_KEEP
+TS_HEAD = """it('does something else', () =>
+  expect(true).toBe(true))
+""" + TS_KEEP
+
+DEFAULT_BASE = """import calc
+
+
+def test_runs_in_fast_mode(
+    opts={
+        "mode": "fast",
+        "retries": 2,
+        "budget": 10,
+    },
+):
+    assert calc.run(opts) == 1
+"""
+DEFAULT_HEAD = DEFAULT_BASE.replace("test_runs_in_fast_mode", "test_whatever").replace(
+    "assert calc.run(opts) == 1", "assert True")
+
+RUST = """#[test]
+fn keeps_missed() {
+    let fake = fake(&["a", "b"]);
+    let clock = clock(100, 130);
+    let check = run(&fake, &clock, 2);
+    assert_eq!(check.status, "fail");
+}
+"""
+
+TS = """describe('budget', () => {
+  it('keeps missed', () => {
+    const fake = makeFake(['a', 'b'])
+    const clock = makeClock(100, 130)
+    const check = run(fake, clock, 2)
+    expect(check.status).toBe('fail')
+  })
+})
+"""
+
+PREAMBLE_BASE = """import calc
+
+
+def test_adds():
+    x = 1
+    y = 2
+    assert calc.add(x, y) == 3
+"""
+PREAMBLE_HEAD = """import calc
+
+
+def test_divides():
+    x = 1
+    y = 2
+    assert calc.div(y, x) == 2
+"""
+
+
 class R2Rename(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -119,6 +205,41 @@ class R2Rename(unittest.TestCase):
         self.assertEqual(res.returncode, 1)
         self.assertEqual([(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]],
                          [("fail", "test fn `test_runs_without_error` removed")])
+
+    def removal(self, path, before, after, stack="python"):
+        """the entries of a head that replaces `before` with `after` at path"""
+        self.repo.commit({path: before}, "case base")
+        self.base = self.repo.git("rev-parse", "HEAD").strip()
+        head = self.repo.commit({path: after}, "case head")
+        res = r2(self.repo, self.base, head, adapter=None, stack=stack)
+        return res.returncode, [(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]]
+
+    def test_a_one_line_test_does_not_borrow_the_next_tests_body(self):
+        self.assertEqual(self.removal("tests/test_refund.py", ONE_LINER_BASE, ONE_LINER_HEAD),
+                         (1, [("fail", "test fn `test_refund_cap` removed")]))
+
+    def test_a_one_line_ts_test_does_not_borrow_the_next_tests_body(self):
+        self.assertEqual(self.removal("tests/refund.test.ts", TS_BASE, TS_HEAD, stack="ts"),
+                         (1, [("fail", "test fn `caps the refund` removed")]))
+
+    def test_a_signature_default_ending_in_a_brace_is_not_the_body(self):
+        self.assertEqual(self.removal("tests/test_mode.py", DEFAULT_BASE, DEFAULT_HEAD),
+                         (1, [("fail", "test fn `test_runs_in_fast_mode` removed")]))
+
+    def test_a_two_line_preamble_shared_by_different_tests_is_no_rename(self):
+        self.assertEqual(self.removal("tests/test_arith.py", PREAMBLE_BASE, PREAMBLE_HEAD),
+                         (1, [("fail", "test fn `test_adds` removed")]))
+
+    def test_a_rust_rename_whose_assertion_changed_is_one_confirm_entry(self):
+        self.assertEqual(self.removal("tests/budget.rs", RUST, RUST.replace("keeps_missed", "leaves_untested")
+                                      .replace('"fail"', '"partial"'), stack="rust"),
+                         (0, [("confirm", "test `keeps_missed` renamed to `leaves_untested`, assertions changed")]))
+
+    def test_a_ts_rename_whose_assertion_changed_is_one_confirm_entry(self):
+        self.assertEqual(self.removal("tests/budget.test.ts", TS, TS.replace("keeps missed", "leaves untested")
+                                      .replace("'fail'", "'partial'"), stack="ts"),
+                         (0, [("confirm", "test `budget > keeps missed` renamed to `budget > leaves untested`, "
+                                          "assertions changed")]))
 
     def test_an_unrelated_test_in_place_of_a_removed_one_stays_a_fail(self):
         rc, got = self.entries(UNRELATED)

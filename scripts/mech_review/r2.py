@@ -102,38 +102,25 @@ def _unparsed(adapter, path, before, after):
 
 
 RENAME_MATCH = 0.6  # difflib's ratio over the non-assert body lines, for a renamed test whose assertions changed (#41)
-RENAME_SHARED = 2  # non-assert body lines the two must share, at least
-HEADER_MAX = 20  # lines a test's header (signature) may span
+RENAME_SHARED = 3  # non-assert body lines the two must share, at least, and at least half of the old test's
 
 
-def _body(text, line, skip=frozenset()):
-    """the stripped non-blank lines of the fn opened at `line` (1-based), language-free, leaving out the line numbers in
-    skip (its assert lines). The header (decorators, a multi-line signature) ends at the first line, from `line`, that
-    ends in `:` or `{` (python's def, a rust fn, a ts callback); the body is the lines after it up to the first non-blank
-    one indented no deeper than `line` (python's dedent; a `}` or `})` closing it in rust and ts). No header end within
-    HEADER_MAX lines: no body."""
+def _body(text, span, skip=frozenset()):
+    """the stripped non-blank lines of a test's body, span (first, last) from the adapter (after the signature, up to
+    its end), leaving out the line numbers in skip (its assert lines). No span: no body."""
+    if not span:
+        return []
     lines = text.splitlines()
-    if not 0 < line <= len(lines):
-        return []
-    indent = len(lines[line - 1]) - len(lines[line - 1].lstrip())
-    head = next((i for i in range(line - 1, min(len(lines), line - 1 + HEADER_MAX))
-                 if lines[i].rstrip().endswith((":", "{"))), None)
-    if head is None:
-        return []
-    out = []
-    for no, ln in enumerate(lines[head + 1:], start=head + 2):
-        if ln.strip() and len(ln) - len(ln.lstrip()) <= indent:
-            break
-        if ln.strip() and no not in skip:
-            out.append(ln.strip())
-    return out
+    first, last = span
+    return [ln.strip() for no, ln in enumerate(lines[first - 1:last], start=first) if ln.strip() and no not in skip]
 
 
 def _renames(bfns, afns, bas, aas, before=None, after=None):
     """(removed fns, {new name: old fn}, [(old fn, new fn)]). A removed fn whose asserts reappear unchanged in a new fn
     (one-to-one, non-empty) is a rename, not a removal. Then a removed fn with asserts and a new fn with no fewer, whose
-    non-assert body lines match at least RENAME_MATCH and share at least RENAME_SHARED lines (one-to-one, best match
-    first), are a rename whose assertions changed: listed for a confirm entry."""
+    non-assert body lines (the adapter's body span) match at least RENAME_MATCH and share at least RENAME_SHARED lines
+    and half the old test's (one-to-one, best match first), are a rename whose assertions changed: listed for a confirm
+    entry."""
     names = {f.name for f in afns}
     by_name = {f.name for f in bfns}
     sigs = lambda xs, n: sorted(re.sub(r"\s+", "", a.text) for a in xs if a.fn == n)
@@ -156,13 +143,14 @@ def _renames(bfns, afns, bas, aas, before=None, after=None):
             had = sigs(bas, rf.name)
             if not had:  # no assert: no "assertions changed" to confirm
                 continue
-            rb = _body(before, rf.line, {a.line for a in bas if a.fn == rf.name})
+            rb = _body(before, rf.body, {a.line for a in bas if a.fn == rf.name})
             for nf in new:
                 if len(sigs(aas, nf.name)) < len(had):  # a dropped assert is no rename
                     continue
-                nb = _body(after, nf.line, {a.line for a in aas if a.fn == nf.name})
+                nb = _body(after, nf.body, {a.line for a in aas if a.fn == nf.name})
                 m = difflib.SequenceMatcher(None, rb, nb, autojunk=False)
-                if rb and nb and sum(b.size for b in m.get_matching_blocks()) >= RENAME_SHARED                         and m.ratio() >= RENAME_MATCH:
+                shared = sum(b.size for b in m.get_matching_blocks())
+                if rb and nb and shared >= RENAME_SHARED and 2 * shared >= len(rb) and m.ratio() >= RENAME_MATCH:
                     pairs.append((-m.ratio(), rf.line, nf.line, rf, nf))
         taken_old, taken_new = set(), set()
         for _, _, _, rf, nf in sorted(pairs, key=lambda x: x[:3]):

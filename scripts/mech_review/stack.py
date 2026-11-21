@@ -4,8 +4,9 @@ Adapter interface:
   classify(path, test_globs) -> "test" | "prod" | None (None: not a source file of this stack)
   holds_tests(path, test_globs) -> bool: a file at this path can hold tests. False: the checks read no test fn and no
       assertion in it (python: a file outside the test paths that is not named like a test file). Default True
-  test_fns(text) -> [TestFn(name, line, markers)]   markers: "ignore" (skip-like), "should_panic";
-      name: fn name qualified by its enclosing mods (`m1::works`); top-level fns are bare
+  test_fns(text) -> [TestFn(name, line, markers, body)]   markers: "ignore" (skip-like), "should_panic";
+      name: fn name qualified by its enclosing mods (`m1::works`); top-level fns are bare;
+      body: (first, last) 1-based lines of the test's body, after its signature, or None (R2's rename match, #41)
   assertions(text) -> [Assertion(line, fn, scope, kind, left, right, text)]  fn: enclosing test fn name or None;
       scope: inside a test fn or a #[cfg(test)] mod (production code is never in scope);
       kind: eq | ne | other (assert!(a == b) is eq); left/right: whitespace-normalized operands (eq/ne only);
@@ -42,7 +43,7 @@ from collections import namedtuple
 
 from .globs import any_glob
 
-TestFn = namedtuple("TestFn", "name line markers")
+TestFn = namedtuple("TestFn", "name line markers body", defaults=(None,))
 Assertion = namedtuple("Assertion", "line fn scope kind left right text owner")
 Item = namedtuple("Item", "qname line is_test markers body span")
 CFG_TEST = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
@@ -283,7 +284,9 @@ class RustAdapter(Adapter):
         return m, mods, items
 
     def test_fns(self, text):
-        return [TestFn(it.qname, it.line, it.markers) for it in self._items(text)[2] if it.is_test]
+        m, _, items = self._items(text)
+        return [TestFn(it.qname, it.line, it.markers, _inner(m, *it.body) if it.body else None)
+                for it in items if it.is_test]
 
     def assertions(self, text):
         m, mods, items = self._items(text)
@@ -474,7 +477,7 @@ class _Scan(ast.NodeVisitor):
         skipped = any(e[0] == "class" and e[3] for e in self.scope) or _skip_decorated(node.decorator_list)
         if is_test:
             markers = ["ignore"] if skipped or _body_skips(node) else []
-            self.tests.append(TestFn(qname, node.lineno, markers))
+            self.tests.append(TestFn(qname, node.lineno, markers, (node.body[0].lineno, node.end_lineno)))
             self.bodies[qname] = (node.lineno, _ws(ast.unparse(node)))
         self.scope.append(("fn", node.name, is_test, qname, None))
         for stmt in node.body:
@@ -904,6 +907,13 @@ def _line(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
+def _inner(text, start, end):
+    """(first, last) lines strictly between the line of start and the line of end: a body between its opening and
+    closing lines. None when there is none (a one-line or two-line call)."""
+    first, last = _line(text, start) + 1, _line(text, end) - 1
+    return (first, last) if first <= last else None
+
+
 TS_BUILD = re.compile(r"Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package"
                       r"|Test suite failed to run|SyntaxError|\bTS\d{4}\b|Failed Suites")
 TS_TESTS = re.compile(r"^\s*Tests\b:?(.*)$", re.M)
@@ -973,7 +983,7 @@ class TsAdapter(Adapter):
 
     def test_fns(self, text):
         _, _, _, _, tests, _ = _ts_parse(text)
-        return [TestFn(name, _line(text, t.start), markers) for name, t, markers in tests]
+        return [TestFn(name, _line(text, t.start), markers, _inner(text, t.start, t.end - 1)) for name, t, markers in tests]
 
     def _owners(self, text):
         """[(qname, start, end)] of tests and named functions: the innermost one owns an assertion."""
