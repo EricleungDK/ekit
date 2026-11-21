@@ -170,20 +170,53 @@ def command(exe, name, line):
     return [exe, "-c", line]
 
 
-def group():
-    """Popen kwargs that put the child in its own process group, so a timeout can stop the whole tree."""
+def _job(pid):
+    """A Windows job object holding process `pid`: what that process starts joins it, so terminating the job stops
+    the whole tree, even a child whose parent is gone (Git Bash's `exec` leaves such orphans). None when refused."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.OpenProcess.restype = wintypes.HANDLE
+    job = k32.CreateJobObjectW(None, None)
+    h = k32.OpenProcess(0x0101, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+    try:
+        if job and h and k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(h)):
+            return job
+    finally:
+        if h:
+            k32.CloseHandle(wintypes.HANDLE(h))
+    if job:
+        k32.CloseHandle(wintypes.HANDLE(job))
+    return None
+
+
+def spawn(argv, **kw):
+    """subprocess.Popen(argv) as a tree `kill_tree` can stop: its own process group on POSIX, a job on Windows."""
     if WIN:
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+        kw.setdefault("creationflags", subprocess.CREATE_NEW_PROCESS_GROUP)
+        proc = subprocess.Popen(argv, **kw)
+        proc.ekit_job = _job(proc.pid)
+        return proc
+    return subprocess.Popen(argv, start_new_session=True, **kw)
 
 
 def kill_tree(proc):
-    """Stop `proc` and its children: the process group on POSIX, `taskkill /T` on Windows."""
+    """Stop `proc` and its children: the process group on POSIX; on Windows the job, else `taskkill /T`."""
     if WIN:
-        try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            pass
+        job = getattr(proc, "ekit_job", None)
+        if job:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32")
+            k32.TerminateJobObject(wintypes.HANDLE(job), 1)
+            k32.CloseHandle(wintypes.HANDLE(job))
+            proc.ekit_job = None
+        else:
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                pass
     else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)

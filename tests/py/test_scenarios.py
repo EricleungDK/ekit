@@ -526,6 +526,23 @@ class TestRun(unittest.TestCase):
         with open(r["failed_transcript"], "rb") as f:
             self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: timeout ---\n"))
 
+    def test_a_timeout_stops_the_scenarios_children_too(self):
+        """the whole process tree goes, not only bash: a child left behind would hold the run's pipes open"""
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late")
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            t0 = time.time()
+            code, out, doc = self.main(f"(sleep 4; echo x > '{mark.replace(os.sep, '/')}') &\nsleep 30\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
+        self.assertLess(time.time() - t0, 20)
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "bash is not on this machine (env)"))
+        self.assertIn("FAIL one: bash is not on this machine (env)", out)
+
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")
         kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")

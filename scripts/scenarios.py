@@ -13,6 +13,9 @@ import tempfile
 import time
 from urllib.parse import quote
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
+import shells  # noqa: E402 - the sys.path line above has to run first
+
 LAYOUT = ".ekit/scenarios/<slug>/SCENARIO.md + run.sh"
 NODOC = "missing SCENARIO.md — document it (story, covers, steps, expected)"
 
@@ -113,7 +116,7 @@ def find(repo):
     for d, dirs, fs in os.walk(base):
         dirs[:] = [name for name in dirs if name != "fixtures"]
         if "run.sh" in fs:
-            ids.append(os.path.relpath(d, base))
+            ids.append(os.path.relpath(d, base).replace(os.sep, "/"))  # an id reads the same on every OS
     return sorted(ids, key=lambda i: i.split("/"))
 
 
@@ -129,8 +132,13 @@ def run_one(repo, sid, ids, tdir, kept=None):
     parent's dir. kept: the dir that holds each scenario's last failed transcript (none: not kept)."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
+    bash = shells.find("bash")  # on Windows: Git for Windows' bash, never WSL's
     if not os.path.isfile(os.path.join(d, "SCENARIO.md")):
         res.update(exit=1, reason=NODOC)
+        out = err = b""
+        cwd = ""
+    elif not bash:
+        res.update(exit=None, reason="bash is not on this machine (env)")
         out = err = b""
         cwd = ""
     else:
@@ -146,13 +154,13 @@ def run_one(repo, sid, ids, tdir, kept=None):
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()
-        p = subprocess.Popen(["bash", os.path.join(d, "run.sh")], cwd=cwd, env=env, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, start_new_session=True)
+        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
         try:
             out, err = p.communicate(timeout=limit)
             res["exit"] = p.returncode
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, 9)
+            shells.kill_tree(p)  # the process group on POSIX, the tree on Windows
             out, err = p.communicate()
             res.update(exit=None, reason=f"timeout after {limit:g}s")
         finally:
