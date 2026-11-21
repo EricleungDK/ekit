@@ -70,6 +70,12 @@ class DoctorScenarios(unittest.TestCase):
             rc = cli.main(["doctor", "--repo", self.repo.path, "--no-trial"])
         self.assertEqual((rc, json.loads(out.getvalue())["entries"]), (0, []))
 
+    def test_files_outside_scenarios_that_are_not_of_the_stack_still_count_for_stack_auto(self):
+        # the caller leaves `stack` at auto: doctor finds the project from pyproject.toml, a file python does not classify
+        auto = caller(["tests/**", ".ekit/scenarios/**"]).replace("      stack: python\n", "")
+        rc, env, got = self.doctor({".ekit/scenarios/s/run.sh": "true\n", ".github/workflows/mech-review.yml": auto})
+        self.assertEqual((rc, got), (0, []))
+
     def test_a_repo_without_scenarios_wants_the_tests_glob_alone(self):
         rc, env, got = self.doctor({".github/workflows/mech-review.yml": caller(["tests/**"])})
         self.assertEqual((rc, env["inputs"]["test-paths"], got), (0, "tests/**", []))
