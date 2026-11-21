@@ -13,6 +13,20 @@ from unittest import mock
 import _kit
 
 tv = _kit.load("task-verify")
+launcher = _kit.load("launcher")
+WIN = os.name == "nt"
+TOOL = launcher.shown(os.path.join(_kit.SCRIPTS, "task-verify.py"))
+
+
+def readonly(path):
+    """Make the dir `path` one this user cannot write into, as a sandbox keeps the git dir; returns the undo.
+    Windows ignores a dir's mode bits: a deny entry in its ACL does the same."""
+    if not WIN:
+        os.chmod(path, 0o500)
+        return lambda: os.chmod(path, 0o700)
+    user = os.environ.get("USERNAME") or "*S-1-1-0"
+    subprocess.run(["icacls", path, "/deny", f"{user}:(W,AD,WD)"], check=True, capture_output=True)
+    return lambda: subprocess.run(["icacls", path, "/remove:d", user], check=True, capture_output=True)
 
 
 def git(repo, *args):
@@ -40,6 +54,9 @@ class VerifyCase(unittest.TestCase):
         self.addCleanup(env.stop)
         for name in ("EKIT_STATE", "EK_STATE", "CLAUDE_CODE_SESSION_ID"):
             os.environ.pop(name, None)  # records go to the repo's git dir; the session is the one a test names
+        # the commands below are POSIX shell lines: they are declared in bash (Git Bash on Windows), and the
+        # commands ekit prints start the Python the hook found
+        os.environ.update(EKIT_SHELL="bash", EKIT_PY="python3")
 
     def call(self, argv, payload=None):
         """(exit code, stderr) of one task-verify.py invocation."""
@@ -76,7 +93,7 @@ class VerifyCase(unittest.TestCase):
     def blocked(self, why, cmd, subject="Unit auth"):
         """What a blocked completion sends to the agent: exit 2 and this text on stderr."""
         return 2, (f"[ekit] Task \"{subject}\" is not verified for the current files: {why}. "
-                   f"Run `python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} run -- {cmd}` in the checkout that "
+                   f"Run `python3 {TOOL} run -- {cmd}` in the checkout that "
                    "holds the work, fix what it shows, and mark the task completed once it exits 0. The command is "
                    "the one the task was created with: a different one is the user's call. It cannot pass here → "
                    "leave the task open and report it blocked (finish skill).\n")
@@ -105,8 +122,8 @@ class Completion(VerifyCase):
         self.assertEqual(self.complete("Verify: `exit 3`"), self.blocked("the run exited 3", "exit 3"))
 
     def test_run_reports_the_exit_code_on_stderr(self):
-        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "exit 3"]), (3, "task-verify: `exit 3` exited 3\n"))
-        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "true"]), (0, "task-verify: `true` exited 0\n"))
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "exit 3"]), (3, "task-verify: `exit 3` exited 3 in bash\n"))
+        self.assertEqual(self.call(["--repo", self.repo, "run", "--", "true"]), (0, "task-verify: `true` exited 0 in bash\n"))
 
     def test_a_later_failing_run_replaces_the_pass(self):
         flag = os.path.join(self.repo, ".git", "flag")  # outside the tree: the files stay as they were
@@ -339,8 +356,14 @@ class ReadOnlyGitDir(VerifyCase):
         super().setUp()
         self.dir = os.path.join(self.repo, ".git", "ekit")
         os.mkdir(self.dir)
-        os.chmod(self.dir, 0o500)
-        self.addCleanup(os.chmod, self.dir, 0o700)
+        self.undo = readonly(self.dir)
+        self.addCleanup(self.unlock)
+
+    def unlock(self):
+        """the hook runs outside the sandbox"""
+        if self.undo:
+            self.undo()
+            self.undo = None
 
     def refused(self, name, call):
         return 3, (f"task-verify: nothing recorded, cannot write {os.path.join(self.dir, name)}.{os.getpid()}: "
@@ -348,20 +371,93 @@ class ReadOnlyGitDir(VerifyCase):
                    f"`{call}`.\n")
 
     def tool(self, verb):
-        return f"python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} {verb} --"
+        return f"python3 {TOOL} --repo {launcher.shown(self.repo)} {verb} --"
 
     def test_run_that_cannot_record_is_not_a_pass(self):
         self.assertEqual(self.call(["--repo", self.repo, "run", "--", "test", "-f", "a.txt"]),
                          self.refused("verify.json", f"{self.tool('run')} 'test -f a.txt'"))
-        os.chmod(self.dir, 0o700)  # the hook runs outside the sandbox
+        self.unlock()
         self.assertEqual(self.complete("Verify: `test -f a.txt`"), self.blocked("no run recorded", "test -f a.txt"))
 
     def test_declare_that_cannot_record_gives_the_call_with_the_session_id(self):
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}):
             self.assertEqual(self.call(["--repo", self.repo, "declare", "--", "true"]), self.refused(
                 "declared.json", f"CLAUDE_CODE_SESSION_ID=s1 {self.tool('declare')} true"))
-        os.chmod(self.dir, 0o700)
+        self.unlock()
         self.assertEqual(self.check()[0], 4)
+
+
+def powershell():
+    import shutil
+    return shutil.which("pwsh") or (shutil.which("powershell") if WIN else None)
+
+
+class Shells(VerifyCase):
+    """A verify command is re-run in the shell it was declared in, whichever shell runs `run` later."""
+
+    def declare(self, cmd, shell):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1", "EKIT_SHELL": shell}):
+            return self.call(["--repo", self.repo, "declare", "--", cmd])
+
+    def run_in(self, cmd, shell):
+        with mock.patch.dict(os.environ, {"EKIT_SHELL": shell}):
+            return self.call(["--repo", self.repo, "run", "--", cmd])
+
+    def runs(self):
+        with open(os.path.join(self.repo, ".git", "ekit", "verify.json")) as f:
+            return {r["cmd"]: (r["rc"], r.get("shell")) for r in json.load(f)}
+
+    def test_a_bash_line_with_and_and_quotes_declared_in_bash_is_run_by_bash_from_powershell(self):
+        line = "test -f a.txt && grep -q 'a' a.txt"
+        self.declare(line, "bash")
+        self.assertEqual(self.run_in(line, "powershell"), (0, f"task-verify: `{line}` exited 0 in bash\n"))
+        self.assertEqual(self.runs(), {line: (0, "bash")})
+        self.assertEqual(self.check(), (0, ""))
+
+    def test_a_powershell_line_declared_in_powershell_is_run_by_powershell_from_bash(self):
+        if not powershell():
+            self.skipTest("no PowerShell on this machine")
+        line = "if ((Get-Content 'a.txt') -eq 'a') { exit 0 } else { exit 7 }"
+        self.declare(line, "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell")
+        rc, err = self.run_in(line, "bash")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(self.check(), (0, ""))
+
+    def test_a_native_exit_code_comes_through_powershell(self):
+        if not powershell():
+            self.skipTest("no PowerShell on this machine")
+        name = "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell"
+        self.assertEqual(self.run_in("git -C no-such-dir status", name)[0], 128)  # git's own code, not PowerShell's 1
+        self.assertEqual(self.run_in("exit 4", name)[0], 4)
+
+    def test_a_line_with_and_and_declared_in_powershell_records_one_result(self):
+        if not powershell():
+            self.skipTest("no PowerShell on this machine")
+        name = "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell"
+        line = "git --version && exit 3"  # PowerShell 7 runs it; Windows PowerShell 5.1 cannot parse it
+        self.declare(line, name)
+        rc, _ = self.run_in(line, "bash")
+        self.assertIn(rc, (1, 3))
+        self.assertEqual(self.runs(), {line: (rc, name)})
+
+    def test_an_undeclared_command_is_run_and_kept_with_the_shell_it_was_first_run_in(self):
+        self.run_in("true", "bash")
+        self.assertEqual(self.runs(), {"true": (0, "bash")})
+        self.assertEqual(self.run_in("true", "powershell"), (0, "task-verify: `true` exited 0 in bash\n"))
+
+    def test_a_command_whose_shell_this_machine_lacks_is_n_a_env_never_a_pass(self):
+        self.declare("true", "zsh")
+        with mock.patch.object(tv.shells, "find", return_value=None):
+            self.assertEqual(self.run_in("true", "bash"),
+                             (5, "task-verify: `true` is n/a (env): its shell zsh is not on this machine\n"))
+        self.assertEqual(self.check(), (1, "`true`: n/a (env): its shell zsh is not on this machine\n"))
+        self.assertEqual(self.complete("Verify: `true`")[0], 2)
+
+    def test_a_shell_given_by_path_is_the_one_run(self):
+        bash = tv.shells.find("bash")
+        self.declare("echo $0 > .git/which", bash)
+        self.assertEqual(self.run_in("echo $0 > .git/which", "powershell")[0], 0)
+        self.assertEqual(self.runs()["echo $0 > .git/which"], (0, "bash"))
 
 
 class Worktree(VerifyCase):
