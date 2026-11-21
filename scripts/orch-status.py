@@ -114,9 +114,17 @@ def path_forms(wt):
     return [wt, f"{drive}:/{rest}", f"/{drive.lower()}/{rest}", f"/mnt/{drive.lower()}/{rest}"]
 
 
+END = r"(?=$|[\\/\s\"';:&|)>,])"  # a path ends at a separator, a quote, a space or shell punctuation
+
+
 def names(p, wt):
-    """The command line names the worktree's path (a whole path component: `wt7` is not `wt`)."""
-    return any(re.search(re.escape(f) + r"(?=$|[\\/\s\"';:])", p["cmd"]) for f in path_forms(wt))
+    """The command line names the worktree's path (a whole path component: `wt7` is not `wt`; a drive path in any
+    case), or the command or cwd is in its WSL snapshot clone, `.cache/ekit-verify/<basename>` (verify-wsl.sh)."""
+    flags = re.I if DRIVE.fullmatch(wt) else 0
+    if any(re.search(re.escape(f) + END, p["cmd"], flags) for f in path_forms(wt)):
+        return True
+    snap = r"(?:^|[\\/])\.cache[\\/]ekit-verify[\\/]" + re.escape(os.path.basename(wt.rstrip("\\/"))) + END
+    return any(re.search(snap, text) for text in (p["cmd"], p["cwd"] or ""))
 
 
 def _inside(cwd, wt):

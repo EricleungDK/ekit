@@ -130,12 +130,33 @@ class Processes(Repos):
             {"pid": 16, "age": None, "cwd": None, "cmd": "python3 -m pytest " + os.path.join(self.wt, "tests")},
         ]
         out = self.status().stdout.splitlines()
-        i = out.index("  processes: 3 live")
-        self.assertEqual(out[i + 1:i + 4], [
+        i = out.index("  processes: 4 live")
+        self.assertEqual(out[i + 1:i + 5], [
             "    pid 11 (4m) python3 -m pytest tests/py",
             f"    pid 13 (9m) bash verify-wsl.sh {self.wt} 'bash tests/run.sh'",
+            "    pid 14 python3 -m mutmut run --max-children 4 in /home/u/.cache/ekit-verify/wt-agent-7",
             "    pid 16 python3 -m pytest " + os.path.join(self.wt, "tests"),
         ])
+
+    def test_the_wsl_snapshot_clone_counts_as_a_whole_component(self):
+        """verify-wsl runs the suites in ~/.cache/ekit-verify/<worktree basename>."""
+        self.procs = [{"pid": 31, "age": None, "cwd": "/home/u/.cache/ekit-verify/wt-agent-7/tests", "cmd": "pytest"},
+                      {"pid": 32, "age": None, "cwd": "/home/u/.cache/ekit-verify/wt-agent-77", "cmd": "pytest"},
+                      {"pid": 33, "age": None, "cwd": None, "cmd": "pytest /x/wt-agent-7/tests"}]
+        out = self.status().stdout.splitlines()
+        self.assertIn("  processes: 1 live", out)
+        self.assertIn("    pid 31 pytest", out)
+
+    def test_drive_paths_match_in_any_case(self):
+        p = {"pid": 5, "age": None, "cwd": None, "cmd": "pytest c:\\users\\E\\WT-agent-7\\tests"}
+        self.assertTrue(st.names(p, "C:\\Users\\e\\wt-agent-7"))
+        self.assertFalse(st.names({"pid": 5, "age": None, "cwd": None, "cmd": "pytest /home/E/wt"}, "/home/e/wt"))
+
+    def test_shell_punctuation_ends_a_path(self):
+        wt = "C:\\Users\\e\\ekit"
+        for cmd in ("cd /mnt/c/Users/e/ekit&&pytest", "(C:/Users/e/ekit) pytest", "pytest C:/Users/e/ekit|tee",
+                    "pytest C:/Users/e/ekit>log", "pytest C:/Users/e/ekit,x"):
+            self.assertTrue(st.names({"pid": 1, "age": None, "cwd": None, "cmd": cmd}, wt), cmd)
 
     def test_a_worktree_path_inside_a_longer_name_is_not_a_match(self):
         self.procs = [{"pid": 1, "age": "1m", "cwd": self.wt + "7", "cmd": f"pytest {self.wt}7/tests"}]
