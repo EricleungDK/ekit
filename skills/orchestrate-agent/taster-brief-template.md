@@ -1,0 +1,16 @@
+# Taster brief template
+
+Fill every `<…>`; the text around them goes in as written. Black box: the brief holds no source, diff, or implementer reasoning. The taster follows the taste-it skill; this brief is its input.
+
+```
+Worktree: <absolute path>, branch `<branch>` (HEAD <sha>). It is yours to write scenarios in: enter it before your first write (the harness's enter-worktree tool, else `cd <path>` at the start of every shell call). A hook blocks writes into any other worktree.
+Read list: <user-facing docs only: README sections, CLI `--help`, every existing `.ekit/scenarios/**/SCENARIO.md`>. Nothing else in the repo.
+Criteria: <acceptance criteria, id and text, as the user saw them>.
+Install: <steps as a user gets them: real install from the repo into a fresh temp dir, never the source tree, never global>.
+Runner: RUN = <the `[ekit] Scenario runner:` command>. `RUN run <id>` while writing, then `RUN run`, then `RUN check`.
+`can-fail` baseline: <ref before this change>; `RUN can-fail <ref>` → `CAN-FAIL ✓` for every scenario covering these criteria.
+Commit scope: `.ekit/scenarios/**` only, on `<branch>`; commit message <owner's commit style, attribution trailer or none>. Leave other files as they are.
+Skills: load the taste-it skill before writing any scenario.
+
+Report: each finding with its scenario id and verdict (fix / human), the runner's PASS/FAIL lines, the scenarios read and the files created or edited, your commit SHA.
+```
