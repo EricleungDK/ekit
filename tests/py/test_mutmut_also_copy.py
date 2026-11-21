@@ -9,13 +9,22 @@ import os
 import re
 import subprocess
 import tempfile
-import tomllib
 import unittest
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import mutants
 from scripts.mech_review.gitio import Review, merge_base
 from scripts.mech_review.stack import ADAPTERS
+
+
+def tomllib():
+    """tomllib, imported where a test reads TOML back, as the engine imports it only where it reads a config: the
+    rest of this module runs on python 3.9 too. Older than 3.11: a failure that says so, not an import error."""
+    try:
+        import tomllib as t
+    except ImportError:
+        raise AssertionError("reading TOML back needs python 3.11 or newer (tomllib)") from None
+    return t
 
 
 def git(repo, *args):
@@ -196,17 +205,17 @@ class Symlinks(unittest.TestCase):
 class Table(unittest.TestCase):
     def test_also_copy_goes_into_the_table_beside_source_paths_and_only_mutate(self):
         text = mutants.add_mutmut_table("[project]\nname = 'x'\n", ["src"], ["src/calc/core.py"], ["docs", "scripts"])
-        self.assertEqual(tomllib.loads(text)["tool"]["mutmut"],
+        self.assertEqual(tomllib().loads(text)["tool"]["mutmut"],
                          {"source_paths": ["src"], "only_mutate": ["src/calc/core.py"], "also_copy": ["docs", "scripts"]})
 
     def test_odd_names_stay_valid_toml_and_read_back_unchanged(self):
         names = ["my file.md", 'say "hi".txt', "back\\slash.txt", "tab\there.txt", "del\x7fname.txt", "café 😀.md"]
         text = mutants.add_mutmut_table("", ["src"], ["src/a.py"], names)
-        self.assertEqual(tomllib.loads(text)["tool"]["mutmut"]["also_copy"], names)
+        self.assertEqual(tomllib().loads(text)["tool"]["mutmut"]["also_copy"], names)
 
     def test_a_source_path_outside_the_bmp_stays_valid_toml(self):
         text = mutants.add_mutmut_table("", ["😀"], ["😀/a.py", "src/😀.py"])
-        self.assertEqual(tomllib.loads(text)["tool"]["mutmut"],
+        self.assertEqual(tomllib().loads(text)["tool"]["mutmut"],
                          {"source_paths": ["😀"], "only_mutate": ["😀/a.py", "src/😀.py"]})
 
     def test_the_repos_own_mutmut_table_is_still_not_overridden(self):
@@ -234,7 +243,7 @@ class ConfigMutmutReads(unittest.TestCase):
             if argv[1] == "--version":
                 return 0, "mutmut, version 3.8.1"
             with open(os.path.join(cwd, "pyproject.toml"), "rb") as f:
-                self.pyprojects.append(tomllib.load(f))
+                self.pyprojects.append(tomllib().load(f))
             tables.append(self.pyprojects[-1]["tool"]["mutmut"])
             return 1, "failed to collect stats. runner returned 1\n"  # stop at the first run: the table is all we need
 

@@ -150,7 +150,12 @@ def checks(d, quiet=False):
 
     py = launcher.command()
 
-    good("python") if launcher.version_of(["python"]) else missing("python", f"use {py}")
+    if launcher.version_of(["python"]):
+        good("python")
+    elif launcher.pick():  # a Python 3.9+ is here (this one): bare `python` is only a name to avoid
+        warn(f"python: missing → use {py}")
+    else:
+        missing("python", f"use {py}")
     good("jq") if have("jq") else missing("jq", f"{py} -c 'import json'")
     good("rg") if have("rg") else missing("rg", "grep -rn / find")
 
@@ -215,7 +220,7 @@ def checks(d, quiet=False):
         good("git") if os.access(gd, os.W_OK) else warn("git: .git read-only (sandbox) → commits need unsandboxed run")
     if have("git") and gh_remote(d):
         email = git_out(d, "config", "user.email")
-        if email and not email.endswith(NOREPLY):  # never printed: it is the user's private address
+        if email and not email.lower().endswith(NOREPLY):  # never printed: it is the user's private address
             warn("git: user.email is not a GitHub noreply address → GitHub may reject the push (email privacy); "
                  f"set: git config user.email <id>+<login>{NOREPLY}")
 

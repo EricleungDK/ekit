@@ -147,14 +147,14 @@ and one message names what is missing when none is.
 The Microsoft Store's `python3` stub, when it is all there is, fails the version check and the launcher moves on to
 `py -3`, then `python`. WSL works too, as Linux.
 
-**Linux**
+**Linux** (`apt` on Debian and Ubuntu; `dnf` on Fedora and RHEL; other distributions: their package manager)
 
 | Need | Install | Check |
 |---|---|---|
-| Python 3.9+ | `sudo apt install python3` | `python3 --version` |
-| Git | `sudo apt install git` | `git --version` |
+| Python 3.9+ | `sudo apt install python3` / `sudo dnf install python3` | `python3 --version` |
+| Git | `sudo apt install git` / `sudo dnf install git` | `git --version` |
 | Hook shell | `sh`, built in | nothing to do |
-| Optional tools preflight names | `sudo apt install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
+| Optional tools preflight names | `sudo apt install jq ripgrep gh` / `sudo dnf install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
 
 `<kit>` is the plugin's folder, named by the `[ekit] Scenario runner:` line at session start. Preflight prints the OS,
 then one line per missing tool with this OS's install command. Scenarios (`run.sh`) need bash: Git Bash on Windows.
@@ -262,7 +262,7 @@ python3 -m unittest discover -s tests/py   # the python unit tests alone (Window
 |---|---|---|
 | macOS | `brew install python jq` | stock bash 3.2 is enough; no `sha1sum` or `timeout` needed |
 | Windows | `winget install Git.Git Python.Python.3.13 jqlang.jq`, then run the suites in Git Bash | Developer Mode (Settings → System → For developers) for the symlink tests: without it they skip, naming the refusal |
-| Linux | `sudo apt install python3 jq git` | nothing else |
+| Linux | `sudo apt install python3 jq git` (Debian, Ubuntu) / `sudo dnf install python3 jq git` (Fedora, RHEL) | nothing else |
 
 A fresh clone has LF files on every OS (`.gitattributes`). WSL is an alternative on Windows: clone inside WSL and run
 the suites there as on Linux. The Python suite runs natively on Windows too (`py -3 -m unittest discover -s tests/py`),

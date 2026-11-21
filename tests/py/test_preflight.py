@@ -100,7 +100,7 @@ class Tools(Case):
         b = self.fakebin("b1")
         self.stub(b, "python3", "")
         out = self.run_pf(path=b)
-        self.assertIn("python: missing → use python3", out)
+        self.assertIn("⚠ python: missing → use python3\n", out)  # python3 is here: no install line for python
         self.assertIn("jq: missing → python3 -c 'import json'", out)
         self.assertIn("rg: missing → grep -rn / find", out)
         self.assertNotIn("cargo", out)
@@ -245,6 +245,7 @@ class NoreplyEmail(Case):
 
     def test_a_noreply_email_or_another_host_is_quiet(self):
         for remote, email in (("https://github.com/o/r", "1+o@users.noreply.github.com"),
+                              ("https://github.com/o/r", "1+O@Users.NoReply.GitHub.com"),
                               ("https://gitlab.com/o/r", "me@example.com"), (None, "me@example.com")):
             with self.subTest(remote=remote):
                 import shutil

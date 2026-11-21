@@ -566,17 +566,20 @@ class SandboxTrial(unittest.TestCase):
                          "mutants/ fails on `tests/l00`, `tests/l01`, `tests/l02`, `tests/l03`, `tests/l04`, "
                          "`tests/l05`, `tests/l06`, `tests/l07`, `tests/l08`, `tests/l09` and 2 more")
 
-    @POSIX_COPY
     def test_a_copy_onto_itself_names_the_entry_being_copied(self):
         # a tracked mutants/tests -> ../tests: copytree copies each file onto itself (shutil.SameFileError)
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""}, links=[("mutants/tests", "../tests")])
         env = self.doctor()
-        self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
-                                                       "mutants/ fails on `tests`")
-        # shutil's own words (its src is a DirEntry on 3.8+), the checkout's temp prefix off the path
-        self.assertIn(" and 'mutants/tests/test_a.py' are the same file; fix that in the tree, then rerun doctor",
-                      env["entries"][0]["hint"])
+        # the entry is tests (POSIX names the entry, Windows the file in it: tests/test_a.py)
+        self.assertRegex(env["entries"][0]["problem"], r"^R3's mutmut sandbox cannot be built: mutmut's copy into "
+                                                       r"mutants/ fails on `tests(/test_a\.py)?`$")
+        # the OS's own words for a copy onto itself (POSIX: shutil's, its src a DirEntry on 3.8+; Windows: a sharing
+        # violation), the checkout's temp prefix off the path
+        hint = env["entries"][0]["hint"]
+        self.assertRegex(hint, r"^mutmut's copy into mutants/ fails on it: .+; fix that in the tree, then rerun doctor$")
+        self.assertRegex(hint, r" and 'mutants/tests/test_a\.py' are the same file;|being used by another process;")
+        self.assertNotIn(tempfile.gettempdir(), hint)
 
     def test_doctor_leaves_no_pythonpath_behind_when_there_was_none(self):
         saved = os.environ.pop("PYTHONPATH", None)
@@ -659,15 +662,14 @@ class SandboxTrial(unittest.TestCase):
                                                 "passes (missing there: `docs/guide/usage.md`); `docs/` is left out of "
                                                 "R3's copy because of the link `docs/api/html`", HELD_HINT)])
 
-    @POSIX_COPY
     def test_only_links_that_miss_a_tracked_file_keep_an_entry_out(self):
         # notes/latest.md reaches notes/v1/latest.md through tracked dirs: notes/ is copied. odd/x.md steps through
         # a file (ENOTDIR) and chain/y.md reaches a link, not a file: those two are kept out, as also_copy does
         # site/ is kept out for site/html alone: its own site/latest.md -> v1/latest.md is fine and not named. A tracked
-        # name with a newline in it reads like any other (git ls-tree -z keeps it raw)
+        # name with a space in it reads like any other (git ls-tree -z keeps it raw)
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "site/index.md": "# guide\n",
                      "notes/v1/latest.md": "", "odd/keep.md": "", "chain/keep.md": "", "site/v1/latest.md": "",
-                     "notes/two\nlines.md": "", ".github/workflows/mech-review.yml": CALLER % "",
+                     "notes/two lines.md": "", ".github/workflows/mech-review.yml": CALLER % "",
                      "tests/test_docs.py": READS.replace('"docs" / "guide.md"', '"site" / "index.md"') % 1},
                     links=[("site/html", "../_build/html"), ("site/latest.md", "v1/latest.md"),
                            ("notes/latest.md", "v1/latest.md"),
