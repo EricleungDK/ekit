@@ -126,6 +126,36 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 - Timing is wall time only (`checks.R3.timing.wall_s`): mutmut prints no per-phase durations, so the cargo-mutants phase fields are left out, not guessed. `--mutant-timeout` does not apply: mutmut's own timeout (its `timeout_multiplier` times the test time) decides.
 - A budget hit reads the results mutmut kept: `partial (tested/total)`. A mutant mutmut reports missed before the budget ended its run has had no whole-suite retry, so it is untested too.
 
+## R3 locally
+
+`scripts/r3-local.py` runs the R3 jobs of this workflow on your machine, so a MISSED mutant shows before the review request, not after CI. POSIX only: on Windows run it in WSL (native Windows exits 2).
+
+```bash
+python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 'tests/**' --mutation-budget 20 --env-dir ~/.cache/ekit-r3env
+```
+
+- Setup: the stack's R3 tool with the workflow's pins (the adapter's `r3_tool`): python a venv with `pytest==9.2.0` and `mutmut==3.8.1`, then the project dir's `requirements*.txt`, installed from a checkout of head (`git archive`; pip runs in the project dir there, as CI does, so `-c`, `-r ../x.txt` and `-e .` resolve the same; a link in the tree that points out of the checkout is left out and named on stderr: CI keeps it and never follows it), the venv first on `PATH` (`PYTHONPATH` and `PYTEST_ADDOPTS` are dropped: CI has neither); ts `@stryker-mutator/core@10.0.0` and `jest-runner` in their own npm prefix, passed as `--mutants-cmd`; rust `cargo install cargo-mutants@27.1.0` and the workflow's cargo env. `--env-dir` keeps it and reuses it while the pins and the requirements files match; without it a temp dir is removed after the run. `setup-command` and `extra-apt-packages` are not run: install those yourself.
+- Steps: `plan`, `baseline --shards 4`, every shard at the same time (`mutants --shard K/N`, the CI budget and `max-mutants` each, `--mutant-timeout` or else the baseline's), `merge`. Defaults are the workflow's (`test-paths` `tests/**`, budget 10, `max-mutants` 40); pass your caller's inputs: `--test-paths` (repeat), `--mutation-budget`, `--max-mutants`, `--mutant-timeout`, `--project-dir`. The shards share this machine's CPUs, where CI gives each its own runner: wall times differ, and so can a mutant that hits mutmut's own timeout.
+- Output: the merged summary, R3's status (`tested/total`), each shard's note and wall time, the fail entries; the results are in `<env-dir>/out/` (without `--env-dir` they are removed, and the output says so). It tests the head commit: uncommitted changes are not in it.
+- Exit 0 no fail, 1 a fail entry, 2 setup failed, usage or git error, a step gave no usable result, or native Windows.
+
+## Reading a run
+
+`scripts/mech-summary.py <run-id | PR number | #N | PR URL> [--repo OWNER/NAME]` downloads a run's artifacts (`gh run download`; a PR resolves to the run of its newest `mech-review report` check) and prints the summary line, each check's status and note, each shard's note, and the fail entries grouped by file, merged as the report job merges them. Waivers are not applied. `--dir DIR` reads artifacts already downloaded. Artifacts: `mech-review-json` (R2), `mech-review-red-json` (R1, R4), `mech-review-baseline-json`, `mech-review-mutants-K` (one per shard); a `mech-review-mutants-merged-json` (the merged R3) is used when the run has one. A run still in progress is a note (exit 2), not a result. The job list (`gh run view`) tells a baseline job that was skipped (the plan found no production change: R3 skipped) from one that ran and left no JSON (R3 fails, as in the comment).
+
+The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38; not yet in the workflow: an owner edit):
+
+```yaml
+      - name: upload merged mutants result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mech-review-mutants-merged-json
+          path: mutants-merged.json
+          if-no-files-found: ignore
+          overwrite: true
+```
+
 ## R3 timing and partial
 
 `checks.R3.timing` (JSON, additive) says where the R3 time went. Per shard it comes from cargo-mutants' own `outcomes.json` phase durations (`Build`, `Test`, in seconds) and the runner's clock:

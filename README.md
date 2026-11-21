@@ -204,6 +204,9 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
+| `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail / 2 setup or usage. |
+| `scripts/mech-summary.py` | `<run-id \| PR>`: a mech-review run's artifacts in a few lines (checks, shard notes, fail entries by file). `--dir` for downloaded artifacts. |
+| `scripts/orch-status.py` | `<worktree>...`: commits ahead of the pushed branch, dirty files, live test/mutation processes, CI counts. |
 | `scripts/mech-rerun.py` | `--pr N`: re-runs the PR head's finished `mech-review report` job, so a waiver comment takes effect (the `mech-waive` workflow). Exit 0 / 2 usage / 3 API error. |
 
 </details>
