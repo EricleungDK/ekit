@@ -152,11 +152,7 @@ def summarize(d, label, jobs=None):
         raise Stop(f"unreadable result in {label} ({type(e).__name__}: {e})")
     fails = [e for e in env["entries"] if e["severity"] == "fail"]
     failed = [c for c in ("R1", "R2", "R3", "R4") if env["checks"][c]["status"] == "fail"]
-    summary = env["summary"]
-    if failed and not fails:  # a check failed with no entry to show for it: still a red run
-        summary = (f"fail {env['head']} (a check failed with no fail entry: {' '.join(failed)}; "
-                   f"merged summary: {summary})")
-    print(f"{label}: {summary}")
+    print(f"{label}: {env['summary']}")  # report.summarize reads `fail` for a failed check with no fail entry
     for line in checks:
         print(line)
     if shard_lines:
@@ -176,7 +172,7 @@ def summarize(d, label, jobs=None):
         print(f"confirm entries: {confirms} (see the PR comment)")
     if fails:
         print("waivers: not applied here (the sticky comment applies /mech-waive)")
-    return 1 if fails or failed else 0
+    return 1 if fails or failed else 0  # a failed check is a red run, entry or not
 
 
 def run_jobs(run, rid, repo):

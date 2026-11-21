@@ -239,8 +239,8 @@ class Output(Run):
         r = self.main("--dir", self.art)
         self.assertEqual(r.returncode, 1)
         out = r.stdout.splitlines()
-        self.assertEqual(out[0], f"{self.art}: fail {HEAD} (a check failed with no fail entry: R2; merged summary: "
-                                 f"pass {HEAD} (0 fail, 0 confirm; ran: R1 R2 R3 R4))")
+        self.assertEqual(out[0], f"{self.art}: fail {HEAD} (0 fail, 0 confirm; ran: R1 R2 R3 R4)")
+        self.assertIn("R2 fail: no result", out)
 
     def test_the_merged_artifact_name_is_the_one_the_owner_yaml_uploads(self):
         self.assertEqual(ms.MERGED, ("mech-review-mutants-merged-json", "mutants-merged.json"))
