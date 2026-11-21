@@ -5,6 +5,7 @@ from scripts.mech_review import comment, waiver
 from scripts.mech_review.report import summarize
 
 SHA = "a" * 40
+ZW = chr(0x200B)  # zero-width space
 
 
 def entry(eid="R2-deadbeef", check="R2", severity="fail", cls="agent-fixable"):
@@ -73,11 +74,35 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <why this is OK>"),
                                          note("/mech-waive R2-deadbeef:   <why  this is\tOK>  ")]), {})
 
-    def test_a_reason_wholly_wrapped_in_angle_brackets_is_not_a_reason(self):
+    def test_the_template_placeholder_and_empty_angle_brackets_are_not_a_reason(self):
         self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <reason>"), note("/mech-waive R3-0badc0de <>")]), {})
 
-    def test_a_bracketed_reason_longer_than_the_cut_is_still_not_a_reason(self):
-        self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <" + "x" * 400 + ">")]), {})
+    def test_variants_of_the_placeholder_are_still_the_placeholder(self):
+        for reason in ("<<why this is OK>>", "< why this is OK >", "<WHY THIS IS ok>", "<reason >", "<<>>", "<…>",
+                       "<...>", "<" + ZW + ">", "<why" + ZW + "this is OK>"):
+            line = "/mech-waive R2-deadbeef " + reason
+            self.assertEqual(waiver.collect([note(line)]), {}, reason)
+            self.assertEqual([r["why"] for r in waiver.rejected([note(line)])], [waiver.PLACEHOLDER_WHY], reason)
+
+    def test_the_placeholder_words_without_brackets_are_a_reason(self):
+        for reason in ("reason", "why this is OK", "...", "…"):
+            got = waiver.collect([note("/mech-waive R2-deadbeef " + reason)])
+            self.assertEqual(got["R2-deadbeef"]["reason"], reason, reason)
+            self.assertEqual(waiver.rejected([note("/mech-waive R2-deadbeef " + reason)]), [], reason)
+
+    def test_doubled_angle_brackets_around_a_real_reason_are_stripped(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef <<the test moved to e2e>>")])
+        self.assertEqual(got["R2-deadbeef"]["reason"], "the test moved to e2e")
+
+    def test_a_real_reason_left_in_the_angle_brackets_waives_with_the_brackets_stripped(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef <waive it: the test moved to e2e>"),
+                              note("/mech-waive R3-0badc0de:  < equivalent mutant >")])
+        self.assertEqual({k: v["reason"] for k, v in got.items()},
+                         {"R2-deadbeef": "waive it: the test moved to e2e", "R3-0badc0de": "equivalent mutant"})
+
+    def test_a_bracketed_reason_longer_than_the_cut_is_cut_after_its_brackets_go(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef <" + "x" * 400 + ">")])
+        self.assertEqual(got["R2-deadbeef"]["reason"], "x" * waiver.REASON_MAX)
 
     def test_angle_brackets_inside_a_real_reason_are_fine(self):
         got = waiver.collect([note("/mech-waive R2-deadbeef <T> is generic, so the test moved"),
@@ -117,13 +142,16 @@ class TestRejected(unittest.TestCase):
         got = waiver.rejected([note("/mech-waive R2-deadbeef <why this is OK>"), note("/mech-waive R3-0badc0de <reason>")])
         self.assertEqual(got, [
             {"id": "R2-deadbeef", "by": "owner", "url": "https://github.test/c/1",
-             "why": "the reason is still the placeholder; post a new comment with the reason"},
+             "why": "the reason is still the placeholder `<…>`: replace the text in the angle brackets with the reason and post a new comment"},
             {"id": "R3-0badc0de", "by": "owner", "url": "https://github.test/c/1",
-             "why": "the reason is still the placeholder; post a new comment with the reason"}])
+             "why": "the reason is still the placeholder `<…>`: replace the text in the angle brackets with the reason and post a new comment"}])
 
     def test_an_edited_comment_with_a_placeholder_is_reported_as_edited(self):
         got = waiver.rejected([dict(note("/mech-waive R2-deadbeef <why this is OK>"), **EDITED)])
         self.assertEqual([r["why"] for r in got], ["the comment was edited after posting; post a new comment"])
+
+    def test_a_real_reason_in_angle_brackets_is_not_reported(self):
+        self.assertEqual(waiver.rejected([note("/mech-waive R2-deadbeef <waive it>")]), [])
 
     def test_waivers_that_count_or_never_could_are_not_reported(self):
         self.assertEqual(waiver.rejected([
@@ -148,9 +176,9 @@ class TestRejected(unittest.TestCase):
                                 "why": "the comment was edited after posting; post a new comment"}])
 
     def test_missing_login_and_url_are_empty_strings(self):
-        got = waiver.rejected([{"user": {}, "author_association": "OWNER", "body": "/mech-waive R2-deadbeef <x>"}])
+        got = waiver.rejected([{"user": {}, "author_association": "OWNER", "body": "/mech-waive R2-deadbeef <why this is OK>"}])
         self.assertEqual(got, [{"id": "R2-deadbeef", "by": "", "url": "",
-                                "why": "the reason is still the placeholder; post a new comment with the reason"}])
+                                "why": "the reason is still the placeholder `<…>`: replace the text in the angle brackets with the reason and post a new comment"}])
 
 
 class TestApply(unittest.TestCase):

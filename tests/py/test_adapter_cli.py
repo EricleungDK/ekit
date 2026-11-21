@@ -1,7 +1,6 @@
 """R2 through an adapter file (#16): `mech-review.py r2 --stack <name> --adapter <file>` on a fixture git repo.
 
 The stack is a made-up language described only by tests/fixtures/adapters/mini.toml: no built-in adapter knows it."""
-import collections
 import contextlib
 import io
 import json
@@ -49,7 +48,6 @@ class Repo:
         return self.git("rev-parse", "HEAD").strip()
 
 
-Result = collections.namedtuple("Result", "returncode stdout stderr")
 
 
 def r2(repo, base, head, *extra, adapter=MINI, stack="mini", check="r2"):
@@ -58,13 +56,7 @@ def r2(repo, base, head, *extra, adapter=MINI, stack="mini", check="r2"):
     argv = [check, "--repo", repo.path, "--base", base, "--head", head, "--stack", stack, "--test-paths", "tests/**"]
     if adapter:
         argv += ["--adapter", adapter]
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            rc = cli.main(argv + list(extra))
-        except SystemExit as e:
-            rc = e.code
-    return Result(rc, out.getvalue(), err.getvalue())
+    return _kit.run_cli(argv + list(extra))
 
 
 class AdapterFileR2(unittest.TestCase):

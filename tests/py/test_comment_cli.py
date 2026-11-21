@@ -177,6 +177,41 @@ class TestPoster(unittest.TestCase):
         self.assertIn(f"reason: r2 job: result is for an older head, not {SHA}", api.writes[0])
         self.assertNotIn("R2-deadbeef", api.writes[0])
 
+    def test_a_ci_entry_of_the_mutants_merge_reaches_the_comment_and_fails_the_check(self):
+        from scripts.mech_review import merge
+        shard = {"base": "b" * 40, "head": SHA, "summary": "", "entries": [],
+                 "checks": {"R3": {"status": "pass", "note": ""}}, "shard": {"k": 0, "n": 2, "max_mutants": 40}}
+        mutants = merge.combine_shards("b" * 40, SHA, 2, {0: shard, 1: shard}, {})
+        path = os.path.join(self.tmp.name, "mutants.json")
+        with open(path, "w") as f:
+            json.dump(mutants, f)
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", []), "--envelope", "mutants=" + path, "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("mutants shards do not match: shard 0/2 given 2 times (--envelope 0, 1); shard 1/2 missing",
+                      api.writes[0])
+
+    def test_a_failed_check_with_no_fail_entry_still_fails_the_headline_and_the_check(self):
+        checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in ("R1", "R2", "R4")}
+        checks["R3"] = {"status": "fail", "note": "shard 1/2: no result"}
+        mutants = {"ekit": "0", "base": "b" * 40, "head": SHA, "checks": checks, "entries": [], "summary": ""}
+        path = os.path.join(self.tmp.name, "mutants.json")
+        with open(path, "w") as f:
+            json.dump(mutants, f)
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", []), "--envelope", "mutants=" + path, "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn(f"fail {SHA} (0 fail, 0 confirm; ran: R2 R3; skipped: R1 R4)", api.writes[0])
+
+    def test_a_fail_entry_under_a_check_that_reads_pass_still_fails_the_check(self):
+        env = dict(envelope([FAIL]))
+        env["checks"] = dict(env["checks"], R2={"status": "pass", "note": ""})
+        path = os.path.join(self.tmp.name, "pass-with-fail.json")
+        with open(path, "w") as f:
+            json.dump(env, f)
+        p = self.call(["--envelope", path], Api())
+        self.assertEqual(p.returncode, 1, p.stderr)
+
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
         p = self.post([FAIL], api)
@@ -207,8 +242,15 @@ class TestPoster(unittest.TestCase):
         api = Api([person("/mech-waive R2-deadbeef <why this is OK>")])
         p = self.post([FAIL], api)
         self.assertEqual(p.returncode, 1, p.stderr)
-        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the reason is still the placeholder; post a new comment "
-                      "with the reason\n", api.writes[0])
+        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the reason is still the placeholder `<…>`: replace the "
+                      "text in the angle brackets with the reason and post a new comment\n", api.writes[0])
+
+    def test_a_real_reason_left_in_the_angle_brackets_turns_the_check_green(self):
+        api = Api([person("/mech-waive R2-deadbeef <waive it: moved to the e2e suite>")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Waived: R2-deadbeef by `eric`: waive it: moved to the e2e suite", api.writes[0])
+        self.assertNotIn("Waiver ignored", api.writes[0])
 
     def test_an_ignored_waiver_for_an_entry_no_longer_failing_is_not_shown(self):
         api = Api([person("/mech-waive R2-deadbeef <why this is OK>"), person("/mech-waive R2-deadbeef: moved"),

@@ -28,13 +28,21 @@ py_repo() { local r="$1" p="${2:-.}" d; d="$1/$p"; mkdir -p "$d/src/calc" "$d/te
 docs_test() { mkdir -p "$1/docs"; printf '# Usage\n\nRun `calc add 1 2`.\n' > "$1/docs/usage.md"
   printf 'from pathlib import Path\n\nROOT = Path(__file__).resolve().parent.parent\n\n\ndef test_docs_mention_add():\n    assert "calc add" in (ROOT / "docs" / "usage.md").read_text()\n' > "$1/tests/test_docs.py"; }
 
+# each pytest and doctor run's output is kept in the artifact dir (#44: a rare load flake left only its ASSERT line);
+# on a failed assert they also go to stderr, so the runner's kept failure transcript holds the real error
+SAVE="${EKIT_ARTIFACT_DIR:-$PWD}"
+save_as() { printf '%s/%s' "$SAVE" "${1//[^A-Za-z0-9._-]/_}"; }
+trap 'rc=$?; if (( rc )); then for f in "$SAVE"/plain-* "$SAVE"/doctor-*; do [[ -f $f ]] && { echo "--- ${f##*/}"; cat "$f"; } >&2; done; fi' EXIT
+
 # the plain suite passes in the user's checkout (so a doctor fail is about the sandbox): plain_ok <project dir> <label>
-plain_ok() { (cd "$1" && python3 -m pytest -q -p no:cacheprovider >/dev/null 2>&1) || fail "$2: tests do not pass in the checkout"; }
+plain_ok() { local o; o=$(save_as "plain-$2.out")
+  (cd "$1" && python3 -m pytest -q -p no:cacheprovider >"$o" 2>&1) || fail "$2: tests do not pass in the checkout"; }
 
 # run doctor on repo $1 with args, under the limit; sets OUT and RC; fails on a hang or a traceback
 # and asserts doctor wrote nothing, left one worktree and an empty TMPDIR: doc <label> <repo> [args]
 doc() { local l="$1" r="$2" before; shift 2; before=$(snapshot "$r")
   OUT=$(mr doctor --repo "$r" "$@"); RC=$?
+  cp "$PWD/mr.err" "$(save_as "doctor-$l.err")"; printf '%s\n' "$OUT" > "$(save_as "doctor-$l.json")"
   [[ $RC != 124 ]] || fail "$l: doctor hung (killed after ${MR_LIMIT}s)"
   hasnt "$l no traceback" "$(cat "$PWD/mr.err")" "Traceback"
   jq -e . >/dev/null <<<"$OUT" || fail "$l: stdout is not JSON: [$OUT] stderr [$(cat "$PWD/mr.err")]"

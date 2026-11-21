@@ -21,12 +21,30 @@ PLACEHOLDER = "<why this is OK>"
 
 
 EDITED_WHY = "the comment was edited after posting; post a new comment"
-PLACEHOLDER_WHY = "the reason is still the placeholder; post a new comment with the reason"
+PLACEHOLDER_WHY = ("the reason is still the placeholder `<…>`: replace the text in the angle brackets with the reason "
+                   "and post a new comment")
+
+
+ZERO_WIDTH = re.compile("[" + "".join(map(chr, (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF))) + "]")
+# the placeholder's words, and what the refusal message itself shows in their place
+PLACEHOLDER_WORDS = {"why this is ok", "reason", "…", "...", ""}
+
+
+def _unwrap(reason):
+    """A reason wholly wrapped in <...> (or <<...>>) loses the brackets: the person replaced the placeholder's words
+    only (#40)."""
+    while reason.startswith("<") and reason.endswith(">"):
+        reason = reason[1:-1].strip()
+    return reason
 
 
 def _placeholder(reason):
-    """True for a reason wholly wrapped in <...>: PLACEHOLDER, or a template's `<reason>`."""
-    return reason.startswith("<") and reason.endswith(">")
+    """True for a reason wholly in angle brackets that, brackets stripped, zero-width characters and runs of whitespace
+    made one space, casefolded, is the placeholder's words, the refusal message's `…`, or nothing. The same words
+    without brackets are a reason the person wrote: they waive."""
+    if not (reason.startswith("<") and reason.endswith(">")):
+        return False
+    return " ".join(ZERO_WIDTH.sub(" ", _unwrap(reason)).split()).casefold() in PLACEHOLDER_WORDS
 
 
 def _edited(c):
@@ -52,12 +70,12 @@ def _commands(comments):
 
 def collect(comments):
     """{entry id: {by, reason, url}} from issue comments (API objects, oldest first; a later comment wins).
-    A waiver with no reason is ignored: the reason is the record. The placeholder, or any reason wholly in <...>, is
-    none. An edited comment waives nothing (see `rejected`)."""
+    A waiver with no reason is ignored: the reason is the record. A placeholder left as it stands, or `<>`, is none;
+    any other reason wholly in <...> counts, its brackets stripped. An edited comment waives nothing (see `rejected`)."""
     out = {}
     for c, login, eid, reason in _commands(comments):
         if not _edited(c) and not _placeholder(reason):
-            out[eid] = {"by": login, "reason": reason[:REASON_MAX], "url": c.get("html_url", "")}
+            out[eid] = {"by": login, "reason": _unwrap(reason)[:REASON_MAX], "url": c.get("html_url", "")}
     return out
 
 

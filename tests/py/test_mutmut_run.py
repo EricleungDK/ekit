@@ -283,8 +283,7 @@ class TestMutmutCheck(DiffOfSub):
         self.assertEqual(len(fake.runs), 1)
         self.assertEqual((check["status"], check["note"]), ("partial", "0/2 tested: budget hit, no MISSED so far"))
 
-    def test_the_budget_ending_mid_run_keeps_what_was_tested(self):
-        # name predates #26: unreached mutants are now untested (partial), not MISSED
+    def test_the_budget_ending_mid_run_leaves_the_unreached_mutants_untested(self):
         # #26: a mutant still waiting for its whole-suite retry counts as untested, not MISSED
         fake = FakeMutmut({SUB1: "survived", SUB2: "killed"}, timeout_run=2)
         check, entries, _ = self.r3(fake)
@@ -529,8 +528,7 @@ class TestWholeSuite(DiffOfSub):
         self.assertEqual([t for t, _ in fake.suite_runs], [1, 1])
         self.assertEqual(entries, [])
 
-    def test_the_budget_gone_after_the_clean_run_keeps_every_mutant_missed(self):
-        # name predates #26: unreached mutants are now untested (partial), not MISSED
+    def test_the_budget_gone_after_the_clean_run_leaves_every_mutant_untested(self):
         fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
         with self.clock(100, 130, 140, 150, 150, 151, 220):  # the clean run fits; then exactly nothing is left
             check, entries, _ = self.r3(fake, budget_min=2)
@@ -552,16 +550,14 @@ class TestWholeSuite(DiffOfSub):
         self.assertEqual(entries, [])
         self.assertIn("2 hung the whole suite", check["note"])
 
-    def test_a_spent_budget_leaves_what_mutmut_said(self):
-        # name predates #26: unreached mutants are now untested (partial), not MISSED
+    def test_a_spent_budget_leaves_the_mutant_untested_with_a_partial_entry(self):
         fake = self.fake({SUB1: "survived"}, suite_fails_on=["c = a + b"])
         with self.clock(100, 130, 140, 700):
             check, entries, _ = self.r3(fake, budget_min=2)
         self.assertEqual((check["status"], [e["severity"] for e in entries], fake.suite_runs, fake.applied),
                          ("partial", ["confirm"], [], []))
 
-    def test_the_budget_running_out_between_mutants_keeps_the_rest_missed(self):
-        # name predates #26: unreached mutants are now untested (partial), not MISSED
+    def test_the_budget_running_out_between_mutants_leaves_the_rest_untested(self):
         fake = self.fake({SUB1: "survived", SUB2: "survived"}, suite_fails_on=["c = a + b", "return None"])
         with self.clock(100, 130, 140, 150, 150, 151, 160, 300):  # the second mutant finds the budget gone
             check, entries, _ = self.r3(fake, budget_min=2)

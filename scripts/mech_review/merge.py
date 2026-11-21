@@ -1,6 +1,6 @@
 """Merge the job results into one envelope for the sticky comment, and the mutants shards into the mutants job result.
 
-Each job owns its checks: r2 owns R2, red owns R1 and R4, mutants owns R3. A job with no usable result (missing,
+Each job owns its checks: r2 owns R2, red owns R1 and R4, mutants owns R3; a CI entry in a job's result is kept too. A job with no usable result (missing,
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
 checks stay skipped.
@@ -35,7 +35,8 @@ def merge(parts, reasons):
             continue
         for c in owned:
             checks[c] = env["checks"][c]
-        kept += [e for e in env["entries"] if e["check"] in owned]
+        # a job's own CI entries (the mutants merge: a missing or mismatched shard, #42) reach the comment too
+        kept += [e for e in env["entries"] if e["check"] in owned or e["check"] == "CI"]
     ci = finalize(ci)
     entries = sorted(kept + ci, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return envelope(first["base"], first["head"], entries, checks)
@@ -113,6 +114,58 @@ def _add_unique(kept, seen, e, label):
     kept.append(e)
 
 
+def _count(x):
+    """a whole number >= 0, not a bool (JSON true is no shard index)"""
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def shard_problems(base, head, n, shards):
+    """Why the given shard envelopes are not the n shards of one run (#42), in a fixed order: [] when they are. Each
+    envelope names the shard it ran as and its cap (`shard: {k, n, max_mutants}`, set by `mutants`); one without it (an
+    older engine's) is checked on base and head only, unless another carries it: then its missing field is a problem.
+    A field that is not {k, n, max_mutants} of whole numbers is malformed, named, never a crash. A slot with no
+    envelope is the missing-shard CI entry's, not this."""
+    out, carried, slots = [], {}, {}
+    given = {k: shards.get(k) for k in range(n) if shards.get(k) is not None}
+    any_field = any("shard" in env for env in given.values())
+    for k, env in given.items():
+        if "shard" not in env:
+            if any_field:  # dropping the field must not skip the checks the others get
+                out.append(f"--envelope {k}: no shard field")
+            continue
+        sh = env["shard"]
+        if not (isinstance(sh, dict) and all(_count(sh.get(x)) for x in ("k", "n", "max_mutants"))
+                and sh["n"] >= 1 and sh["max_mutants"] >= 1):
+            out.append(f"--envelope {k}: malformed shard {json.dumps(sh, default=str)}")
+            continue
+        lab = f"{sh['k']}/{sh['n']}"
+        if sh["k"] >= sh["n"]:
+            out.append(f"shard {lab} out of range")
+        if sh["n"] != n:
+            msg = f"shard {lab} ran as one of {sh['n']} shards, not {n}"
+            if msg not in out:
+                out.append(msg)
+        carried.setdefault((sh["k"], sh["n"]), []).append(k)
+        slots[k] = sh
+    for (k, m), at in carried.items():
+        if len(at) > 1:
+            out.append(f"shard {k}/{m} given {len(at)} times (--envelope {', '.join(map(str, at))})")
+    out += [f"shard {k}/{n} missing" for k in slots if (k, n) not in carried]
+    for k in range(n):
+        env = shards.get(k)
+        if env is None:
+            continue
+        lab = f"{k}/{n}"
+        if env.get("base") != base:
+            out.append(f"shard {lab} ran on base {env.get('base')}, not {base}")
+        if env.get("head") != head:
+            out.append(f"shard {lab} ran on head {env.get('head')}, not {head}")
+    caps = sorted({sh["max_mutants"] for sh in slots.values()})
+    if len(caps) > 1:
+        out.append(f"shards ran with different caps (max-mutants {', '.join(map(str, caps))})")
+    return out
+
+
 def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     """The mutants job: R3 from n shard envelopes (0-based shard k of n). shards: {k: envelope or None},
     reasons: {k: why there is no envelope}. A missing shard fails R3 with a CI entry naming it; the other shards'
@@ -152,6 +205,14 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
                 unknown = True
             else:
                 total += c["total"]
+    problems = shard_problems(base, head, n, shards)
+    if problems:
+        statuses.append("fail")
+        notes.append("shards do not match")
+        ci.append(entry("CI", "", 0, "shards-mismatch", "env", "fail",
+                        "mutants shards do not match: " + "; ".join(problems),
+                        "re-run the mutants job: every shard of one run, at one head, base and max-mutants",
+                        "a merged result from shards of different runs"))
     if "fail" in statuses:
         status = "fail"
     elif "n/a" in statuses:

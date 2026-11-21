@@ -2,7 +2,10 @@
 
 That name is the one mutmut derives from the file path (scripts/mech_review/waiver.py -> scripts.mech_review.waiver),
 which is what lets R3 tie a mutant to the tests that reach it. Hyphenated scripts are loaded under the same scheme."""
+import collections
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 
@@ -27,6 +30,28 @@ def _alias_engine():
         sys.modules.setdefault(f"mech_review.{m.name}", importlib.import_module(f"scripts.mech_review.{m.name}"))
 
 
+Result = collections.namedtuple("Result", "returncode stdout stderr")
+
+
+def run_cli(argv, main=None):
+    """`main(argv)` in this process (default: the engine's cli.main, what scripts/mech-review.py runs), stdout and stderr
+    captured. A SystemExit (argparse's usage error, sys.exit) is read as the exit code, as the shell would see it; any
+    other exception fails the test. In-process is what lets R3's mutmut credit the test (#35): a subprocess hides it."""
+    if main is None:
+        from scripts.mech_review import cli
+        main = cli.main
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            rc = main(list(argv))
+        except SystemExit as e:
+            rc = e.code
+            if rc is not None and not isinstance(rc, int):
+                print(rc, file=sys.stderr)
+                rc = 1
+    return Result(0 if rc is None else rc, out.getvalue(), err.getvalue())
+
+
 def load(name):
     """scripts/<name>.py as the module `scripts.<name>` (finish-gate, failure-match: not importable by name)."""
     _alias_engine()
@@ -34,3 +59,15 @@ def load(name):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def symlink(test, target, path):
+    """os.symlink, or a skip naming the refusal when the OS will not make links (Windows without Developer Mode or
+    admin: winerror 1314; a filesystem without links: EPERM/ENOTSUP). Any other error is the test's own."""
+    import errno
+    try:
+        os.symlink(target, path)
+    except OSError as e:
+        if getattr(e, "winerror", None) == 1314 or e.errno in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
+            test.skipTest(f"the OS refused a symlink: {e}")
+        raise

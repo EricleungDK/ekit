@@ -53,7 +53,8 @@ def summarize(head, checks, entries):
     `<pass|fail> <head> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; partial: R3 (<tested>/<total>)]
     [; skipped: <checks>][; n/a: <checks>])`.
     `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran, a partial one too.
-    n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass."""
+    n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass. A check with status
+    `fail` makes it `fail` even with no fail entry (one lost on the way must not turn the result green)."""
     fails = sum(1 for e in entries if e["severity"] == "fail")
     waived = sum(1 for e in entries if e["severity"] == "waived")
     confirms = len(entries) - fails - waived
@@ -71,7 +72,8 @@ def summarize(head, checks, entries):
         parts += f"; skipped: {' '.join(skipped)}"
     if na:
         parts += f"; n/a: {' '.join(na)}"
-    return f"{'fail' if fails else 'pass'} {head} ({parts})"
+    failed = fails or any(checks[c]["status"] == "fail" for c in CHECKS)  # a failed check never reads pass
+    return f"{'fail' if failed else 'pass'} {head} ({parts})"
 
 
 def envelope(base, head, entries, checks):
