@@ -298,7 +298,7 @@ Top level (required unless marked):
 | `not_after` | optional: a name right after one of these (whitespace ignored) declares, not calls: `function it(` |
 | `skipped_text` | optional: the R2 problem for a newly skipped test, `{name}` is the test |
 
-The first argument names the test: a string literal's value, or the argument's text.
+The first argument names the test: a string literal's value, or the argument's text. The test's body, which R2 reads to pair a renamed test, is the block of its callback: the first later argument that ends in a `{...}` block after a head (`() => {`, `function () {`), or a lone later argument that is a block (`case("name", { ... })`). A table before the call or an options object is never the body; with no such block the test has no body and its rename stays a removed-test `fail`.
 
 Only call-style tests can be described today (`style = "calls"`). Declared tests (JUnit `@Test void x()`, Go `func TestX(t *testing.T)`, C# `[Fact]`, rust `#[test] fn x()`) cannot be described yet. Not supported either: a test whose body is a trailing block after the call (`test("keeps") { ... }` in Kotest or Kotlin, Swift trailing closures). The body must be an argument inside the call's parentheses (`case("name", fn)`). With a trailing block, the test is named without its group, its asserts count as outside test fns, and a skip on a trailing-block group (`xcontext("Calc") { ... }`) gives no entry: that skip is not caught.
 

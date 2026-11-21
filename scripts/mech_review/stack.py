@@ -914,24 +914,51 @@ def _inner(text, start, end):
     return (first, last) if first <= last else None
 
 
-def _brace_inner(text, m, start, end):
-    """The lines of the test call's body block: of the top-level `{...}` blocks in m[start:end] (masked text: strings,
-    template literals and comments blanked, so their braces never count), the one spanning the most lines (the
-    callback, not an options object such as `{ timeout: 5 }`), its lines strictly between `{` and `}` (_inner). A call
-    with no such block (a one-line arrow) has no body: None."""
-    best, open_at, depth = None, None, 0
+def _callback_inner(text, m, start, end):
+    """The lines of the test call's body: the block of its callback, strictly between `{` and `}` (_inner). m is the
+    masked text (strings, template literals, comments and regexes blanked, so their braces never count). Only the
+    arguments of the call's last parentheses are read (an `it.each(table)` before them is not), the name left out. The
+    callback is the first argument that ends in a `{...}` block with a head before it (`() => {`, `function () {`); or,
+    with no such argument, a lone argument that is a block (`test("name", { ... })`). An options object, wherever it
+    sits and however long, is never the body. No callback block (a one-line arrow `() => expect(x)`): None."""
+    depth, open_ = 0, None
     for i in range(start, end):
-        if m[i] == "{":
-            if depth == 0:
-                open_at = i
+        if m[i] in OPEN:
+            if depth == 0 and m[i] == "(":
+                open_ = i
             depth += 1
-        elif m[i] == "}" and depth:
+        elif m[i] in CLOSE:
             depth -= 1
+    if open_ is None:
+        return None
+    args, blocks, depth, arg_start, block = [], [], 0, open_ + 1, None
+    for i in range(open_ + 1, end):  # ends at the call's `)`: depth -1
+        ch = m[i]
+        if depth == 0 and (ch == "," or ch in CLOSE):
+            args.append((arg_start, i, block))
+            arg_start, block = i + 1, None
+            if ch != ",":
+                break
+        elif ch in OPEN:
             if depth == 0:
-                span = _inner(text, open_at, i)
-                if span and (best is None or span[1] - span[0] > best[1] - best[0]):
-                    best = span
-    return best
+                block = (i, None) if ch == "{" else None
+            depth += 1
+        elif ch in CLOSE:
+            depth -= 1
+            if depth == 0 and block and block[1] is None and ch == "}":
+                block = (block[0], i)
+    found = []
+    for a, b, block in args[1:]:
+        if not m[a:b].strip():  # a trailing comma
+            continue
+        ends_in_block = bool(block) and block[1] is not None and not m[block[1] + 1:b].strip()
+        found.append((block, ends_in_block, bool(block) and bool(m[a:block[0]].strip())))
+    with_head = [block for block, ends, head in found if ends and head]
+    if with_head:
+        return _inner(text, *with_head[0])
+    if len(found) == 1 and found[0][1]:
+        return _inner(text, *found[0][0])
+    return None
 
 
 TS_BUILD = re.compile(r"Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package"
@@ -1003,7 +1030,7 @@ class TsAdapter(Adapter):
 
     def test_fns(self, text):
         m, _, _, _, tests, _ = _ts_parse(text)
-        return [TestFn(name, _line(text, t.start), markers, _brace_inner(text, m, t.start, t.end))
+        return [TestFn(name, _line(text, t.start), markers, _callback_inner(text, m, t.start, t.end))
                 for name, t, markers in tests]
 
     def _owners(self, text):

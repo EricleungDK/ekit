@@ -218,6 +218,93 @@ def test_divides():
 """
 
 
+TS_ADAPTER = os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml")
+
+# a table or an options object outside the callback, on more lines than the callback's own block
+TS_TABLE = """it.each([
+  {
+    input: 1,
+    mode: 'a',
+    retries: 3,
+    want: 2,
+  },
+])"""
+TS_TABLE_BASE = TS_TABLE + """('%s', ({input, want}) => {
+  const y = g(f(input))
+  expect(y).toBe(want)
+})
+"""
+TS_TABLE_HEAD = TS_TABLE + """('other %s', ({input, want}) => {
+  expect(1).toBe(1)
+})
+"""
+TS_OPTS = """{
+  timeout: 5000,
+  retry: 2,
+  concurrent: true,
+  skip: false,
+}"""
+TS_OPTS_BASE = "it('a', " + TS_OPTS + """, () => {
+  expect(f(1)).toBe(2)
+})
+"""
+TS_OPTS_HEAD = "it('z', " + TS_OPTS + ", () => { expect(1).toBe(1) })\n"
+TS_OPTS_LAST_BASE = """it('a', () => {
+  expect(f(1)).toBe(2)
+}, """ + TS_OPTS + """)
+"""
+TS_OPTS_LAST_HEAD = "it('z', () => { expect(1).toBe(1) }, " + TS_OPTS + ")\n"
+TS_OPTS_ARROW_BASE = "it('a', " + TS_OPTS + """, () =>
+  expect(f(1)).toBe(2))
+"""
+TS_OPTS_ARROW_HEAD = "it('z', " + TS_OPTS + """, () =>
+  expect(1).toBe(1))
+"""
+TS_FUNCTION_BASE = "it('a', " + TS_OPTS + """, async function () {
+  expect(f(1)).toBe(2)
+})
+"""
+TS_FUNCTION_HEAD = "it('z', " + TS_OPTS + ", async function () { expect(1).toBe(1) })\n"
+
+# the callback's own lines, kept by a rename: the setup of TS_SPLIT_LEGIT_BASE
+TS_SETUP = """  const shop = await makeShop()
+  const order = shop.order(['a', 'b'])
+  const refund = shop.refund(order, -5)
+  expect(refund.amount).toBe(0)
+})
+"""
+TS_EACH_LEGIT = "it.each([[1], [2]])('refund %s is never negative', async (n) => {\n" + TS_SETUP
+TS_OPTS_LEGIT = "it('refund is never negative', { timeout: 5 }, async () => {\n" + TS_SETUP
+TS_FUNCTION_LEGIT = "it('refund is never negative', async function () {\n" + TS_SETUP
+TS_BRACES_LEGIT = """it('refund is never negative', async () => {
+  const shop = await makeShop('}')
+  const order = shop.order(`{${'a'}`, "{")
+  const refund = shop.refund(order, /[{]/)
+  expect(refund.amount).toBe(0)
+})
+"""
+
+MINI_LEGIT_BASE = """suite("Calc", {
+  test("refund never negative", {
+    setUp(1)
+    open("shop")
+    order("a", "b")
+    assertEquals(0, refund(-5))
+  })
+})
+"""
+MINI_LEGIT_HEAD = MINI_LEGIT_BASE.replace("refund never negative", "refund capped").replace(
+    "assertEquals(0, refund(-5))", "assertEquals(3, refund(9))")
+MINI_ARG = """
+    {
+      setUp(1)
+      open("shop")
+      order("a", "b")
+    }"""
+MINI_ARG_BASE = 'suite("Calc", {\n  test("a", {\n    assertEquals(0, refund(-5))\n  },' + MINI_ARG + ")\n})\n"
+MINI_ARG_HEAD = 'suite("Calc", {\n  test("z", {\n    assertTrue(1)\n  },' + MINI_ARG + ")\n})\n"
+
+
 class R2Rename(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -317,6 +404,51 @@ class R2Rename(unittest.TestCase):
                          (0, [("confirm", "test `refund is never negative, whatever the input amount is` renamed to "
                                           "`refund is capped at the order, whatever the input amount is`, "
                                           "assertions changed")]))
+
+    def ts_both(self, before, after, want):
+        """the same entries from the built-in ts stack and from the ts adapter file"""
+        self.assertEqual(self.removal("tests/a.test.ts", before, after, stack="ts"), want)
+        self.assertEqual(self.removal("tests/b.test.ts", before, after, stack="ts", adapter=TS_ADAPTER), want)
+
+    def test_two_ts_tests_sharing_only_an_each_table_are_no_rename(self):
+        self.ts_both(TS_TABLE_BASE, TS_TABLE_HEAD, (1, [("fail", "test fn `%s` removed")]))
+
+    def test_two_ts_tests_sharing_only_an_options_object_are_no_rename(self):
+        self.ts_both(TS_OPTS_BASE, TS_OPTS_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_an_options_object_after_the_callback_is_not_the_body(self):
+        self.ts_both(TS_OPTS_LAST_BASE, TS_OPTS_LAST_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_a_ts_arrow_with_no_block_does_not_borrow_the_options_object(self):
+        self.ts_both(TS_OPTS_ARROW_BASE, TS_OPTS_ARROW_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_an_options_object_before_a_function_callback_is_not_the_body(self):
+        self.ts_both(TS_FUNCTION_BASE, TS_FUNCTION_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def ts_legit(self, before, old="refund is never negative", new="refund is capped at the order"):
+        self.ts_both(before, before.replace(old, new).replace("toBe(0)", "toBe(order.total)"),
+                     (0, [("confirm", f"test `{old}` renamed to `{new}`, assertions changed")]))
+
+    def test_a_ts_each_rename_with_a_one_line_table_is_one_confirm_entry(self):
+        self.ts_legit(TS_EACH_LEGIT, "refund %s is never negative", "refund %s is capped at the order")
+
+    def test_a_ts_rename_with_a_one_line_options_object_before_the_callback_is_one_confirm_entry(self):
+        self.ts_legit(TS_OPTS_LEGIT)
+
+    def test_a_ts_rename_of_a_function_callback_is_one_confirm_entry(self):
+        self.ts_legit(TS_FUNCTION_LEGIT)
+
+    def test_braces_in_strings_templates_and_regexes_do_not_end_the_ts_body(self):
+        self.ts_legit(TS_BRACES_LEGIT)
+
+    def test_a_rename_in_an_adapter_file_stack_with_its_setup_kept_is_one_confirm_entry(self):
+        self.assertEqual(self.removal("tests/calc.mini", MINI_LEGIT_BASE, MINI_LEGIT_HEAD, stack="mini", adapter=MINI),
+                         (0, [("confirm", "test `Calc / refund never negative` renamed to `Calc / refund capped`, "
+                                          "assertions changed")]))
+
+    def test_a_block_argument_beside_the_body_of_an_adapter_file_stack_is_not_the_body(self):
+        self.assertEqual(self.removal("tests/calc.mini", MINI_ARG_BASE, MINI_ARG_HEAD, stack="mini", adapter=MINI),
+                         (1, [("fail", "test fn `Calc / a` removed")]))
 
     def test_an_unrelated_test_in_place_of_a_removed_one_stays_a_fail(self):
         rc, got = self.entries(UNRELATED)
