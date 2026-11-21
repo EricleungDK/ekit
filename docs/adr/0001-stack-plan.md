@@ -1,0 +1,5 @@
+# A committed stack plan, judged mechanically
+
+A repo's stacks (planned, current and retiring) are listed in one committed file, `.ekit/stack-plan.toml`, and not left to detection alone. Detecting stacks from manifests can't see a stack that has no code yet, can't tell a migration from an addition, and relies on the model noticing when a new project appears. With a committed plan, a git-only drift check can say exactly what is unchecked, whatever the model's quality. We chose this over re-deriving the stacks on each ci-doctor run (quality then depends on the model) and over describing them in prose (nothing checks prose). See #47.
+
+Edits to the plan and to adapter files are judged by R0 and the drift check, and a PR's own checks read both from the base branch, so a PR can't change the rules it is judged by. A person is asked only when an edit loosens a limit (max-mutants, thresholds, the mutation budget, the plan's ignore list) or changes a target OS, the two cases no mechanical check can judge. We rejected "every edit needs a person": the cases it would catch are already caught mechanically, and it would make routine stack changes wait on review.
