@@ -484,6 +484,48 @@ class TestRun(unittest.TestCase):
         with open(note) as f:
             self.assertIn("?? stray.txt\n", f.read())
 
+    def add_exits(self, rc):
+        """git add, faked at the subprocess boundary, exits rc; every other git call is real"""
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if argv[3:5] == ["add", "-A"]:
+                return subprocess.CompletedProcess(argv, rc, b"", b"error: unable to index file 'x'\n")
+            return real(argv, **kw)
+        return mock.patch.object(scenarios.subprocess, "run", run)
+
+    def test_a_git_add_that_skipped_a_file_still_hashes_and_passes(self):
+        with self.add_exits(1):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+
+    def test_a_git_add_that_dies_with_exit_2_or_128_cannot_hash(self):
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenario")
+        for rc in (2, 128):
+            err = io.StringIO()
+            with self.subTest(rc), self.add_exits(rc), contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+                scenarios.main(["--repo", self.repo, "run"])
+            self.assertEqual((e.exception.code, err.getvalue()),
+                             (3, "cannot hash the working tree: error: unable to index file 'x'\n"))
+
+    def test_a_failed_transcript_holds_stdout_stderr_and_the_exit_code(self):
+        _, _, doc = self.main("echo out; echo err >&2; exit 1\n")
+        r = doc["scenarios"][0]
+        for path in (r["transcript"], r["failed_transcript"]):
+            with open(path, "rb") as f:
+                self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: 1 ---\n"))
+
+    def test_a_timed_out_transcript_says_timeout(self):
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            code, _, doc = self.main("echo out; echo err >&2; sleep 30\n")
+        r = doc["scenarios"][0]
+        self.assertEqual((code, r["reason"]), (1, "timeout after 1s"))
+        with open(r["failed_transcript"], "rb") as f:
+            self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: timeout ---\n"))
+
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")
         kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
