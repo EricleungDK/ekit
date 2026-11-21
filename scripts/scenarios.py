@@ -1,5 +1,7 @@
 """Scenario runner: `scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF`.
 
+can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes but one could not run here (n/a).
+
 Runs .ekit/scenarios/<slug>/run.sh in fresh temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
 Repo-local so the Stop hook (plugin env) and sandboxed Bash (read-only HOME) agree on one location.
 """
@@ -263,15 +265,18 @@ def cmd_can_fail(repo, ref=None):
             return 2
         shutil.rmtree(root(wt), ignore_errors=True)
         shutil.copytree(root(repo), root(wt))
-        flagged = 0
+        flagged = na = 0
         for sid in ids:
             res = run_one(wt, sid, ids, tmp)
-            if res.get("reason"):
+            if str(res.get("reason", "")).endswith("(env)"):  # it never ran: no proof either way
+                print(f"N/A {sid}: {res['reason']}")
+                na += 1
+            elif res.get("reason"):
                 print(f"CAN-FAIL ✓ {sid}")
             else:
                 print(f"CANNOT FAIL {sid}: passes on baseline {ref}")
                 flagged += 1
-        return flagged > 0
+        return 1 if flagged else 4 if na else 0
     finally:
         subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -315,6 +320,8 @@ def usage():
 
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # ✓ and → on a Windows pipe, which reads as cp1252
     a = list(sys.argv[1:] if argv is None else argv)
     repo = "."
     if "--repo" in a:

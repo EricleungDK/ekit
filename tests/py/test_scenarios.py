@@ -560,6 +560,28 @@ class TestRun(unittest.TestCase):
         self.main("exit 0\n")
         self.assertEqual(self.check(), (0, ""))
 
+    def can_fail(self, script, stdout=None):
+        """`can-fail HEAD` in-process: (exit code, what it printed). stdout: the stream it writes to."""
+        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")
+        out = stdout or io.StringIO()
+        with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "can-fail", "HEAD"])
+        return int(e.exception.code or 0), out
+
+    def test_can_fail_on_a_host_without_bash_is_n_a_not_a_pass(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out = self.can_fail("exit 0\n")
+        self.assertEqual((code, out.getvalue()), (4, "N/A one: bash is not on this machine (env)\n"))
+
+    def test_can_fail_writes_its_mark_to_a_windows_pipe(self):
+        """a pipe on Windows reads as cp1252 (as under Claude Code): ✓ must not raise"""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+        code, out = self.can_fail("exit 1\n", stream)
+        out.flush()
+        self.assertEqual((code, out.buffer.getvalue().decode("utf-8")), (0, "CAN-FAIL ✓ one\n"))
+
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")
         kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
