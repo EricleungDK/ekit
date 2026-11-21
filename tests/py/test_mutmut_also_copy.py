@@ -288,6 +288,8 @@ class ConfigMutmutReads(unittest.TestCase):
                          "pkg/src/calc/core.py", project_dir="pkg")
         self.assertEqual(tables, ['[tool.mutmut]\nsource_paths = ["src"]\nonly_mutate = ["src/calc/core.py"]\n'
                                   'also_copy = ["config"]\n'])
+        reads_back(self, self.pyprojects[0], {"source_paths": ["src"], "only_mutate": ["src/calc/core.py"],
+                                              "also_copy": ["config"]})
 
     def test_the_rest_of_the_repos_pyproject_is_kept_beside_the_table(self):
         self.r3({"pyproject.toml": "[project]\nname = 'calc'\n\n[tool.pytest.ini_options]\npythonpath = ['src']\n",
