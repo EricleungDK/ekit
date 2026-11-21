@@ -41,7 +41,9 @@ def hook_command(script, *args):
     dir comes from the CLAUDE_PLUGIN_ROOT env var Claude Code exports, read by each shell: Claude Code would paste
     the path unescaped in place of a `${...}` placeholder, and a ' or $ in it would break the command."""
     tail = "".join(" " + a for a in args)
-    sh = SH.format(check=CHECK, script="$CLAUDE_PLUGIN_ROOT/scripts/" + script, args=tail, msg=MESSAGE)
+    # Git Bash gets the root as /c/...: MSYS converts no argument holding a ' for a native Python, so cygpath does
+    root = '$(cygpath -m "$CLAUDE_PLUGIN_ROOT" 2>/dev/null || printf %s "$CLAUDE_PLUGIN_ROOT")'
+    sh = SH.format(check=CHECK, script=root + "/scripts/" + script, args=tail, msg=MESSAGE)
     ps = PS.format(check=CHECK, script="$env:CLAUDE_PLUGIN_ROOT/scripts/" + script, args=tail, msg=MESSAGE)
     return f"set \\' ; {sh} # \\' ; {ps}"
 

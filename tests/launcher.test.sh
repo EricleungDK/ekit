@@ -17,7 +17,12 @@ fake() {  # fake <name> old|new: old fails the version check, new runs the real 
   else printf '#!/bin/sh\n[ "$1" = -3 ] && shift\nexec "%s" "$@"\n' "$PY" > "$B/$1"; fi
   chmod +x "$B/$1"
 }
-hook() { printf '{"a": 1}' | PATH="$B" CLAUDE_PLUGIN_ROOT="$KIT" "$SH" -c "$CMD" 2>"$T/err"; }
+# the root as Claude Code gives it to sh: Git Bash gets /c/... (MSYS does not convert an argument holding a ' for a
+# native Python), with Git's usr/bin on PATH, where cygpath is
+CYG="$(command -v cygpath)"
+ROOTV="$KIT"; HP="$B"
+[[ -n $CYG ]] && { ROOTV="$(cygpath -u "$KIT")"; HP="$B:$(dirname "$CYG")"; }
+hook() { printf '{"a": 1}' | PATH="$HP" CLAUDE_PLUGIN_ROOT="$ROOTV" "$SH" -c "$CMD" 2>"$T/err"; }
 SH="$(command -v sh)"
 
 fake python3 old; fake py new; fake python new

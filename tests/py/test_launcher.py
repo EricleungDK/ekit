@@ -112,7 +112,7 @@ class HooksJson(unittest.TestCase):
         cmds = hook_commands()
         self.assertEqual(len(cmds), 6)
         for event, cmd in cmds:
-            m = re.search(r'"\$CLAUDE_PLUGIN_ROOT/scripts/([\w-]+\.py)"((?: --[\w-]+)*)', cmd)
+            m = re.search(r'"\$env:CLAUDE_PLUGIN_ROOT/scripts/([\w-]+\.py)"((?: --[\w-]+)*)', cmd)
             self.assertIsNotNone(m, cmd)
             self.assertEqual(cmd, launcher.hook_command(m.group(1), *m.group(2).split()), event)
 
@@ -134,7 +134,10 @@ class HookCommand(unittest.TestCase):
         sh, ps = self.parts()
         cmd = launcher.hook_command("probe.py", "--hook")
         self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", cmd)
-        self.assertIn('-I "$CLAUDE_PLUGIN_ROOT/scripts/probe.py" --hook', sh)
+        # Git Bash: the root is /c/..., which MSYS leaves as it is for a native Python when it holds a ': cygpath
+        # turns it into C:/... first; where there is no cygpath (macOS, Linux) the root is used as it is
+        self.assertIn('-I "$(cygpath -m "$CLAUDE_PLUGIN_ROOT" 2>/dev/null || printf %s "$CLAUDE_PLUGIN_ROOT")'
+                      '/scripts/probe.py" --hook', sh)
         self.assertIn('-I "$env:CLAUDE_PLUGIN_ROOT/scripts/probe.py" --hook', ps)
 
     def test_each_part_tries_python3_then_py_3_then_python_and_checks_3_9(self):
