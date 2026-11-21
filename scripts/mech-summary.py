@@ -4,12 +4,13 @@
 usage: python3 -I scripts/mech-summary.py <run-id | PR number | #N | PR URL> [--repo OWNER/NAME]
        python3 -I scripts/mech-summary.py --dir DIR   (artifacts already downloaded: one subdir per artifact)
 
-A PR resolves to the run of its newest `mech-review report` check (`gh pr checks`). The run's artifacts are downloaded
-(`gh run download`) to a temp dir, merged as the report job merges them (the R3 shards with the baseline, then the jobs),
-and printed: the summary line, each check's status and note, each shard's note, the fail entries grouped by file.
-The merged R3 artifact (mech-review-mutants-merged-json) is used when the run has one. Waivers are not applied: the
-sticky comment applies /mech-waive. A missing artifact reads as that job's CI entry, as in the comment.
-exit: 0 no fail entry; 1 a fail entry; 2 usage, gh error, or no mech-review artifact in the run.
+A PR resolves to the run of its newest `mech-review report` check (`gh pr checks`). A run still in progress is a note,
+not a result. Otherwise the run's artifacts are downloaded (`gh run download`) to a temp dir, merged as the report job
+merges them (the R3 shards with the baseline, then the jobs), and printed: the summary line, each check's status and
+note, each shard's note, the fail entries grouped by file. The merged R3 artifact (mech-review-mutants-merged-json) is
+used when the run has one. The job list (`gh run view`) tells a baseline that never ran (plan: no production change)
+from one that crashed (R3 fails, as in the report). Waivers are not applied: the sticky comment applies /mech-waive.
+exit: 0 no fail entry; 1 a fail entry; 2 usage, gh error, run in progress, unreadable result, or no artifact.
 """
 import argparse
 import json
@@ -22,13 +23,15 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
-from mech_review import merge  # noqa: E402
+from mech_review import merge  # noqa: E402 - imported after the sys.path line above
 
 REPORT = "mech-review report"
+BASELINE_JOB = "mech-review baseline (R3, once)"
 JOBS = {"r2": ("mech-review-json", "mech-review.json"), "red": ("mech-review-red-json", "mech-review-red.json")}
 BASELINE = ("mech-review-baseline-json", "mech-review-baseline.json")
-MERGED = ("mech-review-mutants-merged-json", "mutants-merged.json")
+MERGED = ("mech-review-mutants-merged-json", "mutants-merged.json")  # the owner's upload step (docs/mech-review-ci.md)
 NO_BASELINE = "no baseline artifact: R3 not planned, or the baseline job crashed (see the run's jobs)"
+NO_BASELINE_JSON = "no JSON from the baseline job (see its log)"  # the report job's --baseline-reason
 
 
 class Stop(Exception):
@@ -48,8 +51,8 @@ def _repo(repo):
 
 
 def _pr(target):
-    """The PR number a target names (N below a million, #N, a /pull/N URL), or None for a run id."""
-    m = re.fullmatch(r"#(\d+)|https?://\S+/pull/(\d+)/?|(\d{1,6})", target)
+    """The PR number a target names (N below a million, #N, a /pull/N URL with any page after it), or None (a run id)."""
+    m = re.fullmatch(r"#(\d+)|https?://\S+/pull/(\d+)(?:[/#?]\S*)?|(\d{1,6})", target)
     return m.group(m.lastindex) if m else None  # one alternative matched: its group is the number
 
 
@@ -68,15 +71,32 @@ def _load(d, art):
     return merge.load_envelope(os.path.join(d, *art))  # None when missing or unreadable
 
 
-def mutants_env(d):
-    """(R3 envelope or None, shard lines, R3 line override or None), as the report job's merge step builds it."""
+def _baseline(d):
+    """(baseline envelope, None) or (None, why it is unusable: None when there is no artifact)."""
+    path = os.path.join(d, *BASELINE)
+    if not os.path.exists(path):
+        return None, None
+    b = merge.load_envelope(path)
+    ok = (b is not None and all(k in b for k in ("run", "count", "base")) and isinstance(b.get("checks"), dict)
+          and "R3" in b["checks"])
+    return (b, None) if ok else (None, "no usable result file")
+
+
+def mutants_env(d, jobs, ends):
+    """(R3 envelope or None, shard lines, R3 line override or None), as the report job's merge step builds it.
+    jobs: {job name suffix: conclusion} from `gh run view`, or None (--dir: unknown). ends: (base, head) of the run."""
+    b, bad = _baseline(d)
     merged = _load(d, MERGED)
-    if merged is not None:
-        return merged, [], None
-    b = _load(d, BASELINE)
-    if b is None:
-        return None, [], f"R3 skipped: {NO_BASELINE}"
-    n = b["count"] if b.get("run") else 0
+    if b is None and merged is None:
+        if bad is None:
+            concl = None if jobs is None else jobs.get(BASELINE_JOB, "skipped")
+            if concl is None:
+                return None, [], f"R3 skipped: {NO_BASELINE}"
+            if concl == "skipped":
+                return None, [], "R3 skipped: not run: the plan found no production file changed"
+            bad = NO_BASELINE_JSON
+        return merge.combine_mutants(*ends, 0, {}, {}, baseline=None, baseline_reason=bad), [], None
+    n = b["count"] if b is not None and b["run"] else 0
     shards, reasons, lines = {}, {}, []
     for k in range(n):
         name = f"mech-review-mutants-{k}"
@@ -88,6 +108,8 @@ def mutants_env(d):
             reasons[k] = "no usable result file"
         elif env["head"] != b["head"]:
             reasons[k] = f"result is for an older head, not {b['head']}"
+        elif not isinstance(env["checks"], dict) or "R3" not in env["checks"]:
+            reasons[k] = "result has no R3 check"
         else:
             shards[k] = env
             c = env["checks"]["R3"]
@@ -95,6 +117,8 @@ def mutants_env(d):
             lines.append(f"  shard {k}/{n}: {c['status']}: {c['note']}" + (f" (wall {wall} s)" if wall is not None else ""))
             continue
         lines.append(f"  shard {k}/{n}: no result ({reasons[k]})")
+    if merged is not None:
+        return merged, lines, None
     return merge.combine_mutants(b["base"], b["head"], n, shards, reasons, baseline=b), lines, None
 
 
@@ -105,21 +129,28 @@ def _check_line(name, c):
     return f"{name} {c['status']}: {c['note']}"
 
 
-def summarize(d, label):
+def summarize(d, label, jobs=None):
     parts, reasons = {}, {}
     for job, art in JOBS.items():
         parts[job] = _load(d, art)
         if parts[job] is None:
             reasons[job] = f"no artifact {art[0]}"
-    mut, shard_lines, r3_line = mutants_env(d)
-    if mut is not None:
-        parts["mutants"] = mut
-    if all(v is None for v in parts.values()):
-        raise Stop(f"no mech-review artifact in {label}")
-    env = merge.merge(parts, reasons)
+    present = [e for e in parts.values() if e is not None]
+    ends = (present[0]["base"], present[0]["head"]) if present else ("", "")
+    try:
+        mut, shard_lines, r3_line = mutants_env(d, jobs, ends)
+        if mut is not None:
+            parts["mutants"] = mut
+        if all(v is None for v in parts.values()):
+            raise Stop(f"no mech-review artifact in {label}")
+        env = merge.merge(parts, reasons)
+        checks = [r3_line if name == "R3" and r3_line else _check_line(name, env["checks"][name])
+                  for name in ("R1", "R2", "R3", "R4")]
+    except (KeyError, TypeError, ValueError) as e:
+        raise Stop(f"unreadable result in {label} ({type(e).__name__}: {e})")
     print(f"{label}: {env['summary']}")
-    for name in ("R1", "R2", "R3", "R4"):
-        print(r3_line if name == "R3" and r3_line else _check_line(name, env["checks"][name]))
+    for line in checks:
+        print(line)
     if shard_lines:
         print("shards:")
         for line in shard_lines:
@@ -141,6 +172,19 @@ def summarize(d, label):
     return 1 if fails else 0
 
 
+def run_jobs(run, rid, repo):
+    """{job name suffix: conclusion} of a finished run, or Stop with the in-progress note on stdout."""
+    rc, out, err = run(["gh", "run", "view", rid, "--json", "status,jobs", *_repo(repo)])
+    if rc != 0:
+        raise Stop(f"gh run view {rid}: {err.strip()}")
+    view = json.loads(out)
+    if view["status"] != "completed":
+        done = sum(1 for j in view["jobs"] if j["status"] == "completed")
+        print(f"run {rid}: in progress ({done} of {len(view['jobs'])} jobs done): rerun when it completes")
+        raise Stop(None)
+    return {j["name"].rsplit(" / ", 1)[-1]: j["conclusion"] for j in view["jobs"]}
+
+
 def main(argv, run=run_cmd):
     p = argparse.ArgumentParser(prog="mech-summary.py", description="a mech-review run in a few lines (#38)")
     p.add_argument("target", nargs="?", help="run id, PR number, #N or PR URL")
@@ -154,16 +198,18 @@ def main(argv, run=run_cmd):
             return summarize(a.dir, a.dir)
         pr = _pr(a.target)
         rid = run_of_pr(run, pr, a.repo) if pr else a.target
+        jobs = run_jobs(run, rid, a.repo)
         tmp = tempfile.mkdtemp(prefix="ekit-summary-")
         try:
             rc, _, err = run(["gh", "run", "download", rid, "-D", tmp, *_repo(a.repo)])
             if rc != 0:
                 raise Stop(f"gh run download {rid}: {err.strip()}")
-            return summarize(tmp, f"run {rid}")
+            return summarize(tmp, f"run {rid}", jobs)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     except Stop as e:
-        print(f"mech-summary: {e}", file=sys.stderr)
+        if e.args[0]:
+            print(f"mech-summary: {e}", file=sys.stderr)
         return 2
 
 

@@ -60,6 +60,10 @@ class Run(unittest.TestCase):
                        {"name": "mech-review / mech-review guard (R2)", "state": "SUCCESS",
                         "link": "https://github.com/o/r/actions/runs/555/job/8"}]
         self.download_rc = 0
+        self.run_status = "completed"
+        self.jobs = [{"name": "mech-review / mech-review baseline (R3, once)", "status": "completed",
+                      "conclusion": "success"},
+                     {"name": "mech-review / mech-review report", "status": "completed", "conclusion": "failure"}]
 
     def put(self, name, file, data):
         d = os.path.join(self.art, name)
@@ -83,6 +87,8 @@ class Run(unittest.TestCase):
         self.calls.append(list(argv))
         if argv[:3] == ["gh", "pr", "checks"]:
             return 0, json.dumps(self.checks), ""
+        if argv[:3] == ["gh", "run", "view"]:
+            return 0, json.dumps({"status": self.run_status, "jobs": self.jobs}), ""
         if argv[:3] == ["gh", "run", "download"]:
             if self.download_rc:
                 return self.download_rc, "", "no artifacts found\n"
@@ -131,13 +137,57 @@ class Output(Run):
     def test_a_run_id_is_downloaded_with_no_pr_lookup(self):
         self.red_run()
         r = self.main("44583031414")
-        self.assertEqual([c[:4] for c in self.calls], [["gh", "run", "download", "44583031414"]])
+        self.assertEqual([c[:4] for c in self.calls], [["gh", "run", "view", "44583031414"],
+                                                       ["gh", "run", "download", "44583031414"]])
+        self.assertEqual(self.calls[0][4:6], ["--json", "status,jobs"])
         self.assertTrue(r.stdout.startswith("run 44583031414: fail "), r.stdout)
 
     def test_targets_that_name_a_pr(self):
         self.assertEqual([ms._pr(t) for t in ("47", "#47", "https://github.com/o/r/pull/47", "http://h/x/pull/9/",
-                                              "999999", "1000000", "44583031414", "pr47", "#")],
-                         ["47", "47", "47", "9", "999999", None, None, None, None])
+                                              "https://github.com/o/r/pull/38/checks", "https://github.com/o/r/pull/38/files#x",
+                                              "999999", "1000000", "44583031414", "pr47", "#", "https://h/pull/38x")],
+                         ["47", "47", "47", "9", "38", "38", "999999", None, None, None, None, None])
+
+    def test_a_run_in_progress_is_a_note_not_missing_artifacts(self):
+        self.red_run()
+        self.run_status = "in_progress"
+        self.jobs[1]["status"], self.jobs[1]["conclusion"] = "queued", ""
+        r = self.main("44583031414")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stdout, "run 44583031414: in progress (1 of 2 jobs done): rerun when it completes\n")
+        self.assertFalse(any(c[:3] == ["gh", "run", "download"] for c in self.calls))
+
+    def test_a_failed_run_view_is_exit_2(self):
+        def run(argv, env=None, cwd=None):
+            return (1, "", "run not found\n") if argv[:3] == ["gh", "run", "view"] else self.fake(argv)
+
+        r = _kit.run_cli(["44583031414"], main=lambda a: ms.main(a, run=run))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("mech-summary: gh run view 44583031414: run not found", r.stderr)
+
+    def test_a_crashed_baseline_job_fails_r3_as_the_report_does(self):
+        self.red_run()
+        for d in ("mech-review-baseline-json", "mech-review-mutants-0", "mech-review-mutants-1"):
+            shutil.rmtree(os.path.join(self.art, d))
+        self.jobs[0]["conclusion"] = "failure"
+        r = self.main("44583031414")
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout.splitlines()
+        self.assertIn("R3 fail: no result from baseline job: no JSON from the baseline job (see its log)", out)
+
+    def test_a_skipped_baseline_job_is_r3_not_planned(self):
+        self.red_run()
+        for d in ("mech-review-baseline-json", "mech-review-mutants-0", "mech-review-mutants-1"):
+            shutil.rmtree(os.path.join(self.art, d))
+        self.jobs[0]["conclusion"] = "skipped"
+        out = self.main("44583031414").stdout.splitlines()
+        self.assertIn("R3 skipped: not run: the plan found no production file changed", out)
+
+    def test_the_merged_artifact_name_is_the_one_the_owner_yaml_uploads(self):
+        self.assertEqual(ms.MERGED, ("mech-review-mutants-merged-json", "mutants-merged.json"))
+        with open(os.path.join(_kit.ROOT, "docs", "mech-review-ci.md"), encoding="utf-8") as f:
+            doc = f.read()
+        self.assertIn(f"name: {ms.MERGED[0]}\n          path: {ms.MERGED[1]}\n", doc)
 
     def test_no_repo_flag_means_no_R(self):
         self.red_run()
@@ -280,6 +330,30 @@ class Jobs(Run):
         out = r.stdout.splitlines()
         self.assertIn("R3 pass (5/5 tested)", out)
         self.assertFalse(any("R3-" in x for x in out), out)
+        self.assertIn("  shard 0/2: fail: 10/10 tested: 2 missed in the diff (wall 61.5 s)", out)
+
+    def test_a_baseline_with_missing_keys_fails_r3_as_unusable(self):
+        self.red_run()
+        self.put("mech-review-baseline-json", "mech-review-baseline.json", {"head": HEAD, "summary": "x"})
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("R3 fail: no result from baseline job: no usable result file", r.stdout.splitlines())
+
+    def test_a_shard_with_no_r3_check_is_no_result(self):
+        self.red_run()
+        s = shard(1, "x")
+        del s["checks"]["R3"]
+        self.put("mech-review-mutants-1", "mech-review-mutants.json", s)
+        r = self.main("--dir", self.art)
+        self.assertIn("  shard 1/2: no result (result has no R3 check)", r.stdout.splitlines())
+
+    def test_a_job_envelope_with_bad_checks_is_exit_2_not_a_fail(self):
+        self.red_run()
+        self.put("mech-review-red-json", "mech-review-red.json",
+                 {"head": HEAD, "base": BASE, "summary": "s", "entries": [], "checks": {}})
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("mech-summary: unreadable result in ", r.stderr)
 
     def test_a_green_run_lists_no_fails_and_no_waiver_line(self):
         self.put("mech-review-json", "mech-review.json", env("r2", {"R2": ("pass", "0 fail")}))
