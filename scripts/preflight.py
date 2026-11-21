@@ -59,19 +59,20 @@ def have(tool):
 
 def bounded(argv, secs=5):
     """(exit code, stderr) of argv stopped after `secs` with its whole tree; (None, why) when it cannot start."""
-    try:
-        p = shells.spawn(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
-    except OSError as e:
-        return None, str(e)
-    try:
-        _, err = p.communicate(timeout=secs)
-        return p.returncode, err.decode(errors="replace")
-    except subprocess.TimeoutExpired:
-        shells.kill_tree(p)
-        shells.reap(p)
-        return 124, f"no answer in {secs}s"
-    finally:
-        shells.finish(p)
+    with tempfile.TemporaryFile() as err:  # a file, not a pipe: a child the stop misses holds nothing open
+        try:
+            p = shells.spawn(argv, stdout=subprocess.DEVNULL, stderr=err, stdin=subprocess.DEVNULL)
+        except OSError as e:
+            return None, str(e)
+        try:
+            p.wait(timeout=secs)
+            err.seek(0)
+            return p.returncode, err.read().decode(errors="replace")
+        except subprocess.TimeoutExpired:
+            shells.kill_tree(p)
+            return 124, f"no answer in {secs}s"
+        finally:
+            shells.finish(p)
 
 
 def read(path):

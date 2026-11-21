@@ -156,17 +156,26 @@ def run_one(repo, sid, ids, tdir, kept=None):
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()
-        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=shells.env_for(bash, "bash", env), stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE)
+        # output to files, not pipes: a child the stop misses can hold no pipe open, and what the scenario printed
+        # before a timeout stays for the transcript
+        fo, fe = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=shells.env_for(bash, "bash", env), stdout=fo,
+                         stderr=fe)
         try:
-            out, err = p.communicate(timeout=limit)
+            p.wait(timeout=limit)
             res["exit"] = p.returncode
         except subprocess.TimeoutExpired:
             shells.kill_tree(p)  # the process group on POSIX, the tree on Windows
-            out, err = shells.reap(p)
+            try:
+                p.wait(timeout=shells.REAP)
+            except subprocess.TimeoutExpired:
+                pass  # escaped the stop: its output so far is in the files all the same
             res.update(exit=None, reason=f"timeout after {limit:g}s")
         finally:
             shells.finish(p)  # Windows: what the scenario left running stops with its job
+            out, err = (f.seek(0) or f.read() for f in (fo, fe))
+            fo.close()
+            fe.close()
             res["duration"] = round(time.time() - t0, 3)
             shutil.rmtree(cwd, ignore_errors=True)
             files = sorted(os.path.join(dp, n) for dp, _, ns in os.walk(art) for n in ns)

@@ -537,6 +537,29 @@ class TestRun(unittest.TestCase):
         time.sleep(5)
         self.assertFalse(os.path.exists(mark))
 
+    def test_what_a_timed_out_scenario_printed_stays_even_when_a_child_escapes_the_stop(self):
+        """a child the stop does not reach keeps the scenario's output open: the transcript still holds what the
+        scenario printed, and the run does not wait for that child"""
+        escaped = []
+
+        def stop_nothing(p):
+            escaped.append(p)  # as if the tree kill missed it
+
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}), \
+                mock.patch.object(scenarios.shells, "kill_tree", side_effect=stop_nothing):
+            t0 = time.time()
+            code, _, doc = self.main("echo early; echo err >&2; sleep 30\n")
+        took = time.time() - t0
+        for p in escaped:
+            p.kill()
+        r = doc["scenarios"][0]
+        self.assertEqual((code, r["reason"]), (1, "timeout after 1s"))
+        self.assertLess(took, 25)
+        with open(r["failed_transcript"], "rb") as f:
+            text = f.read()
+        self.assertIn(b"--- stdout ---\nearly\n", text)
+        self.assertIn(b"--- stderr ---\nerr\n", text)
+
     def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n")

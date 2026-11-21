@@ -210,7 +210,7 @@ CREATE_SUSPENDED = 0x4
 KILL_ON_JOB_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: closing the job's last handle stops what is in it
 
 
-def _job_for(pid):
+def _job_for(proc):
     """A job object holding process `pid` (created suspended, so nothing it starts escapes), resumed: what it starts
     joins the job, so terminating the job stops the whole tree, even a child whose parent is gone (Git Bash's
     launcher and `exec` leave such). The handle is returned; None when the OS refused, the process resumed all the
@@ -227,7 +227,7 @@ def _job_for(pid):
                     ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
                     ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
-    h = K32.OpenProcess(0x0800 | 0x0100 | 0x0001, False, pid)  # SUSPEND_RESUME | SET_QUOTA | TERMINATE
+    h = int(proc._handle)  # Popen's own handle (all access): no second open that could fail and leave it suspended
     job = K32.CreateJobObjectW(None, None)
     try:
         if job:
@@ -239,9 +239,7 @@ def _job_for(pid):
                 K32.CloseHandle(wintypes.HANDLE(job))
             job = None
     finally:
-        if h:
-            NTDLL.NtResumeProcess(wintypes.HANDLE(h))
-            K32.CloseHandle(wintypes.HANDLE(h))
+        NTDLL.NtResumeProcess(wintypes.HANDLE(h))  # always: the process waits for this
     return job
 
 
@@ -251,7 +249,7 @@ def spawn(argv, **kw):
     if WIN:
         kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
         proc = subprocess.Popen(argv, **kw)
-        proc.ekit_job = _job_for(proc.pid)
+        proc.ekit_job = _job_for(proc)
         return proc
     return subprocess.Popen(argv, start_new_session=True, **kw)
 
@@ -264,17 +262,7 @@ def finish(proc):
         K32.CloseHandle(wintypes.HANDLE(job))
 
 
-REAP = 10  # seconds to wait for the output of a stopped tree: a child that escaped it may hold the pipes
-
-
-def reap(proc, secs=REAP):
-    """(stdout, stderr) of a stopped `proc`, waited for at most `secs`: past that what was not read is given up
-    (on Windows the readers are daemon threads; closing a pipe one of them holds would wait for it), so a child that
-    escaped the stop cannot hold the caller."""
-    try:
-        return proc.communicate(timeout=secs)
-    except subprocess.TimeoutExpired:
-        return b"", b""
+REAP = 10  # seconds to wait for a stopped tree to go: a child that escaped the stop is left behind
 
 
 def kill_tree(proc):

@@ -168,18 +168,11 @@ class KillTree(unittest.TestCase):
         time.sleep(4)
         self.assertFalse(os.path.exists(mark))
 
-    def test_reap_waits_a_bounded_time_for_pipes_something_still_holds(self):
-        p = subprocess.Popen([sys.executable, "-c", "import time; print('x', flush=True); time.sleep(30)"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.addCleanup(p.kill)
-        t0 = time.time()
-        self.assertEqual(shells.reap(p, 1), (b"", b""))
-        self.assertLess(time.time() - t0, 10)
-
-    def test_reap_of_a_stopped_tree_gives_its_output(self):
+    def test_a_spawned_process_runs_gives_its_output_and_is_let_go_of(self):
+        """started suspended on Windows, joined to its job, resumed: it runs as any child does"""
         p = shells.spawn([sys.executable, "-c", "print('out')"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = shells.reap(p)
-        self.assertEqual((out.strip(), err), (b"out", b""))
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out.strip(), err), (0, b"out", b""))
         shells.finish(p)
         shells.finish(p)  # twice: nothing left to let go of
 
