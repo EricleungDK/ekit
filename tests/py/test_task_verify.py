@@ -387,11 +387,6 @@ class ReadOnlyGitDir(VerifyCase):
         self.assertEqual(self.check()[0], 4)
 
 
-def powershell():
-    import shutil
-    return shutil.which("pwsh") or (shutil.which("powershell") if WIN else None)
-
-
 class Shells(VerifyCase):
     """A verify command is re-run in the shell it was declared in, whichever shell runs `run` later."""
 
@@ -414,31 +409,37 @@ class Shells(VerifyCase):
         self.assertEqual(self.runs(), {line: (0, "bash")})
         self.assertEqual(self.check(), (0, ""))
 
+    def faked_powershell(self, rc):
+        """PowerShell as this machine would start it: its path found, the process faked (its rc); the argv kept.
+        A real PowerShell runs these lines in tests/windows-smoke.py."""
+        calls, real = [], subprocess.run
+
+        def run(argv, **kw):
+            if argv[0] != "/ps/pwsh":
+                return real(argv, **kw)  # git, for the tree hash
+            calls.append((argv, os.path.normpath(kw.get("cwd"))))  # git names the repo root C:/x on Windows
+            return subprocess.CompletedProcess(argv, rc)
+        return calls, mock.patch.object(tv.shells, "find", return_value="/ps/pwsh"), \
+            mock.patch.object(tv.subprocess, "run", side_effect=run)
+
     def test_a_powershell_line_declared_in_powershell_is_run_by_powershell_from_bash(self):
-        if not powershell():
-            self.skipTest("no PowerShell on this machine")
         line = "if ((Get-Content 'a.txt') -eq 'a') { exit 0 } else { exit 7 }"
-        self.declare(line, "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell")
-        rc, err = self.run_in(line, "bash")
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(self.check(), (0, ""))
+        self.declare(line, "powershell")
+        calls, find, run = self.faked_powershell(7)
+        with find, run:
+            self.assertEqual(self.run_in(line, "bash"), (7, f"task-verify: `{line}` exited 7 in powershell\n"))
+        self.assertEqual(calls, [(tv.shells.command("/ps/pwsh", "powershell", line), self.repo)])
+        self.assertEqual(self.runs(), {line: (7, "powershell")})
 
-    def test_a_native_exit_code_comes_through_powershell(self):
-        if not powershell():
-            self.skipTest("no PowerShell on this machine")
-        name = "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell"
-        self.assertEqual(self.run_in("git -C no-such-dir status", name)[0], 128)  # git's own code, not PowerShell's 1
-        self.assertEqual(self.run_in("exit 4", name)[0], 4)
-
-    def test_a_line_with_and_and_declared_in_powershell_records_one_result(self):
-        if not powershell():
-            self.skipTest("no PowerShell on this machine")
-        name = "pwsh" if os.path.basename(powershell()).startswith("pwsh") else "powershell"
-        line = "git --version && exit 3"  # PowerShell 7 runs it; Windows PowerShell 5.1 cannot parse it
-        self.declare(line, name)
-        rc, _ = self.run_in(line, "bash")
-        self.assertIn(rc, (1, 3))
-        self.assertEqual(self.runs(), {line: (rc, name)})
+    def test_a_line_with_and_and_declared_in_powershell_records_one_result_in_powershell(self):
+        line = "git --version && exit 3"
+        self.declare(line, "pwsh")
+        calls, find, run = self.faked_powershell(3)
+        with find, run:
+            self.assertEqual(self.run_in(line, "bash")[0], 3)
+        self.assertEqual(calls[0][0][:4], ["/ps/pwsh", "-NoProfile", "-NonInteractive", "-Command"])
+        self.assertTrue(calls[0][0][4].startswith(line + "\n"))
+        self.assertEqual(self.runs(), {line: (3, "pwsh")})
 
     def test_an_undeclared_command_is_run_and_kept_with_the_shell_it_was_first_run_in(self):
         self.run_in("true", "bash")

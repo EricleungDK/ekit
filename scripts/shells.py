@@ -7,6 +7,7 @@ from: EKIT_SHELL when set (a name, or a path to the shell), else the nearest she
 else a guess from the environment. `find()` resolves a name to an executable on this machine; on Windows `bash` is
 Git for Windows' bash, never the WSL launcher in System32, which cannot run a Windows path.
 """
+import ctypes
 import os
 import shutil
 import signal
@@ -14,6 +15,13 @@ import subprocess
 import sys
 
 WIN = os.name == "nt"
+if WIN:
+    from ctypes import wintypes
+
+    K32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    NTDLL = ctypes.WinDLL("ntdll")
+    for _f in ("CreateToolhelp32Snapshot", "OpenProcess", "CreateJobObjectW"):
+        getattr(K32, _f).restype = wintypes.HANDLE
 POSIX_SHELLS = ("bash", "sh", "zsh", "dash", "ksh")  # each takes `-c LINE`
 PS_SHELLS = ("pwsh", "powershell")
 KNOWN = POSIX_SHELLS + PS_SHELLS + ("cmd",)
@@ -26,11 +34,21 @@ def _name(path):
     return base[:-4] if base.endswith(".exe") else base
 
 
-def _ancestors_windows():
-    """(exe name, full path or None) of each ancestor, nearest first."""
-    import ctypes
-    from ctypes import wintypes
+def chain(table, pid, steps=12):
+    """[(exe name, pid)] of the ancestors of `pid` in `table` ({pid: (parent pid, exe file name)}), nearest first:
+    the walk stops at a parent the table lacks, at a pid seen before, or after `steps`."""
+    out, seen = [], {pid}
+    while pid in table and len(out) < steps:
+        pid = table[pid][0]
+        if pid not in table or pid in seen:
+            break
+        seen.add(pid)
+        out.append((_name(table[pid][1]), pid))
+    return out
 
+
+def _process_table():
+    """{pid: (parent pid, exe file name)} of every process (Windows: a toolhelp snapshot)."""
     class Entry(ctypes.Structure):
         _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
                     ("th32DefaultHeapID", ctypes.c_void_p), ("th32ModuleID", wintypes.DWORD),
@@ -38,41 +56,37 @@ def _ancestors_windows():
                     ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
                     ("szExeFile", ctypes.c_wchar * 260)]
 
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    snap = K32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
     if not snap or snap == wintypes.HANDLE(-1).value:
-        return []
-    procs = {}
+        return {}
+    table = {}
     try:
         e = Entry()
         e.dwSize = ctypes.sizeof(Entry)
-        ok = k32.Process32FirstW(snap, ctypes.byref(e))
+        ok = K32.Process32FirstW(wintypes.HANDLE(snap), ctypes.byref(e))
         while ok:
-            procs[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
-            ok = k32.Process32NextW(snap, ctypes.byref(e))
+            table[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
+            ok = K32.Process32NextW(wintypes.HANDLE(snap), ctypes.byref(e))
     finally:
-        k32.CloseHandle(snap)
+        K32.CloseHandle(wintypes.HANDLE(snap))
+    return table
 
-    def full(pid):
-        k32.OpenProcess.restype = wintypes.HANDLE
-        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            return None
-        try:
-            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
-            return buf.value if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)) else None
-        finally:
-            k32.CloseHandle(h)
 
-    out, pid, seen = [], os.getpid(), set()
-    while pid in procs and pid not in seen and len(out) < 12:
-        seen.add(pid)
-        pid = procs[pid][0]
-        if pid not in procs:
-            break
-        out.append((_name(procs[pid][1]), full(pid)))
-    return out
+def _image(pid):
+    """The full path of process `pid`'s executable (Windows); None when it cannot be read."""
+    h = K32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        return buf.value if K32.QueryFullProcessImageNameW(wintypes.HANDLE(h), 0, buf, ctypes.byref(size)) else None
+    finally:
+        K32.CloseHandle(wintypes.HANDLE(h))
+
+
+def _ancestors_windows():
+    """(exe name, full path or None) of each ancestor, nearest first."""
+    return [(name, _image(pid)) for name, pid in chain(_process_table(), os.getpid())]
 
 
 def _ancestors_posix():
@@ -105,13 +119,15 @@ def ancestors():
 
 
 def current():
-    """{"name", "exe"} of the shell this process was started from (exe None when not known)."""
+    """{"name", "exe"} of the shell this process was started from (exe None when not known). cmd.exe counts only
+    when no other shell is above it: a .bat or .cmd shim (pyenv-win, npm scripts) starts Python through cmd.exe from
+    the shell the command was given in."""
     forced = os.environ.get("EKIT_SHELL")
     if forced:
         return {"name": _name(forced), "exe": forced if os.path.isabs(forced) else None}
-    for name, exe in ancestors():
-        if name in KNOWN:
-            return {"name": name, "exe": exe}
+    up = [(name, exe) for name, exe in ancestors() if name in KNOWN]
+    for name, exe in [x for x in up if x[0] != "cmd"] + up:
+        return {"name": name, "exe": exe}
     if WIN:
         return {"name": "bash" if os.environ.get("MSYSTEM") else "powershell", "exe": None}
     login = _name(os.environ.get("SHELL"))
@@ -123,20 +139,27 @@ def _not_wsl(path):
     return bool(path) and "\\system32\\" not in low and "\\windowsapps\\" not in low
 
 
-def git_bash():
-    """Git for Windows' bash.exe: CLAUDE_CODE_GIT_BASH_PATH, bash on PATH (not WSL's), or beside git.exe."""
-    for p in (os.environ.get("CLAUDE_CODE_GIT_BASH_PATH"), shutil.which("bash")):
-        if p and os.path.isfile(p) and _not_wsl(p):
-            return p
-    git = shutil.which("git")
+def bash_candidates(env, which):
+    """Where Git for Windows' bash may be, in order: CLAUDE_CODE_GIT_BASH_PATH, bash on PATH, then beside git.exe
+    (<git>\\cmd or <git>\\mingw64\\bin): usr\\bin\\bash.exe, the shell itself, before bin\\bash.exe, a launcher that
+    starts it."""
+    out = [env.get("CLAUDE_CODE_GIT_BASH_PATH"), which("bash")]
+    git = which("git")
     if git:
         d = os.path.dirname(os.path.realpath(git))
-        for up in (os.path.dirname(d), os.path.dirname(os.path.dirname(d))):  # <git>\cmd, <git>\mingw64\bin
-            for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
-                p = os.path.join(up, *rel)
-                if os.path.isfile(p):
-                    return p
-    return None
+        for up in (os.path.dirname(d), os.path.dirname(os.path.dirname(d))):
+            out += [os.path.join(up, "usr", "bin", "bash.exe"), os.path.join(up, "bin", "bash.exe")]
+    return out
+
+
+def pick_bash(candidates, isfile=os.path.isfile):
+    """The first candidate that is a file and not WSL's launcher; None when none is."""
+    return next((p for p in candidates if p and isfile(p) and _not_wsl(p)), None)
+
+
+def git_bash():
+    """Git for Windows' bash.exe on this machine, never WSL's launcher; None when there is none."""
+    return pick_bash(bash_candidates(os.environ, shutil.which))
 
 
 def find(shell):
@@ -183,35 +206,75 @@ def command(exe, name, line):
     return [exe, "-c", line]
 
 
-def _job(pid):
-    """A Windows job object holding process `pid`: what that process starts joins it, so terminating the job stops
-    the whole tree, even a child whose parent is gone (Git Bash's `exec` leaves such orphans). None when refused."""
-    import ctypes
-    from ctypes import wintypes
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.CreateJobObjectW.restype = wintypes.HANDLE
-    k32.OpenProcess.restype = wintypes.HANDLE
-    job = k32.CreateJobObjectW(None, None)
-    h = k32.OpenProcess(0x0101, False, pid)  # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+CREATE_SUSPENDED = 0x4
+KILL_ON_JOB_CLOSE = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: closing the job's last handle stops what is in it
+
+
+def _job_for(pid):
+    """A job object holding process `pid` (created suspended, so nothing it starts escapes), resumed: what it starts
+    joins the job, so terminating the job stops the whole tree, even a child whose parent is gone (Git Bash's
+    launcher and `exec` leave such). The handle is returned; None when the OS refused, the process resumed all the
+    same."""
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("Basic", Basic), ("Io", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    h = K32.OpenProcess(0x0800 | 0x0100 | 0x0001, False, pid)  # SUSPEND_RESUME | SET_QUOTA | TERMINATE
+    job = K32.CreateJobObjectW(None, None)
     try:
-        if job and h and k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(h)):
-            return job
+        if job:
+            info = Extended()
+            info.Basic.LimitFlags = KILL_ON_JOB_CLOSE
+            K32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info))
+        if not (job and h and K32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(h))):
+            if job:
+                K32.CloseHandle(wintypes.HANDLE(job))
+            job = None
     finally:
         if h:
-            k32.CloseHandle(wintypes.HANDLE(h))
-    if job:
-        k32.CloseHandle(wintypes.HANDLE(job))
-    return None
+            NTDLL.NtResumeProcess(wintypes.HANDLE(h))
+            K32.CloseHandle(wintypes.HANDLE(h))
+    return job
 
 
 def spawn(argv, **kw):
-    """subprocess.Popen(argv) as a tree `kill_tree` can stop: its own process group on POSIX, a job on Windows."""
+    """subprocess.Popen(argv) as a tree `kill_tree` can stop: its own process group on POSIX; on Windows a job,
+    joined before the process runs. `finish` lets go of it."""
     if WIN:
-        kw.setdefault("creationflags", subprocess.CREATE_NEW_PROCESS_GROUP)
+        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
         proc = subprocess.Popen(argv, **kw)
-        proc.ekit_job = _job(proc.pid)
+        proc.ekit_job = _job_for(proc.pid)
         return proc
     return subprocess.Popen(argv, start_new_session=True, **kw)
+
+
+def finish(proc):
+    """Let go of `proc`'s job (Windows): what it left running stops with it. Nothing on POSIX."""
+    job = getattr(proc, "ekit_job", None)
+    if job:
+        proc.ekit_job = None
+        K32.CloseHandle(wintypes.HANDLE(job))
+
+
+REAP = 10  # seconds to wait for the output of a stopped tree: a child that escaped it may hold the pipes
+
+
+def reap(proc, secs=REAP):
+    """(stdout, stderr) of a stopped `proc`, waited for at most `secs`: past that what was not read is given up
+    (on Windows the readers are daemon threads; closing a pipe one of them holds would wait for it), so a child that
+    escaped the stop cannot hold the caller."""
+    try:
+        return proc.communicate(timeout=secs)
+    except subprocess.TimeoutExpired:
+        return b"", b""
 
 
 def kill_tree(proc):
@@ -219,12 +282,8 @@ def kill_tree(proc):
     if WIN:
         job = getattr(proc, "ekit_job", None)
         if job:
-            import ctypes
-            from ctypes import wintypes
-            k32 = ctypes.WinDLL("kernel32")
-            k32.TerminateJobObject(wintypes.HANDLE(job), 1)
-            k32.CloseHandle(wintypes.HANDLE(job))
-            proc.ekit_job = None
+            K32.TerminateJobObject(wintypes.HANDLE(job), 1)
+            finish(proc)
         else:
             try:
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)

@@ -18,6 +18,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
+import shells  # noqa: E402 - imported after the sys.path line above, which makes the kit's scripts importable
+
 ORDER = ("python3", "py -3", "python")
 NEED = (3, 9)
 MESSAGE = ("[ekit] no Python 3.9+ found: tried python3, py -3, python. Install Python 3.9 or newer "
@@ -68,9 +71,14 @@ def pick(probe=None):
 
 
 def shown(path):
-    """`path` as a command argument both bash and PowerShell read the same: forward slashes, quoted when needed."""
+    """`path` as a command argument bash and PowerShell both read as written: forward slashes, and single quotes
+    when needed (neither shell expands $ or ` inside them). A ' in the path is spelled the way the shell this process
+    was started from spells it: '' in PowerShell, '\'' in a POSIX shell."""
     path = path.replace(os.sep, "/")  # Windows' backslashes; nothing on POSIX
-    return path if re.fullmatch(r"[\w./:@%+=,-]+", path) else f'"{path}"'
+    if re.fullmatch(r"[\w./:@%+=,-]+", path):
+        return path
+    quote = "''" if shells.current()["name"] in shells.PS_SHELLS else "'\\''"
+    return "'" + path.replace("'", quote) + "'"
 
 
 def command():

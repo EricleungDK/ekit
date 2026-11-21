@@ -68,8 +68,10 @@ def bounded(argv, secs=5):
         return p.returncode, err.decode(errors="replace")
     except subprocess.TimeoutExpired:
         shells.kill_tree(p)
-        p.communicate()
+        shells.reap(p)
         return 124, f"no answer in {secs}s"
+    finally:
+        shells.finish(p)
 
 
 def read(path):

@@ -161,9 +161,10 @@ def run_one(repo, sid, ids, tdir, kept=None):
             res["exit"] = p.returncode
         except subprocess.TimeoutExpired:
             shells.kill_tree(p)  # the process group on POSIX, the tree on Windows
-            out, err = p.communicate()
+            out, err = shells.reap(p)
             res.update(exit=None, reason=f"timeout after {limit:g}s")
         finally:
+            shells.finish(p)  # Windows: what the scenario left running stops with its job
             res["duration"] = round(time.time() - t0, 3)
             shutil.rmtree(cwd, ignore_errors=True)
             files = sorted(os.path.join(dp, n) for dp, _, ns in os.walk(art) for n in ns)

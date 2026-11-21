@@ -90,9 +90,17 @@ class Printed(unittest.TestCase):
 
     def test_a_path_is_printed_so_bash_and_powershell_read_it_alike(self):
         self.assertEqual(launcher.shown("/opt/ekit/scripts/x.py"), "/opt/ekit/scripts/x.py")
-        self.assertEqual(launcher.shown("/opt/my kit/x.py"), '"/opt/my kit/x.py"')
+        self.assertEqual(launcher.shown("/opt/my kit/x.py"), "'/opt/my kit/x.py'")
+        self.assertEqual(launcher.shown("/opt/$HOME kit/x.py"), "'/opt/$HOME kit/x.py'")  # literal in both shells
         if WIN:
             self.assertEqual(launcher.shown("C:\\Users\\a\\ekit\\x.py"), "C:/Users/a/ekit/x.py")
+
+    def test_a_quote_in_a_path_is_spelled_the_way_the_shell_that_reads_it_spells_it(self):
+        with mock.patch.dict(os.environ, {"EKIT_SHELL": "bash"}):
+            self.assertEqual(launcher.shown("/o/O'Brien $HOME/x.py"), "'/o/O'\\''Brien $HOME/x.py'")
+        for ps in ("powershell", "pwsh"):
+            with mock.patch.dict(os.environ, {"EKIT_SHELL": ps}):
+                self.assertEqual(launcher.shown("/o/O'Brien $HOME/x.py"), "'/o/O''Brien $HOME/x.py'")
 
     def test_a_printed_script_line_is_the_interpreter_then_the_path(self):
         with mock.patch.dict(os.environ, {"EKIT_PY": "python"}):
