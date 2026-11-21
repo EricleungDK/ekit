@@ -81,7 +81,7 @@ eq "$(e line)" 7 "entry line = base line of removed fn"
 has "$(e problem)" "b" "problem names the removed fn"
 eq "$([[ -n "$(e hint)" ]] && echo yes)" yes "hint present"
 eq "$([[ -n "$(e forbidden)" ]] && echo yes)" yes "forbidden present"
-want_id="R2-$(printf '%s' 'R2tests/a.rsb' | sha1sum | cut -c1-8)"
+want_id="R2-$(printf '%s' 'R2tests/a.rsb' | sha1 | cut -c1-8)"
 eq "$(e id)" "$want_id" "id = R2- + sha1(check+file+test)[:8]"
 has "$(jq -r .summary <<<"$out")" "fail" "summary fail"
 
@@ -166,7 +166,7 @@ eq "$(jq -r '.entries[0].severity' <<<"$out")" fail "ignore severity fail"
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "ignore class agent-fixable"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 8 "ignore line = fn b line in head"
 has "$(jq -r '.entries[0].problem' <<<"$out")" '`b`' "ignore problem names fn"
-want="R2-$(printf '%s' 'R2tests/a.rsignore:b' | sha1sum | cut -c1-8)"
+want="R2-$(printf '%s' 'R2tests/a.rsignore:b' | sha1 | cut -c1-8)"
 eq "$(jq -r '.entries[0].id' <<<"$out")" "$want" "ignore id keyed by ignore:fn"
 
 # new test with #[ignore = "..."] is also a fail
@@ -246,7 +246,7 @@ eq "$(jq -r '.entries[0].file' <<<"$out")" tests/a.rs "dropped assert file"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 2 "per-fn entry line = head fn line"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "from 2 to 1" "problem gives counts"
 eq "$(jq -r '.entries[0].forbidden' <<<"$out")" "fewer asserts in test a" "forbidden names the test fn"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1sum | cut -c1-8)" "assert id keyed by file+fn name"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1 | cut -c1-8)" "assert id keyed by file+fn name"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "test \`a\`" "problem names the test fn"
 
 # commenting an assert out is a drop
@@ -367,7 +367,7 @@ eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "suppression class"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" fail "suppression severity fail"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 3 "suppression line = attr line in head"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "dead_code" "problem names lint"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2src/lib.rsdead_code' | sha1sum | cut -c1-8)" "suppression id keyed by file+lint"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2src/lib.rsdead_code' | sha1 | cut -c1-8)" "suppression id keyed by file+lint"
 
 # reason in the attribute: clean
 put "$R" src/lib.rs <<'EOF2'
@@ -429,7 +429,7 @@ eq "$rc" 0 "changed expected value is confirm, exit 0"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "changed expected severity confirm"
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "changed expected class agent-fixable"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 3 "changed expected line = head assert line"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1sum | cut -c1-8)" "changed expected id keyed by fn + unchanged side"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1 | cut -c1-8)" "changed expected id keyed by fn + unchanged side"
 has "$(jq -r .summary <<<"$out")" "confirm" "summary confirm, not all pass"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "was 4, now 5" "problem gives old and new values"
 eq "$(jq -r '.entries[0].forbidden' <<<"$out")" "editing an expected value to match the code's current output" "changed expected forbidden text"
@@ -454,7 +454,7 @@ eq "$(jq -r '.entries[0].class' <<<"$out")" needs-human "protected class needs-h
 eq "$(jq -r '.entries[0].severity' <<<"$out")" fail "protected severity fail"
 eq "$(jq -r '.entries[0].check' <<<"$out")" R2 "protected check R2"
 eq "$(jq -r '.entries[0].file' <<<"$out")" .github/workflows/ci.yml "protected file"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2.github/workflows/ci.ymlprotected-path' | sha1sum | cut -c1-8)" "protected id keyed by file+protected-path"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2.github/workflows/ci.ymlprotected-path' | sha1 | cut -c1-8)" "protected id keyed by file+protected-path"
 eq "$(jq -r '.entries[0].line' <<<"$out")" 0 "protected entry file-level"
 
 # slice 7 (#27): guard exceptions removed. --pr-body is a usage error; a fail stays fail whatever a PR body says.
@@ -478,7 +478,7 @@ fn a() {
 }
 EOF2
 H=$(commit "$R" drop-b)
-ID="R2-$(printf '%s' 'R2tests/a.rsb' | sha1sum | cut -c1-8)"
+ID="R2-$(printf '%s' 'R2tests/a.rsb' | sha1 | cut -c1-8)"
 body() { printf '%s\n' "$@" > "$T/body.md"; echo "$T/body.md"; }
 
 f=$(body "## Guard exceptions" "- $ID: b superseded by a stronger test in a.rs")
@@ -514,7 +514,7 @@ put "$R" .github/workflows/ci.yml <<'EOF2'
 on: pull_request
 EOF2
 H=$(commit "$R" ci-change)
-PID="R2-$(printf '%s' 'R2.github/workflows/ci.ymlprotected-path' | sha1sum | cut -c1-8)"
+PID="R2-$(printf '%s' 'R2.github/workflows/ci.ymlprotected-path' | sha1 | cut -c1-8)"
 f=$(body "## Guard exceptions" "- $PID: ci change needed for the fix, reviewer please confirm")
 out=$(mr "$R" "$B" "$H" --protected-paths '.github/**' --pr-body "$f" 2>&1); rc=$?
 eq "$rc" 2 "--pr-body listing protected id: usage error exit 2"
@@ -1016,7 +1016,7 @@ H=$(commit "$R" ws-subject)
 out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 0 "whitespace-changed subject with changed expected: confirm, exit 0"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "whitespace subject: confirm"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1sum | cut -c1-8)" "whitespace subject: id keyed by unchanged side"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1 | cut -c1-8)" "whitespace subject: id keyed by unchanged side"
 
 put "$R" tests/a.rs <<'EOF2'
 #[test]
@@ -1034,7 +1034,7 @@ EOF2
 H2=$(commit "$R" lhs-changed)
 out=$(mr "$R" "$B2" "$H2"); rc=$?
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "expected on the left side changed: confirm"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1sum | cut -c1-8)" "left expected: key from unchanged right side"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:adds_two|add(2,2)' | sha1 | cut -c1-8)" "left expected: key from unchanged right side"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "was 4, now 5" "left expected: old and new"
 
 R=$(mkrepo r2cmp)
@@ -1456,7 +1456,7 @@ fn a() {
 }
 EOF2
 H=$(commit "$R" drop-b-body)
-ID="R2-$(printf '%s' 'R2tests/a.rsb' | sha1sum | cut -c1-8)"
+ID="R2-$(printf '%s' 'R2tests/a.rsb' | sha1 | cut -c1-8)"
 printf '## Guard exceptions\n- %s: b superseded by a stronger test \377 in a.rs\n' "$ID" > "$T/badbody.md"
 out=$(mr "$R" "$B" "$H" --pr-body "$T/badbody.md" 2>&1); rc=$?
 lacks "$out" "Traceback" "non-utf8 pr body: no traceback"
@@ -1544,7 +1544,7 @@ H=$(commit "$R" two-allows)
 out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$(jq -r '.entries|length' <<<"$out")" 2 "two bare allows of one lint in one file: two entries"
 eq "$(jq -r '[.entries[].id]|unique|length' <<<"$out")" 2 "two entries have distinct ids"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2src/lib.rsdead_code' | sha1sum | cut -c1-8)" "first occurrence keeps the plain id"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2src/lib.rsdead_code' | sha1 | cut -c1-8)" "first occurrence keeps the plain id"
 
 R=$(mkrepo r6two_exp)
 put "$R" tests/a.rs <<'EOF2'
@@ -1566,7 +1566,7 @@ H=$(commit "$R" two-same-lhs)
 out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$(jq -r '.entries|length' <<<"$out")" 2 "two changed expected values sharing an operand: two entries"
 eq "$(jq -r '[.entries[].id]|unique|length' <<<"$out")" 2 "those entries have distinct ids"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:a|x' | sha1sum | cut -c1-8)" "first expected entry keeps the plain id"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsexpected:a|x' | sha1 | cut -c1-8)" "first expected entry keeps the plain id"
 
 # #27 summary: `all pass <sha>` only when every check ran and passed with no entries; fail names counts and checks
 pyeng() { python3 -I -c "import sys; sys.path.insert(0, '$ROOT/scripts'); from mech_review import report; print(report.summarize('abc', $1, $2))"; }
@@ -1638,7 +1638,7 @@ eq "$(jq -r '.entries|length' <<<"$out")" 1 "assert moved a to b: one entry, for
 eq "$(jq -r '.entries[0].severity' <<<"$out")" fail "moved assert: severity fail"
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "moved assert: class agent-fixable"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "test \`a\` dropped from 2 to 1" "moved assert: problem names a, 2 to 1"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1sum | cut -c1-8)" "moved assert: id keyed by fn a"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1 | cut -c1-8)" "moved assert: id keyed by fn a"
 
 # ids line-independent: same move with lines shifted in head keeps the id
 put "$R" tests/a.rs <<'EOF2'
@@ -1659,7 +1659,7 @@ fn b() {
 EOF2
 H2=$(commit "$R" move-lines-shifted)
 id2=$(mr "$R" "$B" "$H2" | jq -r '.entries[0].id')
-eq "$id2" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1sum | cut -c1-8)" "moved assert: id unchanged when lines shift"
+eq "$id2" "R2-$(printf '%s' 'R2tests/a.rsassert-count:a' | sha1 | cut -c1-8)" "moved assert: id unchanged when lines shift"
 
 # a moved assert into a helper (not a test fn) is an extraction: clean
 R=$(mkrepo r26helper)
@@ -1708,7 +1708,7 @@ out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 0 "in-place weakening: confirm, exit 0"
 eq "$(jq -r '.entries|length' <<<"$out")" 1 "in-place weakening: one entry"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "in-place weakening: severity confirm"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-replaced:t' | sha1sum | cut -c1-8)" "in-place weakening: id keyed by fn t"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-replaced:t' | sha1 | cut -c1-8)" "in-place weakening: id keyed by fn t"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "assert_eq!(out, Some(3))" "in-place weakening: problem shows old assert"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "assert!(out.is_some())" "in-place weakening: problem shows new assert"
 
@@ -1856,7 +1856,7 @@ out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 0 "should_panic added to existing test: confirm, exit 0"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "should_panic added: severity confirm"
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "should_panic added: class agent-fixable"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsshould-panic:a' | sha1sum | cut -c1-8)" "should_panic added: id keyed by should-panic:fn"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsshould-panic:a' | sha1 | cut -c1-8)" "should_panic added: id keyed by should-panic:fn"
 R=$(mkrepo f5bnew)
 put "$R" tests/a.rs <<'EOF2'
 #[test]
@@ -1971,7 +1971,7 @@ EOF2
 H=$(commit "$R" weaken-bool-assert)
 out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 0 "assert!(v.len() > 2) -> assert!(true): confirm, exit 0"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-replaced:t' | sha1sum | cut -c1-8)" "bool weakening: id keyed by assert-replaced:t"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsassert-replaced:t' | sha1 | cut -c1-8)" "bool weakening: id keyed by assert-replaced:t"
 eq "$(jq -r '.entries[0].severity' <<<"$out")" confirm "bool weakening: severity confirm"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "assert!(v.len() > 2)" "bool weakening: problem shows old assert"
 
@@ -2198,7 +2198,7 @@ EOF2
 H=$(commit "$R" rename-and-should-panic)
 out=$(mr "$R" "$B" "$H"); rc=$?
 eq "$rc" 0 "rename adding should_panic: confirm, exit 0"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsshould-panic:adds_numbers' | sha1sum | cut -c1-8)" "rename adding should_panic: keyed by new name"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R2-$(printf '%s' 'R2tests/a.rsshould-panic:adds_numbers' | sha1 | cut -c1-8)" "rename adding should_panic: keyed by new name"
 
 # review round 2: a method call x.check() is not a call to the free fn check
 R=$(mkrepo f2method)

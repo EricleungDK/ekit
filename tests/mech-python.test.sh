@@ -13,7 +13,7 @@ commit() { git -C "$1" add -A; git -C "$1" -c user.name=t -c user.email=t@t -c c
 # mr <repo> <base> <head> [extra args]: r2 with the python stack
 mr() { local r="$1" b="$2" h="$3"; shift 3; python3 -I "$MR" r2 --repo "$r" --base "$b" --head "$h" --stack python --test-paths 'tests/**' "$@"; }
 # sid <text>: the id R2 gives an entry with this file+key (check R2)
-sid() { printf 'R2-%s' "$(printf 'R2%s' "$1" | sha1sum | cut -c1-8)"; }
+sid() { printf 'R2-%s' "$(printf 'R2%s' "$1" | sha1 | cut -c1-8)"; }
 
 # ---- adapter unit: detection, test fns, assertions, markers, parse errors (pure) ----
 python3 -I - "$ROOT" <<'PY'

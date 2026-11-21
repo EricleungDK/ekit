@@ -10,6 +10,7 @@ from unittest import mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts import scenarios
+from test_doctor_sandbox import symlink  # a skip naming the refusal where the OS will not make links
 
 
 def git(repo, *args):
@@ -483,7 +484,7 @@ class TestPrune(unittest.TestCase):
     def test_a_symlink_to_a_dir_is_left_alone(self):
         target = self.make("real", scenarios.KEEP_DAYS * 3)
         link = os.path.join(self.out, "link")
-        os.symlink(target, link)
+        symlink(self, target, link)
         scenarios.prune(self.out, "real")
         self.assertTrue(os.path.islink(link) and os.path.isdir(target))
 
