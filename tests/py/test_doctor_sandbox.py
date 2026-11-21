@@ -3,13 +3,17 @@
 R3 copies into `<project dir>/mutants/` only mutmut 3.8.1's defaults, the source dirs and the tracked top-level entries
 of the project dir (also_copy). A suite that reads a file outside those passes a plain run and fails there, so doctor
 runs it once in the same sandbox and names the missing paths instead of reporting `ok`."""
+import _thread
+import contextlib
 import errno
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 
@@ -85,6 +89,45 @@ def git(repo, *args):
                            *args], check=True, capture_output=True, text=True).stdout
 
 
+@contextlib.contextmanager
+def deadline(test, secs, why):
+    """`test` fails when the block still runs after secs (a copy without end): SIGALRM where the OS has it, else a
+    timer that interrupts the main thread (Windows)."""
+    if hasattr(signal, "SIGALRM"):
+        before = signal.signal(signal.SIGALRM, lambda *_: test.fail(why))
+        signal.alarm(secs)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
+        return
+    timer = threading.Timer(secs, _thread.interrupt_main)
+    timer.start()
+    try:
+        yield
+    except KeyboardInterrupt:
+        test.fail(why)
+    finally:
+        timer.cancel()
+
+
+# The sandbox mirrors mutmut's copy, and mutmut runs on POSIX only: these cases read POSIX's own error words or a
+# name a Windows checkout cannot hold
+POSIX_COPY = unittest.skipIf(os.name == "nt", "mutmut's copy as POSIX does it: its error words, its file names")
+
+
+def fifo(test, path):
+    """os.mkfifo, or a skip where the OS has no named pipes (Windows): the fixture cannot exist there."""
+    if not hasattr(os, "mkfifo"):
+        test.skipTest("the OS has no named pipes (os.mkfifo)")
+    os.mkfifo(path)
+
+
+# a name Windows will not hold in its filesystem (a control char, ", a backslash): it goes in through the index only
+REFUSED = re.compile(r'[\x00-\x1f"*:<>?\\|]') if os.name == "nt" else re.compile(r"(?!)")
+
+
 def write(root, files):
     for path, text in files.items():
         full = os.path.join(root, path)
@@ -119,14 +162,21 @@ class SandboxTrial(unittest.TestCase):
         self.repo = os.path.join(tmp.name, "repo")
         os.makedirs(self.repo)
         git(self.repo, "init", "-q", "-b", "main")
+        git(self.repo, "config", "core.symlinks", "true")  # Git for Windows' default is false: links would be files
         self.calls = []
 
     def commit(self, files, links=()):
-        write(self.repo, files)
+        write(self.repo, {p: t for p, t in files.items() if not REFUSED.search(p)})
         for path, target in links:
             os.makedirs(os.path.dirname(os.path.join(self.repo, path)), exist_ok=True)
             symlink(self, target, os.path.join(self.repo, path))
         git(self.repo, "add", "-A")
+        for path, text in files.items():
+            if REFUSED.search(path):
+                blob = subprocess.run(["git", "-C", self.repo, "hash-object", "-w", "--stdin"], input=text,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+                git(self.repo, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo",
+                    f"100644,{blob},{path}")
         git(self.repo, "commit", "-q", "-m", "head")
 
     def doctor(self, runner=None, **kw):
@@ -263,13 +313,8 @@ class SandboxTrial(unittest.TestCase):
         # mutmut's copytree of tests/ follows tests/up -> .. without end; doctor must not start that copy
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""}, links=[("tests/up", ".."), ("tests/self", ".")])
-        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
-        signal.alarm(30)
-        try:
+        with deadline(self, 30, "doctor still copying after 30 s"):
             env = self.doctor()
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, before)
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/self`, `tests/up`")
         self.assertEqual((env["trial"]["sandbox"], env["entries"]),
@@ -282,13 +327,8 @@ class SandboxTrial(unittest.TestCase):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      "shared/x.txt": "", "other/y.txt": "", ".github/workflows/mech-review.yml": CALLER % ""},
                     links=[("tests/a", "../shared"), ("shared/b", "../other"), ("other/c", "../shared")])
-        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
-        signal.alarm(30)
-        try:
+        with deadline(self, 30, "doctor still copying after 30 s"):
             env = self.doctor()
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, before)
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/a/b/c`")
 
@@ -335,7 +375,7 @@ class SandboxTrial(unittest.TestCase):
         # test -> <outside> is not walked (it may be big); copytree then cannot read outside/locked
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"locked/x.txt": "", "ok.txt": ""})
-        os.mkfifo(os.path.join(outside, "fifo"))
+        fifo(self, os.path.join(outside, "fifo"))
         os.chmod(os.path.join(outside, "locked"), 0)
         self.addCleanup(os.chmod, os.path.join(outside, "locked"), 0o700)
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
@@ -352,7 +392,7 @@ class SandboxTrial(unittest.TestCase):
     def test_a_named_pipe_behind_a_link_is_named_with_the_reason_not_the_link_hint(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         os.makedirs(outside)
-        os.mkfifo(os.path.join(outside, "fifo"))
+        fifo(self, os.path.join(outside, "fifo"))
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""},
                     links=[("tests/pipe", os.path.join(outside, "fifo"))])
@@ -372,7 +412,7 @@ class SandboxTrial(unittest.TestCase):
         # pipe gives a SpecialFileError with no file name of its own
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         os.makedirs(outside)
-        os.mkfifo(os.path.join(outside, "fifo"))
+        fifo(self, os.path.join(outside, "fifo"))
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""},
                     links=[("calc/pipe", os.path.join(outside, "fifo"))])
@@ -382,6 +422,7 @@ class SandboxTrial(unittest.TestCase):
                                          "mutants/ fails on `calc`", "mutmut's copy into mutants/ fails on it: "
                                          "`calc/pipe` is a named pipe; fix that in the tree, then rerun doctor")]))
 
+    @POSIX_COPY
     def test_a_tracked_file_named_mutants_names_the_path_that_cannot_be_made(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      "mutants": "", ".github/workflows/mech-review.yml": CALLER % ""})
@@ -414,13 +455,8 @@ class SandboxTrial(unittest.TestCase):
 
     def doctor_within(self, secs):
         """doctor.run, failed if it is still running after secs (a copy without end)."""
-        before = signal.signal(signal.SIGALRM, lambda *_: self.fail(f"doctor still copying after {secs} s"))
-        signal.alarm(secs)
-        try:
+        with deadline(self, secs, f"doctor still copying after {secs} s"):
             return self.doctor()
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, before)
 
     def test_a_link_under_tests_into_the_callers_checkout_by_absolute_path_is_an_entry(self):
         # doctor's worktree is elsewhere: copytree would copy the caller's checkout, this link in it included, over and
@@ -450,13 +486,8 @@ class SandboxTrial(unittest.TestCase):
                     links=[("tests/fx", os.path.join(main, "data", "fixtures")), ("tests/repo", main)])
         linked = os.path.join(main, ".claude", "worktrees", "x")
         git(main, "worktree", "add", "-q", "--detach", linked)
-        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
-        signal.alarm(30)
-        try:
+        with deadline(self, 30, "doctor still copying after 30 s"):
             env = doctor.run(linked, stack="python", runner=unittest_runner(self.calls))
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, before)
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/fx`, `tests/repo`")
 
@@ -467,19 +498,15 @@ class SandboxTrial(unittest.TestCase):
         repo = os.path.join(ws, "org", "P")
         os.makedirs(repo)
         git(repo, "init", "-q", "-b", "main")
+        git(repo, "config", "core.symlinks", "true")
         write(repo, {"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""})
         symlink(self, ws, os.path.join(repo, "tests", "ws"))
         git(repo, "add", "-A")
         git(repo, "commit", "-q", "-m", "head")
-        before = signal.signal(signal.SIGALRM, lambda *_: self.fail("doctor still copying after 30 s"))
-        signal.alarm(30)
-        try:
+        with deadline(self, 30, "doctor still copying after 30 s"):
             with unittest.mock.patch.object(doctor, "OUTSIDE_WALK", 1):
                 env = doctor.run(repo, stack="python", runner=unittest_runner(self.calls))
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, before)
         self.assertEqual(env["entries"][0]["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into "
                                                        "mutants/ fails on `tests/ws`")
 
@@ -499,6 +526,7 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
                                                 "copy into mutants/ fails on `tests/x/a/b/c/gone`", LINK_HINT)])
 
+    @POSIX_COPY
     def test_past_its_cap_the_walk_outside_leaves_the_rest_to_the_copy(self):
         # four entries walked: c/ is not opened, so copytree meets the dangling link and names it with its reason
         self.outside_chain()
@@ -538,6 +566,7 @@ class SandboxTrial(unittest.TestCase):
                          "mutants/ fails on `tests/l00`, `tests/l01`, `tests/l02`, `tests/l03`, `tests/l04`, "
                          "`tests/l05`, `tests/l06`, `tests/l07`, `tests/l08`, `tests/l09` and 2 more")
 
+    @POSIX_COPY
     def test_a_copy_onto_itself_names_the_entry_being_copied(self):
         # a tracked mutants/tests -> ../tests: copytree copies each file onto itself (shutil.SameFileError)
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
@@ -630,6 +659,7 @@ class SandboxTrial(unittest.TestCase):
                                                 "passes (missing there: `docs/guide/usage.md`); `docs/` is left out of "
                                                 "R3's copy because of the link `docs/api/html`", HELD_HINT)])
 
+    @POSIX_COPY
     def test_only_links_that_miss_a_tracked_file_keep_an_entry_out(self):
         # notes/latest.md reaches notes/v1/latest.md through tracked dirs: notes/ is copied. odd/x.md steps through
         # a file (ENOTDIR) and chain/y.md reaches a link, not a file: those two are kept out, as also_copy does
@@ -665,7 +695,7 @@ class SandboxTrial(unittest.TestCase):
         def run(argv, cwd):
             if "--version" in argv:
                 return 0, "mutmut, version 3.8.1\n"
-            return (1, "E   assert 1 == 2\n1 failed in 0.01s\n") if cwd.endswith("/mutants") else (0, "1 passed in 0.01s\n")
+            return (1, "E   assert 1 == 2\n1 failed in 0.01s\n") if os.path.basename(cwd) == "mutants" else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
         [e] = env["entries"]
         self.assertEqual(e["problem"], "R3's mutmut sandbox fails where the plain run passes (no missing path found in "
@@ -679,7 +709,7 @@ class SandboxTrial(unittest.TestCase):
         def run(argv, cwd):
             if "--version" in argv:
                 return 0, "mutmut, version 3.8.1\n"
-            if not cwd.endswith("/mutants"):
+            if not os.path.basename(cwd) == "mutants":
                 return 0, "1 passed in 0.01s\n"
             return 1, (f"E   FileNotFoundError: [Errno 2] No such file or directory: '{cwd}/scripts/demo.py'\n"
                        f"ERROR tests/test_a.py - FileNotFoundError: [Errno 2] No such file or directory: '{cwd}/scripts/demo.py'\n"
@@ -700,7 +730,7 @@ class SandboxTrial(unittest.TestCase):
         def run(argv, cwd):
             if "--version" in argv:
                 return 0, "mutmut, version 3.8.1\n"
-            return ("timeout", "") if cwd.endswith("/mutants") else (0, "1 passed in 0.01s\n")
+            return ("timeout", "") if os.path.basename(cwd) == "mutants" else (0, "1 passed in 0.01s\n")
         env = self.doctor(runner=run)
         self.assertEqual(env["trial"]["sandbox"], "fail")
         [e] = env["entries"]
@@ -732,7 +762,7 @@ class SandboxTrial(unittest.TestCase):
         seen = {}
 
         def run(argv, cwd):
-            if cwd.endswith("/mutants"):
+            if os.path.basename(cwd) == "mutants":
                 seen["top"] = sorted(os.listdir(cwd))
                 seen["docs"] = sorted(os.listdir(os.path.join(cwd, "docs")))
                 with open(os.path.join(cwd, "docs", "guide.md")) as f:
@@ -760,6 +790,20 @@ class SandboxTrial(unittest.TestCase):
         env = doctor.run(self.repo, stack="rust", runner=run)
         self.assertEqual(env["trial"], {"tests": "pass", "command": "cargo test", "mutation_tool": "present"})
         self.assertEqual(self.calls, [["cargo", "test"], ["cargo", "mutants", "--version"]])
+
+
+class CopyErrorText(unittest.TestCase):
+    """The reason a failed copy gives: the OS's words without the path, as POSIX and Windows each word it."""
+
+    def why(self, text):
+        return doctor._copy_error(shutil.Error([("/w/c/a", "/w/c/mutants/a", text)]), "/w/c", "a").why
+
+    def test_a_posix_error_reads_as_its_strerror(self):
+        self.assertEqual(self.why("[Errno 2] No such file or directory: '/w/c/a'"), "No such file or directory")
+
+    def test_a_windows_error_reads_as_its_message_without_the_path(self):
+        self.assertEqual(self.why("[WinError 3] The system cannot find the path specified: 'C:\\\\w\\\\c\\\\a'"),
+                         "The system cannot find the path specified")
 
 
 class RefusedSymlink(unittest.TestCase):
