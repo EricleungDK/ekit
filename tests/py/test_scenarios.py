@@ -560,6 +560,18 @@ class TestRun(unittest.TestCase):
         self.assertIn(b"--- stdout ---\nearly\n", text)
         self.assertIn(b"--- stderr ---\nerr\n", text)
 
+    def test_a_background_child_does_not_outlive_its_scenario(self):
+        """`server &` then exit 0: the scenario passes, and its child is stopped with it (a server would keep its
+        port); a foreground hang still times out"""
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late").replace(os.sep, "/")
+        code, out, doc = self.main(f"(sleep 3; echo x > '{mark}') &\nexit 0\n")
+        self.assertEqual((code, doc["scenarios"][0].get("reason")), (0, None))
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            code, _, doc = self.main("sleep 30\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
+
     def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n")

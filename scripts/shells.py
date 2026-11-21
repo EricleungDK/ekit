@@ -255,7 +255,14 @@ def spawn(argv, **kw):
 
 
 def finish(proc):
-    """Let go of `proc`'s job (Windows): what it left running stops with it. Nothing on POSIX."""
+    """Stop what `proc` left running (a server started with `&` would keep its port): on Windows its job is let go
+    of, which stops what is in it; on POSIX its process group gets SIGKILL."""
+    if not WIN:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:  # ProcessLookupError: the group is gone already
+            pass
+        return
     job = getattr(proc, "ekit_job", None)
     if job:
         proc.ekit_job = None

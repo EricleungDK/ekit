@@ -176,6 +176,17 @@ class KillTree(unittest.TestCase):
         shells.finish(p)
         shells.finish(p)  # twice: nothing left to let go of
 
+    def test_finish_stops_what_a_finished_process_left_running(self):
+        mark = os.path.join(tempfile.mkdtemp(), "late")
+        self.addCleanup(shutil.rmtree, os.path.dirname(mark), True)
+        child = f"import time; time.sleep(3); open({mark!r}, 'w').close()"
+        p = shells.spawn([sys.executable, "-c", f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', "
+                                                f"{child!r}])"])
+        p.wait(timeout=60)
+        shells.finish(p)
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+
     def test_a_process_already_gone_is_no_error(self):
         p = shells.spawn([sys.executable, "-c", "pass"])
         p.wait()
