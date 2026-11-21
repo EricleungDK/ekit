@@ -18,15 +18,25 @@ REASON_MAX = 300
 MARKER = "<!-- mech-review -->"
 # what the sticky comment's ready-made lines say in place of the reason; left in, it is no reason
 PLACEHOLDER = "<why this is OK>"
+# the placeholders ekit writes (the ready-made lines; `<reason>` in the docs and --help): refused as they stand (#40)
+PLACEHOLDERS = (PLACEHOLDER, "<reason>")
 
 
 EDITED_WHY = "the comment was edited after posting; post a new comment"
-PLACEHOLDER_WHY = "the reason is still the placeholder; post a new comment with the reason"
+PLACEHOLDER_WHY = ("the reason is still the placeholder `<…>`: replace the text in the angle brackets with the reason "
+                   "and post a new comment")
+
+
+def _unwrap(reason):
+    """A reason wholly wrapped in <...> loses the brackets: the person replaced the placeholder's words only (#40)."""
+    if reason.startswith("<") and reason.endswith(">"):
+        return reason[1:-1].strip()
+    return reason
 
 
 def _placeholder(reason):
-    """True for a reason wholly wrapped in <...>: PLACEHOLDER, or a template's `<reason>`."""
-    return reason.startswith("<") and reason.endswith(">")
+    """True for one of PLACEHOLDERS left as it stands, or empty angle brackets."""
+    return reason in PLACEHOLDERS or not _unwrap(reason)
 
 
 def _edited(c):
@@ -52,12 +62,12 @@ def _commands(comments):
 
 def collect(comments):
     """{entry id: {by, reason, url}} from issue comments (API objects, oldest first; a later comment wins).
-    A waiver with no reason is ignored: the reason is the record. The placeholder, or any reason wholly in <...>, is
-    none. An edited comment waives nothing (see `rejected`)."""
+    A waiver with no reason is ignored: the reason is the record. A placeholder left as it stands, or `<>`, is none;
+    any other reason wholly in <...> counts, its brackets stripped. An edited comment waives nothing (see `rejected`)."""
     out = {}
     for c, login, eid, reason in _commands(comments):
         if not _edited(c) and not _placeholder(reason):
-            out[eid] = {"by": login, "reason": reason[:REASON_MAX], "url": c.get("html_url", "")}
+            out[eid] = {"by": login, "reason": _unwrap(reason)[:REASON_MAX], "url": c.get("html_url", "")}
     return out
 
 

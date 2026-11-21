@@ -207,8 +207,15 @@ class TestPoster(unittest.TestCase):
         api = Api([person("/mech-waive R2-deadbeef <why this is OK>")])
         p = self.post([FAIL], api)
         self.assertEqual(p.returncode, 1, p.stderr)
-        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the reason is still the placeholder; post a new comment "
-                      "with the reason\n", api.writes[0])
+        self.assertIn("\nWaiver ignored: R2-deadbeef by `eric`: the reason is still the placeholder `<…>`: replace the "
+                      "text in the angle brackets with the reason and post a new comment\n", api.writes[0])
+
+    def test_a_real_reason_left_in_the_angle_brackets_turns_the_check_green(self):
+        api = Api([person("/mech-waive R2-deadbeef <waive it: moved to the e2e suite>")])
+        p = self.post([FAIL], api)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Waived: R2-deadbeef by `eric`: waive it: moved to the e2e suite", api.writes[0])
+        self.assertNotIn("Waiver ignored", api.writes[0])
 
     def test_an_ignored_waiver_for_an_entry_no_longer_failing_is_not_shown(self):
         api = Api([person("/mech-waive R2-deadbeef <why this is OK>"), person("/mech-waive R2-deadbeef: moved"),
