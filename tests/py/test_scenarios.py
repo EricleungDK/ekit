@@ -10,6 +10,7 @@ from unittest import mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts import scenarios
+from _kit import symlink  # a skip naming the refusal where the OS will not make links
 
 
 def git(repo, *args):
@@ -171,6 +172,52 @@ class TestTreeHash(unittest.TestCase):
         self.assertEqual(stop.exception.code, 3)
         self.assertEqual(err.getvalue(), "cannot hash the working tree: fatal: git-write-tree: error building trees \ufffd\n")
         self.assertEqual(out.getvalue(), "")
+
+    def test_a_git_add_that_dies_is_exit_3_not_a_clean_hash(self):
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if "add" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: add died\n")
+            return real(argv, **kw)
+
+        err = io.StringIO()
+        with mock.patch.object(scenarios.subprocess, "run", run), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as stop:
+            self.hash()
+        self.assertEqual((stop.exception.code, err.getvalue()), (3, "cannot hash the working tree: fatal: add died\n"))
+
+    def test_the_callers_pathspec_settings_do_not_hide_a_new_file(self):
+        clean = self.hash()
+        write(self.repo, "stray.txt", "x\n")
+        for var in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            with self.subTest(var), mock.patch.dict(os.environ, {var: "1"}):
+                self.assertNotEqual(self.hash(), clean)
+
+    def test_untracked_python_bytecode_does_not_count(self):
+        clean = self.hash()
+        os.makedirs(os.path.join(self.repo, "pkg", "__pycache__"))
+        write(self.repo, "pkg/__pycache__/m.cpython-312.pyc", "b\n")
+        write(self.repo, "top.pyc", "b\n")
+        write(self.repo, "pkg/old.pyo", "b\n")
+        self.assertEqual(self.hash(), clean)
+        self.assertEqual(scenarios.tree_hash(os.path.join(self.repo, "pkg")), clean)  # from a subdirectory too
+
+    def test_a_tracked_bytecode_file_still_counts(self):
+        write(self.repo, "t.pyc", "one\n", age=7200)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "tracked bytecode")
+        clean = self.hash()
+        write(self.repo, "t.pyc", "two\n")
+        edited = self.hash()
+        os.remove(os.path.join(self.repo, "t.pyc"))
+        self.assertEqual(len({clean, edited, self.hash()}), 3)
+
+    def test_a_file_that_is_not_bytecode_under_pycache_still_counts(self):
+        clean = self.hash()
+        os.makedirs(os.path.join(self.repo, "p", "__pycache__"))
+        write(self.repo, "p/__pycache__/notes.txt", "x\n")
+        self.assertNotEqual(self.hash(), clean)
 
     def test_a_tracked_edit_and_an_untracked_file_each_change_the_hash(self):
         clean = self.hash()
@@ -372,6 +419,124 @@ class TestRun(unittest.TestCase):
         self.assertEqual(doc["reason"], "scenarios modified the repo: run in the temp cwd")
         self.assertIn("FAIL: scenarios modified the repo: run in the temp cwd\n", out)
 
+    def main(self, script, *args):
+        """the runner's entry, in-process: (exit code, stdout, results.json)"""
+        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")  # a rerun of the same script: same tree
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "run", *args])
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            return int(e.exception.code or 0), out.getvalue(), json.load(f)
+
+    def test_python_bytecode_left_in_the_repo_is_not_a_repo_change(self):
+        # the repo has no .gitignore: bytecode is untracked like any file, yet it is the interpreter's, not the scenario's
+        code, out, doc = self.main('mkdir -p "$EKIT_REPO/pkg/__pycache__"\n'
+                                   'echo b > "$EKIT_REPO/pkg/__pycache__/m.cpython-312.pyc"; echo b > "$EKIT_REPO/m.pyc"\n')
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+
+    def test_a_real_untracked_file_beside_bytecode_still_fails_the_run(self):
+        code, out, doc = self.main('mkdir -p "$EKIT_REPO/__pycache__"; echo b > "$EKIT_REPO/__pycache__/m.pyc"\n'
+                                   'echo x > "$EKIT_REPO/stray.txt"\n')
+        self.assertEqual((code, doc["reason"]), (1, "scenarios modified the repo: run in the temp cwd"))
+
+    def test_scenarios_run_with_bytecode_writes_off(self):
+        with mock.patch.dict(os.environ, {"PYTHONDONTWRITEBYTECODE": ""}):
+            code, out, _ = self.main('[ "$PYTHONDONTWRITEBYTECODE" = 1 ] || { echo "bytecode on" >&2; exit 1; }\n')
+        self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+
+    def test_a_failed_transcript_stays_until_the_same_scenario_fails_again(self):
+        # fails on the 1st and 3rd run, passes on the 2nd: a pass on the same tree rewrites one.log, not the failure kept
+        script = ('n=$(cat "$EKIT_STATE/n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$EKIT_STATE/n"\n'
+                  'echo "run $n"; [ $n = 2 ]\n')
+        self.main(script)
+        code, _, doc = self.main(script)
+        self.assertEqual((code, doc["verdict"]), (0, "PASS"))
+        kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
+        with open(kept) as f:
+            self.assertIn("--- stdout ---\nrun 1\n", f.read())
+        code, _, doc = self.main(script)
+        self.assertEqual((code, doc["scenarios"][0]["failed_transcript"]), (1, kept))
+        with open(kept) as f:
+            text = f.read()
+        self.assertIn("--- stdout ---\nrun 3\n", text)
+        self.assertNotIn("run 1\n", text)
+
+    def test_kept_failures_of_a_child_and_a_look_alike_id_do_not_overwrite_each_other(self):
+        for d, word in (("one/b", "child"), ("one__b", "look-alike")):
+            os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", d))
+            write(self.repo, f".ekit/scenarios/{d}/SCENARIO.md", "- story: s\n")
+            write(self.repo, f".ekit/scenarios/{d}/run.sh", f"echo {word}; exit 1\n")
+        _, _, doc = self.main("exit 0\n")
+        kept = {r["id"]: r["failed_transcript"] for r in doc["scenarios"] if r.get("reason")}
+        self.assertEqual(sorted(kept), ["one/b", "one__b"])
+        self.assertNotEqual(kept["one/b"], kept["one__b"])
+        for sid, word in (("one/b", "child"), ("one__b", "look-alike")):
+            with open(kept[sid]) as f:
+                self.assertIn(f"--- stdout ---\n{word}\n", f.read())
+
+    def test_a_run_failed_only_by_a_repo_change_keeps_a_note_naming_the_change(self):
+        code, _, doc = self.main('echo x > "$EKIT_REPO/stray.txt"\n')
+        self.assertEqual((code, doc["scenarios"][0].get("reason")), (1, None))
+        note = doc["failed_transcript"]
+        self.assertEqual(os.path.dirname(note), os.path.join(scenarios.outdir(self.repo), "failed"))
+        with open(note) as f:
+            self.assertIn("?? stray.txt\n", f.read())
+
+    def add_exits(self, rc):
+        """git add, faked at the subprocess boundary, exits rc; every other git call is real"""
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if argv[3:5] == ["add", "-A"]:
+                return subprocess.CompletedProcess(argv, rc, b"", b"error: unable to index file 'x'\n")
+            return real(argv, **kw)
+        return mock.patch.object(scenarios.subprocess, "run", run)
+
+    def test_a_git_add_that_skipped_a_file_still_hashes_and_passes(self):
+        with self.add_exits(1):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+
+    def test_a_git_add_that_dies_with_exit_2_or_128_cannot_hash(self):
+        write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "scenario")
+        for rc in (2, 128):
+            err = io.StringIO()
+            with self.subTest(rc), self.add_exits(rc), contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+                scenarios.main(["--repo", self.repo, "run"])
+            self.assertEqual((e.exception.code, err.getvalue()),
+                             (3, "cannot hash the working tree: error: unable to index file 'x'\n"))
+
+    def test_a_failed_transcript_holds_stdout_stderr_and_the_exit_code(self):
+        _, _, doc = self.main("echo out; echo err >&2; exit 1\n")
+        r = doc["scenarios"][0]
+        for path in (r["transcript"], r["failed_transcript"]):
+            with open(path, "rb") as f:
+                self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: 1 ---\n"))
+
+    def test_a_timed_out_transcript_says_timeout(self):
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            code, _, doc = self.main("echo out; echo err >&2; sleep 30\n")
+        r = doc["scenarios"][0]
+        self.assertEqual((code, r["reason"]), (1, "timeout after 1s"))
+        with open(r["failed_transcript"], "rb") as f:
+            self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: timeout ---\n"))
+
+    def test_the_kept_failures_outlive_the_transcript_window(self):
+        self.main("echo boom; exit 1\n")
+        kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")
+        ahead = time.time() + 30 * 86400
+        write(self.repo, "other.txt", "a new tree\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "next")
+        with mock.patch.object(scenarios.time, "time", lambda: ahead), contextlib.redirect_stdout(io.StringIO()):
+            scenarios.cmd_run(self.repo)
+        self.assertTrue(os.path.isfile(kept))
+
 
 class TestPrune(unittest.TestCase):
     NOW = 1_800_000_000
@@ -428,7 +593,7 @@ class TestPrune(unittest.TestCase):
     def test_a_symlink_to_a_dir_is_left_alone(self):
         target = self.make("real", scenarios.KEEP_DAYS * 3)
         link = os.path.join(self.out, "link")
-        os.symlink(target, link)
+        symlink(self, target, link)
         scenarios.prune(self.out, "real")
         self.assertTrue(os.path.islink(link) and os.path.isdir(target))
 

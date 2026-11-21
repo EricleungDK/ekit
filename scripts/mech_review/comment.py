@@ -232,7 +232,9 @@ def render_crash(head, reason):
 
 
 def exit_code(env):
-    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+    """1 on any fail entry, or any check with status fail (an entry lost on the way must not pass the check)."""
+    failed = any(c.get("status") == "fail" for c in (env.get("checks") or {}).values() if isinstance(c, dict))
+    return 1 if failed or any(e["severity"] == "fail" for e in env["entries"]) else 0
 
 
 class ApiError(Exception):

@@ -7,7 +7,7 @@ import re
 
 from .globs import any_glob
 from .scan import Call, line_of, norm
-from .stack import Adapter, Assertion, Suppression, TestFn
+from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
 DEFAULT_PROBLEM = "`{lints}` added without a reason"
@@ -120,8 +120,9 @@ class DataAdapter(Adapter):
         return self.lexer.balance(text, m)
 
     def test_fns(self, text):
-        _, _, _, _, tests, _ = self._parse(text)
-        return [TestFn(name, line_of(text, t.start), markers) for name, t, markers in tests]
+        m, _, _, _, tests, _ = self._parse(text)
+        return [TestFn(name, line_of(text, t.start), markers, _callback_inner(text, m, t.start, t.end))
+                for name, t, markers in tests]
 
     def test_bodies(self, text):
         _, _, _, _, tests, _ = self._parse(text)

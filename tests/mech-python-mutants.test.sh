@@ -225,7 +225,7 @@ eq "$rc" 1 "python baseline fails: exit 1"
 eq "$(jq -r .checks.R3.status <<<"$out")" fail "python baseline fails: R3 fail"
 has "$(jq -r '.entries[0].problem' <<<"$out")" "baseline tests fail at head" "python baseline fails: names the baseline"
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "python baseline fails: agent-fixable"
-eq "$(jq -r '.entries[0].id' <<<"$out")" "R3-$(printf 'R3baseline' | sha1sum | cut -c1-8)" "review 1: baseline entry has a stable id"
+eq "$(jq -r '.entries[0].id' <<<"$out")" "R3-$(printf 'R3baseline' | sha1 | cut -c1-8)" "review 1: baseline entry has a stable id"
 lacks "$(jq -c . <<<"$out")" "_key" "review 1: no internal key leaks into the baseline entry"
 
 # stops early (no test covers any mutant): the untested changed mutants are no tests, so MISSED in the diff
@@ -406,7 +406,7 @@ out=$(MECH_FX="$GX" MUT_FIXTURE=. MUT_RC=0 MECH_TEST_STUB="$MUTSTUB" python3 -I 
 eq "$(jq -r '[.entries[] | select(.check=="R3" and .severity=="fail")] | length' <<<"$out")" 1 "review 1: unlocated is not a fail (only the located miss is)"
 eq "$(jq -r '[.entries[] | select(.check=="R3" and .severity=="confirm")] | length' <<<"$out")" 1 "review 1: unlocated is one confirm entry"
 eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].problem' <<<"$out")" "R3 unlocated: 1 missed mutant(s) could not be mapped to a line: not blocking" "review 1: confirm names the unlocated count and that it does not block"
-eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].id' <<<"$out")" "R3-$(printf 'R3unlocated' | sha1sum | cut -c1-8)" "review 1: unlocated confirm id is stable"
+eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].id' <<<"$out")" "R3-$(printf 'R3unlocated' | sha1 | cut -c1-8)" "review 1: unlocated confirm id is stable"
 has "$(jq -r .checks.R3.note <<<"$out")" "1 unlocated" "review 1: note counts the unlocated mutant"
 eq "$(jq -r .summary <<<"$out")" "fail $H (1 fail, 1 confirm; ran: R3; skipped: R1 R2 R4)" "review 1: summary counts the confirm"
 

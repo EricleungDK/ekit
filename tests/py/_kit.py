@@ -59,3 +59,15 @@ def load(name):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def symlink(test, target, path):
+    """os.symlink, or a skip naming the refusal when the OS will not make links (Windows without Developer Mode or
+    admin: winerror 1314; a filesystem without links: EPERM/ENOTSUP). Any other error is the test's own."""
+    import errno
+    try:
+        os.symlink(target, path)
+    except OSError as e:
+        if getattr(e, "winerror", None) == 1314 or e.errno in (errno.EPERM, errno.ENOTSUP, errno.ENOSYS):
+            test.skipTest(f"the OS refused a symlink: {e}")
+        raise
