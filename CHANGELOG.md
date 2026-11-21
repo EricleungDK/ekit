@@ -19,7 +19,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Fixed
 
-- **`merge` checks which shard each result is** (#42): a shard given twice, a shard index missing for `--shards`, or shards that disagree on head, base or cap give one CI `fail` entry; before, a duplicate shard was counted twice. `mutants` results now carry `shard: {k, n, max_mutants}`; a malformed or dropped field is named, and `--envelope K` given twice is a usage error. The mutants job's CI entries now reach the sticky comment and fail the check (before, `report` kept only R3's entries from it).
+- **`merge` checks which shard each result is** (#42): a shard given twice, a shard index missing for `--shards`, or shards that disagree on head, base or cap give one CI `fail` entry; before, a duplicate shard was counted twice. `mutants` results now carry `shard: {k, n, max_mutants}`; a malformed or dropped field is named, and `--envelope K` given twice is a usage error. The mutants job's CI entries now reach the sticky comment and fail the check (before, `report` kept only R3's entries from it). A check with status `fail` now fails the summary and the check even with no fail entry.
 - **R3 (python)**: a mutant the budget never reached, including one still waiting for its whole-suite retry, read MISSED, so a PR with real tests could read as many failures. It is now untested: R3 is `partial`, with no MISSED entry. A mutant that ran and survived its retry is still MISSED.
 - **`--mutation-budget nan` / `inf`**: crashed `baseline` with a traceback; now a usage error (exit 2).
 

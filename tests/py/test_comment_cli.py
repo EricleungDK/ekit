@@ -191,6 +191,18 @@ class TestPoster(unittest.TestCase):
         self.assertIn("mutants shards do not match: shard 0/2 given 2 times (--envelope 0, 1); shard 1/2 missing",
                       api.writes[0])
 
+    def test_a_failed_check_with_no_fail_entry_still_fails_the_headline_and_the_check(self):
+        checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in ("R1", "R2", "R4")}
+        checks["R3"] = {"status": "fail", "note": "shard 1/2: no result"}
+        mutants = {"ekit": "0", "base": "b" * 40, "head": SHA, "checks": checks, "entries": [], "summary": ""}
+        path = os.path.join(self.tmp.name, "mutants.json")
+        with open(path, "w") as f:
+            json.dump(mutants, f)
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", []), "--envelope", "mutants=" + path, "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn(f"fail {SHA} (0 fail, 0 confirm; ran: R2 R3; skipped: R1 R4)", api.writes[0])
+
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
         p = self.post([FAIL], api)
