@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the s
 from mech_review import merge  # noqa: E402 - imported after the sys.path line above
 
 REPORT = "mech-review report"
-BASELINE_JOB = "mech-review baseline (R3, once)"
+BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
+PLAN_JOB = "mech-review plan (R3 runs?)"
 JOBS = {"r2": ("mech-review-json", "mech-review.json"), "red": ("mech-review-red-json", "mech-review-red.json")}
 BASELINE = ("mech-review-baseline-json", "mech-review-baseline.json")
 MERGED = ("mech-review-mutants-merged-json", "mutants-merged.json")  # the owner's upload step (docs/mech-review-ci.md)
@@ -89,12 +90,13 @@ def mutants_env(d, jobs, ends):
     merged = _load(d, MERGED)
     if b is None and merged is None:
         if bad is None:
-            concl = None if jobs is None else jobs.get(BASELINE_JOB, "skipped")
-            if concl is None:
+            concl = (jobs or {}).get(BASELINE_JOB)
+            plan = (jobs or {}).get(PLAN_JOB)
+            if concl is None:  # --dir, or a job list without it: unknown
                 return None, [], f"R3 skipped: {NO_BASELINE}"
-            if concl == "skipped":
+            if concl == "skipped" and plan == "success":
                 return None, [], "R3 skipped: not run: the plan found no production file changed"
-            bad = NO_BASELINE_JSON
+            bad = NO_BASELINE_JSON  # the report merges with --baseline-reason: baseline ran, or plan did not succeed
         return merge.combine_mutants(*ends, 0, {}, {}, baseline=None, baseline_reason=bad), [], None
     n = b["count"] if b is not None and b["run"] else 0
     shards, reasons, lines = {}, {}, []
@@ -148,14 +150,19 @@ def summarize(d, label, jobs=None):
                   for name in ("R1", "R2", "R3", "R4")]
     except (KeyError, TypeError, ValueError) as e:
         raise Stop(f"unreadable result in {label} ({type(e).__name__}: {e})")
-    print(f"{label}: {env['summary']}")
+    fails = [e for e in env["entries"] if e["severity"] == "fail"]
+    failed = [c for c in ("R1", "R2", "R3", "R4") if env["checks"][c]["status"] == "fail"]
+    summary = env["summary"]
+    if failed and not fails:  # a check failed with no entry to show for it: still a red run
+        summary = (f"fail {env['head']} (a check failed with no fail entry: {' '.join(failed)}; "
+                   f"merged summary: {summary})")
+    print(f"{label}: {summary}")
     for line in checks:
         print(line)
     if shard_lines:
         print("shards:")
         for line in shard_lines:
             print(line)
-    fails = [e for e in env["entries"] if e["severity"] == "fail"]
     confirms = sum(1 for e in env["entries"] if e["severity"] == "confirm")
     if fails:
         print(f"fail entries ({len(fails)}) by file:")
@@ -169,7 +176,7 @@ def summarize(d, label, jobs=None):
         print(f"confirm entries: {confirms} (see the PR comment)")
     if fails:
         print("waivers: not applied here (the sticky comment applies /mech-waive)")
-    return 1 if fails else 0
+    return 1 if fails or failed else 0
 
 
 def run_jobs(run, rid, repo):
@@ -177,12 +184,17 @@ def run_jobs(run, rid, repo):
     rc, out, err = run(["gh", "run", "view", rid, "--json", "status,jobs", *_repo(repo)])
     if rc != 0:
         raise Stop(f"gh run view {rid}: {err.strip()}")
-    view = json.loads(out)
-    if view["status"] != "completed":
-        done = sum(1 for j in view["jobs"] if j["status"] == "completed")
-        print(f"run {rid}: in progress ({done} of {len(view['jobs'])} jobs done): rerun when it completes")
+    try:
+        view = json.loads(out)
+        status, jobs = view["status"], view["jobs"]
+        done = sum(1 for j in jobs if j["status"] == "completed")
+        conclusions = {j["name"].rsplit(" / ", 1)[-1]: j["conclusion"] for j in jobs}
+    except (ValueError, KeyError, TypeError) as e:
+        raise Stop(f"gh run view {rid}: unreadable output ({type(e).__name__}: {e})")
+    if status != "completed":
+        print(f"run {rid}: in progress ({done} of {len(jobs)} jobs done): rerun when it completes")
         raise Stop(None)
-    return {j["name"].rsplit(" / ", 1)[-1]: j["conclusion"] for j in view["jobs"]}
+    return conclusions
 
 
 def main(argv, run=run_cmd):

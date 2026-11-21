@@ -63,13 +63,23 @@ class Run(unittest.TestCase):
         self.run_status = "completed"
         self.jobs = [{"name": "mech-review / mech-review baseline (R3, once)", "status": "completed",
                       "conclusion": "success"},
-                     {"name": "mech-review / mech-review report", "status": "completed", "conclusion": "failure"}]
+                     {"name": "mech-review / mech-review report", "status": "completed", "conclusion": "failure"},
+                     {"name": "mech-review / mech-review plan (R3 runs?)", "status": "completed", "conclusion": "success"}]
 
     def put(self, name, file, data):
         d = os.path.join(self.art, name)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, file), "w") as f:
             f.write(data if isinstance(data, str) else json.dumps(data))
+
+    def green_jobs(self):
+        """Every job passed: no fail entry anywhere."""
+        self.put("mech-review-json", "mech-review.json", env("r2", {"R2": ("pass", "0 fail")}))
+        self.put("mech-review-red-json", "mech-review-red.json", env("red", {"R1": ("pass", "ok"), "R4": ("pass", "ok")}))
+        self.put("mech-review-baseline-json", "mech-review-baseline.json", baseline(2))
+        for k in range(2):
+            self.put(f"mech-review-mutants-{k}", "mech-review-mutants.json",
+                     shard(k, "4/4 tested: 4 caught", status="pass", tested=4, total=4))
 
     def red_run(self):
         """A red report: R2 fails, R3 fails in two shards, R1 and R4 pass."""
@@ -154,7 +164,7 @@ class Output(Run):
         self.jobs[1]["status"], self.jobs[1]["conclusion"] = "queued", ""
         r = self.main("44583031414")
         self.assertEqual(r.returncode, 2)
-        self.assertEqual(r.stdout, "run 44583031414: in progress (1 of 2 jobs done): rerun when it completes\n")
+        self.assertEqual(r.stdout, "run 44583031414: in progress (2 of 3 jobs done): rerun when it completes\n")
         self.assertFalse(any(c[:3] == ["gh", "run", "download"] for c in self.calls))
 
     def test_a_failed_run_view_is_exit_2(self):
@@ -165,23 +175,72 @@ class Output(Run):
         self.assertEqual(r.returncode, 2)
         self.assertIn("mech-summary: gh run view 44583031414: run not found", r.stderr)
 
-    def test_a_crashed_baseline_job_fails_r3_as_the_report_does(self):
-        self.red_run()
+    def no_r3_artifacts(self):
+        self.green_jobs()
         for d in ("mech-review-baseline-json", "mech-review-mutants-0", "mech-review-mutants-1"):
             shutil.rmtree(os.path.join(self.art, d))
+
+    def test_a_crashed_baseline_job_fails_r3_as_the_report_does(self):
+        self.no_r3_artifacts()
         self.jobs[0]["conclusion"] = "failure"
         r = self.main("44583031414")
         self.assertEqual(r.returncode, 1)
         out = r.stdout.splitlines()
+        self.assertTrue(out[0].startswith(f"run 44583031414: fail {HEAD} "), out[0])
         self.assertIn("R3 fail: no result from baseline job: no JSON from the baseline job (see its log)", out)
 
     def test_a_skipped_baseline_job_is_r3_not_planned(self):
-        self.red_run()
-        for d in ("mech-review-baseline-json", "mech-review-mutants-0", "mech-review-mutants-1"):
-            shutil.rmtree(os.path.join(self.art, d))
+        self.no_r3_artifacts()
         self.jobs[0]["conclusion"] = "skipped"
+        r = self.main("44583031414")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("R3 skipped: not run: the plan found no production file changed", r.stdout.splitlines())
+
+    def test_a_failed_plan_job_fails_r3_as_the_report_does(self):
+        self.no_r3_artifacts()
+        self.jobs[0]["conclusion"] = "skipped"
+        self.jobs[2]["conclusion"] = "failure"
+        r = self.main("44583031414")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("R3 fail: no result from baseline job: no JSON from the baseline job (see its log)",
+                      r.stdout.splitlines())
+
+    def test_no_baseline_job_in_the_list_is_unknown_not_unplanned(self):
+        self.no_r3_artifacts()
+        del self.jobs[0]
         out = self.main("44583031414").stdout.splitlines()
-        self.assertIn("R3 skipped: not run: the plan found no production file changed", out)
+        self.assertIn(f"R3 skipped: {ms.NO_BASELINE}", out)
+
+    def test_job_names_are_the_workflows(self):
+        with open(os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml"), encoding="utf-8") as f:
+            wf = f.read()
+        for name in (ms.BASELINE_JOB, ms.PLAN_JOB, ms.REPORT):
+            self.assertIn(f"    name: {name}\n", wf)
+
+    def test_a_run_view_that_is_not_json_is_exit_2(self):
+        def run(argv, env=None, cwd=None):
+            return (0, "<html>", "") if argv[:3] == ["gh", "run", "view"] else self.fake(argv)
+
+        r = _kit.run_cli(["44583031414"], main=lambda a: ms.main(a, run=run))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("mech-summary: gh run view 44583031414: unreadable output (", r.stderr)
+
+    def test_a_run_view_with_missing_keys_is_exit_2(self):
+        def run(argv, env=None, cwd=None):
+            return (0, '{"status": "completed"}', "") if argv[:3] == ["gh", "run", "view"] else self.fake(argv)
+
+        r = _kit.run_cli(["44583031414"], main=lambda a: ms.main(a, run=run))
+        self.assertEqual(r.returncode, 2)
+
+    def test_a_check_fail_with_no_fail_entry_fails_the_run(self):
+        self.green_jobs()
+        r2 = env("r2", {"R2": ("fail", "no result")})
+        self.put("mech-review-json", "mech-review.json", r2)
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout.splitlines()
+        self.assertEqual(out[0], f"{self.art}: fail {HEAD} (a check failed with no fail entry: R2; merged summary: "
+                                 f"pass {HEAD} (0 fail, 0 confirm; ran: R1 R2 R3 R4))")
 
     def test_the_merged_artifact_name_is_the_one_the_owner_yaml_uploads(self):
         self.assertEqual(ms.MERGED, ("mech-review-mutants-merged-json", "mutants-merged.json"))
@@ -334,10 +393,13 @@ class Jobs(Run):
 
     def test_a_baseline_with_missing_keys_fails_r3_as_unusable(self):
         self.red_run()
+        self.green_jobs()
         self.put("mech-review-baseline-json", "mech-review-baseline.json", {"head": HEAD, "summary": "x"})
         r = self.main("--dir", self.art)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("R3 fail: no result from baseline job: no usable result file", r.stdout.splitlines())
+        out = r.stdout.splitlines()
+        self.assertTrue(out[0].startswith(f"{self.art}: fail {HEAD} "), out[0])
+        self.assertIn("R3 fail: no result from baseline job: no usable result file", out)
 
     def test_a_shard_with_no_r3_check_is_no_result(self):
         self.red_run()
