@@ -18,9 +18,6 @@ import shutil
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
-import shells  # noqa: E402 - imported after the sys.path line above, which makes the kit's scripts importable
-
 ORDER = ("python3", "py -3", "python")
 NEED = (3, 9)
 MESSAGE = ("[ekit] no Python 3.9+ found: tried python3, py -3, python. Install Python 3.9 or newer "
@@ -72,15 +69,22 @@ def pick(probe=None):
     return None
 
 
+SAFE = re.compile(r"[\w./:@%+=,-][\w./:@%+=,~-]*")  # ~ only past the start: no tilde expansion
+
+
 def shown(path):
-    """`path` as a command argument bash and PowerShell both read as written: forward slashes, and single quotes
-    when needed (neither shell expands $ or ` inside them). A ' in the path is spelled the way the shell this process
-    was started from spells it: '' in PowerShell, '\'' in a POSIX shell."""
+    """`path` as a command argument that bash and PowerShell both read as written, whichever shell printed it (a
+    hook may print in Git Bash, the agent paste into PowerShell): forward slashes; single quotes when needed (neither
+    shell expands inside them); a path holding a ' in double quotes when it holds no $, ` or " (both read those
+    alike). One with a ' and a $ or ` has no such form (PowerShell joins no adjacent quoted strings, bash expands
+    $ in double quotes, Windows' 8.3 names keep the '): it is double-quoted, and the shell's expansion makes it a
+    path that does not exist, so Python says it cannot open it, never runs another file."""
     path = path.replace(os.sep, "/")  # Windows' backslashes; nothing on POSIX
-    if re.fullmatch(r"[\w./:@%+=,-]+", path):
+    if SAFE.fullmatch(path):
         return path
-    quote = "''" if shells.current()["name"] in shells.PS_SHELLS else "'\\''"
-    return "'" + path.replace("'", quote) + "'"
+    if "'" not in path:
+        return f"'{path}'"
+    return f'"{path}"'
 
 
 def command():

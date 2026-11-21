@@ -95,12 +95,19 @@ class Printed(unittest.TestCase):
         if WIN:
             self.assertEqual(launcher.shown("C:\\Users\\a\\ekit\\x.py"), "C:/Users/a/ekit/x.py")
 
-    def test_a_quote_in_a_path_is_spelled_the_way_the_shell_that_reads_it_spells_it(self):
-        with mock.patch.dict(os.environ, {"EKIT_SHELL": "bash"}):
-            self.assertEqual(launcher.shown("/o/O'Brien $HOME/x.py"), "'/o/O'\\''Brien $HOME/x.py'")
-        for ps in ("powershell", "pwsh"):
-            with mock.patch.dict(os.environ, {"EKIT_SHELL": ps}):
-                self.assertEqual(launcher.shown("/o/O'Brien $HOME/x.py"), "'/o/O''Brien $HOME/x.py'")
+    def test_a_quote_in_a_path_is_printed_in_a_form_both_shells_read_alike_whichever_printed_it(self):
+        """the hook may print in Git Bash and the agent paste into PowerShell, or the other way round"""
+        for shell in ("bash", "powershell"):
+            with self.subTest(shell=shell), mock.patch.dict(os.environ, {"EKIT_SHELL": shell}):
+                self.assertEqual(launcher.shown("/o/O'Brien/x.py"), '"/o/O\'Brien/x.py"')
+
+    def test_a_quote_with_a_dollar_or_backtick_is_double_quoted_the_known_limit(self):
+        """no form reads the same in both shells (tests/windows-smoke.py pastes each form into both): such a path is
+        double-quoted, and its expansion names no file, so the run fails loudly"""
+        self.assertEqual(launcher.shown("/o/O'Brien $HOME/x.py"), '"/o/O\'Brien $HOME/x.py"')
+        self.assertEqual(launcher.shown("C:/o/O'Brien `x/x.py"), '"C:/o/O\'Brien `x/x.py"')
+        self.assertEqual(launcher.shown("C:/o/8~1/x.py"), "C:/o/8~1/x.py")  # a ~ past the start needs no quotes
+        self.assertEqual(launcher.shown("~/x.py"), "'~/x.py'")  # at the start bash would expand it
 
     def test_a_printed_script_line_is_the_interpreter_then_the_path(self):
         with mock.patch.dict(os.environ, {"EKIT_PY": "python"}):
