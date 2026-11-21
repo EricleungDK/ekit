@@ -431,8 +431,8 @@ class TestVerifyCommands(GateCase):
         self.assertEqual(self.stop(DONE)["reason"], (
             "[ekit] A done report needs verify commands, and no verify command was declared for this session. "
             "Declare the units' commands and the full suite for the whole job, each with "
-            f"`CLAUDE_CODE_SESSION_ID=s1 python3 {launcher.shown(os.path.join(_kit.SCRIPTS, 'task-verify.py'))} --repo "
-            f"{launcher.shown(self.repo)} "
+            f"`python3 {launcher.shown(os.path.join(_kit.SCRIPTS, 'task-verify.py'))} --repo "
+            f"{launcher.shown(self.repo)} --session s1 "
             "declare -- <command>`, run each with `run -- <command>` in place of `declare`, then give the finish "
             "report again."))
 

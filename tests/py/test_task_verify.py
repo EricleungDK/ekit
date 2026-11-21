@@ -316,6 +316,16 @@ class Declare(VerifyCase):
         self.assertEqual(self.check()[1], "no verify command was declared for this session\n")
         self.assertEqual(self.check("s2"), (1, "`true`: no run recorded\n"))
 
+    def test_the_session_may_be_given_as_an_argument_in_any_shell(self):
+        """`CLAUDE_CODE_SESSION_ID=x cmd` is bash only; `--session x` reads the same in PowerShell"""
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertEqual(self.call(["--repo", self.repo, "--session", "s7", "declare", "--", "true"]),
+                         (0, "task-verify: `true` is a verify command of this session\n"))
+        self.assertEqual(self.check("s7"), (1, "`true`: no run recorded\n"))
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}):
+            self.call(["--session", "s8", "--repo", self.repo, "declare", "--", "false"])
+        self.assertEqual(self.check("s8"), (1, "`false`: no run recorded\n"))
+
     def test_without_a_session_id_nothing_is_declared(self):
         self.assertEqual(self.declare("true", session=None), (
             2, "task-verify: CLAUDE_CODE_SESSION_ID is not set: run this as a Claude Code Bash command, or set it "
@@ -370,8 +380,8 @@ class ReadOnlyGitDir(VerifyCase):
                    "Permission denied. A sandbox keeps the git dir read-only: run it outside the sandbox, as "
                    f"`{call}`.\n")
 
-    def tool(self, verb):
-        return f"python3 {TOOL} --repo {launcher.shown(self.repo)} {verb} --"
+    def tool(self, verb, session=None):
+        return f"python3 {TOOL} --repo {launcher.shown(self.repo)} {f'--session {session} ' if session else ''}{verb} --"
 
     def test_run_that_cannot_record_is_not_a_pass(self):
         self.assertEqual(self.call(["--repo", self.repo, "run", "--", "test", "-f", "a.txt"]),
@@ -382,7 +392,7 @@ class ReadOnlyGitDir(VerifyCase):
     def test_declare_that_cannot_record_gives_the_call_with_the_session_id(self):
         with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "s1"}):
             self.assertEqual(self.call(["--repo", self.repo, "declare", "--", "true"]), self.refused(
-                "declared.json", f"CLAUDE_CODE_SESSION_ID=s1 {self.tool('declare')} true"))
+                "declared.json", f"{self.tool('declare', session='s1')} true"))
         self.unlock()
         self.assertEqual(self.check()[0], 4)
 
@@ -530,13 +540,14 @@ class VerifyLine(unittest.TestCase):
 
 class Usage(VerifyCase):
     def test_run_without_a_command_is_a_usage_error(self):
-        usage = (2, "usage: task-verify.py [--repo DIR] declare -- CMD... | run -- CMD... | check SESSION | "
-                    "task-verify.py --hook\n")
+        usage = (2, "usage: task-verify.py [--repo DIR] [--session ID] declare -- CMD... | run -- CMD... | "
+                    "check SESSION | task-verify.py --hook\n")
         for argv in ([], ["--repo"], ["--repo", self.repo], ["run"], ["run", "--"], ["run", "--", "", " "],
                      ["--repo", self.repo, "run", "--"], ["--repo", self.repo, "run", "true"], ["bogus", "--", "true"],
                      ["run", "true", "--"], ["--hook", "x"], ["check"],
                      ["check", "s1", "s2"], ["--repo", self.repo, "check"], ["declare"], ["declare", "--"],
-                     ["declare", "true"], ["declare", "--", " "]):
+                     ["declare", "true"], ["declare", "--", " "], ["--session"], ["--session", "s1"],
+                     ["--repo", self.repo, "--session"], ["--session", "", "declare", "--", "true"]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.call(argv), usage)
 

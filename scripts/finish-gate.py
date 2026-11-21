@@ -244,7 +244,7 @@ def main():
         if rc == 4:
             return block("A done report needs verify commands, and no verify command was declared for this session. "
                          "Declare the units' commands and the full suite for the whole job, each with "
-                         f"`CLAUDE_CODE_SESSION_ID={session} {tool} declare -- <command>`, run each with `run -- "
+                         f"`{tool} --session {session} declare -- <command>`, run each with `run -- "
                          "<command>` in place of `declare`, then give the finish report again.")
         if rc != 0:
             return block(f"Verify commands not green for the current files: {why}. Run each with `{tool} run -- "

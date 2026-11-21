@@ -2,8 +2,9 @@
 """Task verification: work is checked with verify commands that were named before it was called done.
 
 A verify command belongs to a session. It gets there in one of two ways:
-- `task-verify.py [--repo DIR] declare -- CMD...`, run by the agent. The session is $CLAUDE_CODE_SESSION_ID, which
-  Claude Code sets for Bash commands. This works in every session.
+- `task-verify.py [--repo DIR] [--session ID] declare -- CMD...`, run by the agent. The session is --session's ID,
+  else $CLAUDE_CODE_SESSION_ID, which Claude Code sets for Bash commands. This works in every session; the commands
+  ekit prints pass --session, which reads the same in bash and PowerShell.
 - a task whose description carries a line ``Verify: `<command>` ``, in a harness with a task list (the hook below).
 A command stays once it is there: no call takes one away, and a task keeps the command it was first seen with.
 
@@ -175,8 +176,9 @@ def cmd_run(top, words):
     return rc
 
 
-def cmd_declare(top, words):
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+def cmd_declare(top, words, session=None):
+    """session: --session's value, else $CLAUDE_CODE_SESSION_ID."""
+    session = session or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
         print("task-verify: CLAUDE_CODE_SESSION_ID is not set: run this as a Claude Code Bash command, or set it to "
               "the session id", file=sys.stderr)
@@ -255,17 +257,24 @@ def hook():
     return 2
 
 
-USAGE = "usage: task-verify.py [--repo DIR] declare -- CMD... | run -- CMD... | check SESSION | task-verify.py --hook"
+USAGE = ("usage: task-verify.py [--repo DIR] [--session ID] declare -- CMD... | run -- CMD... | check SESSION | "
+         "task-verify.py --hook")
 
 
 def main():
     a = sys.argv[1:]
     if a == ["--hook"]:
         return hook()
-    repo = os.getcwd()
+    repo, session = os.getcwd(), None
     try:
-        if a[0] == "--repo":
-            repo, a = os.path.abspath(a[1]), a[2:]
+        while a[0] in ("--repo", "--session"):  # either order; --session: the session id in a shell without
+            if a[0] == "--repo":                # `VAR=x cmd` (PowerShell)
+                repo = os.path.abspath(a[1])
+            elif not a[1]:
+                raise IndexError
+            else:
+                session = a[1]
+            a = a[2:]
         check = a[0] == "check" and len(a) == 2
         if not check and (a[0] not in ("declare", "run") or a[1] != "--" or not any(w.strip() for w in a[2:])):
             raise IndexError
@@ -279,13 +288,13 @@ def main():
     if check:
         return cmd_check(top, a[1])
     try:
-        return (cmd_declare if a[0] == "declare" else cmd_run)(top, a[2:])
+        return cmd_declare(top, a[2:], session) if a[0] == "declare" else cmd_run(top, a[2:])
     except OSError as e:
         # the session id goes along for declare: a shell outside the session (the user's own) does not have it
-        session = f"CLAUDE_CODE_SESSION_ID={os.environ.get('CLAUDE_CODE_SESSION_ID')} " if a[0] == "declare" else ""
+        sid = f"--session {session or os.environ.get('CLAUDE_CODE_SESSION_ID')} " if a[0] == "declare" else ""
         print(f"task-verify: nothing recorded, cannot write {e.filename}: {e.strerror}. A sandbox keeps the git dir "
-              f"read-only: run it outside the sandbox, as `{session}{launcher.line(os.path.abspath(__file__))} --repo {launcher.shown(top)} "
-              f"{a[0]} -- {shlex.quote(spelled(a[2:]))}`.", file=sys.stderr)
+              f"read-only: run it outside the sandbox, as `{launcher.line(os.path.abspath(__file__))} --repo "
+              f"{launcher.shown(top)} {sid}{a[0]} -- {shlex.quote(spelled(a[2:]))}`.", file=sys.stderr)
         return 3
 
 
