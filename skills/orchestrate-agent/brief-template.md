@@ -26,7 +26,7 @@ Tasks:
 6. Commit on <branch>. Every fix (review finding, mech entry, R1 fail) is a new commit on top; commits you reported stay as they are. A fix for a mech entry carries body line `mech: <id>` (the 3-strike stop counts per id). Commit message ends with:
    <attribution trailer>
 7. Review: you cannot spawn agents, so the orchestrator runs the mech checks, then your review. Stop and send your report (task 10) as a REVIEW REQUEST. Wait; findings arrive by message. Fix the real ones red-first, each in a new commit, re-verify, then report again.
-8. Push: <yes after review passes, then watch `gh pr checks <n> --watch` / no>.
+8. Push: <yes after review passes: open the PR, then turn on its CI monitor (Auto-fix), approved at plan time; a failure wakes you, and you fix it as a CI round / no>.
 9. Fix rounds: 3 per source (review, taste, CI), counted apart; rounds left: <review n, taste n, CI n>. The same mech `id` or the same finding (its key: file plus a short title, as the orchestrator names it) failing a 3rd time: stop and report, whatever is left.
 10. Report: load the finish skill; every report you send (review request, after a fix round, blocked) is its report, done or blocked branch, one row per checklist item you own. Add: branch, base SHA, head SHA, files changed, focus areas, commits; for a fix, the error, its cause, and new vs pre-existing. The issue and the PR stay with the orchestrator.
 

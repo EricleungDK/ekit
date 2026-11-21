@@ -198,5 +198,36 @@ class TestLocalTools(unittest.TestCase):
         self.assertIn("scripts/orch-status.py <worktree>", s)
 
 
+class TestCiMonitor(unittest.TestCase):
+    """Retro of the #34-#46 run: a harness that forbids polling CI wakes the PR's session through its CI monitor; the
+    owner approves that monitor once, at plan time, for every PR the run opens."""
+
+    def test_checklist_asks_the_owner_once_for_every_prs_ci_monitor(self):
+        s = section(read("SKILL.md"), "3. Acceptance checklist")
+        self.assertRegex(s, r"(?m)^- CI monitor: [^\n]*Needs-you row[^\n]*every PR the run opens")
+
+    def test_brief_turns_the_monitor_on_after_opening_its_pr_instead_of_watching(self):
+        t = flat(read("brief-template.md"))
+        self.assertIn("turn on its CI monitor (Auto-fix)", t)
+        self.assertNotIn("gh pr checks <n> --watch", t)
+
+
+class TestAgentsMdPreReviewChecks(unittest.TestCase):
+    """Retro of the #34-#46 run: R3 and a new Python were first seen in CI; AGENTS.md names both local runs."""
+
+    def agents(self):
+        with open(os.path.join(_kit.ROOT, "AGENTS.md"), encoding="utf-8") as f:
+            return flat(f.read())
+
+    def test_names_r3_local_with_ekits_own_caller_inputs(self):
+        t = self.agents()
+        self.assertIn("scripts/r3-local.py", t)
+        for arg in ("--stack python", "--test-paths 'tests/**' --test-paths '.ekit/scenarios/**'", "--mutation-budget 20"):
+            self.assertIn(arg, t)
+
+    def test_names_a_run_under_the_newest_python(self):
+        self.assertIn("uv run --python 3.14 python -m unittest discover -s tests/py", self.agents())
+
+
 if __name__ == "__main__":
     unittest.main()
