@@ -526,6 +526,106 @@ class TestRun(unittest.TestCase):
         with open(r["failed_transcript"], "rb") as f:
             self.assertTrue(f.read().endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: timeout ---\n"))
 
+    def test_a_timeout_stops_the_scenarios_children_too(self):
+        """the whole process tree goes, not only bash: a child left behind would hold the run's pipes open"""
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late")
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            t0 = time.time()
+            code, out, doc = self.main(f"(sleep 4; echo x > '{mark.replace(os.sep, '/')}') &\nsleep 30\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
+        self.assertLess(time.time() - t0, 20)
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_what_a_timed_out_scenario_printed_stays_even_when_a_child_escapes_the_stop(self):
+        """a child the stop does not reach keeps the scenario's output open: the transcript still holds what the
+        scenario printed, and the run does not wait for that child"""
+        escaped = []
+
+        def stop_nothing(p):
+            escaped.append(p)  # as if the tree kill missed it
+
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}), \
+                mock.patch.object(scenarios.shells, "kill_tree", side_effect=stop_nothing):
+            t0 = time.time()
+            code, _, doc = self.main("echo early; echo err >&2; sleep 30\n")
+        took = time.time() - t0
+        for p in escaped:
+            p.kill()
+        r = doc["scenarios"][0]
+        self.assertEqual((code, r["reason"]), (1, "timeout after 1s"))
+        self.assertLess(took, 25)
+        with open(r["failed_transcript"], "rb") as f:
+            text = f.read()
+        self.assertIn(b"--- stdout ---\nearly\n", text)
+        self.assertIn(b"--- stderr ---\nerr\n", text)
+
+    def test_a_background_child_does_not_outlive_its_scenario(self):
+        """`server &` then exit 0: the scenario passes, and its child is stopped with it (a server would keep its
+        port); a foreground hang still times out"""
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late").replace(os.sep, "/")
+        code, out, doc = self.main(f"(sleep 3; echo x > '{mark}') &\nexit 0\n")
+        self.assertEqual((code, doc["scenarios"][0].get("reason")), (0, None))
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            code, _, doc = self.main("sleep 30\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
+
+    def test_a_repo_path_that_does_not_exist_is_named_not_no_scenarios(self):
+        missing = os.path.join(os.path.realpath(self.tmp.name), "nope")
+        err = io.StringIO()
+        for verb in ("run", "check", "tree-hash"):
+            with self.subTest(verb=verb), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as e:
+                scenarios.main(["--repo", missing, verb])
+            self.assertEqual(e.exception.code, 2)
+        self.assertEqual(err.getvalue(), f"scenarios.py: no such directory: {missing}\n" * 3)
+
+    def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "bash is not on this machine (env)"))
+        self.assertIn("FAIL one: bash is not on this machine (env)", out)
+
+    def check(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "check"])
+        return e.exception.code, out.getvalue()
+
+    def test_check_after_a_run_this_host_could_not_do_says_it_cannot_run_here(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.main("exit 0\n")
+        self.assertEqual(self.check(), (1, "cannot run here: one: bash is not on this machine (env)\n"))
+
+    def test_check_after_a_real_failure_is_a_failed_run(self):
+        self.main("exit 1\n")
+        self.assertEqual(self.check(), (1, "last run FAIL\n"))
+        self.main("exit 0\n")
+        self.assertEqual(self.check(), (0, ""))
+
+    def can_fail(self, script, stdout=None):
+        """`can-fail HEAD` in-process: (exit code, what it printed). stdout: the stream it writes to."""
+        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")
+        out = stdout or io.StringIO()
+        with mock.patch("sys.stdout", out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "can-fail", "HEAD"])
+        return int(e.exception.code or 0), out
+
+    def test_can_fail_on_a_host_without_bash_is_n_a_not_a_pass(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out = self.can_fail("exit 0\n")
+        self.assertEqual((code, out.getvalue()), (4, "N/A one: bash is not on this machine (env)\n"))
+
+    def test_can_fail_writes_its_mark_to_a_windows_pipe(self):
+        """a pipe on Windows reads as cp1252 (as under Claude Code): ✓ must not raise"""
+        stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+        code, out = self.can_fail("exit 1\n", stream)
+        out.flush()
+        self.assertEqual((code, out.buffer.getvalue().decode("utf-8")), (0, "CAN-FAIL ✓ one\n"))
+
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")
         kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")

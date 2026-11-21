@@ -12,7 +12,7 @@ Trivial work (no acceptance criteria, no code behaviour changed) gets the light 
 At report time, rerun the decisive commands: tests, typecheck, build. Counts and results come from this run, never from memory.
 
 - CLI or app deliverable: install it the way a user gets it, into a throwaway location (a temp venv, `npm pack` plus a local install, `cargo install --root <tmp>`; taste-it's drivers.md has each), then run the command from there. Never install into the user's global environment to verify, and never editable: that runs the source tree. A built binary or `playwright --list` counts as not run.
-- The report's `Env:` line is what `bash <kit>/scripts/preflight.sh --env` prints, run now as a plain Bash command (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`). Copy it; never write it from memory or from an earlier report. A command you ran outside the sandbox says so in its own row.
+- The report's `Env:` line is what `<py> -I <kit>/scripts/preflight.py --env` prints, run now as a plain command in the shell the verify commands ran in (`<py>` = the Python named by the `[ekit] Python:` session line (`python3`, `py -3` or `python`: the first that is 3.9+); no such line → `python3`, else `py -3`, else `python`). It names that shell once; a row whose command ran in another shell names its own (`task-verify.py run` prints the shell it used) (`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit`). Copy it; never write it from memory or from an earlier report. A command you ran outside the sandbox says so in its own row.
 - Mech-review envelope present (PR comment or CLI) → follow [mech.md](mech.md).
 - Repo with `.ekit/scenarios/` → follow [scenarios.md](scenarios.md).
 
@@ -45,7 +45,7 @@ Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchest
 | <criterion> | 👤 human-only | <what the user checks>; Needs-you block below |
 Mech <head sha>: R1 <status> · R2 <status> · R3 <status> · R4 <status>
 TDD: <test> red (`<failure line>`) → green (`<cmd>` exit 0)
-Env: <the line `preflight.sh --env` printed>
+Env: <the line `preflight.py --env` printed>
 Verification debt: <items, or none>
 Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
 ```

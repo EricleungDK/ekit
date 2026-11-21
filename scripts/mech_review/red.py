@@ -10,6 +10,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from .gitio import blob, changes, git
@@ -20,13 +21,20 @@ TEST_RUNS = 5  # R4: each new or changed test, this many times at head
 TEST_TIMEOUT = 900  # seconds per run; a timeout is a verdict, not a crash
 
 
+def stubbed(argv, stub):
+    """argv with the stub in place of the toolchain executable (argv[0]); the arguments stay. A `.py` stub runs with
+    this Python: Windows starts no script by its shebang."""
+    if not stub:
+        return argv
+    return ([sys.executable, stub] if stub.endswith(".py") else [stub]) + list(argv[1:])
+
+
 def default_runner():
-    """Real runner. MECH_TEST_STUB, when set, replaces the toolchain executable (argv[0]); the arguments stay."""
+    """Real runner. MECH_TEST_STUB, when set, replaces the toolchain executable (argv[0]): `stubbed`."""
     stub = os.environ.get("MECH_TEST_STUB")
 
     def run(argv, cwd):
-        if stub:
-            argv = [stub] + argv[1:]
+        argv = stubbed(argv, stub)
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=TEST_TIMEOUT)
         except FileNotFoundError:

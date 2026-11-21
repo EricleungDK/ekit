@@ -257,7 +257,7 @@ def sandbox(repo, head, crate, project_dir, root):
     bad += [p for n in sorted(mutants.MUTMUT_COPIES)
             for p in _copytree_stops(os.path.join(crate, n), crate, root, checkouts)]
     if bad:
-        raise CopyFails(sorted({os.path.relpath(p, crate) for p in bad}))
+        raise CopyFails(sorted({_rel(p, crate) for p in bad}))
     for name in srcs:  # mutmut's root test*.py default among them: tracked .py files left out of also_copy
         _copy_or_fail(_copy_source, crate, name, box)
     for name in copied + sorted(mutants.MUTMUT_COPIES):
@@ -307,15 +307,20 @@ def _copy_error(e, crate, name):
                   (r for r in e.args[0] if isinstance(r, tuple))) if isinstance(e, shutil.Error) else []
     if rows:
         why = rows[0][2]  # str(OSError) of the first row: its strerror, as for a plain OSError
-        m = re.match(r"\[Errno \d+\] ([^:]+)", why)
+        m = re.match(r"\[(?:Errno|WinError) \d+\] ([^:]+)", why)  # POSIX and Windows word it so
         return CopyError(sorted({_rel(src, crate) for src, _, _ in rows}), m.group(1) if m else _scrub(why, crate))
     if isinstance(e, shutil.Error):  # its message, or that message split into characters by copytree's errors.extend
         return CopyError([name], _scrub("".join(map(str, e.args[0])), crate))
     return CopyError([_rel(e.filename, crate)] if e.filename else [name], e.strerror or _scrub(str(e), crate))
 
 
+def _posix(path):
+    """a path as an entry names it on every OS: `docs/x.md`, never `docs\\x.md`"""
+    return path.replace(os.sep, "/")
+
+
 def _rel(path, crate):
-    return os.path.relpath(os.fspath(path), crate)
+    return _posix(os.path.relpath(os.fspath(path), crate))
 
 
 def _scrub(text, crate):
@@ -436,9 +441,9 @@ def missing(out, wt, box):
         if os.path.isabs(path):
             real = os.path.realpath(path)
             if real == root or real.startswith(root + os.sep):
-                path = os.path.relpath(real, box)
+                path = _posix(os.path.relpath(real, box))
         else:
-            path = os.path.normpath(path)
+            path = _posix(os.path.normpath(path))
         if path not in seen:
             seen.append(path)
     return seen

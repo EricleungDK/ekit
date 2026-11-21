@@ -94,8 +94,7 @@ class RustCap(unittest.TestCase):
         git(self.repo, "commit", "-q", "-am", "head")
         self.stub = os.path.join(self.tmp.name, "stub.py")
         with open(self.stub, "w") as f:
-            f.write(STUB)
-        os.chmod(self.stub, 0o755)
+            f.write(STUB)  # no exec bit: a .py stub runs with this Python, as on Windows, which runs no shebang
         self.log = os.path.join(self.tmp.name, "calls.log")
         self.listing(LISTED)
 

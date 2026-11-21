@@ -104,6 +104,17 @@ class TestClassify(unittest.TestCase):
         self.assertIn("port ? in use", self.port("12:34:56 OSError: [Errno 98] Address already in use"))
 
 
+class TestFallbacks(unittest.TestCase):
+    def test_a_missing_python_names_the_python_the_hook_found(self):
+        with mock.patch.dict(os.environ, {"EKIT_PY": "py -3"}):
+            self.assertEqual(fm.classify("python x.py", "bash: python: command not found"), "[ekit] python missing → py -3.")
+            self.assertEqual(fm.classify("jq .a f", "bash: jq: command not found"),
+                             "[ekit] jq missing → py -3 -c 'import json'.")
+            self.assertEqual(fm.classify("pip install x", "bash: pip: command not found"),
+                             "[ekit] pip missing → uv pip / py -3 -m pip.")
+            self.assertEqual(fm.classify("rg x", "bash: rg: command not found"), "[ekit] rg missing → grep -rn / find.")
+
+
 class TestRunsTests(unittest.TestCase):
     """The `test red` hint is for a command that ran tests, not for one that only mentions a runner."""
 

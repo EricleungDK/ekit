@@ -183,7 +183,7 @@ mktask() { jq -nc --arg c "$V" --arg d "$1" --arg t "$2" '{hook_event_name:"Task
 start "$V" v1 >/dev/null; arm "$V" v1 >/dev/null; echo a > "$V/a.txt"
 out="$(stop "$V" v1 false Stop "$REPORT")"; eq "$(dec "$out")" "block" "done, no verify command in the session → block"
 has "$(jq -r .reason <<<"$out")" "no verify command was declared for this session" "reason: no command declared"
-has "$(jq -r .reason <<<"$out")" "CLAUDE_CODE_SESSION_ID=v1 python3 $TV --repo $V declare -- <command>" "reason gives the declare command with the session id"
+has "$(jq -r .reason <<<"$out")" "python3 $TV --repo $V --session v1 declare -- <command>" "reason gives the declare command with the session id"
 CLAUDE_CODE_SESSION_ID=v1 python3 -I "$TV" --repo "$V" declare -- 'test -f a.txt' 2>/dev/null
 out="$(stop "$V" v1 false Stop "$REPORT")"; has "$(jq -r .reason <<<"$out")" '`test -f a.txt`: no run recorded' "a declared command is asked for"
 lacks "$(jq -r .reason <<<"$out")" "declare --" "with a command declared, the reason is the run, not the declare call"

@@ -521,6 +521,19 @@ class _Scan(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+
+def mutmut_section(text):
+    """the text of pyproject's [tool.mutmut] table and its subtables, blank lines and comments left out; None when it
+    has none. Where tomllib is missing (python < 3.11) a change to it is what a change to the table's value is."""
+    out, inside = [], False
+    for line in text.splitlines():
+        bare = line.split("#", 1)[0].strip() if not line.lstrip().startswith(("'", '"')) else line.strip()
+        if bare.startswith("["):
+            inside = bool(re.match(r"\[\s*tool\s*\.\s*mutmut\s*(\]|\.)", bare))
+        if inside and bare:
+            out.append(bare)
+    return "\n".join(out) or None
+
 class PythonAdapter(Adapter):
     """Python: pytest functions and `Test*` classes, unittest TestCase methods (test_* / test* prefix, as both runners collect).
     Names: `test_fn`, `Class::test_method` (Class nested in another class: `Outer::Class::test_method`)."""
@@ -621,7 +634,10 @@ class PythonAdapter(Adapter):
             if text is None:
                 return None
             if name == "pyproject.toml":
-                import tomllib
+                try:
+                    import tomllib
+                except ImportError:  # python 3.9, 3.10: the table's own text stands in for its value
+                    return mutmut_section(text)
                 return tomllib.loads(text).get("tool", {}).get("mutmut")
             cp = configparser.ConfigParser(interpolation=None)
             cp.read_string(text)

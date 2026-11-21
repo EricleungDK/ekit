@@ -1,5 +1,7 @@
 """Scenario runner: `scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF`.
 
+can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes but one could not run here (n/a).
+
 Runs .ekit/scenarios/<slug>/run.sh in fresh temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
 Repo-local so the Stop hook (plugin env) and sandboxed Bash (read-only HOME) agree on one location.
 """
@@ -12,6 +14,9 @@ import sys
 import tempfile
 import time
 from urllib.parse import quote
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
+import shells  # noqa: E402 - the sys.path line above has to run first
 
 LAYOUT = ".ekit/scenarios/<slug>/SCENARIO.md + run.sh"
 NODOC = "missing SCENARIO.md — document it (story, covers, steps, expected)"
@@ -113,7 +118,7 @@ def find(repo):
     for d, dirs, fs in os.walk(base):
         dirs[:] = [name for name in dirs if name != "fixtures"]
         if "run.sh" in fs:
-            ids.append(os.path.relpath(d, base))
+            ids.append(os.path.relpath(d, base).replace(os.sep, "/"))  # an id reads the same on every OS
     return sorted(ids, key=lambda i: i.split("/"))
 
 
@@ -129,8 +134,13 @@ def run_one(repo, sid, ids, tdir, kept=None):
     parent's dir. kept: the dir that holds each scenario's last failed transcript (none: not kept)."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
+    bash = shells.find("bash")  # on Windows: Git for Windows' bash, never WSL's
     if not os.path.isfile(os.path.join(d, "SCENARIO.md")):
         res.update(exit=1, reason=NODOC)
+        out = err = b""
+        cwd = ""
+    elif not bash:
+        res.update(exit=None, reason="bash is not on this machine (env)")
         out = err = b""
         cwd = ""
     else:
@@ -146,16 +156,26 @@ def run_one(repo, sid, ids, tdir, kept=None):
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()
-        p = subprocess.Popen(["bash", os.path.join(d, "run.sh")], cwd=cwd, env=env, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, start_new_session=True)
+        # output to files, not pipes: a child the stop misses can hold no pipe open, and what the scenario printed
+        # before a timeout stays for the transcript
+        fo, fe = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=shells.env_for(bash, "bash", env), stdout=fo,
+                         stderr=fe)
         try:
-            out, err = p.communicate(timeout=limit)
+            p.wait(timeout=limit)
             res["exit"] = p.returncode
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, 9)
-            out, err = p.communicate()
+            shells.kill_tree(p)  # the process group on POSIX, the tree on Windows
+            try:
+                p.wait(timeout=shells.REAP)
+            except subprocess.TimeoutExpired:
+                pass  # escaped the stop: its output so far is in the files all the same
             res.update(exit=None, reason=f"timeout after {limit:g}s")
         finally:
+            shells.finish(p)  # Windows: what the scenario left running stops with its job
+            out, err = (f.seek(0) or f.read() for f in (fo, fe))
+            fo.close()
+            fe.close()
             res["duration"] = round(time.time() - t0, 3)
             shutil.rmtree(cwd, ignore_errors=True)
             files = sorted(os.path.join(dp, n) for dp, _, ns in os.walk(art) for n in ns)
@@ -254,15 +274,18 @@ def cmd_can_fail(repo, ref=None):
             return 2
         shutil.rmtree(root(wt), ignore_errors=True)
         shutil.copytree(root(repo), root(wt))
-        flagged = 0
+        flagged = na = 0
         for sid in ids:
             res = run_one(wt, sid, ids, tmp)
-            if res.get("reason"):
+            if str(res.get("reason", "")).endswith("(env)"):  # it never ran: no proof either way
+                print(f"N/A {sid}: {res['reason']}")
+                na += 1
+            elif res.get("reason"):
                 print(f"CAN-FAIL ✓ {sid}")
             else:
                 print(f"CANNOT FAIL {sid}: passes on baseline {ref}")
                 flagged += 1
-        return flagged > 0
+        return 1 if flagged else 4 if na else 0
     finally:
         subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -284,7 +307,12 @@ def cmd_check(repo):
     except (OSError, ValueError):
         print("no results: run scenarios")
         return 1
-    if res.get("verdict") != "PASS":
+    failed = [r for r in res.get("scenarios") or [] if isinstance(r, dict) and r.get("reason")]
+    if res.get("verdict") != "PASS" and failed and not res.get("reason") \
+            and all(str(r["reason"]).endswith("(env)") for r in failed):
+        # every failure is what this host lacks: the Stop gate takes a blocked report naming it
+        print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
+    elif res.get("verdict") != "PASS":
         print("last run FAIL")
     elif res.get("filter"):
         print(f"partial run: only '{res['filter']}' was run; run all scenarios")
@@ -301,6 +329,8 @@ def usage():
 
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # ✓ and → on a Windows pipe, which reads as cp1252
     a = list(sys.argv[1:] if argv is None else argv)
     repo = "."
     if "--repo" in a:
@@ -309,6 +339,9 @@ def main(argv=None):
             usage()
         repo = a[i + 1]
         del a[i:i + 2]
+    if not os.path.isdir(repo):  # not "no scenarios found": the path itself is wrong
+        print(f"scenarios.py: no such directory: {repo}", file=sys.stderr)
+        sys.exit(2)
     top = git(repo, "rev-parse", "--show-toplevel").strip()
     repo = top or os.path.abspath(repo)
     cmds = {"run": cmd_run, "tree-hash": cmd_hash, "check": cmd_check, "can-fail": cmd_can_fail}

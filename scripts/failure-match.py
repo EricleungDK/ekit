@@ -8,6 +8,9 @@ import shlex
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
+import launcher  # noqa: E402 - the sys.path line above has to run first
+
 ENV = re.compile(
     r"EPERM|Operation not permitted|EROFS|Read-only file system|docker\.sock|"
     r"Could not resolve host|ENOTFOUND|EAI_AGAIN|Temporary failure in name resolution",
@@ -17,7 +20,13 @@ PORT = re.compile(r"EADDRINUSE|address already in use", re.I)
 PORT_NO = re.compile(r":(\d{2,5})\b")
 CLOCK = re.compile(r"(?<![\d.])\d{1,2}:\d{2}(?::\d{2})?")  # a log line's 12:34:56 is not host:port
 NOT_FOUND = re.compile(r"(?:^|\s)([\w.-]+): command not found")
-FALLBACK = {"python": "python3", "rg": "grep -rn / find", "jq": "python3 -c 'import json'", "pip": "uv pip / python3 -m pip"}
+
+
+def fallback(tool):
+    """What to use in place of a missing tool: the Python ones start the Python the hook found (launcher)."""
+    py = launcher.command()
+    return {"python": py, "python3": py, "rg": "grep -rn / find", "jq": f"{py} -c 'import json'",
+            "pip": f"uv pip / {py} -m pip"}.get(tool)
 TEST_CMD = re.compile(r"\b(pytest|vitest|jest|playwright test|cargo test|go test|npm (run )?test|pnpm test|yarn test|bun test|unittest)\b")
 # tools that read or print: a failing one that names a test runner (`grep -rn pytest docs/`) has run no test
 READERS = frozenset("grep egrep fgrep rg ag ack cat head tail less more ls find fd wc echo printf which type file stat diff "
@@ -82,7 +91,7 @@ def classify(cmd, err):
     m = NOT_FOUND.search(err)
     if m:
         tool = m.group(1)
-        return f"[ekit] {tool} missing → {FALLBACK.get(tool, 'find an installed alternative or log as verification debt')}."
+        return f"[ekit] {tool} missing → {fallback(tool) or 'find an installed alternative or log as verification debt'}."
     if runs_tests(cmd):
         return "[ekit] test red. Before editing code, classify it with the failure-triage skill."
     return None

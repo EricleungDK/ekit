@@ -2,13 +2,19 @@
 """Task verification: work is checked with verify commands that were named before it was called done.
 
 A verify command belongs to a session. It gets there in one of two ways:
-- `task-verify.py [--repo DIR] declare -- CMD...`, run by the agent. The session is $CLAUDE_CODE_SESSION_ID, which
-  Claude Code sets for Bash commands. This works in every session.
+- `task-verify.py [--repo DIR] [--session ID] declare -- CMD...`, run by the agent. The session is --session's ID,
+  else $CLAUDE_CODE_SESSION_ID, which Claude Code sets for Bash commands. This works in every session; the commands
+  ekit prints pass --session, which reads the same in bash and PowerShell.
 - a task whose description carries a line ``Verify: `<command>` ``, in a harness with a task list (the hook below).
 A command stays once it is there: no call takes one away, and a task keeps the command it was first seen with.
 
 `task-verify.py [--repo DIR] run -- CMD...` runs CMD in the repo root and records its exit code with the tree hash.
 The agent runs it, through the Bash tool, so the command passes the session's permission rules and sandbox.
+
+A command line means what its shell makes of it (bash, zsh, PowerShell): the first `declare` or `run` of a command
+keeps the shell it was given in (shells.current()), and every later `run` of it uses that shell, whichever shell
+calls `run`. A command whose shell this machine lacks is not run: `run` exits 5, and the command reads
+`n/a (env)`, never a pass.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command becomes a command of the session.
@@ -40,7 +46,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
 
-import scenarios  # noqa: E402 - the sys.path line above has to run first
+import launcher  # noqa: E402 - the sys.path line above has to run first
+import scenarios  # noqa: E402 - imported after the sys.path line above, like the one before it
+import shells  # noqa: E402 - imported after the sys.path line above, like the one before it
 
 STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.join(
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
@@ -105,11 +113,29 @@ def runs_of(top):
     return load(os.path.join(store(top), "verify.json"), list)
 
 
-def record(top, cmd, rc):
-    """Replaces this worktree's earlier run of `cmd`."""
+def record(top, cmd, rc, shell=None, na=None):
+    """Replaces this worktree's earlier run of `cmd`. na: why it could not run here (rc None)."""
     runs = [r for r in runs_of(top) if (r["top"], r["cmd"]) != (top, cmd)]
-    runs.append({"cmd": cmd, "top": top, "tree": tree(top), "rc": rc})
+    run = {"cmd": cmd, "top": top, "tree": tree(top), "rc": rc, "shell": shell}
+    if na:
+        run["na"] = na
+    runs.append(run)
     save(os.path.join(store(top), "verify.json"), runs)
+
+
+def shell_of(top, cmd):
+    """The shell `cmd` was first given in ({"name", "exe"}), else the current one."""
+    sh = load(os.path.join(store(top), "shells.json"), dict).get(cmd)
+    return sh if isinstance(sh, dict) and sh.get("name") else shells.current()
+
+
+def keep_shell(top, cmd, sh):
+    """`sh` becomes the shell of `cmd` unless it has one."""
+    path = os.path.join(store(top), "shells.json")
+    known = load(path, dict)
+    if not (isinstance(known.get(cmd), dict) and known[cmd].get("name")):
+        known[cmd] = sh
+        save(path, known)
 
 
 def keep(top, session, key, cmd):
@@ -135,20 +161,31 @@ def spelled(words):
 
 def cmd_run(top, words):
     cmd = spelled(words)
-    rc = subprocess.run(cmd, shell=True, cwd=top).returncode
-    record(top, cmd, rc)  # hashed after the run: what the command left is what the hook will see
-    print(f"task-verify: `{cmd}` exited {rc}", file=sys.stderr)
+    sh = shell_of(top, cmd)
+    exe = shells.find(sh)
+    if not exe:
+        na = f"its shell {sh['name']} is not on this machine"
+        record(top, cmd, None, sh["name"], na)
+        keep_shell(top, cmd, sh)
+        print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
+        return 5
+    rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"])).returncode
+    record(top, cmd, rc, sh["name"])  # hashed after the run: what the command left is what the hook will see
+    keep_shell(top, cmd, sh)
+    print(f"task-verify: `{cmd}` exited {rc} in {sh['name']}", file=sys.stderr)
     return rc
 
 
-def cmd_declare(top, words):
-    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+def cmd_declare(top, words, session=None):
+    """session: --session's value, else $CLAUDE_CODE_SESSION_ID."""
+    session = session or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
         print("task-verify: CLAUDE_CODE_SESSION_ID is not set: run this as a Claude Code Bash command, or set it to "
               "the session id", file=sys.stderr)
         return 2
     cmd = spelled(words)
     keep(top, session, f"cmd:{cmd}", cmd)
+    keep_shell(top, cmd, shells.current())
     print(f"task-verify: `{cmd}` is a verify command of this session", file=sys.stderr)
     return 0
 
@@ -172,6 +209,8 @@ def why_not(top, cmd):
     runs = [r for r in runs_of(top) if r["cmd"] == cmd]
     if not runs:
         return "no run recorded"
+    if runs[-1].get("na") and not any(r["rc"] == 0 for r in runs):
+        return f"n/a (env): {runs[-1]['na']}"
     passed = [r for r in runs if r["rc"] == 0]
     if any(r["tree"] and tree(r["top"]) == r["tree"] for r in passed):
         return None
@@ -211,24 +250,31 @@ def hook():
             return 0
         write(seen, mark)
     print(f"[ekit] Task \"{data.get('task_subject')}\" is not verified for the current files: {why}. "
-          f"Run `python3 {os.path.abspath(__file__)} run -- {cmd}` in the checkout that holds the work, fix what it "
+          f"Run `{launcher.line(os.path.abspath(__file__))} run -- {cmd}` in the checkout that holds the work, fix what it "
           "shows, and mark the task completed once it exits 0. The command is the one the task was created with: "
           "a different one is the user's call. It cannot pass here → leave the task open and report it blocked "
           "(finish skill).", file=sys.stderr)
     return 2
 
 
-USAGE = "usage: task-verify.py [--repo DIR] declare -- CMD... | run -- CMD... | check SESSION | task-verify.py --hook"
+USAGE = ("usage: task-verify.py [--repo DIR] [--session ID] declare -- CMD... | run -- CMD... | check SESSION | "
+         "task-verify.py --hook")
 
 
 def main():
     a = sys.argv[1:]
     if a == ["--hook"]:
         return hook()
-    repo = os.getcwd()
+    repo, session = os.getcwd(), None
     try:
-        if a[0] == "--repo":
-            repo, a = os.path.abspath(a[1]), a[2:]
+        while a[0] in ("--repo", "--session"):  # either order; --session: the session id in a shell without
+            if a[0] == "--repo":                # `VAR=x cmd` (PowerShell)
+                repo = os.path.abspath(a[1])
+            elif not a[1]:
+                raise IndexError
+            else:
+                session = a[1]
+            a = a[2:]
         check = a[0] == "check" and len(a) == 2
         if not check and (a[0] not in ("declare", "run") or a[1] != "--" or not any(w.strip() for w in a[2:])):
             raise IndexError
@@ -242,13 +288,13 @@ def main():
     if check:
         return cmd_check(top, a[1])
     try:
-        return (cmd_declare if a[0] == "declare" else cmd_run)(top, a[2:])
+        return cmd_declare(top, a[2:], session) if a[0] == "declare" else cmd_run(top, a[2:])
     except OSError as e:
         # the session id goes along for declare: a shell outside the session (the user's own) does not have it
-        session = f"CLAUDE_CODE_SESSION_ID={os.environ.get('CLAUDE_CODE_SESSION_ID')} " if a[0] == "declare" else ""
+        sid = f"--session {session or os.environ.get('CLAUDE_CODE_SESSION_ID')} " if a[0] == "declare" else ""
         print(f"task-verify: nothing recorded, cannot write {e.filename}: {e.strerror}. A sandbox keeps the git dir "
-              f"read-only: run it outside the sandbox, as `{session}python3 {os.path.abspath(__file__)} --repo {top} "
-              f"{a[0]} -- {shlex.quote(spelled(a[2:]))}`.", file=sys.stderr)
+              f"read-only: run it outside the sandbox, as `{launcher.line(os.path.abspath(__file__))} --repo "
+              f"{launcher.shown(top)} {sid}{a[0]} -- {shlex.quote(spelled(a[2:]))}`.", file=sys.stderr)
         return 3
 
 

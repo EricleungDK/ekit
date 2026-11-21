@@ -448,11 +448,14 @@ def verdict(mo, rc, text, adapter, test_globs, wall_s=None, project_dir=".", tim
 
 
 def _signal_run(proc, sig):
-    """Signal the run's process group (cargo-mutants and what did not leave it), then the process itself."""
-    try:
-        os.killpg(proc.pid, sig)
-    except OSError:
-        pass
+    """Signal the run's process group (cargo-mutants and what did not leave it), then the process itself. An OS
+    without process groups (Windows) gets the signal to the process alone."""
+    killpg = getattr(os, "killpg", None)
+    if killpg:
+        try:
+            killpg(proc.pid, sig)
+        except OSError:
+            pass
     try:
         proc.send_signal(sig)
     except OSError:
@@ -466,7 +469,7 @@ def _stop(proc):
     try:
         proc.wait(timeout=KILL_GRACE)
     except subprocess.TimeoutExpired:
-        _signal_run(proc, signal.SIGKILL)
+        _signal_run(proc, getattr(signal, "SIGKILL", signal.SIGTERM))  # Windows: SIGTERM is TerminateProcess
         try:
             proc.wait(timeout=REAP)
         except subprocess.TimeoutExpired:
@@ -480,8 +483,7 @@ def default_runner():
     stub = os.environ.get("MECH_TEST_STUB")
 
     def run(argv, cwd, budget):
-        if stub:
-            argv = [stub] + argv[1:]
+        argv = red.stubbed(argv, stub)
         with tempfile.TemporaryFile() as out:
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
