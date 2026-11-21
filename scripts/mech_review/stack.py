@@ -25,6 +25,9 @@ Adapter interface:
       python `# pragma: no mutate`, ts `// Stryker disable`), in code, not strings; default none
   mutation_config(path, load) -> None | what: this change edits the R3 tool's config (cargo-mutants mutants.toml,
       [tool.mutmut], stryker config). load() -> (base text or None, head text or None), read only when needed
+  r3_tool: R3Tool(kind, packages, env, mutants_cmd) or None: the R3 tool as the workflow installs it, pinned (kind:
+      venv = pip into a venv, npm = npm install --prefix, cargo = cargo install); env: set for the R3 runs;
+      mutants_cmd: the tool's binary under the install dir, or None (on PATH). scripts/r3-local.py reads it (#35)
 
 Keep this interface narrow: a new check rule needs new data (a marker, an assertion kind) from these methods, not a
 new method for its message text.
@@ -49,6 +52,7 @@ CFG_TEST = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 BODY_END = re.compile(r"[{;]")
 ATTR = re.compile(r"#\[[^\]]*\]")
 Suppression = namedtuple("Suppression", "line end_line kind lints lint_text reason")
+R3Tool = namedtuple("R3Tool", "kind packages env mutants_cmd")
 
 RESULT = re.compile(r"test result: \w+\. (\d+) passed; (\d+) failed")
 BUILD = re.compile(r"could not compile|error\[E\d{4}\]")
@@ -183,6 +187,7 @@ class Adapter:
     default_test_cmd = ""
     manifests = ()  # files that make a directory a project of this stack (a missing one is named by a hint)
     from_file = False  # True: described by an adapter file (data_adapter); a file it cannot read is needs-human
+    r3_tool = None  # no R3 tool: an adapter file stack (R2 only)
 
     def classify(self, path, test_globs):
         raise NotImplementedError
@@ -245,6 +250,9 @@ class RustAdapter(Adapter):
     name = "rust"
     default_test_cmd = "cargo test"
     manifests = ("Cargo.toml",)
+    # incremental rebuilds and no debug info: each mutant otherwise rebuilds the crate and relinks every test binary
+    r3_tool = R3Tool("cargo", ("cargo-mutants@27.1.0",),
+                     {"CARGO_INCREMENTAL": "1", "CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_PROFILE_TEST_DEBUG": "0"}, None)
 
     def classify(self, path, test_globs):
         if not path.endswith(".rs"):
@@ -516,6 +524,7 @@ class PythonAdapter(Adapter):
     name = "python"
     default_test_cmd = "python3 -m pytest"
     manifests = ("pyproject.toml", "setup.py", "setup.cfg")
+    r3_tool = R3Tool("venv", ("pytest==9.2.0", "mutmut==3.8.1"), {}, None)
 
     def ignored_text(self, name):
         return f"test `{name}` marked skipped (skip or xfail)"
@@ -947,6 +956,8 @@ class TsAdapter(Adapter):
     name = "ts"
     default_test_cmd = "node_modules/.bin/vitest run"
     manifests = ("package.json",)
+    r3_tool = R3Tool("npm", ("@stryker-mutator/core@10.0.0", "@stryker-mutator/jest-runner@10.0.0"), {},
+                     "node_modules/.bin/stryker")
 
     def classify(self, path, test_globs):
         if not path.endswith(JS_EXT):

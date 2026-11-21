@@ -1,0 +1,381 @@
+"""scripts/r3-local.py (#35): the workflow's R3 jobs on this machine, the tool pinned as CI pins it.
+
+main(argv, run=...) in this process; the fake `run` stands for every command (git, venv, pip, the engine), so no tool is
+installed and no test of the PR is run here. One real run is in the PR's evidence, not in the suite."""
+import json
+import os
+import re
+import tempfile
+import threading
+import time
+import unittest
+
+import _kit
+from scripts.mech_review import stack
+
+r3 = _kit.load("r3-local")
+WORKFLOW = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml")
+BASE, HEAD = "b" * 40, "a" * 40
+
+
+def env(note, status="fail", entries=(), **extra):
+    checks = {c: {"status": "skipped", "note": "x"} for c in ("R1", "R2", "R3", "R4")}
+    checks["R3"] = dict({"status": status, "note": note}, **extra)
+    return {"ekit": "t", "base": BASE, "head": HEAD, "checks": checks, "entries": list(entries),
+            "summary": f"{status} {HEAD} (summary)"}
+
+
+def fail(file, line, problem):
+    return {"id": f"R3-{line:08d}", "check": "R3", "class": "agent-fixable", "severity": "fail", "file": file,
+            "line": line, "problem": problem, "hint": "h", "forbidden": "f"}
+
+
+class Fake:
+    """Answers each command by its kind; records (argv, env, cwd)."""
+
+    def __init__(self, plan=True, count=2, timeout=None, shard_rc=None, merge_rc=1, base_rc=0, fails=None,
+                 dirty="", merged=None):
+        self.calls, self.lock = [], threading.Lock()
+        self.plan, self.count, self.timeout = plan, count, timeout
+        self.shard_rc = shard_rc or {}
+        self.merge_rc, self.base_rc, self.fails, self.dirty = merge_rc, base_rc, fails or {}, dirty
+        self.merged = merged or env("shard 0/2: one; shard 1/2: two", entries=[fail("src/a.py", 3, "missed `+`")])
+
+    def __call__(self, argv, env_=None, cwd=None):
+        with self.lock:
+            self.calls.append((list(argv), env_, cwd))
+        if argv[:2] == ["git", "-C"] and argv[3] == "rev-parse":
+            return 0, {"main": BASE, "HEAD": HEAD}.get(argv[-1].split("^")[0], "c" * 40) + "\n", ""
+        if argv[:2] == ["git", "-C"] and argv[3] == "status":
+            return 0, self.dirty, ""
+        if argv[0] in self.fails:
+            return 1, "", f"{argv[0]} broke\n"
+        if len(argv) > 3 and argv[2].endswith("mech-review.py"):
+            sub = argv[3]
+            if sub == "plan":
+                return (2, "", "mech-review: git broke\n") if self.plan is None else (0, json.dumps({"run": self.plan}), "")
+            if sub == "baseline":
+                b = env(f"files in {self.count} shard(s)", status="skipped")
+                b.update(run=self.count > 0, count=self.count, mutants=None, timeout=self.timeout)
+                return self.base_rc, json.dumps(b), "baseline log\n"
+            if sub == "mutants":
+                k = int(argv[argv.index("--shard") + 1].split("/")[0])
+                rc = self.shard_rc.get(k, 1)
+                if rc > 1:
+                    return rc, "", "usage\n"
+                return rc, json.dumps(env(f"note of shard {k}", timing={"wall_s": 10.0 + k})), ""
+            if sub == "merge":
+                return self.merge_rc, json.dumps(self.merged), ""
+        return 0, "", ""
+
+    def engine(self, sub):
+        return [a for a, _, _ in self.calls if len(a) > 3 and a[2].endswith("mech-review.py") and a[3] == sub]
+
+    def opt(self, argv, flag):
+        return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+
+class Tmp(unittest.TestCase):
+    def setUp(self):
+        t = tempfile.TemporaryDirectory()
+        self.addCleanup(t.cleanup)
+        self.tmp = t.name
+        self.envdir = os.path.join(self.tmp, "env")
+
+    def main(self, fake, *extra, stack_name="python"):
+        argv = ["--repo", self.tmp, "--base", "main", "--stack", stack_name, "--env-dir", self.envdir, *extra]
+        return _kit.run_cli(argv, main=lambda a: r3.main(a, run=fake))
+
+
+class Pins(unittest.TestCase):
+    """The pins and settings come from the adapter; the workflow installs the same ones."""
+
+    def setUp(self):
+        with open(WORKFLOW, encoding="utf-8") as f:
+            self.wf = f.read()
+
+    def test_python_pins_are_the_workflows(self):
+        t = stack.PythonAdapter.r3_tool
+        self.assertEqual((t.kind, t.packages), ("venv", ("pytest==9.2.0", "mutmut==3.8.1")))
+        self.assertIn("pip install --quiet " + " ".join(f'"{p}"' for p in t.packages), self.wf)
+
+    def test_ts_pins_are_the_workflows(self):
+        t = stack.TsAdapter.r3_tool
+        self.assertEqual(t.kind, "npm")
+        self.assertIn("--legacy-peer-deps " + " ".join(f'"{p}"' for p in t.packages), self.wf)
+        self.assertIn("/stryker/" + t.mutants_cmd, self.wf)
+
+    def test_rust_pins_and_env_are_the_workflows(self):
+        t = stack.RustAdapter.r3_tool
+        self.assertEqual((t.kind, t.packages), ("cargo", ("cargo-mutants@27.1.0",)))
+        self.assertIn("tool: cargo-mutants@27.1.0", self.wf)
+        self.assertEqual(t.env, {"CARGO_INCREMENTAL": "1", "CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_PROFILE_TEST_DEBUG": "0"})
+        self.assertIn("export CARGO_INCREMENTAL=1", self.wf)
+        self.assertIn("export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0", self.wf)
+
+    def test_the_base_adapter_has_no_r3_tool(self):
+        self.assertIsNone(stack.Adapter.r3_tool)
+
+
+class Steps(Tmp):
+    def test_python_env_is_a_venv_with_the_pins_and_the_requirements_files(self):
+        for name in ("requirements.txt", "requirements-dev.txt", "other.txt"):
+            open(os.path.join(self.tmp, name), "w").close()
+        fake = Fake()
+        r = self.main(fake)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        venv = os.path.join(self.envdir, "venv")
+        py = os.path.join(venv, "bin", "python")
+        setup = [a for a, _, _ in fake.calls if a[0] in ("python3", py)][:4]
+        self.assertEqual(setup, [
+            ["python3", "-m", "venv", venv],
+            [py, "-m", "pip", "install", "--quiet", "pytest==9.2.0", "mutmut==3.8.1"],
+            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(self.tmp, "requirements-dev.txt")],
+            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(self.tmp, "requirements.txt")],
+        ])
+        # the engine runs with the venv first on PATH, as CI puts it on GITHUB_PATH
+        _, e, _ = [c for c in fake.calls if c[0][0] == "python3" and c[0][1] == "-I"][0]
+        self.assertTrue(e["PATH"].startswith(os.path.join(venv, "bin") + os.pathsep), e["PATH"])
+
+    def test_requirements_are_read_in_the_project_dir(self):
+        os.makedirs(os.path.join(self.tmp, "app"))
+        open(os.path.join(self.tmp, "app", "requirements.txt"), "w").close()
+        open(os.path.join(self.tmp, "requirements.txt"), "w").close()
+        fake = Fake()
+        self.main(fake, "--project-dir", "app")
+        reqs = [a[-1] for a, _, _ in fake.calls if "-r" in a]
+        self.assertEqual(reqs, [os.path.join(self.tmp, "app", "requirements.txt")])
+
+    def test_a_ready_env_is_reused(self):
+        self.main(Fake())
+        fake = Fake()
+        r = self.main(fake)
+        self.assertEqual([a for a, _, _ in fake.calls if "venv" in a or "pip" in a], [])
+        self.assertIn("r3-local: env ready in " + self.envdir, r.stdout)
+
+    def test_an_env_for_other_pins_is_set_up_again(self):
+        os.makedirs(self.envdir)
+        with open(os.path.join(self.envdir, r3.MARKER), "w") as f:
+            f.write('{"kind": "venv", "packages": ["mutmut==3.0.0"]}')
+        fake = Fake()
+        self.main(fake)
+        self.assertIn(["python3", "-m", "venv", os.path.join(self.envdir, "venv")], [a for a, _, _ in fake.calls])
+
+    def test_a_failed_setup_step_stops_with_exit_2_naming_it(self):
+        fake = Fake(fails={"python3"})
+        r = self.main(fake)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: setup failed: python3 -m venv", r.stderr)
+        self.assertIn("python3 broke", r.stderr)
+        self.assertEqual(fake.engine("plan"), [])
+        self.assertFalse(os.path.exists(os.path.join(self.envdir, r3.MARKER)))
+
+    def test_ts_env_is_stryker_in_its_own_prefix_and_its_bin_is_the_mutants_cmd(self):
+        fake = Fake()
+        self.main(fake, stack_name="ts")
+        prefix = os.path.join(self.envdir, "stryker")
+        self.assertEqual([a for a, _, _ in fake.calls if a[0] == "npm"], [
+            ["npm", "install", "--prefix", prefix, "--no-audit", "--no-fund", "--legacy-peer-deps",
+             "@stryker-mutator/core@10.0.0", "@stryker-mutator/jest-runner@10.0.0"]])
+        for argv in fake.engine("mutants"):
+            self.assertEqual(fake.opt(argv, "--mutants-cmd"), [os.path.join(prefix, "node_modules", ".bin", "stryker")])
+        self.assertEqual([fake.opt(a, "--mutants-cmd") for a in fake.engine("baseline")], [[]])
+
+    def test_rust_env_installs_cargo_mutants_and_sets_the_build_env(self):
+        fake = Fake()
+        self.main(fake, stack_name="rust")
+        root = os.path.join(self.envdir, "cargo")
+        self.assertEqual([a for a, _, _ in fake.calls if a[0] == "cargo"], [
+            ["cargo", "install", "--locked", "--root", root, "cargo-mutants", "--version", "27.1.0"]])
+        _, e, _ = [c for c in fake.calls if c[0][:2] == ["python3", "-I"]][0]
+        self.assertTrue(e["PATH"].startswith(os.path.join(root, "bin") + os.pathsep))
+        self.assertEqual((e["CARGO_INCREMENTAL"], e["CARGO_PROFILE_DEV_DEBUG"], e["CARGO_PROFILE_TEST_DEBUG"]),
+                         ("1", "0", "0"))
+        self.assertEqual([fake.opt(a, "--mutants-cmd") for a in fake.engine("mutants")], [[], []])
+
+    def test_a_stack_without_an_r3_tool_is_exit_2(self):
+        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "nope"], main=lambda a: r3.main(a, run=Fake()))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no R3 tool for stack nope", r.stderr)
+
+    def test_engine_steps_take_the_ci_inputs(self):
+        fake = Fake(count=3, timeout=42)
+        self.main(fake, "--test-paths", "tests/**", "--test-paths", "e2e/**", "--mutation-budget", "20",
+                  "--max-mutants", "7", "--project-dir", "app")
+        common = ["--repo", self.tmp, "--base", BASE, "--head", HEAD, "--stack", "python"]
+        tp = ["--test-paths", "tests/**", "--test-paths", "e2e/**"]
+        (plan,) = fake.engine("plan")
+        self.assertEqual(plan[4:], common + tp)
+        (base,) = fake.engine("baseline")
+        self.assertEqual(base[4:], common + ["--mutation-budget", "20", "--max-mutants", "7", "--project-dir", "app",
+                                             "--shards", "4"] + tp)
+        shards = sorted(fake.engine("mutants"), key=lambda a: a[a.index("--shard") + 1])
+        self.assertEqual([a[4:] for a in shards], [
+            common + ["--shard", f"{k}/3", "--mutation-budget", "20", "--max-mutants", "7", "--project-dir", "app",
+                      "--mutant-timeout", "42"] + tp for k in range(3)])
+        (merge,) = fake.engine("merge")
+        out = os.path.join(self.envdir, "out")
+        self.assertEqual(merge[4:], common + ["--shards", "3", "--baseline", os.path.join(out, "mech-review-baseline.json")]
+                         + [x for k in range(3) for x in ("--envelope", f"{k}={os.path.join(out, f'mech-review-mutants-{k}.json')}")])
+        self.assertTrue(os.path.isfile(os.path.join(out, "mech-review-mutants-2.json")))
+
+    def test_defaults_are_the_workflows(self):
+        fake = Fake(count=1)
+        self.main(fake)
+        (argv,) = fake.engine("mutants")
+        self.assertEqual((fake.opt(argv, "--mutation-budget"), fake.opt(argv, "--max-mutants"),
+                          fake.opt(argv, "--project-dir"), fake.opt(argv, "--mutant-timeout"), fake.opt(argv, "--head")),
+                         (["10"], ["40"], ["."], [], [HEAD]))
+
+    def test_the_engine_is_the_one_beside_this_script(self):
+        fake = Fake(count=1)
+        self.main(fake)
+        self.assertEqual({a[2] for a in fake.engine("mutants") + fake.engine("plan")},
+                         {os.path.join(_kit.SCRIPTS, "mech-review.py")})
+
+
+class Shards(Tmp):
+    def test_shards_run_at_the_same_time(self):
+        seen, peak, lock = [0], [0], threading.Lock()
+        inner = Fake(count=4)
+
+        def run(argv, env=None, cwd=None):
+            if "--shard" not in argv:
+                return inner(argv, env, cwd)
+            with lock:
+                seen[0] += 1
+                peak[0] = max(peak[0], seen[0])
+            time.sleep(0.2)
+            with lock:
+                seen[0] -= 1
+            return inner(argv, env, cwd)
+
+        self.main(run)
+        self.assertEqual(peak[0], 4)
+
+    def test_a_shard_with_no_result_is_left_out_of_the_merge_and_named(self):
+        fake = Fake(count=2, shard_rc={1: 2})
+        r = self.main(fake)
+        (merge,) = fake.engine("merge")
+        self.assertEqual([x.split("=")[0] for x in fake.opt(merge, "--envelope")], ["0"])
+        self.assertIn("shard 1/2: no result (exit 2)", r.stdout)
+
+    def test_a_shard_that_passes_is_kept(self):
+        fake = Fake(count=2, shard_rc={0: 0})
+        self.main(fake)
+        (merge,) = fake.engine("merge")
+        self.assertEqual([x.split("=")[0] for x in fake.opt(merge, "--envelope")], ["0", "1"])
+
+
+class Output(Tmp):
+    def test_prints_merged_summary_r3_status_per_shard_notes_and_fails(self):
+        r = self.main(Fake(count=2))
+        self.assertEqual(r.returncode, 1)
+        lines = r.stdout.splitlines()
+        i = lines.index(f"fail {HEAD} (summary)")
+        self.assertEqual(lines[i:], [
+            f"fail {HEAD} (summary)",
+            "R3 fail",
+            "shard 0/2: note of shard 0 (wall 10.0 s)",
+            "shard 1/2: note of shard 1 (wall 11.0 s)",
+            "fail R3-00000003 src/a.py:3 missed `+`",
+            "merged: " + os.path.join(self.envdir, "out", "mech-review-mutants-merged.json"),
+        ])
+        with open(os.path.join(self.envdir, "out", "mech-review-mutants-merged.json")) as f:
+            self.assertEqual(json.load(f)["summary"], f"fail {HEAD} (summary)")
+
+    def test_tested_over_total_is_shown_when_known(self):
+        merged = env("n", status="partial", tested=40, total=90)
+        r = self.main(Fake(count=1, merge_rc=0, merged=merged))
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("R3 partial (40/90 tested)", r.stdout.splitlines())
+
+    def test_unknown_total_is_a_question_mark(self):
+        merged = env("n", status="partial", tested=3, total=None)
+        r = self.main(Fake(count=1, merge_rc=0, merged=merged))
+        self.assertIn("R3 partial (3/? tested)", r.stdout.splitlines())
+
+    def test_a_shard_with_no_wall_time_has_no_wall_note(self):
+        inner = Fake(count=1)
+
+        def run(argv, env_=None, cwd=None):
+            rc, out, err = inner(argv, env_, cwd)
+            if "--shard" in argv:
+                out = json.dumps(env("bare"))
+            return rc, out, err
+
+        r = self.main(run)
+        self.assertIn("shard 0/1: bare", r.stdout.splitlines())
+
+    def test_the_plan_says_no_run(self):
+        fake = Fake(plan=False)
+        r = self.main(fake)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("R3 not run: no production file changed in scope (plan)", r.stdout)
+        self.assertEqual(fake.engine("baseline"), [])
+
+    def test_a_baseline_that_does_not_run_the_shards_is_merged_alone(self):
+        fake = Fake(count=0, merge_rc=0, merged=env("baseline note", status="n/a"))
+        r = self.main(fake)
+        self.assertEqual((r.returncode, fake.engine("mutants")), (0, []))
+        (merge,) = fake.engine("merge")
+        self.assertEqual((fake.opt(merge, "--shards"), fake.opt(merge, "--envelope")), (["0"], []))
+        self.assertIn("R3 n/a: baseline note", r.stdout.splitlines())
+
+    def test_a_plan_error_is_exit_2(self):
+        fake = Fake(plan=None)
+        r = self.main(fake)
+        self.assertEqual((r.returncode, fake.engine("baseline")), (2, []))
+        self.assertIn("r3-local: plan exit 2: no result\nmech-review: git broke", r.stderr)
+
+    def test_a_baseline_usage_error_is_exit_2(self):
+        fake = Fake(base_rc=2)
+        r = self.main(fake)
+        self.assertEqual((r.returncode, fake.engine("mutants")), (2, []))
+        self.assertIn("r3-local: baseline exit 2: no result", r.stderr)
+        self.assertIn("baseline log", r.stderr)
+
+    def test_a_merge_usage_error_is_exit_2(self):
+        r = self.main(Fake(merge_rc=2))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: merge exit 2: no result", r.stderr)
+
+    def test_uncommitted_changes_are_named_as_not_in_the_run(self):
+        r = self.main(Fake(dirty=" M src/a.py\n"))
+        self.assertIn(f"r3-local: uncommitted changes are not in the run (it tests {HEAD})", r.stderr)
+        r = self.main(Fake(dirty=""))
+        self.assertNotIn("uncommitted", r.stderr)
+
+    def test_a_bad_ref_is_exit_2(self):
+        def run(argv, env=None, cwd=None):
+            if "rev-parse" in argv:
+                return 128, "", "fatal: bad ref\n"
+            return 0, "", ""
+
+        r = self.main(run)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: main: fatal: bad ref", r.stderr)
+
+    def test_head_defaults_to_HEAD_and_takes_a_ref(self):
+        fake = Fake(count=1)
+        self.main(fake, "--head", "topic")
+        (plan,) = fake.engine("plan")
+        self.assertEqual(fake.opt(plan, "--head"), ["c" * 40])
+
+
+class RealRun(unittest.TestCase):
+    """The default runner: a real command, its exit code and output."""
+
+    def test_runs_a_command(self):
+        rc, out, err = r3.run_cmd(["git", "--version"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(re.match(r"git version \d", out), out)
+
+    def test_a_missing_executable_is_127(self):
+        rc, out, err = r3.run_cmd(["ekit-no-such-tool-xyz"])
+        self.assertEqual((rc, out), (127, ""))
+        self.assertIn("ekit-no-such-tool-xyz", err)
+
+
+if __name__ == "__main__":
+    unittest.main()
