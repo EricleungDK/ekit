@@ -203,6 +203,15 @@ class TestPoster(unittest.TestCase):
         self.assertEqual(p.returncode, 1, p.stderr)
         self.assertIn(f"fail {SHA} (0 fail, 0 confirm; ran: R2 R3; skipped: R1 R4)", api.writes[0])
 
+    def test_a_fail_entry_under_a_check_that_reads_pass_still_fails_the_check(self):
+        env = dict(envelope([FAIL]))
+        env["checks"] = dict(env["checks"], R2={"status": "pass", "note": ""})
+        path = os.path.join(self.tmp.name, "pass-with-fail.json")
+        with open(path, "w") as f:
+            json.dump(env, f)
+        p = self.call(["--envelope", path], Api())
+        self.assertEqual(p.returncode, 1, p.stderr)
+
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
         p = self.post([FAIL], api)
