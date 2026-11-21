@@ -62,4 +62,8 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
                                        max_mutants=max_mutants)
     entries = sorted(finalize(raw) + r3, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
-    return envelope(base, head, entries, checks)
+    env = envelope(base, head, entries, checks)
+    if "R3" in want:  # which shard this result is, and its cap: merge checks them (#42)
+        k, _, n = (shard or "0/1").partition("/")
+        env["shard"] = {"k": int(k), "n": int(n), "max_mutants": max_mutants}
+    return env
