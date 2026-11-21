@@ -50,7 +50,7 @@ def _repo(repo):
 def _pr(target):
     """The PR number a target names (N below a million, #N, a /pull/N URL), or None for a run id."""
     m = re.fullmatch(r"#(\d+)|https?://\S+/pull/(\d+)/?|(\d{1,6})", target)
-    return next((g for g in m.groups() if g), None) if m else None
+    return m.group(m.lastindex) if m else None  # one alternative matched: its group is the number
 
 
 def run_of_pr(run, pr, repo):
@@ -65,8 +65,7 @@ def run_of_pr(run, pr, repo):
 
 
 def _load(d, art):
-    path = os.path.join(d, *art)
-    return merge.load_envelope(path) if os.path.exists(path) else None
+    return merge.load_envelope(os.path.join(d, *art))  # None when missing or unreadable
 
 
 def mutants_env(d):

@@ -128,6 +128,17 @@ class Output(Run):
         self.assertEqual(dl[dl.index("-R") + 1], "o/r")
         self.assertFalse(os.path.exists(dl[dl.index("-D") + 1]))
 
+    def test_a_run_id_is_downloaded_with_no_pr_lookup(self):
+        self.red_run()
+        r = self.main("44583031414")
+        self.assertEqual([c[:4] for c in self.calls], [["gh", "run", "download", "44583031414"]])
+        self.assertTrue(r.stdout.startswith("run 44583031414: fail "), r.stdout)
+
+    def test_targets_that_name_a_pr(self):
+        self.assertEqual([ms._pr(t) for t in ("47", "#47", "https://github.com/o/r/pull/47", "http://h/x/pull/9/",
+                                              "999999", "1000000", "44583031414", "pr47", "#")],
+                         ["47", "47", "47", "9", "999999", None, None, None, None])
+
     def test_no_repo_flag_means_no_R(self):
         self.red_run()
         self.main("555")
