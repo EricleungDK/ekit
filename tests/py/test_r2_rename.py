@@ -40,6 +40,9 @@ UNRELATED = BASE.replace('''    def test_the_budget_gone_keeps_every_mutant_miss
 ''')
 
 
+DROPPED = RENAMED.replace('        self.assertIn("2 untested", check["note"])\n', "")
+
+
 class R2Rename(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -59,6 +62,11 @@ class R2Rename(unittest.TestCase):
         self.assertEqual(self.entries(RENAMED), (0, [
             ("confirm", "test `T::test_the_budget_gone_keeps_every_mutant_missed` renamed to "
                         "`T::test_the_budget_gone_leaves_every_mutant_untested`, assertions changed")]))
+
+    def test_a_rename_that_drops_an_assertion_stays_a_fail(self):
+        rc, got = self.entries(DROPPED)
+        self.assertEqual(rc, 1)
+        self.assertEqual(got, [("fail", "test fn `T::test_the_budget_gone_keeps_every_mutant_missed` removed")])
 
     def test_an_unrelated_test_in_place_of_a_removed_one_stays_a_fail(self):
         rc, got = self.entries(UNRELATED)

@@ -123,7 +123,8 @@ def _body(text, line):
 def _renames(bfns, afns, bas, aas, before=None, after=None):
     """(removed fns, {new name: old fn}, [(old fn, new fn)]). A removed fn whose asserts reappear unchanged in a new fn
     (one-to-one, non-empty) is a rename, not a removal. Then a removed fn and a new fn whose bodies match at least
-    RENAME_MATCH (one-to-one, best match first) are a rename whose assertions changed: listed for a confirm entry."""
+    RENAME_MATCH (one-to-one, best match first), the new one with no fewer asserts, are a rename whose assertions
+    changed: listed for a confirm entry."""
     names = {f.name for f in afns}
     by_name = {f.name for f in bfns}
     sigs = lambda xs, n: sorted(re.sub(r"\s+", "", a.text) for a in xs if a.fn == n)
@@ -146,7 +147,7 @@ def _renames(bfns, afns, bas, aas, before=None, after=None):
             rb = _body(before, rf.line)
             for nf in new:
                 nb = _body(after, nf.line)
-                if rb and nb:
+                if rb and nb and len(sigs(aas, nf.name)) >= len(sigs(bas, rf.name)):  # a dropped assert is no rename
                     ratio = difflib.SequenceMatcher(None, rb, nb, autojunk=False).ratio()
                     if ratio >= RENAME_MATCH:
                         pairs.append((-ratio, rf.line, nf.line, rf, nf))
