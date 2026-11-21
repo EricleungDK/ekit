@@ -524,7 +524,10 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         ci = read_ci(t for p, t in texts.items() if not is_caller(t))
         inputs = wanted_inputs(stack, project_dir, ci, _channel(repo, head, project_dir, paths),
                                scenarios=any(p.startswith(SCENARIOS) for p in paths))
-        entries += caller_entries(callers, inputs, paths) + scenario_entries(stack, callers, inputs, paths)
+        # a scenario file not of the stack (run.sh) is no test file: it never makes test-paths look missing (#39)
+        own = ADAPTERS[stack]()
+        seen = [p for p in paths if not p.startswith(SCENARIOS) or own.classify(p, []) is not None]
+        entries += caller_entries(callers, inputs, seen) + scenario_entries(stack, callers, inputs, paths)
         if run_trial:
             tried, trial_entries = trial(repo, head, stack, project_dir, runner or red.default_runner())
             entries = trial_entries + entries

@@ -61,6 +61,15 @@ class DoctorScenarios(unittest.TestCase):
                                     ".github/workflows/mech-review.yml": caller(["tests/**"])})
         self.assertEqual((rc, got), (0, []))
 
+    def test_shell_only_scenarios_in_a_repo_with_no_tests_dir_add_no_test_paths_entry(self):
+        self.repo.commit({"pyproject.toml": "[project]\nname = 'x'\n", "calc.py": "X = 1\n",
+                          "test_calc.py": TESTS, ".ekit/scenarios/s/run.sh": "true\n",
+                          ".github/workflows/mech-review.yml": caller(["tests/**"])}, "c")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(["doctor", "--repo", self.repo.path, "--no-trial"])
+        self.assertEqual((rc, json.loads(out.getvalue())["entries"]), (0, []))
+
     def test_a_repo_without_scenarios_wants_the_tests_glob_alone(self):
         rc, env, got = self.doctor({".github/workflows/mech-review.yml": caller(["tests/**"])})
         self.assertEqual((rc, env["inputs"]["test-paths"], got), (0, "tests/**", []))
