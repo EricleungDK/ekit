@@ -120,7 +120,44 @@ Copies editable skill files. Update: `npx skills@latest update`.
 
 </details>
 
-Needs `git`, `bash` and `python3` 3.9 or newer (standard library only). Runs on Linux and macOS; on Windows use WSL.
+### Setup per OS
+
+The plugin needs Python 3.9 or newer (standard library only) and Git, on macOS, Windows or Linux. No bash and no WSL:
+each hook starts the first of `python3`, `py -3` and `python` that is 3.9+, in whichever shell Claude Code gives it,
+and one message names what is missing when none is.
+
+**macOS**
+
+| Need | Install | Check |
+|---|---|---|
+| Python 3.9+ | `brew install python` (or python.org) | `python3 --version` |
+| Git | `xcode-select --install` (or `brew install git`) | `git --version` |
+| Hook shell | `sh`, built in | nothing to do |
+| Optional tools preflight names | `brew install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
+
+**Windows**
+
+| Need | Install | Check |
+|---|---|---|
+| Python 3.9+ | `winget install Python.Python.3.13` (or python.org: it adds `py`) | `py -3 --version` |
+| Git | `winget install Git.Git` (Git for Windows; its Git Bash is optional) | `git --version` |
+| Hook shell | Git Bash when installed, else PowerShell: both work | nothing to do |
+| Optional tools preflight names | `winget install jqlang.jq BurntSushi.ripgrep.MSVC GitHub.cli` | `py -3 -I <kit>/scripts/preflight.py` |
+
+The Microsoft Store's `python3` stub, when it is all there is, fails the version check and the launcher moves on to
+`py -3`, then `python`. WSL works too, as Linux.
+
+**Linux**
+
+| Need | Install | Check |
+|---|---|---|
+| Python 3.9+ | `sudo apt install python3` | `python3 --version` |
+| Git | `sudo apt install git` | `git --version` |
+| Hook shell | `sh`, built in | nothing to do |
+| Optional tools preflight names | `sudo apt install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
+
+`<kit>` is the plugin's folder, named by the `[ekit] Scenario runner:` line at session start. Preflight prints the OS,
+then one line per missing tool with this OS's install command. Scenarios (`run.sh`) need bash: Git Bash on Windows.
 
 ### Hooks and scripts outside Claude Code
 
@@ -213,10 +250,23 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 
 ## Development
 
+The suites are bash (`tests/*.test.sh`) plus Python unittest (`tests/py`), so contributors also need bash and `jq`.
+The same commands run on each OS:
+
 ```bash
 bash tests/run.sh                          # everything
-python3 -m unittest discover -s tests/py   # the python unit tests alone
+python3 -m unittest discover -s tests/py   # the python unit tests alone (Windows: py -3 -m unittest ...)
 ```
+
+| OS | Setup | Notes |
+|---|---|---|
+| macOS | `brew install python jq` | stock bash 3.2 is enough; no `sha1sum` or `timeout` needed |
+| Windows | `winget install Git.Git Python.Python.3.13 jqlang.jq`, then run the suites in Git Bash | Developer Mode (Settings → System → For developers) for the symlink tests: without it they skip, naming the refusal |
+| Linux | `sudo apt install python3 jq git` | nothing else |
+
+A fresh clone has LF files on every OS (`.gitattributes`). WSL is an alternative on Windows: clone inside WSL and run
+the suites there as on Linux. The Python suite runs natively on Windows too (`py -3 -m unittest discover -s tests/py`),
+in PowerShell or Git Bash; `tests/py/test_hook_smoke.py` runs every hook in plain PowerShell with no Git Bash on PATH.
 
 ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml`, python stack): a change to `scripts/` needs a test in `tests/py` that fails without it.
 

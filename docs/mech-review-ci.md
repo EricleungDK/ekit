@@ -128,6 +128,10 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 
 ## R3 locally
 
+### Developer machine
+
+mech-review's checks run on the CI runner. What runs on a developer's machine is the plugin (hooks, `scenarios.py`, `task-verify.py`, `finish-gate.py`, `preflight.py`) and `doctor` (ci-doctor): those work on macOS, Windows and Linux with Python 3.9+ and Git. Each hook starts the first of `python3`, `py -3`, `python` that is 3.9+ (`scripts/launcher.py`), in `sh`, Git Bash or PowerShell. On Windows `doctor` names paths with `/` like the CI runner does. Its sandbox trial copies the way mutmut does; mutmut runs on POSIX only, so the CI runner (Linux) stays the judge of R3. R3's runner stops an over-budget run with `SIGTERM` where the OS has no process groups. `MECH_TEST_STUB` (the test seam that replaces the toolchain) may be a `.py` file: it runs with the engine's Python.
+
 `scripts/r3-local.py` runs the R3 jobs of this workflow on your machine, so a MISSED mutant shows before the review request, not after CI. POSIX only: on Windows run it in WSL (native Windows exits 2).
 
 ```bash
