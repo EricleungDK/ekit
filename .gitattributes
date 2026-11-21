@@ -1,3 +1,5 @@
 # LF everywhere, whatever core.autocrlf says: the suites, run.sh scenarios and fixture bytes need it (#46).
 # The repo holds no binary files; one added later gets its own `-text` line here.
 * text=auto eol=lf
+# every PR adds lines under `## Unreleased`: a local merge or rebase keeps both sides (GitHub's merge button ignores this)
+CHANGELOG.md merge=union

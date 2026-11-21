@@ -14,4 +14,7 @@ eq "$(cmd_at 'timeout +[0-9]')" "" "no suite runs timeout"
 
 # LF checkouts whatever core.autocrlf says
 eq "$(git -C "$ROOT" check-attr text eol -- tests/lib.sh | tr '\n' ' ')" "tests/lib.sh: text: auto tests/lib.sh: eol: lf " ".gitattributes: text=auto eol=lf"
+
+# every PR adds a CHANGELOG line under `## Unreleased`: a local merge keeps both sides, no conflict
+eq "$(git -C "$ROOT" check-attr merge -- CHANGELOG.md)" "CHANGELOG.md: merge: union" ".gitattributes: CHANGELOG.md merge=union"
 done_tests

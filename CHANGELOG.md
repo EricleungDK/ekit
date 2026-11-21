@@ -15,6 +15,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Changed
 
+- **orchestrate-agent: CI monitor at plan time** (retro of #34–#46): the checklist asks the owner once for the CI monitor (Auto-fix) on every PR the run opens; a brief turns it on after opening its PR instead of watching `gh pr checks --watch`, which a harness may forbid. `.gitattributes` merges `CHANGELOG.md` as a union, so a local merge of two PRs' entries keeps both. `tests/py/test_r2_rename_corpus.py`: one row per test shape R2's rename pairing must handle.
 - **orchestrate-agent: plan-time gates** (#36): the checklist lists each edit a unit needs under a protected path as a Needs-you row with the exact lines, before dispatch. Briefs have the agent (and the taster) enter its worktree before its first write. The orchestrator verifies or merges a foreign head in a scratch worktree; its own checkout stays on its branch.
 - **orchestrate-agent: reviewer and taster briefs** (#37): `review-brief-template.md`, with the reviewer's standing rules, and `taster-brief-template.md`. The review relay and taste steps fill them. The taster writes in the idle implementer's worktree.
 - **orchestrate-agent: fix rounds per source** (#45): 3 rounds each for review, taste and CI, so a first CI failure after a clean review and taste gets a round without a stop. The same mech `id` or finding failing a 3rd time still escalates.
