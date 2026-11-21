@@ -136,6 +136,8 @@ class Command(unittest.TestCase):
 
 class Env(unittest.TestCase):
     def test_git_bash_gets_its_own_tools_on_path_whatever_path_it_was_started_with(self):
+        if not WIN:
+            self.skipTest("Windows only: elsewhere bash's tools are on PATH already (the case below: env unchanged)")
         bash = shells.find("bash")
         if not bash:
             self.skipTest("no bash on this machine")
