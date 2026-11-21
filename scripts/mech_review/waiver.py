@@ -39,8 +39,11 @@ def _unwrap(reason):
 
 
 def _placeholder(reason):
-    """True when the reason, brackets stripped, zero-width characters and runs of whitespace made one space, casefolded,
-    is the placeholder's words, the refusal message's `…`, or nothing."""
+    """True for a reason wholly in angle brackets that, brackets stripped, zero-width characters and runs of whitespace
+    made one space, casefolded, is the placeholder's words, the refusal message's `…`, or nothing. The same words
+    without brackets are a reason the person wrote: they waive."""
+    if not (reason.startswith("<") and reason.endswith(">")):
+        return False
     return " ".join(ZERO_WIDTH.sub(" ", _unwrap(reason)).split()).casefold() in PLACEHOLDER_WORDS
 
 

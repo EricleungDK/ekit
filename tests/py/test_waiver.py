@@ -84,6 +84,12 @@ class TestCollect(unittest.TestCase):
             self.assertEqual(waiver.collect([note(line)]), {}, reason)
             self.assertEqual([r["why"] for r in waiver.rejected([note(line)])], [waiver.PLACEHOLDER_WHY], reason)
 
+    def test_the_placeholder_words_without_brackets_are_a_reason(self):
+        for reason in ("reason", "why this is OK", "...", "…"):
+            got = waiver.collect([note("/mech-waive R2-deadbeef " + reason)])
+            self.assertEqual(got["R2-deadbeef"]["reason"], reason, reason)
+            self.assertEqual(waiver.rejected([note("/mech-waive R2-deadbeef " + reason)]), [], reason)
+
     def test_doubled_angle_brackets_around_a_real_reason_are_stripped(self):
         got = waiver.collect([note("/mech-waive R2-deadbeef <<the test moved to e2e>>")])
         self.assertEqual(got["R2-deadbeef"]["reason"], "the test moved to e2e")
