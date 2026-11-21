@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,6 +82,11 @@ class GateCase(unittest.TestCase):
 
     def scenarios(self):
         os.makedirs(os.path.join(self.repo, ".ekit", "scenarios"))
+
+    def tearDown_state(self):
+        """a fresh session state: the gate's files for this test gone"""
+        shutil.rmtree(fg.STATE, ignore_errors=True)
+        self.runner.tree, self.runner.check = (0, "T0"), (0, "")
 
 
 class TestArm(GateCase):
@@ -367,6 +373,20 @@ class TestScenarios(GateCase):
         self.assertIn("`one`", self.stop(BLOCKED)["reason"])
         self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: scenario one (no bash here)"))
 
+    def test_a_scenario_debt_is_found_again_for_changed_files(self):
+        for d in (".ekit", ".ek"):
+            with self.subTest(dir=d):
+                self.tearDown_state()
+                os.makedirs(os.path.join(self.repo, d, "scenarios"), exist_ok=True)
+                self.start()
+                self.runner.tree, self.runner.check = (0, "T1"), (1, "cannot run here: one: bash is not on this "
+                                                                     "machine (env)")
+                self.stop(DONE)
+                self.runner.tree = (0, "T2")  # a file touched; the scenario still cannot run here
+                self.assertIn("`one`", self.stop(BLOCKED)["reason"])
+                self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: scenario one → no bash → a host with bash"))
+                shutil.rmtree(os.path.join(self.repo, d))
+
     def test_each_scenario_this_host_cannot_run_is_to_be_named(self):
         self.scenarios()
         self.start()
@@ -461,6 +481,24 @@ class TestVerifyCommands(GateCase):
             with self.subTest(msg=msg):
                 self.assertEqual(self.stop(msg)["decision"], "block")
         self.assertIsNone(self.stop(head + "Verification debt:\n- Pytest -Q: no zsh → rerun where zsh is\nOpen: none"))
+
+    def test_a_debt_line_inside_a_fence_is_not_the_reports(self):
+        head = "## Finish: blocked\nBlocker: x\n"
+        for fence in ("```", "~~~"):
+            with self.subTest(fence=fence):
+                self.owe_pytest()  # again: the named report before met it
+                quoted = f"{fence}\nVerification debt: `pytest -q` → no zsh\n{fence}\n"
+                self.assertEqual(self.stop(head + quoted + "Verification debt: none")["decision"], "block")
+                self.assertIsNone(self.stop(head + quoted + "Verification debt: `pytest -q` → no zsh"))
+
+    def test_an_indented_quote_or_a_none_in_any_case_names_nothing(self):
+        self.owe_pytest()
+        head = "## Finish: blocked\nBlocker: x\nVerification debt:\n"
+        for item in ("   > pytest -q → no zsh", "None (`pytest -q` passed)", "NONE: `pytest -q`"):
+            with self.subTest(item=item):
+                self.assertEqual(self.stop(head + item)["decision"], "block")
+        self.assertIsNone(self.stop(head + "nonexistent zsh: `pytest -q` → a host with zsh"))  # not "none"
+
 
     def test_one_real_red_among_the_n_a_ones_is_fixed_not_reported_blocked(self):
         self.start()

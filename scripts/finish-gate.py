@@ -175,8 +175,8 @@ def debt_items(msg):
             continue
         bare = line.strip().lstrip("-* \t")
         if not inside:
-            m = DEBT_LINE.match(bare)
-            if m and not line.lstrip().startswith(">"):
+            m = DEBT_LINE.match(bare)  # a quoted line starts with >: never the field
+            if m:
                 inside = True
                 items.append(m.group(1))
             continue
