@@ -5,6 +5,7 @@ from scripts.mech_review import comment, waiver
 from scripts.mech_review.report import summarize
 
 SHA = "a" * 40
+ZW = chr(0x200B)  # zero-width space
 
 
 def entry(eid="R2-deadbeef", check="R2", severity="fail", cls="agent-fixable"):
@@ -75,6 +76,17 @@ class TestCollect(unittest.TestCase):
 
     def test_the_template_placeholder_and_empty_angle_brackets_are_not_a_reason(self):
         self.assertEqual(waiver.collect([note("/mech-waive R2-deadbeef <reason>"), note("/mech-waive R3-0badc0de <>")]), {})
+
+    def test_variants_of_the_placeholder_are_still_the_placeholder(self):
+        for reason in ("<<why this is OK>>", "< why this is OK >", "<WHY THIS IS ok>", "<reason >", "<<>>", "<…>",
+                       "<...>", "<" + ZW + ">", "<why" + ZW + "this is OK>"):
+            line = "/mech-waive R2-deadbeef " + reason
+            self.assertEqual(waiver.collect([note(line)]), {}, reason)
+            self.assertEqual([r["why"] for r in waiver.rejected([note(line)])], [waiver.PLACEHOLDER_WHY], reason)
+
+    def test_doubled_angle_brackets_around_a_real_reason_are_stripped(self):
+        got = waiver.collect([note("/mech-waive R2-deadbeef <<the test moved to e2e>>")])
+        self.assertEqual(got["R2-deadbeef"]["reason"], "the test moved to e2e")
 
     def test_a_real_reason_left_in_the_angle_brackets_waives_with_the_brackets_stripped(self):
         got = waiver.collect([note("/mech-waive R2-deadbeef <waive it: the test moved to e2e>"),

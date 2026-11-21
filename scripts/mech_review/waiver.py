@@ -18,8 +18,6 @@ REASON_MAX = 300
 MARKER = "<!-- mech-review -->"
 # what the sticky comment's ready-made lines say in place of the reason; left in, it is no reason
 PLACEHOLDER = "<why this is OK>"
-# the placeholders ekit writes (the ready-made lines; `<reason>` in the docs and --help): refused as they stand (#40)
-PLACEHOLDERS = (PLACEHOLDER, "<reason>")
 
 
 EDITED_WHY = "the comment was edited after posting; post a new comment"
@@ -27,16 +25,23 @@ PLACEHOLDER_WHY = ("the reason is still the placeholder `<…>`: replace the tex
                    "and post a new comment")
 
 
+ZERO_WIDTH = re.compile("[" + "".join(map(chr, (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF))) + "]")
+# the placeholder's words, and what the refusal message itself shows in their place
+PLACEHOLDER_WORDS = {"why this is ok", "reason", "…", "...", ""}
+
+
 def _unwrap(reason):
-    """A reason wholly wrapped in <...> loses the brackets: the person replaced the placeholder's words only (#40)."""
-    if reason.startswith("<") and reason.endswith(">"):
-        return reason[1:-1].strip()
+    """A reason wholly wrapped in <...> (or <<...>>) loses the brackets: the person replaced the placeholder's words
+    only (#40)."""
+    while reason.startswith("<") and reason.endswith(">"):
+        reason = reason[1:-1].strip()
     return reason
 
 
 def _placeholder(reason):
-    """True for one of PLACEHOLDERS left as it stands, or empty angle brackets."""
-    return reason in PLACEHOLDERS or not _unwrap(reason)
+    """True when the reason, brackets stripped, zero-width characters and runs of whitespace made one space, casefolded,
+    is the placeholder's words, the refusal message's `…`, or nothing."""
+    return " ".join(ZERO_WIDTH.sub(" ", _unwrap(reason)).split()).casefold() in PLACEHOLDER_WORDS
 
 
 def _edited(c):
