@@ -339,6 +339,9 @@ def main(argv=None):
             usage()
         repo = a[i + 1]
         del a[i:i + 2]
+    if not os.path.isdir(repo):  # not "no scenarios found": the path itself is wrong
+        print(f"scenarios.py: no such directory: {repo}", file=sys.stderr)
+        sys.exit(2)
     top = git(repo, "rev-parse", "--show-toplevel").strip()
     repo = top or os.path.abspath(repo)
     cmds = {"run": cmd_run, "tree-hash": cmd_hash, "check": cmd_check, "can-fail": cmd_can_fail}

@@ -572,6 +572,15 @@ class TestRun(unittest.TestCase):
             code, _, doc = self.main("sleep 30\n")
         self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
 
+    def test_a_repo_path_that_does_not_exist_is_named_not_no_scenarios(self):
+        missing = os.path.join(os.path.realpath(self.tmp.name), "nope")
+        err = io.StringIO()
+        for verb in ("run", "check", "tree-hash"):
+            with self.subTest(verb=verb), contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as e:
+                scenarios.main(["--repo", missing, verb])
+            self.assertEqual(e.exception.code, 2)
+        self.assertEqual(err.getvalue(), f"scenarios.py: no such directory: {missing}\n" * 3)
+
     def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n")
