@@ -112,9 +112,14 @@ def deadline(test, secs, why):
         timer.cancel()
 
 
-# The sandbox mirrors mutmut's copy, and mutmut runs on POSIX only: these cases read POSIX's own error words or a
-# name a Windows checkout cannot hold
-POSIX_COPY = unittest.skipIf(os.name == "nt", "mutmut's copy as POSIX does it: its error words, its file names")
+def os_says(op):
+    """The OS's own words (strerror) for the error `op` raises: what doctor passes on for the same failed copy, on
+    POSIX and on Windows alike."""
+    try:
+        op()
+    except OSError as e:
+        return e.strerror
+    raise AssertionError(f"{op} raised nothing")
 
 
 def fifo(test, path):
@@ -422,7 +427,6 @@ class SandboxTrial(unittest.TestCase):
                                          "mutants/ fails on `calc`", "mutmut's copy into mutants/ fails on it: "
                                          "`calc/pipe` is a named pipe; fix that in the tree, then rerun doctor")]))
 
-    @POSIX_COPY
     def test_a_tracked_file_named_mutants_names_the_path_that_cannot_be_made(self):
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      "mutants": "", ".github/workflows/mech-review.yml": CALLER % ""})
@@ -431,7 +435,9 @@ class SandboxTrial(unittest.TestCase):
         # the first entry copied (also_copy, sorted: .github) is the first that cannot be made under the file
         self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
                                        "`mutants/.github`")
-        self.assertEqual(e["hint"], "mutmut's copy into mutants/ fails on it: Not a directory; fix that in the tree, "
+        a_file = os.path.join(self.repo, "pyproject.toml")
+        why = os_says(lambda: os.makedirs(os.path.join(a_file, ".github")))  # POSIX: Not a directory
+        self.assertEqual(e["hint"], f"mutmut's copy into mutants/ fails on it: {why}; fix that in the tree, "
                                     "then rerun doctor")
 
     def test_copystat_failures_on_a_dir_and_its_subdir_are_an_entry_not_a_crash(self):
@@ -526,16 +532,16 @@ class SandboxTrial(unittest.TestCase):
         self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
                                                 "copy into mutants/ fails on `tests/x/a/b/c/gone`", LINK_HINT)])
 
-    @POSIX_COPY
     def test_past_its_cap_the_walk_outside_leaves_the_rest_to_the_copy(self):
         # four entries walked: c/ is not opened, so copytree meets the dangling link and names it with its reason
         self.outside_chain()
         with unittest.mock.patch.object(doctor, "OUTSIDE_WALK", 4):
             env = self.doctor()
+        gone = os.path.join(os.path.dirname(self.repo), "outside", "a", "b", "c", "gone")
+        why = os_says(lambda: shutil.copy2(gone, os.path.join(os.path.dirname(self.repo), "copy")))  # POSIX: No such…
         self.assertEqual(env["entries"], [entry("doctor-be15db16", "R3's mutmut sandbox cannot be built: mutmut's "
                                                 "copy into mutants/ fails on `tests/x/a/b/c/gone`", "mutmut's copy into "
-                                                "mutants/ fails on it: No such file or directory; fix that in the tree, "
-                                                "then rerun doctor")])
+                                                f"mutants/ fails on it: {why}; fix that in the tree, then rerun doctor")])
 
     def test_a_loop_inside_a_dir_outside_the_checkout_is_an_entry(self):
         outside = os.path.join(os.path.dirname(self.repo), "outside")
