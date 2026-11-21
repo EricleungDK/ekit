@@ -52,10 +52,27 @@ def run_cmd(argv, env=None, cwd=None):
     return p.returncode, p.stdout, p.stderr
 
 
+def _left_out(m, root):
+    """Why this tar member is not extracted under root ("name (reason)"), or None. The rules of tarfile's data filter,
+    which python < 3.12 may lack: nothing is written outside root, no link points outside it or to an absolute path."""
+    def outside(path):
+        return os.path.commonpath([root, os.path.realpath(path)]) != root
+
+    path = os.path.join(root, m.name)
+    if outside(path):
+        return f"{m.name} (outside the checkout)"
+    if m.issym():
+        if os.path.isabs(m.linkname) or outside(os.path.join(os.path.dirname(path), m.linkname)):
+            return f"{m.name} -> {m.linkname} (outside the checkout)"
+        return None
+    return None if m.isreg() or m.isdir() else f"{m.name} (not a file, dir or link)"
+
+
 def requirements(run, repo, head, project_dir, envdir):
     """A checkout of the tree at head under envdir/head (git archive: the repo is not touched), and the project dir's
     requirements*.txt in it: (project dir in the checkout, [(name, sha256)] sorted by name). pip runs in that dir, as
-    CI runs it in caller/$PROJECT_DIR, so `-c x.txt`, `-r ../y.txt` and `-e .` resolve as there."""
+    CI runs it in caller/$PROJECT_DIR, so `-c x.txt`, `-r ../y.txt` and `-e .` resolve as there. A link that points
+    out of the checkout (CI keeps it and never follows it) is not extracted and is named on stderr."""
     tar = os.path.join(envdir, "head.tar")
     os.makedirs(envdir, exist_ok=True)
     rc, _, err = run(["git", "-C", repo, "archive", "--format=tar", "-o", tar, head])
@@ -63,11 +80,19 @@ def requirements(run, repo, head, project_dir, envdir):
         raise Stop(f"git archive: {err.strip()}")
     src = os.path.join(envdir, "head")
     shutil.rmtree(src, ignore_errors=True)
-    with tarfile.open(tar) as t:
-        if hasattr(tarfile, "data_filter"):
-            t.extractall(src, filter="data")
-        else:  # python < 3.12 without the filter backport: git's own archive of our own tree
-            t.extractall(src)
+    root = os.path.realpath(src)
+    try:
+        with tarfile.open(tar) as t:
+            for m in t.getmembers():
+                why = _left_out(m, root)
+                if why:
+                    print(f"r3-local: head checkout: left out {why}", file=sys.stderr)
+                elif hasattr(tarfile, "data_filter"):  # a member the check above let through stops the run here
+                    t.extract(m, root, filter="data")
+                else:  # python < 3.12 without the filter backport
+                    t.extract(m, root)
+    except tarfile.TarError as e:
+        raise Stop(f"head checkout: no usable archive ({type(e).__name__}: {e})")
     os.remove(tar)
     proj = os.path.normpath(os.path.join(src, project_dir))
     got = []

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 
 import _kit
 from scripts.mech_review import stack
@@ -193,6 +194,109 @@ class Steps(Tmp):
         r = self.main(run)
         self.assertEqual(r.returncode, 2)
         self.assertIn("r3-local: git archive: fatal: bad tree", r.stderr)
+
+    def archive(self, *members):
+        """A run whose `git archive` writes these members: (name, text) a file, (name, None, target) a symlink, or a
+        TarInfo; every other command is Fake's."""
+        fake = Fake()
+
+        def run(argv, env_=None, cwd=None):
+            if "archive" not in argv:
+                return fake(argv, env_, cwd)
+            with tarfile.open(argv[argv.index("-o") + 1], "w") as tar:
+                for m in members:
+                    if isinstance(m, tarfile.TarInfo):
+                        tar.addfile(m)
+                        continue
+                    info, data = tarfile.TarInfo(m[0]), (m[1] or "").encode()
+                    if m[1] is None:
+                        info.type, info.linkname = tarfile.SYMTYPE, m[2]
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            return 0, "", ""
+
+        return fake, run
+
+    def test_a_link_out_of_the_checkout_is_left_out_and_named_and_the_requirements_install(self):
+        """CI's checkout keeps such a link and never follows it; here it is not extracted (#35)."""
+        fake, run = self.archive(("link", None, "../../etc"), ("requirements.txt", "six\n"))
+        r = self.main(run)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        src = os.path.join(self.envdir, "head")
+        self.assertEqual([(a[-1], cwd) for a, _, cwd in fake.calls if "-r" in a], [("requirements.txt", src)])
+        self.assertFalse(os.path.lexists(os.path.join(src, "link")))
+        self.assertIn("r3-local: head checkout: left out link -> ../../etc (outside the checkout)\n", r.stderr)
+        self.assertNotIn("requirements.txt", r.stderr)
+
+    def test_a_link_is_judged_from_its_own_dir(self):
+        fake, run = self.archive(("base.txt", "attrs\n"), ("app/ok", None, "../base.txt"), ("app/up", None, "../../x"),
+                                 ("app/requirements.txt", "six\n"))
+        r = self.main(run, "--project-dir", "app")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        app = os.path.join(self.envdir, "head", "app")
+        self.assertEqual(os.readlink(os.path.join(app, "ok")), "../base.txt")
+        self.assertFalse(os.path.lexists(os.path.join(app, "up")))
+        self.assertEqual([l for l in r.stderr.splitlines() if "left out" in l],
+                         ["r3-local: head checkout: left out app/up -> ../../x (outside the checkout)"])
+
+    def test_an_absolute_link_is_left_out_even_into_the_checkout(self):
+        inside = os.path.join(os.path.realpath(self.envdir), "head", "requirements.txt")
+        fake, run = self.archive(("requirements.txt", "six\n"), ("abs", None, inside))
+        r = self.main(run)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertFalse(os.path.lexists(os.path.join(self.envdir, "head", "abs")))
+        self.assertIn(f"left out abs -> {inside} (outside the checkout)", r.stderr)
+
+    def test_a_member_path_out_of_the_checkout_is_left_out(self):
+        fake, run = self.archive(("../up.txt", "x"), (os.path.join(self.tmp, "abs.txt"), "x"),
+                                 ("requirements.txt", "six\n"))
+        r = self.main(run)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.envdir, "up.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "abs.txt")))
+        self.assertEqual(len([l for l in r.stderr.splitlines() if "left out" in l]), 2, r.stderr)
+        self.assertEqual(len([a for a, _, _ in fake.calls if "-r" in a]), 1)
+
+    def test_a_member_that_is_no_file_dir_or_link_is_left_out(self):
+        fifo, d = tarfile.TarInfo("pipe"), tarfile.TarInfo("app")
+        fifo.type, d.type, d.mode = tarfile.FIFOTYPE, tarfile.DIRTYPE, 0o755
+        fake, run = self.archive(fifo, d, ("requirements.txt", "six\n"))
+        r = self.main(run)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        src = os.path.join(self.envdir, "head")
+        self.assertFalse(os.path.lexists(os.path.join(src, "pipe")))
+        self.assertTrue(os.path.isdir(os.path.join(src, "app")))
+        self.assertEqual([l for l in r.stderr.splitlines() if "left out" in l],
+                         ["r3-local: head checkout: left out pipe (not a file, dir or link)"])
+
+    def test_a_python_without_the_data_filter_leaves_the_same_members_out(self):
+        if hasattr(tarfile, "data_filter"):
+            saved = tarfile.data_filter
+            del tarfile.data_filter
+            self.addCleanup(setattr, tarfile, "data_filter", saved)
+        fake, run = self.archive(("link", None, "../../etc"), ("base.txt", "attrs\n"), ("ok", None, "base.txt"),
+                                 ("requirements.txt", "six\n"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)  # 3.12 and 3.13: extract() with no filter
+            r = self.main(run)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        src = os.path.join(self.envdir, "head")
+        self.assertFalse(os.path.lexists(os.path.join(src, "link")))
+        self.assertEqual(os.readlink(os.path.join(src, "ok")), "base.txt")
+        self.assertEqual([(a[-1], cwd) for a, _, cwd in fake.calls if "-r" in a], [("requirements.txt", src)])
+        self.assertIn("left out link -> ../../etc (outside the checkout)", r.stderr)
+
+    def test_an_archive_that_is_no_tar_is_exit_2(self):
+        def run(argv, env_=None, cwd=None):
+            if "archive" not in argv:
+                return Fake()(argv, env_, cwd)
+            with open(argv[argv.index("-o") + 1], "wb") as f:
+                f.write(b"not a tar " * 200)
+            return 0, "", ""
+
+        r = self.main(run)
+        self.assertEqual(r.returncode, 2)
+        self.assertRegex(r.stderr, r"(?s)^r3-local: head checkout: no usable archive \(ReadError: .+\)\n$")
 
     def test_changed_requirements_set_the_env_up_again(self):
         self.main(Fake(reqs={"requirements.txt": "six\n"}))
