@@ -6,7 +6,62 @@ import tempfile
 import unittest
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
-from test_adapter_cli import Repo, r2
+from test_adapter_cli import MINI, Repo, r2
+
+# prettier splits a call with a long name: the name, `async () => {` and `},` get lines of their own
+TS_SPLIT_BASE = """it(
+  'refund is never negative, whatever the input amount is',
+  async () => {
+    const x = f(1)
+    expect(g(x)).toBe(2)
+    expect(h(x)).toBe(0)
+  },
+)
+"""
+TS_SPLIT_HEAD = """it(
+  'something else entirely, with a long enough name to split',
+  async () => {
+    const x = f(1)
+    expect(1).toBe(1)
+    expect(2).toBe(2)
+  },
+)
+"""
+TS_SPLIT_LEGIT_BASE = """it(
+  'refund is never negative, whatever the input amount is',
+  async () => {
+    const shop = await makeShop()
+    const order = shop.order(['a', 'b'])
+    const refund = shop.refund(order, -5)
+    expect(refund.amount).toBe(0)
+  },
+)
+"""
+TS_SPLIT_LEGIT_HEAD = TS_SPLIT_LEGIT_BASE.replace("refund is never negative", "refund is capped at the order") \
+    .replace("toBe(0)", "toBe(order.total)")
+
+MINI_SPLIT_BASE = """suite("Calc", {
+  test(
+    "refund never negative",
+    {
+      setUp(1)
+      assertEquals(0, refund(-5))
+      assertEquals(3, refund(3))
+    },
+  )
+})
+"""
+MINI_SPLIT_HEAD = """suite("Calc", {
+  test(
+    "something else entirely",
+    {
+      setUp(1)
+      assertTrue(1)
+      assertTrue(2)
+    },
+  )
+})
+"""
 
 BASE = '''import unittest
 
@@ -206,12 +261,12 @@ class R2Rename(unittest.TestCase):
         self.assertEqual([(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]],
                          [("fail", "test fn `test_runs_without_error` removed")])
 
-    def removal(self, path, before, after, stack="python"):
+    def removal(self, path, before, after, stack="python", adapter=None):
         """the entries of a head that replaces `before` with `after` at path"""
         self.repo.commit({path: before}, "case base")
         self.base = self.repo.git("rev-parse", "HEAD").strip()
         head = self.repo.commit({path: after}, "case head")
-        res = r2(self.repo, self.base, head, adapter=None, stack=stack)
+        res = r2(self.repo, self.base, head, adapter=adapter, stack=stack)
         return res.returncode, [(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]]
 
     def test_a_one_line_test_does_not_borrow_the_next_tests_body(self):
@@ -239,6 +294,28 @@ class R2Rename(unittest.TestCase):
         self.assertEqual(self.removal("tests/budget.test.ts", TS, TS.replace("keeps missed", "leaves untested")
                                       .replace("'fail'", "'partial'"), stack="ts"),
                          (0, [("confirm", "test `budget > keeps missed` renamed to `budget > leaves untested`, "
+                                          "assertions changed")]))
+
+    def test_a_prettier_split_ts_call_shares_no_lines_of_its_own_with_another(self):
+        self.assertEqual(self.removal("tests/refund.test.ts", TS_SPLIT_BASE, TS_SPLIT_HEAD, stack="ts"),
+                         (1, [("fail", "test fn `refund is never negative, whatever the input amount is` removed")]))
+
+    def test_a_split_test_call_of_an_adapter_file_stack_shares_no_lines_of_its_own_with_another(self):
+        self.assertEqual(self.removal("tests/calc.mini", MINI_SPLIT_BASE, MINI_SPLIT_HEAD, stack="mini", adapter=MINI),
+                         (1, [("fail", "test fn `Calc / refund never negative` removed")]))
+
+    def test_a_prettier_split_ts_rename_with_its_setup_kept_is_one_confirm_entry(self):
+        self.assertEqual(self.removal("tests/refund.test.ts", TS_SPLIT_LEGIT_BASE, TS_SPLIT_LEGIT_HEAD, stack="ts"),
+                         (0, [("confirm", "test `refund is never negative, whatever the input amount is` renamed to "
+                                          "`refund is capped at the order, whatever the input amount is`, "
+                                          "assertions changed")]))
+
+    def test_a_ts_rename_whose_call_ends_in_an_options_object_reads_the_callback_body(self):
+        base = TS_SPLIT_LEGIT_BASE.replace("  },\n)\n", "  },\n  { timeout: 5000 },\n)\n")
+        head = TS_SPLIT_LEGIT_HEAD.replace("  },\n)\n", "  },\n  { timeout: 5000 },\n)\n")
+        self.assertEqual(self.removal("tests/refund.test.ts", base, head, stack="ts"),
+                         (0, [("confirm", "test `refund is never negative, whatever the input amount is` renamed to "
+                                          "`refund is capped at the order, whatever the input amount is`, "
                                           "assertions changed")]))
 
     def test_an_unrelated_test_in_place_of_a_removed_one_stays_a_fail(self):

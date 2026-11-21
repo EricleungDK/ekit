@@ -914,6 +914,26 @@ def _inner(text, start, end):
     return (first, last) if first <= last else None
 
 
+def _brace_inner(text, m, start, end):
+    """The lines of the test call's body block: of the top-level `{...}` blocks in m[start:end] (masked text: strings,
+    template literals and comments blanked, so their braces never count), the one spanning the most lines (the
+    callback, not an options object such as `{ timeout: 5 }`), its lines strictly between `{` and `}` (_inner). A call
+    with no such block (a one-line arrow) has no body: None."""
+    best, open_at, depth = None, None, 0
+    for i in range(start, end):
+        if m[i] == "{":
+            if depth == 0:
+                open_at = i
+            depth += 1
+        elif m[i] == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                span = _inner(text, open_at, i)
+                if span and (best is None or span[1] - span[0] > best[1] - best[0]):
+                    best = span
+    return best
+
+
 TS_BUILD = re.compile(r"Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package"
                       r"|Test suite failed to run|SyntaxError|\bTS\d{4}\b|Failed Suites")
 TS_TESTS = re.compile(r"^\s*Tests\b:?(.*)$", re.M)
@@ -982,8 +1002,9 @@ class TsAdapter(Adapter):
         return None
 
     def test_fns(self, text):
-        _, _, _, _, tests, _ = _ts_parse(text)
-        return [TestFn(name, _line(text, t.start), markers, _inner(text, t.start, t.end - 1)) for name, t, markers in tests]
+        m, _, _, _, tests, _ = _ts_parse(text)
+        return [TestFn(name, _line(text, t.start), markers, _brace_inner(text, m, t.start, t.end))
+                for name, t, markers in tests]
 
     def _owners(self, text):
         """[(qname, start, end)] of tests and named functions: the innermost one owns an assertion."""
