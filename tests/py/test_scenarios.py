@@ -10,7 +10,7 @@ from unittest import mock
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts import scenarios
-from test_doctor_sandbox import symlink  # a skip naming the refusal where the OS will not make links
+from _kit import symlink  # a skip naming the refusal where the OS will not make links
 
 
 def git(repo, *args):
@@ -172,6 +172,52 @@ class TestTreeHash(unittest.TestCase):
         self.assertEqual(stop.exception.code, 3)
         self.assertEqual(err.getvalue(), "cannot hash the working tree: fatal: git-write-tree: error building trees \ufffd\n")
         self.assertEqual(out.getvalue(), "")
+
+    def test_a_git_add_that_dies_is_exit_3_not_a_clean_hash(self):
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if "add" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"fatal: add died\n")
+            return real(argv, **kw)
+
+        err = io.StringIO()
+        with mock.patch.object(scenarios.subprocess, "run", run), contextlib.redirect_stderr(err), \
+                self.assertRaises(SystemExit) as stop:
+            self.hash()
+        self.assertEqual((stop.exception.code, err.getvalue()), (3, "cannot hash the working tree: fatal: add died\n"))
+
+    def test_the_callers_pathspec_settings_do_not_hide_a_new_file(self):
+        clean = self.hash()
+        write(self.repo, "stray.txt", "x\n")
+        for var in ("GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS"):
+            with self.subTest(var), mock.patch.dict(os.environ, {var: "1"}):
+                self.assertNotEqual(self.hash(), clean)
+
+    def test_untracked_python_bytecode_does_not_count(self):
+        clean = self.hash()
+        os.makedirs(os.path.join(self.repo, "pkg", "__pycache__"))
+        write(self.repo, "pkg/__pycache__/m.cpython-312.pyc", "b\n")
+        write(self.repo, "top.pyc", "b\n")
+        write(self.repo, "pkg/old.pyo", "b\n")
+        self.assertEqual(self.hash(), clean)
+        self.assertEqual(scenarios.tree_hash(os.path.join(self.repo, "pkg")), clean)  # from a subdirectory too
+
+    def test_a_tracked_bytecode_file_still_counts(self):
+        write(self.repo, "t.pyc", "one\n", age=7200)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "tracked bytecode")
+        clean = self.hash()
+        write(self.repo, "t.pyc", "two\n")
+        edited = self.hash()
+        os.remove(os.path.join(self.repo, "t.pyc"))
+        self.assertEqual(len({clean, edited, self.hash()}), 3)
+
+    def test_a_file_that_is_not_bytecode_under_pycache_still_counts(self):
+        clean = self.hash()
+        os.makedirs(os.path.join(self.repo, "p", "__pycache__"))
+        write(self.repo, "p/__pycache__/notes.txt", "x\n")
+        self.assertNotEqual(self.hash(), clean)
 
     def test_a_tracked_edit_and_an_untracked_file_each_change_the_hash(self):
         clean = self.hash()
@@ -416,6 +462,27 @@ class TestRun(unittest.TestCase):
             text = f.read()
         self.assertIn("--- stdout ---\nrun 3\n", text)
         self.assertNotIn("run 1\n", text)
+
+    def test_kept_failures_of_a_child_and_a_look_alike_id_do_not_overwrite_each_other(self):
+        for d, word in (("one/b", "child"), ("one__b", "look-alike")):
+            os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", d))
+            write(self.repo, f".ekit/scenarios/{d}/SCENARIO.md", "- story: s\n")
+            write(self.repo, f".ekit/scenarios/{d}/run.sh", f"echo {word}; exit 1\n")
+        _, _, doc = self.main("exit 0\n")
+        kept = {r["id"]: r["failed_transcript"] for r in doc["scenarios"] if r.get("reason")}
+        self.assertEqual(sorted(kept), ["one/b", "one__b"])
+        self.assertNotEqual(kept["one/b"], kept["one__b"])
+        for sid, word in (("one/b", "child"), ("one__b", "look-alike")):
+            with open(kept[sid]) as f:
+                self.assertIn(f"--- stdout ---\n{word}\n", f.read())
+
+    def test_a_run_failed_only_by_a_repo_change_keeps_a_note_naming_the_change(self):
+        code, _, doc = self.main('echo x > "$EKIT_REPO/stray.txt"\n')
+        self.assertEqual((code, doc["scenarios"][0].get("reason")), (1, None))
+        note = doc["failed_transcript"]
+        self.assertEqual(os.path.dirname(note), os.path.join(scenarios.outdir(self.repo), "failed"))
+        with open(note) as f:
+            self.assertIn("?? stray.txt\n", f.read())
 
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")

@@ -38,7 +38,7 @@ Layout, committed in the repo:
 - **steps**: what the user does
 - **expected**: observable result
 
-No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR`, `EKIT_ARTIFACT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run. Files a person should see, screenshots first, go in `EKIT_ARTIFACT_DIR`: the runner keeps them beside the transcript and lists them under `artifacts` in results.json.
+No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR`, `EKIT_ARTIFACT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run (untracked Python bytecode excepted). They run with `PYTHONDONTWRITEBYTECODE=1`: one that tests bytecode caching must `unset` it. Files a person should see, screenshots first, go in `EKIT_ARTIFACT_DIR`: the runner keeps them beside the transcript and lists them under `artifacts` in results.json.
 
 ### Reuse before write
 
