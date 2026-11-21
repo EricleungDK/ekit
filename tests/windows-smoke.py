@@ -119,6 +119,7 @@ def hooks_in_plain_powershell(tmp):
                GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
     found = shutil.which("bash", path=env["PATH"])
     check("no Git Bash on PATH", found is None or "system32" in found.lower(), found)
+    check("no sh on PATH", shutil.which("sh", path=env["PATH"]) is None, shutil.which("sh", path=env["PATH"]))
     for args in (["init", "-q"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"]):
         subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, env=env)
     with open(os.path.join(kit, "hooks", "hooks.json")) as f:
@@ -143,10 +144,59 @@ def hooks_in_plain_powershell(tmp):
     task = {"task_id": "t1", "task_subject": "Unit", "task_description": "Verify: `git status`"}
     check("TaskCreated: never blocks", hook("TaskCreated", **task)[:2] == (0, ""))
     rc, out, err = hook("TaskCompleted", **task)
-    check("TaskCompleted: exit 2 naming the run to do", rc == 2 and "task-verify.py' run -- git status" in err,
+    check("TaskCompleted: exit 2, no run recorded, naming the run to do",
+          rc == 2 and "no run recorded" in err and "task-verify.py\" run -- git status" in err,
           (rc, out, err))
     rc, out, err = hook("Stop", stop_hook_active=False)
     check("Stop: nothing changed → allowed", (rc, out) == (0, ""), (rc, out, err))
+
+
+def hooks_in_git_bash(tmp):
+    print("hooks: every hooks.json command in Git Bash, the plugin dir as Claude Code gives it there (/c/...)")
+    kit = os.path.join(tmp, "gb", "O'Brien $HOME kit")
+    os.makedirs(os.path.dirname(kit))
+    shutil.copytree(os.path.join(tmp, "O'Brien $HOME kit"), kit)
+    repo = os.path.join(tmp, "gbrepo")
+    os.mkdir(repo)
+    bash = shells.find("bash")
+    git = git_root()
+    env = {k: v for k, v in os.environ.items() if k not in ("EKIT_PY", "EKIT_SHELL")}
+    env.update(PATH=os.pathsep.join([os.path.join(git, "usr", "bin"), os.path.join(git, "mingw64", "bin"),
+                                     os.path.dirname(sys.executable), os.path.join(git, "cmd")]),
+               EKIT_STATE=os.path.join(tmp, "gbstate"), GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+    unix = subprocess.run([bash, "-c", 'cygpath -u "$1"', "-", kit], capture_output=True, text=True,
+                          env=env).stdout.strip()
+    env["CLAUDE_PLUGIN_ROOT"] = unix
+    check("the root is the /c/... form, a ' in it", unix.startswith("/") and "'" in unix, unix)
+    for args in (["init", "-q"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"]):
+        subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, env=env)
+    with open(os.path.join(kit, "hooks", "hooks.json")) as f:
+        hooks = {e: g[0]["hooks"][0]["command"] for e, g in json.load(f)["hooks"].items()}
+
+    def hook(event, **payload):
+        data = dict({"session_id": "g1", "cwd": repo, "hook_event_name": event}, **payload)
+        r = subprocess.run([bash, "-c", claude_code_fills(hooks[event], unix)], input=json.dumps(data).encode(),
+                           capture_output=True, env=env, cwd=repo, timeout=300)
+        return r.returncode, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
+
+    rc, out, err = hook("SessionStart", source="startup")
+    check("SessionStart in Git Bash: context with the Python line", rc == 0 and "[ekit] Python: " in out, (rc, out, err))
+    task = {"task_id": "t1", "task_subject": "Unit", "task_description": "Verify: `git status`"}
+    rc, out, err = hook("TaskCompleted", **task)
+    check("TaskCompleted in Git Bash: exit 2, no run recorded", rc == 2 and "no run recorded" in err, (rc, out, err))
+
+
+def printed_paths_in_both_shells(tmp):
+    print("printed paths: each form read the same in bash and in PowerShell")
+    bash = shells.find("bash")
+    echo = "import sys; print(sys.argv[1])"
+    for path in ("C:/a/my kit/x.py", "C:/a/O'Brien kit/x.py", "C:/a/my $HOME `b kit/x.py"):
+        arg = launcher.shown(path)
+        rb = subprocess.run([bash, "-c", f"\"{sys.executable.replace(chr(92), '/')}\" -c '{echo}' {arg}"],
+                            capture_output=True, text=True, env=shells.env_for(bash, "bash"))
+        rc, out, err = ps(f"& '{sys.executable}' -c '{echo}' {arg}", dict(os.environ))
+        check(f"{arg}: bash and PowerShell both read {path}",
+              rb.stdout.strip() == path and out.strip() == path, (rb.stdout, rb.stderr, out, err))
 
 
 def verify_shells(tmp):
@@ -234,6 +284,8 @@ def main():
         tmp = os.path.realpath(tmp)
         launcher_in_powershell(tmp)
         hooks_in_plain_powershell(tmp)
+        hooks_in_git_bash(tmp)
+        printed_paths_in_both_shells(tmp)
         verify_shells(tmp)
         shells_for_real()
         scenario_timeout(tmp)

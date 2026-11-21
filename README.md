@@ -266,7 +266,7 @@ python3 -m unittest discover -s tests/py   # the python unit tests alone (Window
 
 A fresh clone has LF files on every OS (`.gitattributes`). WSL is an alternative on Windows: clone inside WSL and run
 the suites there as on Linux. The Python suite runs natively on Windows too (`py -3 -m unittest discover -s tests/py`),
-in PowerShell or Git Bash. `python tests/windows-smoke.py` checks ekit in the real shells of a Windows machine
+in PowerShell or Git Bash. `python tests/windows-smoke.py` (run by `tests/run.sh` on Windows) checks ekit in the real shells of a Windows machine
 (every hook in plain PowerShell with no Git Bash on PATH, verify commands in their own shells, a scenario timeout);
 the unit tests fake those shells and run on every OS.
 

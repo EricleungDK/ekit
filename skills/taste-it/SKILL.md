@@ -57,7 +57,7 @@ Name the scenarios read and the files created or edited before writing any.
 | `RUN run` | all scenarios |
 | `RUN run <id>` | one scenario + its children (fix loop) |
 | `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run` |
-| `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>` or `CANNOT FAIL <id>`: passes at baseline |
+| `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>`, `CANNOT FAIL <id>`: passes at baseline (exit 1), or `N/A <id>: <reason> (env)`: could not run on this host, no proof either way (exit 4) |
 | `RUN tree-hash` | current tree hash |
 
 Evidence is the runner's `PASS`/`FAIL` lines and results.json (`<git dir>/ekit/`, transcripts beside it; each scenario's last failed transcript stays in `failed/` until it fails again), never the taster's say-so. Any file edit makes the PASS stale; committing the tested tree does not (the hash is the tree's content). The Stop gate wants a **fresh PASS**. Missing driver tool (preflight warns) → scenario unrunnable: verification debt (finish skill), not skipped.
