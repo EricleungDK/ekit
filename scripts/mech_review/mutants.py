@@ -483,8 +483,7 @@ def default_runner():
     stub = os.environ.get("MECH_TEST_STUB")
 
     def run(argv, cwd, budget):
-        if stub:
-            argv = [stub] + argv[1:]
+        argv = red.stubbed(argv, stub)
         with tempfile.TemporaryFile() as out:
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)

@@ -235,7 +235,8 @@ class Steps(Tmp):
         r = self.main(run, "--project-dir", "app")
         self.assertEqual(r.returncode, 1, r.stderr)
         app = os.path.join(self.envdir, "head", "app")
-        self.assertEqual(os.readlink(os.path.join(app, "ok")), "../base.txt")
+        # Windows keeps a link's target with its own separator: ..\base.txt
+        self.assertEqual(os.path.normpath(os.readlink(os.path.join(app, "ok"))), os.path.normpath("../base.txt"))
         self.assertFalse(os.path.lexists(os.path.join(app, "up")))
         self.assertEqual([l for l in r.stderr.splitlines() if "left out" in l],
                          ["r3-local: head checkout: left out app/up -> ../../x (outside the checkout)"])

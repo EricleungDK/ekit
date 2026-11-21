@@ -6,6 +6,7 @@ baseline inside mutants/. R3 lists the other tracked top-level entries as also_c
 import contextlib
 import io
 import os
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -20,6 +21,26 @@ from scripts.mech_review.stack import ADAPTERS
 def git(repo, *args):
     return subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", *args], check=True,
                           capture_output=True, text=True).stdout
+
+
+# a name Windows will not hold in its filesystem (", a backslash, a control char, a trailing dot or space): such a
+# name goes into the repo through the index only, which is all also_copy reads (the tree at a commit)
+REFUSED = re.compile(r'[\x00-\x1f"*:<>?\\|]|[ .](/|$)') if os.name == "nt" else re.compile(r"(?!)")
+
+
+def commit(repo, files, msg):
+    """Commit `files` ({path: text}) in `repo`: on disk where the OS can hold the name, else in the index alone."""
+    on_disk = [p for p in files if not REFUSED.search(p)]
+    write(repo, {p: files[p] for p in on_disk})
+    if on_disk:
+        git(repo, "add", "--", *on_disk)
+    for path, text in files.items():
+        if REFUSED.search(path):
+            blob = subprocess.run(["git", "-C", repo, "hash-object", "-w", "--stdin"], input=text, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            # Git for Windows refuses such a path in the index unless told the repo is not checked out on NTFS
+            git(repo, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
+    git(repo, "-c", "core.protectNTFS=false", "commit", "-q", "-m", msg)
 
 
 def write(root, files):
@@ -51,9 +72,7 @@ class AlsoCopy(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.repo = tmp.name
         git(self.repo, "init", "-q")
-        write(self.repo, TRACKED)
-        git(self.repo, "add", "-A")
-        git(self.repo, "commit", "-q", "-m", "head")
+        commit(self.repo, TRACKED, "head")
         self.head = git(self.repo, "rev-parse", "HEAD").strip()
         write(self.repo, UNTRACKED)
 
@@ -78,9 +97,7 @@ class AlsoCopy(unittest.TestCase):
                           "scripts"])
 
     def test_a_name_with_a_tab_or_a_leading_space_is_listed_whole(self):
-        write(self.repo, {"tab\there.txt": "", " lead.txt": "", "docs/a\tb.md": ""})
-        git(self.repo, "add", "--", "tab\there.txt", " lead.txt", "docs/a\tb.md")
-        git(self.repo, "commit", "-q", "-m", "odd")
+        commit(self.repo, {"tab\there.txt": "", " lead.txt": "", "docs/a\tb.md": ""}, "odd")
         head = git(self.repo, "rev-parse", "HEAD").strip()
         self.assertEqual(mutants.also_copy(self.repo, head, ".", ["src"]),
                          [" lead.txt", "README.md", "back\\slash.txt", "conftest.py", "docs", 'my "odd" file.txt',
@@ -88,9 +105,10 @@ class AlsoCopy(unittest.TestCase):
 
     def test_a_name_that_is_not_utf8_is_left_out_since_no_toml_file_can_hold_it(self):
         blob = git(self.repo, "hash-object", "-w", os.devnull).strip()  # empty blob; the name goes in via the index only
-        subprocess.run([b"git", b"-C", self.repo.encode(), b"update-index", b"--add", b"--cacheinfo",
-                        b"100644," + blob.encode() + b",bad\xff.txt"], check=True, capture_output=True)
-        git(self.repo, "commit", "-q", "-m", "bad name")
+        # on stdin, not in argv: Windows passes a command line as text, which no byte 0xff is
+        subprocess.run(["git", "-C", self.repo, "update-index", "--index-info"],
+                       input=b"100644 blob " + blob.encode() + b"\tbad\xff.txt\n", check=True, capture_output=True)
+        git(self.repo, "-c", "core.protectNTFS=false", "commit", "-q", "-m", "bad name")
         head = git(self.repo, "rev-parse", "HEAD").strip()
         self.assertEqual(mutants.also_copy(self.repo, head, ".", ["src"]),
                          ["README.md", "back\\slash.txt", "conftest.py", "docs", 'my "odd" file.txt', "pytest.ini",

@@ -10,7 +10,8 @@ from scripts.mech_review import report
 
 class TestVersion(unittest.TestCase):
     def test_the_version_is_the_plugin_manifests(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+        # a file in a temp dir, not a NamedTemporaryFile: Windows will not open that one a second time
+        with tempfile.TemporaryDirectory() as tmp, open(os.path.join(tmp, "plugin.json"), "w") as f:
             json.dump({"name": "ekit", "version": "9.8.7"}, f)
             f.flush()
             with mock.patch.object(report, "PLUGIN", f.name):
@@ -25,7 +26,7 @@ class TestVersion(unittest.TestCase):
 
     def test_a_manifest_that_is_not_json_or_has_no_version_is_unknown(self):
         for text in ("{", "{}"):
-            with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            with tempfile.TemporaryDirectory() as tmp, open(os.path.join(tmp, "plugin.json"), "w") as f:
                 f.write(text)
                 f.flush()
                 with mock.patch.object(report, "PLUGIN", f.name):

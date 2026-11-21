@@ -9,6 +9,7 @@ import tempfile
 import unittest
 
 import _kit
+from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 
 
 
@@ -31,7 +32,7 @@ class TestOrchestrateMechTickScaffold(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.repo = os.path.join(os.path.realpath(self.tmp.name), "repo")
         os.mkdir(self.repo)
-        subprocess.run(["bash", os.path.join(CASE, "setup.sh")], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run([shells.find("bash"), os.path.join(CASE, "setup.sh")], cwd=self.repo, check=True, capture_output=True)
         self.env = dict(os.environ, EKIT_STATE=os.path.join(self.tmp.name, "state"))
         for name in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX"):  # the eval's child writes bytecode beside the source
             self.env.pop(name, None)
