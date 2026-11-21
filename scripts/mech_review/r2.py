@@ -101,30 +101,39 @@ def _unparsed(adapter, path, before, after):
     return out
 
 
-RENAME_MATCH = 0.6  # body lines kept, as difflib's ratio, for a renamed test whose assertions changed (#41)
+RENAME_MATCH = 0.6  # difflib's ratio over the non-assert body lines, for a renamed test whose assertions changed (#41)
+RENAME_SHARED = 2  # non-assert body lines the two must share, at least
+HEADER_MAX = 20  # lines a test's header (signature) may span
 
 
-def _body(text, line):
-    """the stripped non-blank lines of the fn opened at `line` (1-based), language-free: the lines after it up to the
-    first non-blank one indented no deeper than it (python's dedent; a `}` or `})` closing it in rust and ts)."""
+def _body(text, line, skip=frozenset()):
+    """the stripped non-blank lines of the fn opened at `line` (1-based), language-free, leaving out the line numbers in
+    skip (its assert lines). The header (decorators, a multi-line signature) ends at the first line, from `line`, that
+    ends in `:` or `{` (python's def, a rust fn, a ts callback); the body is the lines after it up to the first non-blank
+    one indented no deeper than `line` (python's dedent; a `}` or `})` closing it in rust and ts). No header end within
+    HEADER_MAX lines: no body."""
     lines = text.splitlines()
     if not 0 < line <= len(lines):
         return []
     indent = len(lines[line - 1]) - len(lines[line - 1].lstrip())
+    head = next((i for i in range(line - 1, min(len(lines), line - 1 + HEADER_MAX))
+                 if lines[i].rstrip().endswith((":", "{"))), None)
+    if head is None:
+        return []
     out = []
-    for ln in lines[line:]:
+    for no, ln in enumerate(lines[head + 1:], start=head + 2):
         if ln.strip() and len(ln) - len(ln.lstrip()) <= indent:
             break
-        if ln.strip():
+        if ln.strip() and no not in skip:
             out.append(ln.strip())
     return out
 
 
 def _renames(bfns, afns, bas, aas, before=None, after=None):
     """(removed fns, {new name: old fn}, [(old fn, new fn)]). A removed fn whose asserts reappear unchanged in a new fn
-    (one-to-one, non-empty) is a rename, not a removal. Then a removed fn and a new fn whose bodies match at least
-    RENAME_MATCH (one-to-one, best match first), the new one with no fewer asserts, are a rename whose assertions
-    changed: listed for a confirm entry."""
+    (one-to-one, non-empty) is a rename, not a removal. Then a removed fn with asserts and a new fn with no fewer, whose
+    non-assert body lines match at least RENAME_MATCH and share at least RENAME_SHARED lines (one-to-one, best match
+    first), are a rename whose assertions changed: listed for a confirm entry."""
     names = {f.name for f in afns}
     by_name = {f.name for f in bfns}
     sigs = lambda xs, n: sorted(re.sub(r"\s+", "", a.text) for a in xs if a.fn == n)
@@ -144,13 +153,17 @@ def _renames(bfns, afns, bas, aas, before=None, after=None):
         new = [f for f in afns if f.name not in by_name and f.name not in renamed]
         pairs = []
         for rf in gone:
-            rb = _body(before, rf.line)
+            had = sigs(bas, rf.name)
+            if not had:  # no assert: no "assertions changed" to confirm
+                continue
+            rb = _body(before, rf.line, {a.line for a in bas if a.fn == rf.name})
             for nf in new:
-                nb = _body(after, nf.line)
-                if rb and nb and len(sigs(aas, nf.name)) >= len(sigs(bas, rf.name)):  # a dropped assert is no rename
-                    ratio = difflib.SequenceMatcher(None, rb, nb, autojunk=False).ratio()
-                    if ratio >= RENAME_MATCH:
-                        pairs.append((-ratio, rf.line, nf.line, rf, nf))
+                if len(sigs(aas, nf.name)) < len(had):  # a dropped assert is no rename
+                    continue
+                nb = _body(after, nf.line, {a.line for a in aas if a.fn == nf.name})
+                m = difflib.SequenceMatcher(None, rb, nb, autojunk=False)
+                if rb and nb and sum(b.size for b in m.get_matching_blocks()) >= RENAME_SHARED                         and m.ratio() >= RENAME_MATCH:
+                    pairs.append((-m.ratio(), rf.line, nf.line, rf, nf))
         taken_old, taken_new = set(), set()
         for _, _, _, rf, nf in sorted(pairs, key=lambda x: x[:3]):
             if rf.name in taken_old or nf.name in taken_new:

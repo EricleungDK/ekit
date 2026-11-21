@@ -43,6 +43,40 @@ UNRELATED = BASE.replace('''    def test_the_budget_gone_keeps_every_mutant_miss
 DROPPED = RENAMED.replace('        self.assertIn("2 untested", check["note"])\n', "")
 
 
+BLACK_BASE = """import refunds
+
+
+def test_refund_is_never_negative(
+    tmp_path,
+):
+    assert refunds.refund(tmp_path, -5) == 0
+    assert refunds.refund(tmp_path, 0) == 0
+    assert refunds.refund(tmp_path, 3) == 3
+"""
+
+BLACK_HEAD = """import refunds
+
+
+def test_something_else(
+    tmp_path,
+):
+    assert True
+    assert 1
+    assert 2
+"""
+
+NO_ASSERT_BASE = """import calc
+
+
+def test_runs_without_error():
+    fake = calc.fake({"a": "survived"})
+    with calc.clock(100, 130):
+        calc.run(fake, budget=2)
+"""
+
+NO_ASSERT_HEAD = NO_ASSERT_BASE.replace("test_runs_without_error", "test_runs_quietly")
+
+
 class R2Rename(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -67,6 +101,24 @@ class R2Rename(unittest.TestCase):
         rc, got = self.entries(DROPPED)
         self.assertEqual(rc, 1)
         self.assertEqual(got, [("fail", "test fn `T::test_the_budget_gone_keeps_every_mutant_missed` removed")])
+
+    def test_two_tests_sharing_only_a_multi_line_signature_are_no_rename(self):
+        self.repo.commit({"tests/test_refunds.py": BLACK_BASE}, "black base")
+        self.base = self.repo.git("rev-parse", "HEAD").strip()
+        head = self.repo.commit({"tests/test_refunds.py": BLACK_HEAD}, "head")
+        res = r2(self.repo, self.base, head, adapter=None, stack="python")
+        self.assertEqual(res.returncode, 1)
+        self.assertEqual([(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]],
+                         [("fail", "test fn `test_refund_is_never_negative` removed")])
+
+    def test_a_removed_test_with_no_assertion_is_no_rename_whose_assertions_changed(self):
+        self.repo.commit({"tests/test_quiet.py": NO_ASSERT_BASE}, "quiet base")
+        self.base = self.repo.git("rev-parse", "HEAD").strip()
+        head = self.repo.commit({"tests/test_quiet.py": NO_ASSERT_HEAD}, "head")
+        res = r2(self.repo, self.base, head, adapter=None, stack="python")
+        self.assertEqual(res.returncode, 1)
+        self.assertEqual([(e["severity"], e["problem"]) for e in json.loads(res.stdout)["entries"]],
+                         [("fail", "test fn `test_runs_without_error` removed")])
 
     def test_an_unrelated_test_in_place_of_a_removed_one_stays_a_fail(self):
         rc, got = self.entries(UNRELATED)
