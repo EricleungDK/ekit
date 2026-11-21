@@ -5,6 +5,7 @@ installed and no test of the PR is run here. One real run is in the PR's evidenc
 import json
 import os
 import re
+import shlex
 import tempfile
 import threading
 import time
@@ -34,8 +35,10 @@ class Fake:
     """Answers each command by its kind; records (argv, env, cwd)."""
 
     def __init__(self, plan=True, count=2, timeout=None, shard_rc=None, merge_rc=1, base_rc=0, fails=None,
-                 dirty="", merged=None):
+                 dirty="", merged=None, reqs=None, plan_out=None, base_out=None):
         self.calls, self.lock = [], threading.Lock()
+        self.reqs = reqs or {}  # repo path -> text, at head
+        self.plan_out, self.base_out = plan_out, base_out
         self.plan, self.count, self.timeout = plan, count, timeout
         self.shard_rc = shard_rc or {}
         self.merge_rc, self.base_rc, self.fails, self.dirty = merge_rc, base_rc, fails or {}, dirty
@@ -48,10 +51,22 @@ class Fake:
             return 0, {"main": BASE, "HEAD": HEAD}.get(argv[-1].split("^")[0], "c" * 40) + "\n", ""
         if argv[:2] == ["git", "-C"] and argv[3] == "status":
             return 0, self.dirty, ""
+        if argv[:2] == ["git", "-C"] and argv[3] == "ls-tree":
+            tree = argv[-1]
+            d = tree.split(":", 1)[1] if ":" in tree else ""
+            names = [p[len(d) + 1:] if d else p for p in self.reqs if (os.path.dirname(p) == d)]
+            return 0, "".join(n + "\n" for n in names + ["setup.py"]), ""
+        if argv[:2] == ["git", "-C"] and argv[3] == "show":
+            sha, path = argv[-1].split(":", 1)
+            return (0, self.reqs[path], "") if sha == HEAD and path in self.reqs else (128, "", "fatal: no such path\n")
         if argv[0] in self.fails:
             return 1, "", f"{argv[0]} broke\n"
         if len(argv) > 3 and argv[2].endswith("mech-review.py"):
             sub = argv[3]
+            if sub == "plan" and self.plan_out is not None:
+                return 0, self.plan_out, ""
+            if sub == "baseline" and self.base_out is not None:
+                return 0, self.base_out, ""
             if sub == "plan":
                 return (2, "", "mech-review: git broke\n") if self.plan is None else (0, json.dumps({"run": self.plan}), "")
             if sub == "baseline":
@@ -84,7 +99,7 @@ class Tmp(unittest.TestCase):
 
     def main(self, fake, *extra, stack_name="python"):
         argv = ["--repo", self.tmp, "--base", "main", "--stack", stack_name, "--env-dir", self.envdir, *extra]
-        return _kit.run_cli(argv, main=lambda a: r3.main(a, run=fake))
+        return _kit.run_cli(argv, main=lambda a: r3.main(a, run=fake, os_name="posix"))
 
 
 class Pins(unittest.TestCase):
@@ -118,33 +133,80 @@ class Pins(unittest.TestCase):
 
 
 class Steps(Tmp):
-    def test_python_env_is_a_venv_with_the_pins_and_the_requirements_files(self):
-        for name in ("requirements.txt", "requirements-dev.txt", "other.txt"):
-            open(os.path.join(self.tmp, name), "w").close()
-        fake = Fake()
+    def test_python_env_is_a_venv_with_the_pins_and_the_requirements_files_at_head(self):
+        open(os.path.join(self.tmp, "requirements-local.txt"), "w").close()  # in the working tree only: not read
+        fake = Fake(reqs={"requirements.txt": "six\n", "requirements-dev.txt": "attrs\n", "other.txt": "x\n"})
         r = self.main(fake)
         self.assertEqual(r.returncode, 1, r.stderr)
         venv = os.path.join(self.envdir, "venv")
         py = os.path.join(venv, "bin", "python")
+        req = os.path.join(self.envdir, "requirements")
         setup = [a for a, _, _ in fake.calls if a[0] in ("python3", py)][:4]
         self.assertEqual(setup, [
             ["python3", "-m", "venv", venv],
             [py, "-m", "pip", "install", "--quiet", "pytest==9.2.0", "mutmut==3.8.1"],
-            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(self.tmp, "requirements-dev.txt")],
-            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(self.tmp, "requirements.txt")],
+            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(req, "requirements-dev.txt")],
+            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(req, "requirements.txt")],
         ])
+        self.assertIn(["git", "-C", self.tmp, "ls-tree", "--name-only", HEAD], [a for a, _, _ in fake.calls])
+        with open(os.path.join(req, "requirements-dev.txt")) as f:
+            self.assertEqual(f.read(), "attrs\n")
         # the engine runs with the venv first on PATH, as CI puts it on GITHUB_PATH
         _, e, _ = [c for c in fake.calls if c[0][0] == "python3" and c[0][1] == "-I"][0]
         self.assertTrue(e["PATH"].startswith(os.path.join(venv, "bin") + os.pathsep), e["PATH"])
 
     def test_requirements_are_read_in_the_project_dir(self):
-        os.makedirs(os.path.join(self.tmp, "app"))
-        open(os.path.join(self.tmp, "app", "requirements.txt"), "w").close()
-        open(os.path.join(self.tmp, "requirements.txt"), "w").close()
-        fake = Fake()
+        fake = Fake(reqs={"app/requirements.txt": "six\n", "requirements.txt": "attrs\n"})
         self.main(fake, "--project-dir", "app")
-        reqs = [a[-1] for a, _, _ in fake.calls if "-r" in a]
-        self.assertEqual(reqs, [os.path.join(self.tmp, "app", "requirements.txt")])
+        self.assertIn(["git", "-C", self.tmp, "ls-tree", "--name-only", f"{HEAD}:app"], [a for a, _, _ in fake.calls])
+        self.assertEqual([a[-1] for a, _, _ in fake.calls if "-r" in a],
+                         [os.path.join(self.envdir, "requirements", "requirements.txt")])
+        with open(os.path.join(self.envdir, "requirements", "requirements.txt")) as f:
+            self.assertEqual(f.read(), "six\n")
+
+    def test_changed_requirements_set_the_env_up_again(self):
+        self.main(Fake(reqs={"requirements.txt": "six\n"}))
+        fake = Fake(reqs={"requirements.txt": "six==1.17.0\n"})
+        self.main(fake)
+        self.assertIn(["python3", "-m", "venv", os.path.join(self.envdir, "venv")], [a for a, _, _ in fake.calls])
+        fake = Fake(reqs={"requirements.txt": "six==1.17.0\n"})
+        self.main(fake)
+        self.assertEqual([a for a, _, _ in fake.calls if "venv" in a], [])
+
+    def test_a_relative_env_dir_is_made_absolute(self):
+        fake = Fake(count=1)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python", "--env-dir", "rel"],
+                     main=lambda a: r3.main(a, run=fake, os_name="posix"))
+        venv = os.path.join(os.path.realpath(self.tmp), "rel", "venv")
+        self.assertIn(["python3", "-m", "venv", venv], [a for a, _, _ in fake.calls])
+        _, e, _ = [c for c in fake.calls if c[0][:2] == ["python3", "-I"]][0]
+        self.assertTrue(e["PATH"].startswith(os.path.join(venv, "bin") + os.pathsep), e["PATH"])
+
+    def test_the_tools_get_no_pythonpath_or_pytest_addopts(self):
+        os.environ["PYTHONPATH"], os.environ["PYTEST_ADDOPTS"] = "/x", "-k nothing"
+        self.addCleanup(os.environ.pop, "PYTHONPATH")
+        self.addCleanup(os.environ.pop, "PYTEST_ADDOPTS")
+        fake = Fake(count=1)
+        self.main(fake)
+        for argv, e, _ in fake.calls:
+            if argv[:2] == ["python3", "-I"]:
+                self.assertNotIn("PYTHONPATH", e)
+                self.assertNotIn("PYTEST_ADDOPTS", e)
+
+    def test_native_windows_is_exit_2(self):
+        fake = Fake()
+        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python"],
+                         main=lambda a: r3.main(a, run=fake, os_name="nt"))
+        self.assertEqual((r.returncode, fake.calls), (2, []))
+        self.assertIn("r3-local: POSIX only (on Windows run it in WSL)", r.stderr)
+
+    def test_help_says_posix_only(self):
+        r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("POSIX only", r.stdout)
 
     def test_a_ready_env_is_reused(self):
         self.main(Fake())
@@ -178,8 +240,17 @@ class Steps(Tmp):
             ["npm", "install", "--prefix", prefix, "--no-audit", "--no-fund", "--legacy-peer-deps",
              "@stryker-mutator/core@10.0.0", "@stryker-mutator/jest-runner@10.0.0"]])
         for argv in fake.engine("mutants"):
-            self.assertEqual(fake.opt(argv, "--mutants-cmd"), [os.path.join(prefix, "node_modules", ".bin", "stryker")])
+            self.assertEqual([shlex.split(c) for c in fake.opt(argv, "--mutants-cmd")],
+                             [[os.path.join(prefix, "node_modules", ".bin", "stryker")]])
         self.assertEqual([fake.opt(a, "--mutants-cmd") for a in fake.engine("baseline")], [[]])
+
+    def test_ts_mutants_cmd_is_quoted_for_the_engines_split(self):
+        self.envdir = os.path.join(self.tmp, "my env")
+        fake = Fake(count=1)
+        self.main(fake, stack_name="ts")
+        (argv,) = fake.engine("mutants")
+        (cmd,) = fake.opt(argv, "--mutants-cmd")
+        self.assertEqual(shlex.split(cmd), [os.path.join(self.envdir, "stryker", "node_modules", ".bin", "stryker")])
 
     def test_rust_env_installs_cargo_mutants_and_sets_the_build_env(self):
         fake = Fake()
@@ -194,7 +265,7 @@ class Steps(Tmp):
         self.assertEqual([fake.opt(a, "--mutants-cmd") for a in fake.engine("mutants")], [[], []])
 
     def test_a_stack_without_an_r3_tool_is_exit_2(self):
-        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "nope"], main=lambda a: r3.main(a, run=Fake()))
+        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "nope"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
         self.assertEqual(r.returncode, 2)
         self.assertIn("no R3 tool for stack nope", r.stderr)
 
@@ -224,8 +295,18 @@ class Steps(Tmp):
         self.main(fake)
         (argv,) = fake.engine("mutants")
         self.assertEqual((fake.opt(argv, "--mutation-budget"), fake.opt(argv, "--max-mutants"),
-                          fake.opt(argv, "--project-dir"), fake.opt(argv, "--mutant-timeout"), fake.opt(argv, "--head")),
-                         (["10"], ["40"], ["."], [], [HEAD]))
+                          fake.opt(argv, "--project-dir"), fake.opt(argv, "--mutant-timeout"), fake.opt(argv, "--head"),
+                          fake.opt(argv, "--test-paths")),
+                         (["10"], ["40"], ["."], [], [HEAD], ["tests/**"]))
+        (plan,) = fake.engine("plan")
+        self.assertEqual(fake.opt(plan, "--test-paths"), ["tests/**"])
+
+    def test_a_set_mutant_timeout_wins_over_the_baselines(self):
+        fake = Fake(count=1, timeout=42)
+        self.main(fake, "--mutant-timeout", "7")
+        (argv,) = fake.engine("mutants")
+        self.assertEqual(fake.opt(argv, "--mutant-timeout"), ["7"])
+        self.assertEqual(fake.opt(fake.engine("baseline")[0], "--mutant-timeout"), [])
 
     def test_the_engine_is_the_one_beside_this_script(self):
         fake = Fake(count=1)
@@ -334,6 +415,46 @@ class Output(Tmp):
         self.assertEqual((r.returncode, fake.engine("mutants")), (2, []))
         self.assertIn("r3-local: baseline exit 2: no result", r.stderr)
         self.assertIn("baseline log", r.stderr)
+
+    def test_a_plan_that_is_not_json_is_exit_2(self):
+        r = self.main(Fake(plan_out="Traceback ..."))
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: plan: no usable result (", r.stderr)
+
+    def test_a_baseline_with_missing_keys_is_exit_2(self):
+        fake = Fake(base_out=json.dumps({"run": True}))
+        r = self.main(fake)
+        self.assertEqual((r.returncode, fake.engine("mutants")), (2, []))
+        self.assertIn("r3-local: baseline: no usable result (", r.stderr)
+
+    def test_a_shard_that_is_not_json_is_no_result(self):
+        inner = Fake(count=2)
+
+        def run(argv, env_=None, cwd=None):
+            rc, out, err = inner(argv, env_, cwd)
+            return (rc, "{oops", err) if "0/2" in argv else (rc, out, err)
+
+        r = self.main(run)
+        self.assertIn("shard 0/2: no usable result", r.stdout.splitlines())
+        (merge,) = inner.engine("merge")
+        self.assertEqual([x.split("=")[0] for x in inner.opt(merge, "--envelope")], ["1"])
+
+    def test_a_merge_that_is_not_json_is_exit_2(self):
+        inner = Fake(count=1)
+
+        def run(argv, env_=None, cwd=None):
+            rc, out, err = inner(argv, env_, cwd)
+            return (rc, "", err) if "merge" in argv else (rc, out, err)
+
+        r = self.main(run)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: merge: no usable result (", r.stderr)
+
+    def test_without_env_dir_the_merged_json_is_said_not_kept(self):
+        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python"],
+                         main=lambda a: r3.main(a, run=Fake(count=1), os_name="posix"))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[-1], "merged: not kept (temp dir removed; pass --env-dir to keep it)")
 
     def test_a_merge_usage_error_is_exit_2(self):
         r = self.main(Fake(merge_rc=2))

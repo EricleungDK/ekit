@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""r3-local: the workflow's R3 jobs on this machine, before the review request (#35).
+"""r3-local: the workflow's R3 jobs on this machine, before the review request (#35). POSIX only (on Windows: WSL).
 
 usage: python3 -I scripts/r3-local.py --base REF [--head REF] --stack {python,rust,ts} [--repo DIR]
-           [--test-paths GLOB ...] [--mutation-budget MIN] [--max-mutants N] [--project-dir DIR] [--env-dir DIR]
+           [--test-paths GLOB ...] [--mutation-budget MIN] [--max-mutants N] [--mutant-timeout SEC]
+           [--project-dir DIR] [--env-dir DIR]
 
 Steps, as .github/workflows/mech-review.yml runs them: set up the stack's R3 tool with the workflow's pins (the adapter's
-r3_tool: python a venv with pytest and mutmut, ts Stryker in its own npm prefix, rust cargo-mutants), then the engine's
-plan, baseline (shard count, per-mutant timeout), every shard at the same time with the CI budget each, and the merge.
-Prints the merged summary, R3's status, each shard's note and the fail entries; the merged JSON is written beside the
-shard results. Pass the inputs your caller workflow sets (ekit: --test-paths 'tests/**' --test-paths
-'.ekit/scenarios/**' --mutation-budget 20). The run tests the head commit: uncommitted changes are not in it.
---env-dir keeps the tool and the results (reused while the pins match); default: a temp dir, removed after the run.
-exit: 0 no fail entry; 1 a fail entry; 2 setup failed, usage, git error, or a step produced no result.
+r3_tool: python a venv with pytest and mutmut plus the project dir's requirements*.txt at head, ts Stryker in its own
+npm prefix, rust cargo-mutants), then the engine's plan, baseline (shard count, per-mutant timeout), every shard at the
+same time with the CI budget each, and the merge. Prints the merged summary, R3's status, each shard's note and the fail
+entries. Defaults are the workflow's (test-paths tests/**, budget 10, max-mutants 40); pass your caller's inputs (ekit:
+--test-paths 'tests/**' --test-paths '.ekit/scenarios/**' --mutation-budget 20). The run tests the head commit:
+uncommitted changes are not in it. The shards share this machine's CPUs (CI gives each its own runner), so wall times
+and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
+--env-dir keeps the tool and the results (reused while the pins and requirements match); default: a temp dir, removed.
+exit: 0 no fail entry; 1 a fail entry; 2 setup failed, usage, git error, a step produced no usable result, or Windows.
 """
 import argparse
 import concurrent.futures
-import glob
+import fnmatch
+import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,10 +30,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
-from mech_review.stack import ADAPTERS  # noqa: E402
+from mech_review.stack import ADAPTERS  # noqa: E402 - imported after the sys.path line above
 
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-review.py")
-MARKER = ".ekit-r3-env.json"  # the pins an env dir was set up with
+MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up with
+DROP_ENV = ("PYTHONPATH", "PYTEST_ADDOPTS")  # a developer's shell settings CI does not have
 
 
 class Stop(Exception):
@@ -44,14 +50,35 @@ def run_cmd(argv, env=None, cwd=None):
     return p.returncode, p.stdout, p.stderr
 
 
-def _setup_steps(tool, envdir, project):
-    """[(argv, None)] install commands, the dir to put first on PATH (or None), and the mutants cmd (or None)."""
+def requirements(run, repo, head, project_dir, envdir):
+    """The project dir's requirements*.txt at head, written under envdir: [(path, sha256)], sorted by name."""
+    tree = head if project_dir == "." else f"{head}:{project_dir}"
+    rc, out, err = run(["git", "-C", repo, "ls-tree", "--name-only", tree])
+    if rc != 0:
+        raise Stop(f"git ls-tree {tree}: {err.strip()}")
+    names = sorted(n for n in out.splitlines() if fnmatch.fnmatch(n, "requirements*.txt"))
+    d = os.path.join(envdir, "requirements")
+    got = []
+    for name in names:
+        rel = name if project_dir == "." else f"{project_dir}/{name}"
+        rc, text, err = run(["git", "-C", repo, "show", f"{head}:{rel}"])
+        if rc != 0:
+            raise Stop(f"git show {head}:{rel}: {err.strip()}")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write(text)
+        got.append((path, hashlib.sha256(text.encode()).hexdigest()))
+    return got
+
+
+def _setup_steps(tool, envdir, reqs):
+    """The install commands, the dir to put first on PATH (or None), and the mutants cmd (or None)."""
     if tool.kind == "venv":
         venv = os.path.join(envdir, "venv")
         py = os.path.join(venv, "bin", "python")
         steps = [["python3", "-m", "venv", venv], [py, "-m", "pip", "install", "--quiet", *tool.packages]]
-        steps += [[py, "-m", "pip", "install", "--quiet", "-r", f]
-                  for f in sorted(glob.glob(os.path.join(project, "requirements*.txt")))]
+        steps += [[py, "-m", "pip", "install", "--quiet", "-r", path] for path, _ in reqs]
         return steps, os.path.join(venv, "bin"), None
     if tool.kind == "npm":
         prefix = os.path.join(envdir, "stryker")
@@ -63,10 +90,11 @@ def _setup_steps(tool, envdir, project):
     return steps, os.path.join(root, "bin"), None
 
 
-def setup(run, tool, envdir, project):
-    """Install the tool unless envdir already holds these pins. Returns (env for the engine, mutants cmd or None)."""
-    steps, bindir, mutants_cmd = _setup_steps(tool, envdir, project)
-    want = {"kind": tool.kind, "packages": list(tool.packages)}
+def setup(run, tool, envdir, reqs):
+    """Install the tool unless envdir already holds these pins and requirements. Returns (engine env, mutants cmd)."""
+    steps, bindir, mutants_cmd = _setup_steps(tool, envdir, reqs)
+    want = {"kind": tool.kind, "packages": list(tool.packages),
+            "requirements": {os.path.basename(p): h for p, h in reqs}}
     marker = os.path.join(envdir, MARKER)
     try:
         with open(marker) as f:
@@ -83,7 +111,8 @@ def setup(run, tool, envdir, project):
                 raise Stop(f"setup failed: {' '.join(argv)} (exit {rc})\n{err.rstrip()}")
         with open(marker, "w") as f:
             json.dump(want, f)
-    env = dict(os.environ, **tool.env)
+    env = {k: v for k, v in os.environ.items() if k not in DROP_ENV}
+    env.update(tool.env)
     if bindir:
         env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
     return env, mutants_cmd
@@ -100,10 +129,27 @@ def _engine(run, env, sub, args):
     return run(["python3", "-I", ENGINE, sub, *args], env)
 
 
-def _shard_line(k, n, shard):
-    c = shard["checks"]["R3"]
+def _parse(text, what, keys):
+    """The step's JSON with these keys (a dotted key reaches into a table), or Stop."""
+    try:
+        d = json.loads(text)
+        for k in keys:
+            v = d
+            for part in k.split("."):
+                v = v[part]
+    except (ValueError, KeyError, TypeError) as e:
+        raise Stop(f"{what}: no usable result ({type(e).__name__}: {e})")
+    return d
+
+
+def _shard_line(k, n, text):
+    try:
+        c = json.loads(text)["checks"]["R3"]
+        note = c["note"]
+    except (ValueError, KeyError, TypeError):
+        return None
     wall = (c.get("timing") or {}).get("wall_s")
-    return f"shard {k}/{n}: {c['note']}" + (f" (wall {wall} s)" if wall is not None else "")
+    return f"shard {k}/{n}: {note}" + (f" (wall {wall} s)" if wall is not None else "")
 
 
 def _r3_line(c):
@@ -113,7 +159,7 @@ def _r3_line(c):
     return f"R3 {c['status']} ({c['tested']}/{total} tested)"
 
 
-def r3(run, a):
+def r3(run, a, keep):
     adapter = ADAPTERS.get(a.stack)
     tool = adapter.r3_tool if adapter else None
     if tool is None:
@@ -123,9 +169,11 @@ def r3(run, a):
     _, dirty, _ = run(["git", "-C", repo, "status", "--porcelain"])
     if dirty.strip():
         print(f"r3-local: uncommitted changes are not in the run (it tests {head})", file=sys.stderr)
-    env, mutants_cmd = setup(run, tool, a.env_dir, os.path.normpath(os.path.join(repo, a.project_dir)))
+    reqs = requirements(run, repo, head, a.project_dir, a.env_dir) if tool.kind == "venv" else []
+    env, mutants_cmd = setup(run, tool, a.env_dir, reqs)
+    test_paths = a.test_paths or ["tests/**"]  # the workflow's default input
     common = ["--repo", repo, "--base", base, "--head", head, "--stack", a.stack]
-    tp = [x for g in a.test_paths for x in ("--test-paths", g)]
+    tp = [x for g in test_paths for x in ("--test-paths", g)]
     knobs = ["--mutation-budget", a.mutation_budget, "--max-mutants", a.max_mutants, "--project-dir", a.project_dir]
     out = os.path.join(a.env_dir, "out")
     os.makedirs(out, exist_ok=True)
@@ -133,19 +181,20 @@ def r3(run, a):
     rc, text, err = _engine(run, env, "plan", common + tp)
     if rc != 0:
         raise Stop(f"plan exit {rc}: no result\n{err.rstrip()}")
-    if not json.loads(text)["run"]:
+    if not _parse(text, "plan", ["run"])["run"]:
         print("R3 not run: no production file changed in scope (plan)")
         return 0
     rc, text, err = _engine(run, env, "baseline", common + knobs + ["--shards", "4"] + tp)
     if rc > 1:
         raise Stop(f"baseline exit {rc}: no result\n{err.rstrip()}")
+    b = _parse(text, "baseline", ["run", "count", "timeout", "head", "checks.R3"])
     base_file = os.path.join(out, "mech-review-baseline.json")
     with open(base_file, "w") as f:
         f.write(text)
-    b = json.loads(text)
     n = b["count"] if b["run"] else 0
-    extra = [] if b["timeout"] is None else ["--mutant-timeout", str(b["timeout"])]
-    extra += ["--mutants-cmd", mutants_cmd] if mutants_cmd else []
+    timeout = a.mutant_timeout or ("" if b["timeout"] is None else str(b["timeout"]))  # input || baseline, as CI
+    extra = ["--mutant-timeout", timeout] if timeout else []
+    extra += ["--mutants-cmd", shlex.quote(mutants_cmd)] if mutants_cmd else []
 
     def shard(k):
         return _engine(run, env, "mutants", common + ["--shard", f"{k}/{n}"] + knobs + extra + tp)
@@ -154,22 +203,23 @@ def r3(run, a):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(n, 1)) as pool:
         results = list(pool.map(shard, range(n)))
     for k, (rc, text, err) in enumerate(results):
-        if rc > 1:
-            lines.append(f"shard {k}/{n}: no result (exit {rc})")
+        line = None if rc > 1 else _shard_line(k, n, text)
+        if line is None:
+            lines.append(f"shard {k}/{n}: no result (exit {rc})" if rc > 1 else f"shard {k}/{n}: no usable result")
             print(f"r3-local: shard {k}/{n} exit {rc}\n{err.rstrip()}", file=sys.stderr)
             continue
         path = os.path.join(out, f"mech-review-mutants-{k}.json")
         with open(path, "w") as f:
             f.write(text)
         envelopes += ["--envelope", f"{k}={path}"]
-        lines.append(_shard_line(k, n, json.loads(text)))
+        lines.append(line)
     rc, text, err = _engine(run, env, "merge", common + ["--shards", str(n), "--baseline", base_file] + envelopes)
     if rc > 1:
         raise Stop(f"merge exit {rc}: no result\n{err.rstrip()}")
+    m = _parse(text, "merge", ["summary", "entries", "checks.R3.status", "checks.R3.note"])
     merged_file = os.path.join(out, "mech-review-mutants-merged.json")
     with open(merged_file, "w") as f:
         f.write(text)
-    m = json.loads(text)
     c = m["checks"]["R3"]
     print(m["summary"])
     print(_r3_line(c) if n else f"R3 {c['status']}: {c['note']}")
@@ -178,37 +228,44 @@ def r3(run, a):
     for e in m["entries"]:
         if e["severity"] == "fail":
             print(f"fail {e['id']} {e['file']}:{e['line']} {e['problem']}")
-    print(f"merged: {merged_file}")
+    print(f"merged: {merged_file}" if keep else "merged: not kept (temp dir removed; pass --env-dir to keep it)")
     return rc
 
 
 def parse(argv):
-    p = argparse.ArgumentParser(prog="r3-local.py", description="the workflow's R3 jobs, locally (#35)")
+    p = argparse.ArgumentParser(prog="r3-local.py", description="the workflow's R3 jobs, locally (#35). POSIX only: "
+                                "on Windows run it in WSL.")
     p.add_argument("--repo", default=".", help="git repo (default .)")
     p.add_argument("--base", required=True, help="base ref (the PR's base: origin/main)")
-    p.add_argument("--head", default="HEAD", help="head ref (default HEAD)")
+    p.add_argument("--head", default="HEAD", help="head ref (default HEAD; a commit: uncommitted changes are not in it)")
     p.add_argument("--stack", required=True, help="python, rust or ts")
-    p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
+    p.add_argument("--test-paths", action="append", default=None, metavar="GLOB",
+                   help="test file glob, repeatable (workflow default tests/**)")
     p.add_argument("--mutation-budget", default="10", metavar="MIN", help="minutes per shard (workflow default 10)")
     p.add_argument("--max-mutants", default="40", metavar="N", help="R3 cap (workflow default 40)")
+    p.add_argument("--mutant-timeout", default="", metavar="SEC",
+                   help="per-mutant timeout (workflow default: empty, the baseline's derived one)")
     p.add_argument("--project-dir", default=".", metavar="DIR", help="project dir under the repo (default .)")
     p.add_argument("--env-dir", metavar="DIR", help="keep the tool and results here (reused); default: temp dir")
     return p.parse_args(argv)
 
 
-def main(argv, run=run_cmd):
+def main(argv, run=run_cmd, os_name=os.name):
     a = parse(argv)
-    tmp = None
-    if not a.env_dir:
-        tmp = a.env_dir = tempfile.mkdtemp(prefix="ekit-r3-")
+    if os_name == "nt":
+        print("r3-local: POSIX only (on Windows run it in WSL): the venv and the mutation tools need a POSIX host",
+              file=sys.stderr)
+        return 2
+    keep = bool(a.env_dir)
+    a.env_dir = os.path.abspath(a.env_dir) if keep else tempfile.mkdtemp(prefix="ekit-r3-")
     try:
-        return r3(run, a)
+        return r3(run, a, keep)
     except Stop as e:
         print(f"r3-local: {e}", file=sys.stderr)
         return 2
     finally:
-        if tmp:
-            shutil.rmtree(tmp, ignore_errors=True)
+        if not keep:
+            shutil.rmtree(a.env_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
