@@ -20,6 +20,7 @@ import argparse
 import concurrent.futures
 import fnmatch
 import hashlib
+import inspect
 import json
 import os
 import posixpath
@@ -36,6 +37,9 @@ from mech_review.stack import ADAPTERS  # noqa: E402 - imported after the sys.pa
 
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-review.py")
 MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up with
+# what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
+HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
+EXTRACT_TAKES_FILTER = "filter" in inspect.signature(tarfile.TarFile.extract).parameters
 DROP_ENV = ("PYTHONPATH", "PYTEST_ADDOPTS")  # a developer's shell settings CI does not have
 
 
@@ -87,8 +91,10 @@ def requirements(run, repo, head, project_dir, envdir):
                 why = _left_out(m, root)
                 if why:
                     print(f"r3-local: head checkout: left out {why}", file=sys.stderr)
-                elif hasattr(tarfile, "data_filter"):  # a member the check above let through stops the run here
+                elif HAS_DATA_FILTER:  # a member the check above let through stops the run here
                     t.extract(m, root, filter="data")
+                elif EXTRACT_TAKES_FILTER:  # _left_out did the data filter's work; never reach tarfile's own default
+                    t.extract(m, root, filter="fully_trusted")
                 else:  # python < 3.12 without the filter backport
                     t.extract(m, root)
     except tarfile.TarError as e:

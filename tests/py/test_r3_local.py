@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 import warnings
 
 import _kit
@@ -270,10 +271,13 @@ class Steps(Tmp):
                          ["r3-local: head checkout: left out pipe (not a file, dir or link)"])
 
     def test_a_python_without_the_data_filter_leaves_the_same_members_out(self):
-        if hasattr(tarfile, "data_filter"):
-            saved = tarfile.data_filter
-            del tarfile.data_filter
-            self.addCleanup(setattr, tarfile, "data_filter", saved)
+        """r3-local's own seam stands for an old python; tarfile itself is never patched (3.14 reads its globals)."""
+        for takes_filter in (True, False):
+            with self.subTest(takes_filter=takes_filter),                     mock.patch.object(r3, "HAS_DATA_FILTER", False),                     mock.patch.object(r3, "EXTRACT_TAKES_FILTER", takes_filter and r3.EXTRACT_TAKES_FILTER):
+                self.envdir = os.path.join(self.tmp, f"env-{takes_filter}")
+                self.no_filter_run()
+
+    def no_filter_run(self):
         fake, run = self.archive(("link", None, "../../etc"), ("base.txt", "attrs\n"), ("ok", None, "base.txt"),
                                  ("requirements.txt", "six\n"))
         with warnings.catch_warnings():
