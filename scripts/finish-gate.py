@@ -14,7 +14,9 @@ A tree that was reported stays allowed. A missing report blocks once per tree; s
 not green block every `done` report. stop_hook_active (the stop right after a block) is the loop guard: such a stop is
 let through, except one that gives a `done` report again. Saying done twice proves nothing, so its checks run each
 time; `## Finish: blocked` is the way out, and Claude Code itself ends a run of consecutive blocks.
-Runner errors fail closed (block).
+Runner errors fail closed (block), except for a `blocked` report. A runner that cannot run on this host (a runner
+error, scenarios that failed only on what the host lacks, a verify command `n/a (env)`) is named as such, with
+`## Finish: blocked` and the debt named as the way out. Printed commands start the Python the hook found (launcher).
 A stop while a subagent still runs (the payload's `background_tasks`) is a wait for its report, not the end of the
 work: it is allowed and asks nothing. A payload without that list (an older Claude Code) is gated as any stop.
 Test seams: EKIT_SCENARIOS_PY overrides the runner path, EKIT_TASK_VERIFY_PY the verifier's.
@@ -29,6 +31,9 @@ import re
 import subprocess
 import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
+import launcher  # noqa: E402 - the sys.path line above has to run first
 
 STATE = os.environ.get("EKIT_STATE") or os.environ.get("EK_STATE") or os.path.join(
     os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.expanduser("~/.cache/ekit"), "state"
@@ -143,6 +148,8 @@ def block(reason):
     print(json.dumps({"decision": "block", "reason": f"[ekit] {reason}"}))
 
 
+HOST = "It cannot run on this host → `## Finish: blocked`, naming it as verification debt. "
+NOT_HERE = "cannot run here: "  # scenarios.py check: the last run failed only on what this host lacks
 ASK = ("Give the finish report (finish skill): it opens with `## Finish: done` or `## Finish: blocked`, then each "
        "criterion with evidence, verification debt, and what stays uncommitted and why. Then stop.")
 
@@ -160,6 +167,7 @@ def main():
     top = (git(cwd, "rev-parse", "--show-toplevel") or "").strip()
     if not top:
         return
+    top = os.path.normpath(top)  # git says C:/x on Windows: the OS's own spelling, as the runner and verifier get it
     if not baseline and data.get("hook_event_name") == "SubagentStop":
         return  # a subagent's stop (an older install may still register it): nothing to hash
     if not baseline and data.get("stop_hook_active") and report_kind(data) != "done":
@@ -174,21 +182,30 @@ def main():
         if read(base) is None:
             write(base, cur if rc == 0 else "")
         return
-    run_hint = f"Run `python3 {SCEN} --repo {top} run` and follow the taste-it skill (ekit:taste-it). "
+    run_hint = (f"Run `{launcher.line(SCEN, '--repo', launcher.shown(top), 'run')}` and follow the taste-it skill "
+                "(ekit:taste-it). ")
+    kind = report_kind(data)
     if rc != 0:
-        return block(f"scenario runner error: {cur.splitlines()[-1] if cur else f'exit {rc}'}. {run_hint}{ASK}")
+        if kind == "blocked":
+            return  # the runner cannot run here: a blocked report that names it is the way out
+        return block(f"scenario runner error: {cur.splitlines()[-1] if cur else f'exit {rc}'}. {run_hint}{HOST}{ASK}")
     if cur in (read(base), read(reported)):
         return
-    kind = report_kind(data)
     if kind != "blocked" and any(os.path.isdir(os.path.join(top, d, "scenarios")) for d in (".ekit", ".ek")):
         rc, why = runner(top, "check")
+        if rc == 1 and why.startswith(NOT_HERE):
+            return block(f"Scenarios cannot run on this host: {why[len(NOT_HERE):]}. Give `## Finish: blocked`, "
+                         f"naming the scenarios as verification debt. {ASK}")
         if rc == 1:
             return block(f"Scenarios not green: {why}. {run_hint}{ASK}")
         if rc != 0:
-            return block(f"scenario runner error: {why.splitlines()[-1] if why else f'exit {rc}'}. {run_hint}{ASK}")
+            return block(f"scenario runner error: {why.splitlines()[-1] if why else f'exit {rc}'}. {run_hint}{HOST}{ASK}")
     if kind == "done":
         rc, why = verifier(top, session)
-        tool = f"python3 {VERIFY} --repo {top}"
+        tool = f"{launcher.line(VERIFY)} --repo {launcher.shown(top)}"
+        if rc == 1 and "n/a (env)" in why:
+            return block(f"A verify command cannot run on this host: {why}. Give `## Finish: blocked`, naming it as "
+                         f"verification debt. {ASK}")
         if rc == 4:
             return block("A done report needs verify commands, and no verify command was declared for this session. "
                          "Declare the units' commands and the full suite for the whole job, each with "

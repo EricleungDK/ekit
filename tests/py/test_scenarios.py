@@ -543,6 +543,23 @@ class TestRun(unittest.TestCase):
         self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "bash is not on this machine (env)"))
         self.assertIn("FAIL one: bash is not on this machine (env)", out)
 
+    def check(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, "check"])
+        return e.exception.code, out.getvalue()
+
+    def test_check_after_a_run_this_host_could_not_do_says_it_cannot_run_here(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.main("exit 0\n")
+        self.assertEqual(self.check(), (1, "cannot run here: one: bash is not on this machine (env)\n"))
+
+    def test_check_after_a_real_failure_is_a_failed_run(self):
+        self.main("exit 1\n")
+        self.assertEqual(self.check(), (1, "last run FAIL\n"))
+        self.main("exit 0\n")
+        self.assertEqual(self.check(), (0, ""))
+
     def test_the_kept_failures_outlive_the_transcript_window(self):
         self.main("echo boom; exit 1\n")
         kept = os.path.join(scenarios.outdir(self.repo), "failed", "one.log")

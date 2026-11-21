@@ -5,7 +5,7 @@ description: Set up or repair a repo's mech-review CI. Use when adopting mech-re
 
 Ends in a PR a person merges. `.github/**` is a human decision, so your last action is opening that PR.
 
-`DOCTOR` = `python3 -I <kit>/scripts/mech-review.py doctor --repo <repo>`. `<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line; no such line (harness without hooks) → `~/.ekit`, cloned once with `git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit`. Exit 0 no problems, 1 problems, 2 usage.
+`DOCTOR` = `<py> -I <kit>/scripts/mech-review.py doctor --repo <repo>`. `<py>` = the Python named by the `[ekit] Python:` session line (`python3`, `py -3` or `python`: the first that is 3.9+); no such line → `python3`, else `py -3`, else `python`. `<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line; no such line (harness without hooks) → `~/.ekit`, cloned once with `git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit`. Exit 0 no problems, 1 problems, 2 usage.
 
 ## 1. Diagnose
 

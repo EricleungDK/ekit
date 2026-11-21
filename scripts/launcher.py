@@ -43,10 +43,11 @@ def hook_command(script, *args):
 
 def version_of(words):
     """(major, minor) of the interpreter `words` starts; None when it is missing or does not run."""
-    if not shutil.which(words[0]):
+    exe = shutil.which(words[0])  # the path: Windows starts a .cmd or .bat shim (pyenv-win) only by its full name
+    if not exe:
         return None
     try:
-        r = subprocess.run(list(words) + ["-c", "import sys; print(*sys.version_info[:2])"], capture_output=True,
+        r = subprocess.run([exe, *words[1:], "-c","import sys; print(*sys.version_info[:2])"], capture_output=True,
                            text=True, timeout=20, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None

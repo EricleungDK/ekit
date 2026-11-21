@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -12,6 +13,12 @@ from unittest import mock
 import _kit
 
 fg = _kit.load("finish-gate")
+launcher = _kit.load("launcher")
+
+
+def transcript(tmp, mode="w"):
+    """A transcript file the gate can open while it is being written: Windows will not open a NamedTemporaryFile twice."""
+    return open(os.path.join(tmp, "t.jsonl"), mode)
 
 DONE = "Work is in.\n\n## Finish: done\n| Criterion | Status | Evidence |"
 BLOCKED = "## Finish: blocked\nBlocker: no token"
@@ -48,7 +55,8 @@ class GateCase(unittest.TestCase):
         subprocess.run(["git", "-C", self.repo, "init", "-q"], check=True)
         self.runner, self.verifier = Runner(), Verifier()
         for p in (mock.patch.object(fg, "STATE", os.path.join(self.tmp.name, "state")),
-                  mock.patch.object(fg, "runner", self.runner), mock.patch.object(fg, "verifier", self.verifier)):
+                  mock.patch.object(fg, "runner", self.runner), mock.patch.object(fg, "verifier", self.verifier),
+                  mock.patch.dict(os.environ, {"EKIT_PY": "python3"})):  # the Python the hook found
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -276,7 +284,8 @@ class TestScenarios(GateCase):
             self.assertEqual(out["decision"], "block")
             self.assertTrue(out["reason"].startswith("[ekit] Scenarios not green: stale: tree changed since run. Run `python3 "),
                             out["reason"])
-            self.assertIn(f"scenarios.py --repo {self.repo} run` and follow the taste-it skill (ekit:taste-it). ", out["reason"])
+            self.assertIn(f"scenarios.py --repo {launcher.shown(self.repo)} run` and follow the taste-it skill "
+                          "(ekit:taste-it). ", out["reason"])
             self.assertTrue(out["reason"].endswith(fg.ASK))
 
     def test_green_scenarios_still_need_the_report(self):
@@ -325,6 +334,25 @@ class TestScenarios(GateCase):
         self.runner.tree = (2, "")
         self.assertIn("scenario runner error: exit 2. ", self.stop(DONE)["reason"])
 
+    def test_a_runner_that_cannot_run_here_says_so_and_takes_a_blocked_report(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree = (3, "Traceback (most recent call last):\nOSError: no bash")
+        out = self.stop(DONE)
+        self.assertIn("It cannot run on this host → `## Finish: blocked`, naming it as verification debt.",
+                      out["reason"])
+        self.assertIsNone(self.stop(BLOCKED))
+
+    def test_scenarios_this_host_cannot_run_say_so_and_take_a_blocked_report(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree, self.runner.check = (0, "T1"), (1, "cannot run here: one: bash is not on this machine (env)")
+        out = self.stop(DONE)
+        self.assertTrue(out["reason"].startswith(
+            "[ekit] Scenarios cannot run on this host: one: bash is not on this machine (env). Give `## Finish: "
+            "blocked`, naming the scenarios as verification debt. "), out["reason"])
+        self.assertIsNone(self.stop(BLOCKED))
+
     def test_a_check_error_is_a_runner_error_not_a_red_scenario(self):
         self.scenarios()
         self.start()
@@ -339,6 +367,15 @@ class TestScenarios(GateCase):
 class TestVerifyCommands(GateCase):
     """A `done` report stands only when every verify command of the session passed on the files as they are."""
 
+    def test_a_verify_command_this_host_cannot_run_says_so_and_takes_a_blocked_report(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.verifier.result = (1, "`npm test`: n/a (env): its shell zsh is not on this machine")
+        out = self.stop(DONE)
+        self.assertIn("A verify command cannot run on this host: `npm test`: n/a (env): its shell zsh is not on this "
+                      "machine. Give `## Finish: blocked`, naming it as verification debt.", out["reason"])
+        self.assertIsNone(self.stop(BLOCKED))
+
     def work(self):
         self.start()
         self.runner.tree = (0, "T1")
@@ -351,7 +388,8 @@ class TestVerifyCommands(GateCase):
             self.assertEqual(out["decision"], "block")
         self.assertEqual(out["reason"], (
             "[ekit] Verify commands not green for the current files: `pytest -q`: the run exited 1. Run each with "
-            f"`python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} run -- <command>`, fix what "
+            f"`python3 {launcher.shown(os.path.join(_kit.SCRIPTS, 'task-verify.py'))} --repo {launcher.shown(self.repo)} "
+            "run -- <command>`, fix what "
             "it shows, then give the finish report again. It cannot pass here → `## Finish: blocked`."))
         self.assertEqual(self.verifier.calls[-1], (self.repo, "s1"))
 
@@ -361,7 +399,8 @@ class TestVerifyCommands(GateCase):
         self.assertEqual(self.stop(DONE)["reason"], (
             "[ekit] A done report needs verify commands, and no verify command was declared for this session. "
             "Declare the units' commands and the full suite for the whole job, each with "
-            f"`CLAUDE_CODE_SESSION_ID=s1 python3 {os.path.join(_kit.SCRIPTS, 'task-verify.py')} --repo {self.repo} "
+            f"`CLAUDE_CODE_SESSION_ID=s1 python3 {launcher.shown(os.path.join(_kit.SCRIPTS, 'task-verify.py'))} --repo "
+            f"{launcher.shown(self.repo)} "
             "declare -- <command>`, run each with `run -- <command>` in place of `declare`, then give the finish "
             "report again."))
 
@@ -471,13 +510,13 @@ class TestVerifierProcess(unittest.TestCase):
             os.mkdir(repo)
             subprocess.run(["git", "-C", repo, "init", "-q"], check=True)
             tv = os.path.join(_kit.SCRIPTS, "task-verify.py")
-            with mock.patch.dict(os.environ, {"EKIT_STATE": os.path.join(tmp, "state")}):
+            with mock.patch.dict(os.environ, {"EKIT_STATE": os.path.join(tmp, "state"), "EKIT_SHELL": "bash"}):
                 payload = {"hook_event_name": "TaskCreated", "session_id": "s1", "cwd": repo, "task_id": "1",
                            "task_description": "Verify: `true`"}
-                subprocess.run(["python3", "-I", tv, "--hook"], input=json.dumps(payload), text=True, check=True)
+                subprocess.run([sys.executable, "-I", tv, "--hook"], input=json.dumps(payload), text=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (1, "`true`: no run recorded"))
                 self.assertEqual(fg.verifier(repo, "s2"), (4, "no verify command was declared for this session"))
-                subprocess.run(["python3", "-I", tv, "--repo", repo, "run", "--", "true"], capture_output=True, check=True)
+                subprocess.run([sys.executable, "-I", tv, "--repo", repo, "run", "--", "true"], capture_output=True, check=True)
                 self.assertEqual(fg.verifier(repo, "s1"), (0, ""))
 
 
@@ -497,7 +536,7 @@ class TestReport(unittest.TestCase):
             self.assertIsNone(self.kind(msg), msg)
 
     def test_the_transcript_is_read_when_the_payload_has_no_message(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp) as f:
             rows = [
                 {"type": "user", "message": {"content": "/ekit:orchestrate-agent x"}},
                 {"type": "assistant", "message": {"content": [{"type": "text", "text": "## Finish: done\nold"}]}},
@@ -524,13 +563,13 @@ class TestReport(unittest.TestCase):
         self.assertEqual(fg._text({"type": "text", "text": "not a list"}), "")
 
     def test_an_empty_payload_message_falls_back_to_the_transcript(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp) as f:
             f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}) + "\n")
             f.flush()
             self.assertEqual(fg.last_message({"last_assistant_message": "", "transcript_path": f.name}), "## Finish: done")
 
     def test_a_sidechain_entry_between_two_parts_of_the_message_is_skipped_not_the_end(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp) as f:
             rows = [{"type": "assistant", "message": {"content": "## Finish: blocked"}},
                     {"type": "assistant", "isSidechain": True, "message": {"content": "subagent chatter"}},
                     ["not", "a", "dict"],
@@ -540,14 +579,14 @@ class TestReport(unittest.TestCase):
             self.assertEqual(fg.last_message({"transcript_path": f.name}), "## Finish: blocked\nBlocker: x")
 
     def test_bytes_that_are_not_utf8_in_the_transcript_do_not_crash_the_read(self):
-        with tempfile.NamedTemporaryFile("wb", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp, "wb") as f:
             f.write(b"\xff\xfe garbage line\n")
             f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}).encode() + b"\n")
             f.flush()
             self.assertEqual(fg.report_kind({"transcript_path": f.name}), "done")
 
     def test_the_payload_message_wins_over_the_transcript(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp) as f:
             f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}) + "\n")
             f.flush()
             self.assertEqual(fg.last_message({"last_assistant_message": "hello", "transcript_path": f.name}), "hello")
@@ -557,7 +596,7 @@ class TestReport(unittest.TestCase):
         self.assertEqual(fg.last_message({"transcript_path": "/nonexistent/ekit.jsonl", "last_assistant_message": ""}), "")
 
     def test_only_the_tail_of_a_long_transcript_is_read(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl") as f:
+        with tempfile.TemporaryDirectory() as tmp, transcript(tmp) as f:
             f.write(json.dumps({"type": "assistant", "message": {"content": "## Finish: done"}}) + "\n")
             f.write(json.dumps({"type": "assistant", "message": {"content": "x" * (fg.TAIL + 10)}}) + "\n")
             f.flush()

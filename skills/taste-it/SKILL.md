@@ -21,7 +21,7 @@ Taster writes or updates scenarios and reports each finding with the scenario id
 
 ## 2. Scenarios
 
-Runner: use the `[ekit] Scenario runner:` line from session context (absolute path, same in plugin and cloud installs). Absent (harness without hooks): `python3 ~/.ekit/scripts/scenarios.py`, after `git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit` if missing; `<kit>` below = `~/.ekit`. Below, `RUN` = that command.
+Runner: use the `[ekit] Scenario runner:` line from session context (absolute path, same in plugin and cloud installs). Absent (harness without hooks): `<py> ~/.ekit/scripts/scenarios.py` (`<py>`: `python3`, else `py -3`, else `python`, the first that is 3.9+), after `git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit` if missing; `<kit>` below = `~/.ekit`. Below, `RUN` = that command.
 
 Layout, committed in the repo:
 

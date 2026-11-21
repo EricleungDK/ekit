@@ -292,7 +292,12 @@ def cmd_check(repo):
     except (OSError, ValueError):
         print("no results: run scenarios")
         return 1
-    if res.get("verdict") != "PASS":
+    failed = [r for r in res.get("scenarios") or [] if isinstance(r, dict) and r.get("reason")]
+    if res.get("verdict") != "PASS" and failed and not res.get("reason") \
+            and all(str(r["reason"]).endswith("(env)") for r in failed):
+        # every failure is what this host lacks: the Stop gate takes a blocked report naming it
+        print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
+    elif res.get("verdict") != "PASS":
         print("last run FAIL")
     elif res.get("filter"):
         print(f"partial run: only '{res['filter']}' was run; run all scenarios")
