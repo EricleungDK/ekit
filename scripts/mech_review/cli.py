@@ -242,6 +242,8 @@ def _merge(parser, args):
         if not sep or not k.isdigit() or int(k) >= n:
             parser.error(f"--envelope {item}: want K=FILE with 0 <= K < {n}")
         k = int(k)
+        if k in shards or k in reasons:
+            parser.error(f"--envelope {k} given twice: one result file per shard")
         env = merge.load_envelope(path)
         if env is None:
             reasons[k] = "no usable result file"

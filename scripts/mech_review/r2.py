@@ -1,4 +1,5 @@
 """R2 test-diff guard: path rules per change, then r2_file per source file (text in, entries out)."""
+import difflib
 import re
 from collections import Counter
 
@@ -69,8 +70,8 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     aas = [a for a in adapter.assertions(held_a) if whole_a or a.scope] if held_a is not None else []
     bfns = adapter.test_fns(held_b) if held_b is not None else []
     afns = adapter.test_fns(held_a) if held_a is not None else []
-    gone, renamed = _renames(bfns, afns, bas, aas)
-    entries = _removed(path, gone)
+    gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a)
+    entries = _removed(path, gone) + _renamed_changed(path, changed)
     entries += _markers(adapter, path, afns, bfns, renamed)
     if before is not None:
         entries += _assert_counts(adapter, path, after, bas, aas, afns)
@@ -100,9 +101,26 @@ def _unparsed(adapter, path, before, after):
     return out
 
 
-def _renames(bfns, afns, bas, aas):
-    """(removed fns, {new name: old fn}). A removed fn whose asserts reappear unchanged in a new fn (one-to-one,
-    non-empty) is a rename, not a removal."""
+RENAME_MATCH = 0.6  # difflib's ratio over the non-assert body lines, for a renamed test whose assertions changed (#41)
+RENAME_SHARED = 3  # non-assert body lines the two must share, at least, and at least half of the old test's
+
+
+def _body(text, span, skip=frozenset()):
+    """the stripped non-blank lines of a test's body, span (first, last) from the adapter (after the signature, up to
+    its end), leaving out the line numbers in skip (its assert lines). No span: no body."""
+    if not span:
+        return []
+    lines = text.splitlines()
+    first, last = span
+    return [ln.strip() for no, ln in enumerate(lines[first - 1:last], start=first) if ln.strip() and no not in skip]
+
+
+def _renames(bfns, afns, bas, aas, before=None, after=None):
+    """(removed fns, {new name: old fn}, [(old fn, new fn)]). A removed fn whose asserts reappear unchanged in a new fn
+    (one-to-one, non-empty) is a rename, not a removal. Then a removed fn with asserts and a new fn with no fewer, whose
+    non-assert body lines (the adapter's body span) match at least RENAME_MATCH and share at least RENAME_SHARED lines
+    and half the old test's (one-to-one, best match first), are a rename whose assertions changed: listed for a confirm
+    entry."""
     names = {f.name for f in afns}
     by_name = {f.name for f in bfns}
     sigs = lambda xs, n: sorted(re.sub(r"\s+", "", a.text) for a in xs if a.fn == n)
@@ -117,7 +135,40 @@ def _renames(bfns, afns, bas, aas):
                 renamed[nf.name] = rf
                 gone.remove(rf)
                 break
-    return gone, renamed
+    changed = []
+    if before is not None and after is not None:
+        new = [f for f in afns if f.name not in by_name and f.name not in renamed]
+        pairs = []
+        for rf in gone:
+            had = sigs(bas, rf.name)
+            if not had:  # no assert: no "assertions changed" to confirm
+                continue
+            rb = _body(before, rf.body, {a.line for a in bas if a.fn == rf.name})
+            for nf in new:
+                if len(sigs(aas, nf.name)) < len(had):  # a dropped assert is no rename
+                    continue
+                nb = _body(after, nf.body, {a.line for a in aas if a.fn == nf.name})
+                m = difflib.SequenceMatcher(None, rb, nb, autojunk=False)
+                shared = sum(b.size for b in m.get_matching_blocks())
+                if rb and nb and shared >= RENAME_SHARED and 2 * shared >= len(rb) and m.ratio() >= RENAME_MATCH:
+                    pairs.append((-m.ratio(), rf.line, nf.line, rf, nf))
+        taken_old, taken_new = set(), set()
+        for _, _, _, rf, nf in sorted(pairs, key=lambda x: x[:3]):
+            if rf.name in taken_old or nf.name in taken_new:
+                continue
+            taken_old.add(rf.name)
+            taken_new.add(nf.name)
+            renamed[nf.name] = rf
+            changed.append((rf, nf))
+        gone = [f for f in gone if f.name not in taken_old]
+    return gone, renamed, changed
+
+
+def _renamed_changed(path, changed):
+    return [entry("R2", path, nf.line, f"renamed:{rf.name}", "agent-fixable", "confirm",
+                  f"test `{rf.name}` renamed to `{nf.name}`, assertions changed",
+                  "confirm the spec changed what this test asserts and the new name says what it now checks",
+                  "renaming a test to hide a changed or weakened assertion") for rf, nf in changed]
 
 
 def _removed(path, gone):

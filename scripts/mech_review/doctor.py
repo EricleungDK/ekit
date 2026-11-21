@@ -38,6 +38,8 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
 DEFAULT_TEST_PATHS = "tests/**"
+SCENARIOS = ".ekit/scenarios/"  # taste-it scenarios (and their fixtures): test support in every stack (#39)
+SCENARIO_GLOB = SCENARIOS + "**"
 MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
 LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
@@ -85,14 +87,17 @@ def caller_inputs(text):
     return inputs
 
 
-def wanted_inputs(stack, project_dir, ci, channel):
-    """The caller inputs this repo needs, left out when they equal the workflow's default."""
+def wanted_inputs(stack, project_dir, ci, channel, scenarios=False):
+    """The caller inputs this repo needs, left out when they equal the workflow's default. scenarios: the repo has
+    .ekit/scenarios/, so test-paths holds SCENARIO_GLOB too (one glob per line, as the workflow reads them)."""
     inputs = {"stack": stack}
     if project_dir != ".":
         inputs["project-dir"] = project_dir
         inputs["test-paths"] = f"{project_dir}/{DEFAULT_TEST_PATHS}"
     else:
         inputs["test-paths"] = DEFAULT_TEST_PATHS
+    if scenarios:
+        inputs["test-paths"] += "\n" + SCENARIO_GLOB
     if ci["apt"]:
         inputs["extra-apt-packages"] = " ".join(ci["apt"])
     if ci["sysctl"]:
@@ -108,7 +113,7 @@ def _missing(name, want, have, paths):
     Custom test-paths stand while they match a file; a repo with no tests at `want` has nothing better to offer."""
     if name == "test-paths":
         globs = have.get(name, DEFAULT_TEST_PATHS).split()
-        return not any(any_glob(p, globs) for p in paths) and any(any_glob(p, [want]) for p in paths)
+        return not any(any_glob(p, globs) for p in paths) and any(any_glob(p, want.split()) for p in paths)
     if name not in have:
         if name in ("stack", "project-dir"):  # the workflow's default is `stack: auto`: missing is fine when auto finds it
             got = pick(paths, have.get("stack", "auto"), have.get("project-dir", "."))
@@ -131,6 +136,21 @@ def caller_entries(callers, inputs, paths):
     return [report.entry("doctor", path, 0, name, "needs-human", "fail", f"caller input {name} missing or wrong",
                          f"set {name}: {want}", NOT_YOURS)
             for name, want in inputs.items() if _missing(name, want, have, paths)]
+
+
+def scenario_entries(stack, callers, inputs, paths):
+    """One env entry when .ekit/scenarios/ holds files of the stack that the caller's test-paths (the workflow's
+    default with no caller) do not cover: R3 would mutate them as production code. Language-free: the stack's own
+    classify says which files are its."""
+    adapter = ADAPTERS[stack]()
+    globs = (callers[0][1] if callers else {}).get("test-paths", DEFAULT_TEST_PATHS).split()
+    left = [p for p in paths if p.startswith(SCENARIOS) and adapter.classify(p, []) is not None and not any_glob(p, globs)]
+    if not left:
+        return []
+    return [report.entry("doctor", "", 0, "scenario-test-paths", "env", "fail",
+                         f"`{SCENARIOS}` holds {stack} files no test path covers ({_listed(left)}): R3 mutates them as "
+                         "production code",
+                         f"add `{SCENARIO_GLOB}` to test-paths: set test-paths: {inputs['test-paths']}", NOT_YOURS)]
 
 
 def _copy(src, dst):
@@ -502,8 +522,12 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         texts = {p: gitio.blob(repo, head, p) for p in flows}
         callers = [(p, caller_inputs(t)) for p, t in texts.items() if is_caller(t)]
         ci = read_ci(t for p, t in texts.items() if not is_caller(t))
-        inputs = wanted_inputs(stack, project_dir, ci, _channel(repo, head, project_dir, paths))
-        entries += caller_entries(callers, inputs, paths)
+        inputs = wanted_inputs(stack, project_dir, ci, _channel(repo, head, project_dir, paths),
+                               scenarios=any(p.startswith(SCENARIOS) for p in paths))
+        # a scenario file not of the stack (run.sh) is no test file: it never makes test-paths look missing (#39)
+        own = ADAPTERS[stack]()
+        seen = [p for p in paths if not p.startswith(SCENARIOS) or own.classify(p, []) is not None]
+        entries += caller_entries(callers, inputs, seen) + scenario_entries(stack, callers, inputs, paths)
         if run_trial:
             tried, trial_entries = trial(repo, head, stack, project_dir, runner or red.default_runner())
             entries = trial_entries + entries
