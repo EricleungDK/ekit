@@ -36,7 +36,7 @@ has "$readme" "codex plugin add $plugin@$market" "README: codex install uses $pl
 # every hook command runs a script that ships
 while IFS= read -r script; do
   [[ -f $ROOT/$script ]] && ok "hook script $script exists" || fail "hook script $script exists"
-done < <(grep -o 'CLAUDE_PLUGIN_ROOT}/[^\\"]*' "$ROOT/hooks/hooks.json" | sed 's/^CLAUDE_PLUGIN_ROOT}\///' | sort -u)
+done < <(grep -o 'CLAUDE_PLUGIN_ROOT/scripts/[^\\" ]*' "$ROOT/hooks/hooks.json" | sed 's/^CLAUDE_PLUGIN_ROOT\///' | sort -u)
 
 # A skill that needs kit scripts must work with no SessionStart hook (no `[ekit] Scenario runner:` line).
 for f in $(grep -l '<kit>' "$ROOT"/skills/*/SKILL.md); do

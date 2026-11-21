@@ -34,11 +34,13 @@ PS = ("foreach ($p in 'python3', 'py -3', 'python') {{ $w = -split $p; "
 
 
 def hook_command(script, *args):
-    """The hooks.json command that runs scripts/<script> with `args` under the first Python that works."""
-    path = "${CLAUDE_PLUGIN_ROOT}/scripts/" + script
+    """The hooks.json command that runs scripts/<script> with `args` under the first Python that works. The plugin
+    dir comes from the CLAUDE_PLUGIN_ROOT env var Claude Code exports, read by each shell: Claude Code would paste
+    the path unescaped in place of a `${...}` placeholder, and a ' or $ in it would break the command."""
     tail = "".join(" " + a for a in args)
-    fill = dict(check=CHECK, script=path, args=tail, msg=MESSAGE)
-    return f"set \\' ; {SH.format(**fill)} # \\' ; {PS.format(**fill)}"
+    sh = SH.format(check=CHECK, script="$CLAUDE_PLUGIN_ROOT/scripts/" + script, args=tail, msg=MESSAGE)
+    ps = PS.format(check=CHECK, script="$env:CLAUDE_PLUGIN_ROOT/scripts/" + script, args=tail, msg=MESSAGE)
+    return f"set \\' ; {sh} # \\' ; {ps}"
 
 
 def version_of(words):

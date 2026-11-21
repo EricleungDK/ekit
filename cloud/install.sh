@@ -22,7 +22,12 @@ tracked=0; git -C "$REPO" ls-files --error-unmatch .claude/settings.json >/dev/n
 python3 -I - "$KIT/hooks/hooks.json" "$settings" "$KIT" <<'EOF'
 import json, os, sys
 src, dst, kit = sys.argv[1:]
-kit_hooks = json.loads(open(src).read().replace("${CLAUDE_PLUGIN_ROOT}", kit))["hooks"]
+kit_hooks = json.load(open(src))["hooks"]
+# no plugin here exports CLAUDE_PLUGIN_ROOT: each shell's spelling of it becomes the kit's path
+for groups in kit_hooks.values():
+    for g in groups:
+        for h in g["hooks"]:
+            h["command"] = h["command"].replace("$env:CLAUDE_PLUGIN_ROOT", kit).replace("$CLAUDE_PLUGIN_ROOT", kit)
 cfg = json.load(open(dst)) if os.path.exists(dst) else {}
 hooks = cfg.setdefault("hooks", {})
 for event, groups in kit_hooks.items():

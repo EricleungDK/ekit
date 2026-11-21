@@ -104,91 +104,50 @@ class HooksJson(unittest.TestCase):
         cmds = hook_commands()
         self.assertEqual(len(cmds), 6)
         for event, cmd in cmds:
-            m = re.search(r'"\$\{CLAUDE_PLUGIN_ROOT\}/scripts/([\w-]+\.py)"((?: --[\w-]+)*)', cmd)
+            m = re.search(r'"\$CLAUDE_PLUGIN_ROOT/scripts/([\w-]+\.py)"((?: --[\w-]+)*)', cmd)
             self.assertIsNotNone(m, cmd)
             self.assertEqual(cmd, launcher.hook_command(m.group(1), *m.group(2).split()), event)
 
 
-class HookShells(unittest.TestCase):
-    """The hook command in each shell Claude Code may use, with fake interpreters on PATH."""
+class HookCommand(unittest.TestCase):
+    """The command string itself: how its sh part and its PowerShell part are built. They run in a real sh in
+    tests/launcher.test.sh, and in PowerShell and Git Bash in tests/windows-smoke.py."""
 
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = os.path.realpath(tmp.name)
-        self.root = os.path.join(self.tmp, "kit")
-        os.makedirs(os.path.join(self.root, "scripts"))
-        with open(os.path.join(self.root, "scripts", "probe.py"), "w") as f:
-            f.write("import os, sys\nprint('ran', os.environ.get('EKIT_PY'), sys.argv[1:], repr(sys.stdin.read()))\n"
-                    "sys.exit(2)\n")
-        self.bin = os.path.join(self.tmp, "bin")
-        os.mkdir(self.bin)
-        self.cmd = launcher.hook_command("probe.py", "--hook")
+    def parts(self):
+        cmd = launcher.hook_command("probe.py", "--hook")
+        head, sep, ps = cmd.partition(" # \\' ; ")
+        self.assertTrue(sep, cmd)
+        self.assertTrue(head.startswith("set \\' ; "), cmd)
+        return head[len("set \\' ; "):], ps
 
-    def fake(self, shell, name, version):
-        """A fake interpreter on PATH: `version` answers the version check, a real one runs the script. PowerShell on
-        Windows finds a .cmd; sh finds a script."""
-        old = version < (3, 9)
-        if WIN and shell == "powershell":  # py drops its -3, as the real launcher does
-            run = (f'if "%1"=="-3" shift\r\n"{sys.executable}" %1 %2 %3 %4 %5 %6 %7 %8 %9\r\n' if name == "py"
-                   else f'"{sys.executable}" %*\r\n')
-            body = "@echo off\r\n" + ("exit /b 1\r\n" if old else run + "exit /b %ERRORLEVEL%\r\n")
-            path = os.path.join(self.bin, name + ".cmd")
-        else:
-            body = "#!/bin/sh\n" + ("exit 1\n" if old else
-                                    ('[ "$1" = -3 ] && shift\n' if name == "py" else "") + f'exec "{sys.executable}" "$@"\n')
-            path = os.path.join(self.bin, name)
-        with open(path, "w", newline="") as f:
-            f.write(body)
-        os.chmod(path, 0o755)
+    def test_the_root_is_read_from_the_env_var_never_from_pasted_text(self):
+        """Claude Code pastes the plugin path in place of ${CLAUDE_PLUGIN_ROOT} unescaped: a ' or $ in the path
+        would break the command. The env var it exports is read by each shell instead."""
+        sh, ps = self.parts()
+        cmd = launcher.hook_command("probe.py", "--hook")
+        self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", cmd)
+        self.assertIn('-I "$CLAUDE_PLUGIN_ROOT/scripts/probe.py" --hook', sh)
+        self.assertIn('-I "$env:CLAUDE_PLUGIN_ROOT/scripts/probe.py" --hook', ps)
 
-    def run_in(self, shell):
-        env = dict(os.environ, PATH=self.bin, CLAUDE_PLUGIN_ROOT=self.root, PYTHONUTF8="1")
-        env.pop("EKIT_PY", None)
-        if shell == "sh":
-            exe = sh_path()
-            if not exe:
-                self.skipTest("no POSIX sh on this machine")
-            # sh form: Claude Code fills the placeholder in, with forward slashes on Windows
-            argv = [exe, "-c", self.cmd.replace("${CLAUDE_PLUGIN_ROOT}", self.root.replace("\\", "/"))]
-        else:
-            exe = ps_path()
-            if not exe:
-                self.skipTest("no PowerShell on this machine")
-            # PowerShell form: Claude Code rewrites the placeholder to the env var
-            env["PATH"] = os.pathsep.join([self.bin, os.path.dirname(exe)] + ([os.environ.get("SystemRoot", "C:\\Windows") + "\\System32"] if WIN else []))
-            argv = [exe, "-NoProfile", "-NonInteractive", "-Command",
-                    self.cmd.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}")]
-        r = subprocess.run(argv, input='{"a": "caf\u00e9"}'.encode(), capture_output=True, env=env, timeout=120)
-        return r.returncode, r.stdout.decode(errors="replace").strip(), r.stderr.decode(errors="replace").strip()
+    def test_each_part_tries_python3_then_py_3_then_python_and_checks_3_9(self):
+        sh, ps = self.parts()
+        self.assertIn('for p in python3 "py -3" python; do', sh)
+        self.assertIn("foreach ($p in 'python3', 'py -3', 'python')", ps)
+        for part in (sh, ps):
+            self.assertIn("sys.exit(sys.version_info < (3, 9))", part)
+            self.assertIn(launcher.MESSAGE, part)
 
-    def check_order(self, shell):
-        self.fake(shell, "python3", (3, 8))
-        self.fake(shell, "py", (3, 12))
-        self.fake(shell, "python", (3, 12))
-        rc, out, _ = self.run_in(shell)
-        self.assertEqual((rc, out), (2, "ran py -3 ['--hook'] '{\"a\": \"caf\u00e9\"}'"))
-        os.remove(os.path.join(self.bin, "py.cmd" if WIN and shell == "powershell" else "py"))
-        rc, out, _ = self.run_in(shell)
-        self.assertEqual((rc, out), (2, "ran python ['--hook'] '{\"a\": \"caf\u00e9\"}'"))
+    def test_the_sh_part_holds_no_quote_that_would_end_powershells_string(self):
+        sh, _ = self.parts()
+        self.assertNotIn("'", sh)
 
-    def check_none(self, shell):
-        self.fake(shell, "python3", (3, 8))
-        rc, out, err = self.run_in(shell)
-        self.assertEqual((rc, out), (1, ""))
-        self.assertEqual(err.splitlines()[-1], launcher.MESSAGE)
-
-    def test_sh_tries_python3_then_py_then_python_and_keeps_stdin_and_the_exit_code(self):
-        self.check_order("sh")
-
-    def test_sh_with_no_python_3_9_gives_one_message(self):
-        self.check_none("sh")
-
-    def test_powershell_tries_python3_then_py_then_python_and_keeps_stdin_and_the_exit_code(self):
-        self.check_order("powershell")
-
-    def test_powershell_with_no_python_3_9_gives_one_message(self):
-        self.check_none("powershell")
+    def test_each_part_hands_the_choice_on_and_keeps_the_exit_code(self):
+        sh, ps = self.parts()
+        self.assertIn('EKIT_PY="$p" exec $p', sh)
+        self.assertIn("$env:EKIT_PY = $p", ps)
+        self.assertIn("exit $LASTEXITCODE", ps)
+        self.assertTrue(sh.endswith("exit 1"))
+        self.assertTrue(ps.endswith("exit 1"))
 
 
 if __name__ == "__main__":
