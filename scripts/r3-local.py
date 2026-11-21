@@ -22,10 +22,12 @@ import fnmatch
 import hashlib
 import json
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
@@ -51,50 +53,53 @@ def run_cmd(argv, env=None, cwd=None):
 
 
 def requirements(run, repo, head, project_dir, envdir):
-    """The project dir's requirements*.txt at head, written under envdir: [(path, sha256)], sorted by name."""
-    tree = head if project_dir == "." else f"{head}:{project_dir}"
-    rc, out, err = run(["git", "-C", repo, "ls-tree", "--name-only", tree])
+    """A checkout of the tree at head under envdir/head (git archive: the repo is not touched), and the project dir's
+    requirements*.txt in it: (project dir in the checkout, [(name, sha256)] sorted by name). pip runs in that dir, as
+    CI runs it in caller/$PROJECT_DIR, so `-c x.txt`, `-r ../y.txt` and `-e .` resolve as there."""
+    tar = os.path.join(envdir, "head.tar")
+    os.makedirs(envdir, exist_ok=True)
+    rc, _, err = run(["git", "-C", repo, "archive", "--format=tar", "-o", tar, head])
     if rc != 0:
-        raise Stop(f"git ls-tree {tree}: {err.strip()}")
-    names = sorted(n for n in out.splitlines() if fnmatch.fnmatch(n, "requirements*.txt"))
-    d = os.path.join(envdir, "requirements")
+        raise Stop(f"git archive: {err.strip()}")
+    src = os.path.join(envdir, "head")
+    shutil.rmtree(src, ignore_errors=True)
+    with tarfile.open(tar) as t:
+        if hasattr(tarfile, "data_filter"):
+            t.extractall(src, filter="data")
+        else:  # python < 3.12 without the filter backport: git's own archive of our own tree
+            t.extractall(src)
+    os.remove(tar)
+    proj = os.path.normpath(os.path.join(src, project_dir))
     got = []
-    for name in names:
-        rel = name if project_dir == "." else f"{project_dir}/{name}"
-        rc, text, err = run(["git", "-C", repo, "show", f"{head}:{rel}"])
-        if rc != 0:
-            raise Stop(f"git show {head}:{rel}: {err.strip()}")
-        os.makedirs(d, exist_ok=True)
-        path = os.path.join(d, name)
-        with open(path, "w") as f:
-            f.write(text)
-        got.append((path, hashlib.sha256(text.encode()).hexdigest()))
-    return got
+    for name in sorted(n for n in os.listdir(proj) if fnmatch.fnmatch(n, "requirements*.txt")) if os.path.isdir(proj) else []:
+        with open(os.path.join(proj, name), "rb") as f:
+            got.append((name, hashlib.sha256(f.read()).hexdigest()))
+    return proj, got
 
 
-def _setup_steps(tool, envdir, reqs):
-    """The install commands, the dir to put first on PATH (or None), and the mutants cmd (or None)."""
+def _setup_steps(tool, envdir, proj, reqs):
+    """The install commands [(argv, cwd)], the dir to put first on PATH (or None), and the mutants cmd (or None)."""
     if tool.kind == "venv":
         venv = os.path.join(envdir, "venv")
         py = os.path.join(venv, "bin", "python")
-        steps = [["python3", "-m", "venv", venv], [py, "-m", "pip", "install", "--quiet", *tool.packages]]
-        steps += [[py, "-m", "pip", "install", "--quiet", "-r", path] for path, _ in reqs]
+        steps = [(["python3", "-m", "venv", venv], None), ([py, "-m", "pip", "install", "--quiet", *tool.packages], None)]
+        steps += [([py, "-m", "pip", "install", "--quiet", "-r", name], proj) for name, _ in reqs]
         return steps, os.path.join(venv, "bin"), None
     if tool.kind == "npm":
         prefix = os.path.join(envdir, "stryker")
-        steps = [["npm", "install", "--prefix", prefix, "--no-audit", "--no-fund", "--legacy-peer-deps", *tool.packages]]
+        steps = [(["npm", "install", "--prefix", prefix, "--no-audit", "--no-fund", "--legacy-peer-deps",
+                   *tool.packages], None)]
         return steps, None, os.path.join(prefix, *tool.mutants_cmd.split("/"))
     root = os.path.join(envdir, "cargo")
-    steps = [["cargo", "install", "--locked", "--root", root, *p.split("@")[:1], "--version", p.split("@")[1]]
+    steps = [(["cargo", "install", "--locked", "--root", root, *p.split("@")[:1], "--version", p.split("@")[1]], None)
              for p in tool.packages]
     return steps, os.path.join(root, "bin"), None
 
 
-def setup(run, tool, envdir, reqs):
+def setup(run, tool, envdir, proj, reqs):
     """Install the tool unless envdir already holds these pins and requirements. Returns (engine env, mutants cmd)."""
-    steps, bindir, mutants_cmd = _setup_steps(tool, envdir, reqs)
-    want = {"kind": tool.kind, "packages": list(tool.packages),
-            "requirements": {os.path.basename(p): h for p, h in reqs}}
+    steps, bindir, mutants_cmd = _setup_steps(tool, envdir, proj, reqs)
+    want = {"kind": tool.kind, "packages": list(tool.packages), "requirements": dict(reqs)}
     marker = os.path.join(envdir, MARKER)
     try:
         with open(marker) as f:
@@ -105,8 +110,8 @@ def setup(run, tool, envdir, reqs):
         print(f"r3-local: env ready in {envdir}")
     else:
         os.makedirs(envdir, exist_ok=True)
-        for argv in steps:
-            rc, _, err = run(argv)
+        for argv, cwd in steps:
+            rc, _, err = run(argv, cwd=cwd)
             if rc != 0:
                 raise Stop(f"setup failed: {' '.join(argv)} (exit {rc})\n{err.rstrip()}")
         with open(marker, "w") as f:
@@ -169,8 +174,8 @@ def r3(run, a, keep):
     _, dirty, _ = run(["git", "-C", repo, "status", "--porcelain"])
     if dirty.strip():
         print(f"r3-local: uncommitted changes are not in the run (it tests {head})", file=sys.stderr)
-    reqs = requirements(run, repo, head, a.project_dir, a.env_dir) if tool.kind == "venv" else []
-    env, mutants_cmd = setup(run, tool, a.env_dir, reqs)
+    proj, reqs = requirements(run, repo, head, a.project_dir, a.env_dir) if tool.kind == "venv" else (None, [])
+    env, mutants_cmd = setup(run, tool, a.env_dir, proj, reqs)
     test_paths = a.test_paths or ["tests/**"]  # the workflow's default input
     common = ["--repo", repo, "--base", base, "--head", head, "--stack", a.stack]
     tp = [x for g in test_paths for x in ("--test-paths", g)]
@@ -247,7 +252,9 @@ def parse(argv):
                    help="per-mutant timeout (workflow default: empty, the baseline's derived one)")
     p.add_argument("--project-dir", default=".", metavar="DIR", help="project dir under the repo (default .)")
     p.add_argument("--env-dir", metavar="DIR", help="keep the tool and results here (reused); default: temp dir")
-    return p.parse_args(argv)
+    a = p.parse_args(argv)
+    a.project_dir = posixpath.normpath(a.project_dir)  # app/ and ./app are app, as the engine reads it
+    return a
 
 
 def main(argv, run=run_cmd, os_name=os.name):

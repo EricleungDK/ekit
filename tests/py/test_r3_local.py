@@ -2,10 +2,12 @@
 
 main(argv, run=...) in this process; the fake `run` stands for every command (git, venv, pip, the engine), so no tool is
 installed and no test of the PR is run here. One real run is in the PR's evidence, not in the suite."""
+import io
 import json
 import os
 import re
 import shlex
+import tarfile
 import tempfile
 import threading
 import time
@@ -51,14 +53,14 @@ class Fake:
             return 0, {"main": BASE, "HEAD": HEAD}.get(argv[-1].split("^")[0], "c" * 40) + "\n", ""
         if argv[:2] == ["git", "-C"] and argv[3] == "status":
             return 0, self.dirty, ""
-        if argv[:2] == ["git", "-C"] and argv[3] == "ls-tree":
-            tree = argv[-1]
-            d = tree.split(":", 1)[1] if ":" in tree else ""
-            names = [p[len(d) + 1:] if d else p for p in self.reqs if (os.path.dirname(p) == d)]
-            return 0, "".join(n + "\n" for n in names + ["setup.py"]), ""
-        if argv[:2] == ["git", "-C"] and argv[3] == "show":
-            sha, path = argv[-1].split(":", 1)
-            return (0, self.reqs[path], "") if sha == HEAD and path in self.reqs else (128, "", "fatal: no such path\n")
+        if argv[:2] == ["git", "-C"] and argv[3] == "archive":
+            with tarfile.open(argv[argv.index("-o") + 1], "w") as tar:
+                for path, text in self.reqs.items():
+                    data = text.encode()
+                    info = tarfile.TarInfo(path)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            return 0, "", ""
         if argv[0] in self.fails:
             return 1, "", f"{argv[0]} broke\n"
         if len(argv) > 3 and argv[2].endswith("mech-review.py"):
@@ -140,16 +142,17 @@ class Steps(Tmp):
         self.assertEqual(r.returncode, 1, r.stderr)
         venv = os.path.join(self.envdir, "venv")
         py = os.path.join(venv, "bin", "python")
-        req = os.path.join(self.envdir, "requirements")
-        setup = [a for a, _, _ in fake.calls if a[0] in ("python3", py)][:4]
+        src = os.path.join(self.envdir, "head")
+        setup = [(a, cwd) for a, _, cwd in fake.calls if a[0] in ("python3", py)][:4]
         self.assertEqual(setup, [
-            ["python3", "-m", "venv", venv],
-            [py, "-m", "pip", "install", "--quiet", "pytest==9.2.0", "mutmut==3.8.1"],
-            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(req, "requirements-dev.txt")],
-            [py, "-m", "pip", "install", "--quiet", "-r", os.path.join(req, "requirements.txt")],
+            (["python3", "-m", "venv", venv], None),
+            ([py, "-m", "pip", "install", "--quiet", "pytest==9.2.0", "mutmut==3.8.1"], None),
+            ([py, "-m", "pip", "install", "--quiet", "-r", "requirements-dev.txt"], src),
+            ([py, "-m", "pip", "install", "--quiet", "-r", "requirements.txt"], src),
         ])
-        self.assertIn(["git", "-C", self.tmp, "ls-tree", "--name-only", HEAD], [a for a, _, _ in fake.calls])
-        with open(os.path.join(req, "requirements-dev.txt")) as f:
+        self.assertIn(["git", "-C", self.tmp, "archive", "--format=tar", "-o", os.path.join(self.envdir, "head.tar"),
+                       HEAD], [a for a, _, _ in fake.calls])
+        with open(os.path.join(src, "requirements-dev.txt")) as f:
             self.assertEqual(f.read(), "attrs\n")
         # the engine runs with the venv first on PATH, as CI puts it on GITHUB_PATH
         _, e, _ = [c for c in fake.calls if c[0][0] == "python3" and c[0][1] == "-I"][0]
@@ -158,11 +161,38 @@ class Steps(Tmp):
     def test_requirements_are_read_in_the_project_dir(self):
         fake = Fake(reqs={"app/requirements.txt": "six\n", "requirements.txt": "attrs\n"})
         self.main(fake, "--project-dir", "app")
-        self.assertIn(["git", "-C", self.tmp, "ls-tree", "--name-only", f"{HEAD}:app"], [a for a, _, _ in fake.calls])
-        self.assertEqual([a[-1] for a, _, _ in fake.calls if "-r" in a],
-                         [os.path.join(self.envdir, "requirements", "requirements.txt")])
-        with open(os.path.join(self.envdir, "requirements", "requirements.txt")) as f:
-            self.assertEqual(f.read(), "six\n")
+        self.assertEqual([(a[-1], cwd) for a, _, cwd in fake.calls if "-r" in a],
+                         [("requirements.txt", os.path.join(self.envdir, "head", "app"))])
+
+    def test_a_project_dir_with_a_trailing_slash_is_the_same_dir(self):
+        fake = Fake(count=1, reqs={"app/requirements.txt": "six\n"})
+        r = self.main(fake, "--project-dir", "app/")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual([cwd for a, _, cwd in fake.calls if "-r" in a], [os.path.join(self.envdir, "head", "app")])
+        (argv,) = fake.engine("mutants")
+        self.assertEqual(fake.opt(argv, "--project-dir"), ["app"])
+
+    def test_relative_lines_in_requirements_resolve_in_the_head_checkout(self):
+        """-c constraints.txt, -r ../x.txt and -e . are relative to the file or cwd: pip runs in the project dir."""
+        fake = Fake(reqs={"app/requirements.txt": "-c constraints.txt\n-r ../base.txt\n-e .\n",
+                          "app/constraints.txt": "six==1\n", "base.txt": "attrs\n", "app/setup.py": ""})
+        self.main(fake, "--project-dir", "app")
+        (cwd,) = [cwd for a, _, cwd in fake.calls if "-r" in a]
+        for rel in ("constraints.txt", os.path.join("..", "base.txt"), "setup.py"):
+            self.assertTrue(os.path.isfile(os.path.join(cwd, rel)), rel)
+
+    def test_a_stale_checkout_is_replaced(self):
+        self.main(Fake(reqs={"requirements.txt": "six\n", "old.txt": "x"}))
+        self.main(Fake(reqs={"requirements.txt": "six\n"}))
+        self.assertFalse(os.path.exists(os.path.join(self.envdir, "head", "old.txt")))
+
+    def test_a_failed_archive_is_exit_2(self):
+        def run(argv, env_=None, cwd=None):
+            return (128, "", "fatal: bad tree\n") if "archive" in argv else Fake()(argv, env_, cwd)
+
+        r = self.main(run)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("r3-local: git archive: fatal: bad tree", r.stderr)
 
     def test_changed_requirements_set_the_env_up_again(self):
         self.main(Fake(reqs={"requirements.txt": "six\n"}))
