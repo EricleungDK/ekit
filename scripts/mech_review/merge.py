@@ -1,6 +1,6 @@
 """Merge the job results into one envelope for the sticky comment, and the mutants shards into the mutants job result.
 
-Each job owns its checks: r2 owns R2, red owns R1 and R4, mutants owns R3. A job with no usable result (missing,
+Each job owns its checks: r2 owns R2, red owns R1 and R4, mutants owns R3; a CI entry in a job's result is kept too. A job with no usable result (missing,
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
 checks stay skipped.
@@ -35,7 +35,8 @@ def merge(parts, reasons):
             continue
         for c in owned:
             checks[c] = env["checks"][c]
-        kept += [e for e in env["entries"] if e["check"] in owned]
+        # a job's own CI entries (the mutants merge: a missing or mismatched shard, #42) reach the comment too
+        kept += [e for e in env["entries"] if e["check"] in owned or e["check"] == "CI"]
     ci = finalize(ci)
     entries = sorted(kept + ci, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return envelope(first["base"], first["head"], entries, checks)

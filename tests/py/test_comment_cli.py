@@ -177,6 +177,20 @@ class TestPoster(unittest.TestCase):
         self.assertIn(f"reason: r2 job: result is for an older head, not {SHA}", api.writes[0])
         self.assertNotIn("R2-deadbeef", api.writes[0])
 
+    def test_a_ci_entry_of_the_mutants_merge_reaches_the_comment_and_fails_the_check(self):
+        from scripts.mech_review import merge
+        shard = {"base": "b" * 40, "head": SHA, "summary": "", "entries": [],
+                 "checks": {"R3": {"status": "pass", "note": ""}}, "shard": {"k": 0, "n": 2, "max_mutants": 40}}
+        mutants = merge.combine_shards("b" * 40, SHA, 2, {0: shard, 1: shard}, {})
+        path = os.path.join(self.tmp.name, "mutants.json")
+        with open(path, "w") as f:
+            json.dump(mutants, f)
+        api = Api()
+        p = self.call(["--envelope", "r2=" + self.save("r2.json", []), "--envelope", "mutants=" + path, "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("mutants shards do not match: shard 0/2 given 2 times (--envelope 0, 1); shard 1/2 missing",
+                      api.writes[0])
+
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
         p = self.post([FAIL], api)
