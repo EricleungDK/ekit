@@ -119,7 +119,7 @@ def current():
 
 
 def _not_wsl(path):
-    low = os.path.normcase(path or "")
+    low = (path or "").replace("/", "\\").lower()  # a Windows path read the same on any OS
     return bool(path) and "\\system32\\" not in low and "\\windowsapps\\" not in low
 
 

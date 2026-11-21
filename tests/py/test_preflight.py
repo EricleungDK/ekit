@@ -82,10 +82,10 @@ class OsAndInstallLines(Case):
         os.environ["EKIT_PY"] = "py -3"  # the Python the hook found
         for plat, line in (("darwin", "brew install jq"), ("win32", "winget install jqlang.jq"),
                            ("linux", "sudo apt install jq")):
-            with mock.patch.object(pf.sys, "platform", plat):
+            with mock.patch.object(pf, "platform", return_value=plat):
                 self.assertIn(f"⚠ jq: missing → py -3 -c 'import json'; install: {line}",
                               self.run_pf(path=self.fakebin("b-" + plat, "rg")))
-        with mock.patch.object(pf.sys, "platform", "win32"):
+        with mock.patch.object(pf, "platform", return_value="win32"):
             out = self.run_pf(path=self.fakebin("bw", "jq"))
         self.assertIn("rg: missing → grep -rn / find; install: winget install BurntSushi.ripgrep.MSVC", out)
 

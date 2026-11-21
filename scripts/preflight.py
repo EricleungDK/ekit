@@ -38,8 +38,13 @@ GATE = re.compile(r"^\[project\]|^\[tool\.poetry|^\[tool\.uv|^\[build-system\]",
 NOREPLY = "@users.noreply.github.com"
 
 
+def platform():
+    """sys.platform: a seam, so a test can ask for another OS's lines without changing sys for everything else."""
+    return sys.platform
+
+
 def os_name(platform=None):
-    platform = platform or sys.platform
+    platform = platform or globals()["platform"]()
     return "macOS" if platform == "darwin" else "Windows" if platform.startswith("win") else "Linux"
 
 
