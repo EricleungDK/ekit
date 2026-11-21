@@ -32,9 +32,12 @@ jobs:
       stack: rust
       test-paths: |
         tests/**
+        .ekit/scenarios/**
       protected-paths: |
         .github/**
 ```
+
+`.ekit/scenarios/**` only when the repo has taste-it scenarios: their fixtures are test support, and outside `test-paths` R3 mutates them as production code (#39). `doctor` names the gap.
 
 `stack` may be left out: `auto` finds a single project by itself. Setting it keeps CI running when a second project appears.
 
@@ -54,7 +57,7 @@ instead; then upgrading is a bump in that repo again.
 | Input | Default | Use |
 |---|---|---|
 | `stack` | `auto` | language adapter: `auto`, `rust` (cargo test, cargo-mutants), `python` (pytest, mutmut) or `ts` (vitest or jest, Stryker). Sets up the toolchain for `red-first` and `mutants`. `auto` finds the one project from the tracked manifests (`Cargo.toml`; `pyproject.toml`, `setup.py` or `setup.cfg`; `package.json`; the shallowest ones, `tests/`, fixture, vendored and build dirs skipped, as `doctor` does), at the PR base and at its head, git only. Several projects, none, or a head that finds a different one than the base: no check runs, and the comment names the projects found and asks for `stack` and `project-dir`. It never guesses. With `project-dir` set, only that dir is read |
-| `test-paths` | `tests/**` | test file globs, one per line; `.rs` files here count every assert; a `.rs` file outside them is production code for R1 |
+| `test-paths` | `tests/**` | test file globs, one per line; `.rs` files here count every assert; a `.rs` file outside them is production code for R1. A repo with `.ekit/scenarios/` adds `.ekit/scenarios/**` (ci-doctor writes it; `doctor` gives an `env` entry when a file of the stack there is not covered) |
 | `protected-paths` | `.github/**` | globs, one per line; any change under them is a `needs-human` fail |
 | `agent-branch-prefix` | `agent/`, `claude/`, `codex/`, `copilot/`, `cursor/` | prefixes, one per line: R1 runs only when the PR head branch starts with one of them (`--agent-prefix`, repeatable); other branches skip R1. `*` runs R1 on every branch. A value you set replaces the default list |
 | `mutation-budget` | `10` | R3 budget in minutes, per mutants shard and for the baseline step. A budget hit is `partial` (no MISSED so far) or `fail` (a MISSED found), never a crash; a baseline that does not finish in it is `n/a`. Applies to all stacks |
@@ -160,7 +163,7 @@ Some `fail` entries are a person's call: a protected-path change in a PR that is
 ```
 
 - Ready-made lines: the sticky comment shows, under each `fail` entry, the line to post (`/mech-waive <id> <why this is OK>`), plus one block with every fail entry when there are several. Copy it, replace `<why this is OK>` with the reason, post it.
-- One line per entry id, at the start of a line, with a reason. A waiver with no reason, or with the placeholder `<why this is OK>` (or any reason wholly in `<…>`) left in, is ignored, and the sticky comment says so. Several lines may share one comment.
+- One line per entry id, at the start of a line, with a reason. A waiver with no reason, or with the placeholder `<why this is OK>` (or `<reason>`, or `<>`) left as it stands, is ignored, and the sticky comment says so, naming the angle brackets. A reason left inside the brackets (`<the test moved to e2e>`) counts, brackets stripped (#40). Several lines may share one comment.
 - Who: comments whose author is `OWNER`, `MEMBER` or `COLLABORATOR` of the repo, and not a bot. These are GitHub's author associations, not permission levels: `COLLABORATOR` includes an outside collaborator with read or triage access, and `MEMBER` any member of the owning org. The PR's own content (body, commits, files) can never waive: that is what the checks judge. The sticky comment itself (`<!-- mech-review -->`) is never read for waivers, whoever posts it.
 - Edited comments do not waive. Anyone with write access can edit anyone's comment while the author shown stays the same, so a comment edited after posting (`updated_at` ≠ `created_at`) is ignored, and the sticky comment says so. To change a waiver, post a new comment. The stamps have one-second resolution: an edit within the same second as the post is not seen.
 - When: the `report` job reads the PR's comments each time it runs. With the [waiver re-run caller](#waiver-re-run) set up, posting, editing or deleting a `/mech-waive` comment re-runs `report` on its own. Without it, re-run the run's failed job (`report`, the only one that fails on entries), or push: the next run picks the waiver up.
@@ -423,7 +426,7 @@ With it, R2 reports ``test fn `Calc / adds` removed`` for a deleted test, ``test
 - R3 results come from `mutants`, which runs the PR's tests. A malicious test can forge that job's JSON, as with R1 and R4; the read-only token stops it editing the comment, not forging its own result. R2 is still the hard guard for weakened tests.
 - R3 measures test strength on the changed production code only. A MISSED mutant can be an equivalent mutant (no observable change): the fix is then to assert the behaviour the code really has, and a person may decide the mutant is not worth a test: that is a [waiver](#waivers). Without one a MISSED mutant stays `fail` until a test kills it or the code changes.
 - `partial` (budget hit or `max-mutants` reached, nothing MISSED so far) does not block, so part of the diff was not mutated. The reviewer reads the `tested/total` note; a bigger `mutation-budget` or `max-mutants` (or fewer changed lines) is the fix. A budget hit with a MISSED found is `fail`.
-- Shard results are merged by `mech-review.py merge`. A missing or stale shard is a CI `fail` entry that names the shard; the other shards' entries are kept.
+- Shard results are merged by `mech-review.py merge`. A missing or stale shard is a CI `fail` entry that names the shard; the other shards' entries are kept. Each `mutants` result carries `shard: {k, n, max_mutants}`; a shard given twice, a shard index missing for `--shards`, or shards that disagree on head, base or cap give one CI `fail` entry (`mutants shards do not match: …`, #42). A result without `shard` (an older engine) is checked on head and base only.
 
 With `stack: auto` the stack and project dir come from the PR's tree, so the `stack` job reads them at the base too and stops when the head finds something else: a PR cannot switch the stack its own checks run with. The job runs no PR code, and its outputs (`stack`, `project-dir`, `error`) reach later jobs only through `env` and `if:` conditions, never a `run:` script. A dir name with a control character is an error, not an output.
 

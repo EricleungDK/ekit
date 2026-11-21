@@ -19,7 +19,7 @@ Read `.github/workflows/*`. Anything the tests depend on that isn't in `inputs` 
 
 ## 3. Write the caller
 
-On a new branch, write or repair `.github/workflows/mech-review.yml`. Keep inputs already there; add or correct only what entries name.
+On a new branch, write or repair `.github/workflows/mech-review.yml`. Keep inputs already there; add or correct only what entries name. The repo has `.ekit/scenarios/` → `test-paths` holds `.ekit/scenarios/**` too (doctor's `inputs` says so): scenario fixtures are test support, not code for R3 to mutate.
 
 ```yaml
 name: mech-review
@@ -33,6 +33,7 @@ jobs:
     uses: EricleungDK/ekit/.github/workflows/mech-review.yml@v0
     with:
       # every key in doctor's `inputs`, `stack` too: `auto` is the default, a set stack survives a second project
+      # test-paths: one glob per line; a repo with .ekit/scenarios/ gets `.ekit/scenarios/**` beside `tests/**`
       protected-paths: |
         .github/**
 ```
