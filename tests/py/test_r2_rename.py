@@ -265,6 +265,15 @@ TS_FUNCTION_BASE = "it('a', " + TS_OPTS + """, async function () {
 })
 """
 TS_FUNCTION_HEAD = "it('z', " + TS_OPTS + ", async function () { expect(1).toBe(1) })\n"
+TS_CAST = """<O>{
+  a: 1,
+  b: 2,
+  c: 3,
+}"""
+TS_CAST_BASE = "it('a', " + TS_CAST + ", () => { expect(f(1)).toBe(2) })\n"
+TS_CAST_HEAD = "it('z', " + TS_CAST + ", () => { expect(1).toBe(1) })\n"
+TS_AS_BASE = "it('a', opts as " + TS_CAST[3:] + ", () => { expect(f(1)).toBe(2) })\n"
+TS_AS_HEAD = "it('z', opts as " + TS_CAST[3:] + ", () => { expect(1).toBe(1) })\n"
 
 # the callback's own lines, kept by a rename: the setup of TS_SPLIT_LEGIT_BASE
 TS_SETUP = """  const shop = await makeShop()
@@ -424,6 +433,15 @@ class R2Rename(unittest.TestCase):
 
     def test_an_options_object_before_a_function_callback_is_not_the_body(self):
         self.ts_both(TS_FUNCTION_BASE, TS_FUNCTION_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_an_options_object_under_an_angle_bracket_cast_is_not_the_body(self):
+        self.ts_both(TS_CAST_BASE, TS_CAST_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_an_object_type_after_as_is_not_the_body(self):
+        self.ts_both(TS_AS_BASE, TS_AS_HEAD, (1, [("fail", "test fn `a` removed")]))
+
+    def test_a_ts_rename_of_a_function_callback_with_a_return_type_is_one_confirm_entry(self):
+        self.ts_legit(TS_FUNCTION_LEGIT.replace("function ()", "function (): Promise<void>"))
 
     def ts_legit(self, before, old="refund is never negative", new="refund is capped at the order"):
         self.ts_both(before, before.replace(old, new).replace("toBe(0)", "toBe(order.total)"),

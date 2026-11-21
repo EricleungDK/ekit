@@ -914,13 +914,17 @@ def _inner(text, start, end):
     return (first, last) if first <= last else None
 
 
+CALLBACK_HEAD = re.compile(r"=>\s*$|(?<![\w$.])function\b[^{}]*$")  # what stands before a callback's `{`
+
+
 def _callback_inner(text, m, start, end):
     """The lines of the test call's body: the block of its callback, strictly between `{` and `}` (_inner). m is the
     masked text (strings, template literals, comments and regexes blanked, so their braces never count). Only the
     arguments of the call's last parentheses are read (an `it.each(table)` before them is not), the name left out. The
-    callback is the first argument that ends in a `{...}` block with a head before it (`() => {`, `function () {`); or,
+    callback is the first argument that ends in a `{...}` block right after `=>` or a `function (...)` head; or,
     with no such argument, a lone argument that is a block (`test("name", { ... })`). An options object, wherever it
-    sits and however long, is never the body. No callback block (a one-line arrow `() => expect(x)`): None."""
+    sits, however long and whatever stands before it (`<O>{`, `x as {`), is never the body. No callback block (a
+    one-line arrow `() => expect(x)`): None."""
     depth, open_ = 0, None
     for i in range(start, end):
         if m[i] in OPEN:
@@ -952,7 +956,7 @@ def _callback_inner(text, m, start, end):
         if not m[a:b].strip():  # a trailing comma
             continue
         ends_in_block = bool(block) and block[1] is not None and not m[block[1] + 1:b].strip()
-        found.append((block, ends_in_block, bool(block) and bool(m[a:block[0]].strip())))
+        found.append((block, ends_in_block, bool(block) and bool(CALLBACK_HEAD.search(m[a:block[0]]))))
     with_head = [block for block, ends, head in found if ends and head]
     if with_head:
         return _inner(text, *with_head[0])
