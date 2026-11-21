@@ -491,6 +491,22 @@ class TestVerifyCommands(GateCase):
                 self.assertEqual(self.stop(head + quoted + "Verification debt: none")["decision"], "block")
                 self.assertIsNone(self.stop(head + quoted + "Verification debt: `pytest -q` → no zsh"))
 
+    def test_the_debt_found_again_holds_only_what_this_host_cannot_run_now(self):
+        """a repo with .ekit/ but no scenarios (and a cwd that has some), or scenarios that failed for real: only the
+        verify command is owed on the changed files"""
+        os.makedirs(os.path.join(self.repo, ".ekit"))
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(_kit.ROOT)  # a dir that holds .ekit/scenarios: the repo's are asked about, not the cwd's
+        self.owe_pytest()
+        self.runner.tree, self.runner.check = (0, "T2"), (1, "cannot run here: one: bash is not on this machine (env)")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `pytest -q` → no zsh → a host with zsh"))
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios"))
+        self.runner.check = (0, "")
+        self.owe_pytest()
+        self.runner.tree, self.runner.check = (0, "T4"), (1, "stale: tree changed since run")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `pytest -q` → no zsh → a host with zsh"))
+
     def test_an_indented_quote_or_a_none_in_any_case_names_nothing(self):
         self.owe_pytest()
         head = "## Finish: blocked\nBlocker: x\nVerification debt:\n"

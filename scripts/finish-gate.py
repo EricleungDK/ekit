@@ -184,7 +184,7 @@ def debt_items(msg):
             break
         if not line.lstrip().startswith(">"):
             items.append(bare)
-    return [it for it in items if it.strip() and not re.match(r"[`*_\s]*none\b", it, re.I)]
+    return [it for it in items if it.strip() and not re.match(r"[`*_\s]*none\b", it.lower())]
 
 
 def owe(p, items, tree=""):
