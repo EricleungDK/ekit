@@ -154,7 +154,7 @@ def run_one(repo, sid, ids, tdir, kept=None):
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()
-        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=env, stdout=subprocess.PIPE,
+        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=shells.env_for(bash, "bash", env), stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE)
         try:
             out, err = p.communicate(timeout=limit)

@@ -134,6 +134,25 @@ class Command(unittest.TestCase):
         self.assertEqual(r.returncode, 6)
 
 
+class Env(unittest.TestCase):
+    def test_git_bash_gets_its_own_tools_on_path_whatever_path_it_was_started_with(self):
+        bash = shells.find("bash")
+        if not bash:
+            self.skipTest("no bash on this machine")
+        env = shells.env_for(bash, "bash", {"PATH": os.path.dirname(sys.executable)})
+        r = subprocess.run(shells.command(bash, "bash", "grep -q x <<< x && sed --version >/dev/null"), env=env)
+        self.assertEqual(r.returncode, 0)
+
+    def test_on_windows_its_dirs_go_first_elsewhere_nothing_changes(self):
+        with mock.patch.object(shells, "WIN", True):
+            env = shells.env_for(os.path.join("G", "usr", "bin", "bash.exe"), "bash", {"PATH": "P"})
+            self.assertEqual(env["PATH"].split(os.pathsep),
+                             [os.path.join("G", "usr", "bin"), os.path.join("G", "mingw64", "bin"), "P"])
+            self.assertEqual(shells.env_for("pwsh.exe", "pwsh", {"PATH": "P"}), {"PATH": "P"})
+        with mock.patch.object(shells, "WIN", False):
+            self.assertEqual(shells.env_for("/bin/bash", "bash", {"PATH": "P"}), {"PATH": "P"})
+
+
 class KillTree(unittest.TestCase):
     def test_a_child_and_its_childs_child_both_stop(self):
         mark = os.path.join(tempfile.mkdtemp(), "late")

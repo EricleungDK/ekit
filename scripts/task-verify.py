@@ -168,7 +168,7 @@ def cmd_run(top, words):
         keep_shell(top, cmd, sh)
         print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
         return 5
-    rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top).returncode
+    rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"])).returncode
     record(top, cmd, rc, sh["name"])  # hashed after the run: what the command left is what the hook will see
     keep_shell(top, cmd, sh)
     print(f"task-verify: `{cmd}` exited {rc} in {sh['name']}", file=sys.stderr)

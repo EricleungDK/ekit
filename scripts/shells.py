@@ -161,6 +161,19 @@ def find(shell):
     return shutil.which(name) if name in KNOWN else None
 
 
+def env_for(exe, name, env=None):
+    """The environment to run `exe` with: on Windows, Git Bash's own dirs go first on PATH (a Windows PATH holds
+    neither usr/bin nor mingw64/bin, so a bash line would find no grep or sed); elsewhere `env` as it is."""
+    env = dict(os.environ if env is None else env)
+    if WIN and name in POSIX_SHELLS:
+        d = os.path.dirname(exe)
+        git = os.path.dirname(os.path.dirname(d)) if os.path.basename(os.path.dirname(d)).lower() == "usr" \
+            else os.path.dirname(d)
+        own = [os.path.join(git, "usr", "bin"), os.path.join(git, "mingw64", "bin")]
+        env["PATH"] = os.pathsep.join(own + [env.get("PATH", "")])
+    return env
+
+
 def command(exe, name, line):
     """argv (or, for cmd.exe, the command string) that runs `line` with the shell `name` at `exe`."""
     if name in PS_SHELLS:
