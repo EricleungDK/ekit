@@ -125,16 +125,16 @@ TypeScript toolchain (`stack: ts`), set up in `red-first` and `mutants`:
 
 ## R3 locally
 
-`scripts/r3-local.py` runs the R3 jobs of this workflow on your machine, so a MISSED mutant shows before the review request, not after CI:
+`scripts/r3-local.py` runs the R3 jobs of this workflow on your machine, so a MISSED mutant shows before the review request, not after CI. POSIX only: on Windows run it in WSL (native Windows exits 2).
 
 ```bash
 python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 'tests/**' --mutation-budget 20 --env-dir ~/.cache/ekit-r3env
 ```
 
-- Setup: the stack's R3 tool with the workflow's pins (the adapter's `r3_tool`): python a venv with `pytest==9.2.0` and `mutmut==3.8.1`, then the project dir's `requirements*.txt`, the venv first on `PATH`; ts `@stryker-mutator/core@10.0.0` and `jest-runner` in their own npm prefix, passed as `--mutants-cmd`; rust `cargo install cargo-mutants@27.1.0` and the workflow's cargo env. `--env-dir` keeps it and reuses it while the pins match; without it a temp dir is removed after the run. `setup-command` and `extra-apt-packages` are not run: install those yourself.
-- Steps: `plan`, `baseline --shards 4`, every shard at the same time (`mutants --shard K/N`, the CI budget and `max-mutants` each, the baseline's timeout), `merge`. Pass your caller's inputs: `--test-paths` (repeat), `--mutation-budget`, `--max-mutants`, `--project-dir`.
-- Output: the merged summary, R3's status (`tested/total`), each shard's note and wall time, the fail entries; the results are in `<env-dir>/out/`. It tests the head commit: uncommitted changes are not in it.
-- Exit 0 no fail, 1 a fail entry, 2 setup failed, usage or git error, or a step gave no result.
+- Setup: the stack's R3 tool with the workflow's pins (the adapter's `r3_tool`): python a venv with `pytest==9.2.0` and `mutmut==3.8.1`, then the project dir's `requirements*.txt` as they are at head, the venv first on `PATH` (`PYTHONPATH` and `PYTEST_ADDOPTS` are dropped: CI has neither); ts `@stryker-mutator/core@10.0.0` and `jest-runner` in their own npm prefix, passed as `--mutants-cmd`; rust `cargo install cargo-mutants@27.1.0` and the workflow's cargo env. `--env-dir` keeps it and reuses it while the pins and the requirements files match; without it a temp dir is removed after the run. `setup-command` and `extra-apt-packages` are not run: install those yourself.
+- Steps: `plan`, `baseline --shards 4`, every shard at the same time (`mutants --shard K/N`, the CI budget and `max-mutants` each, `--mutant-timeout` or else the baseline's), `merge`. Defaults are the workflow's (`test-paths` `tests/**`, budget 10, `max-mutants` 40); pass your caller's inputs: `--test-paths` (repeat), `--mutation-budget`, `--max-mutants`, `--mutant-timeout`, `--project-dir`. The shards share this machine's CPUs, where CI gives each its own runner: wall times differ, and so can a mutant that hits mutmut's own timeout.
+- Output: the merged summary, R3's status (`tested/total`), each shard's note and wall time, the fail entries; the results are in `<env-dir>/out/` (without `--env-dir` they are removed, and the output says so). It tests the head commit: uncommitted changes are not in it.
+- Exit 0 no fail, 1 a fail entry, 2 setup failed, usage or git error, a step gave no usable result, or native Windows.
 
 ## Reading a run
 
