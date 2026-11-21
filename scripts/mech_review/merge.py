@@ -114,24 +114,38 @@ def _add_unique(kept, seen, e, label):
     kept.append(e)
 
 
+def _count(x):
+    """a whole number >= 0, not a bool (JSON true is no shard index)"""
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
 def shard_problems(base, head, n, shards):
     """Why the given shard envelopes are not the n shards of one run (#42), in a fixed order: [] when they are. Each
     envelope names the shard it ran as and its cap (`shard: {k, n, max_mutants}`, set by `mutants`); one without it (an
-    older engine's) is checked on base and head only. A slot with no envelope is the missing-shard CI entry's, not this."""
+    older engine's) is checked on base and head only, unless another carries it: then its missing field is a problem.
+    A field that is not {k, n, max_mutants} of whole numbers is malformed, named, never a crash. A slot with no
+    envelope is the missing-shard CI entry's, not this."""
     out, carried, slots = [], {}, {}
-    for k in range(n):
-        env = shards.get(k)
-        if env is None:
+    given = {k: shards.get(k) for k in range(n) if shards.get(k) is not None}
+    any_field = any("shard" in env for env in given.values())
+    for k, env in given.items():
+        if "shard" not in env:
+            if any_field:  # dropping the field must not skip the checks the others get
+                out.append(f"--envelope {k}: no shard field")
             continue
-        sh = env.get("shard") if isinstance(env.get("shard"), dict) else None
-        if sh is None:
+        sh = env["shard"]
+        if not (isinstance(sh, dict) and all(_count(sh.get(x)) for x in ("k", "n", "max_mutants"))
+                and sh["n"] >= 1 and sh["max_mutants"] >= 1):
+            out.append(f"--envelope {k}: malformed shard {json.dumps(sh, default=str)}")
             continue
-        lab = f"{sh.get('k')}/{sh.get('n')}"
-        if sh.get("n") != n:
-            msg = f"shard {lab} ran as one of {sh.get('n')} shards, not {n}"
+        lab = f"{sh['k']}/{sh['n']}"
+        if sh["k"] >= sh["n"]:
+            out.append(f"shard {lab} out of range")
+        if sh["n"] != n:
+            msg = f"shard {lab} ran as one of {sh['n']} shards, not {n}"
             if msg not in out:
                 out.append(msg)
-        carried.setdefault((sh.get("k"), sh.get("n")), []).append(k)
+        carried.setdefault((sh["k"], sh["n"]), []).append(k)
         slots[k] = sh
     for (k, m), at in carried.items():
         if len(at) > 1:
@@ -146,7 +160,7 @@ def shard_problems(base, head, n, shards):
             out.append(f"shard {lab} ran on base {env.get('base')}, not {base}")
         if env.get("head") != head:
             out.append(f"shard {lab} ran on head {env.get('head')}, not {head}")
-    caps = sorted({sh.get("max_mutants") for sh in slots.values()}, key=str)
+    caps = sorted({sh["max_mutants"] for sh in slots.values()})
     if len(caps) > 1:
         out.append(f"shards ran with different caps (max-mutants {', '.join(map(str, caps))})")
     return out

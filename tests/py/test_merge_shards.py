@@ -112,5 +112,48 @@ class MergeShards(unittest.TestCase):
                          [f"mutants shard 1/2 produced no result: result is for an older head, not {self.head}"])
 
 
+    def edited(self, name, ran_as, **change):
+        """the envelope of shard `ran_as` with top-level fields changed (None: removed)"""
+        path = self.shard(name, ran_as)
+        with open(path) as f:
+            env = json.load(f)
+        for key, value in change.items():
+            if value is None:
+                env.pop(key)
+            else:
+                env[key] = value
+        with open(path, "w") as f:
+            json.dump(env, f)
+        return path
+
+    def test_a_malformed_shard_field_is_one_ci_entry_not_a_crash(self):
+        for bad in ({"k": "1", "n": 2, "max_mutants": 40}, {"k": True, "n": 2, "max_mutants": 40},
+                    {"k": 1, "n": [2], "max_mutants": 40}, {"k": 1, "n": 2, "max_mutants": {}}, "1/2"):
+            rc, env, ci = self.merge(2, self.shard("s0", "0/2"), self.edited("s1", "1/2", shard=bad))
+            self.assertEqual(rc, 1, bad)
+            self.assertEqual([e["problem"] for e in ci],
+                             ["mutants shards do not match: --envelope 1: malformed shard " + json.dumps(bad)], bad)
+
+    def test_a_shard_field_dropped_beside_shards_that_carry_it_is_one_ci_entry(self):
+        s0 = self.shard("s0", "0/2")
+        rc, env, ci = self.merge(2, s0, self.edited("s1", "0/2", shard=None))
+        self.assertEqual(rc, 1)
+        self.assertEqual([e["problem"] for e in ci], ["mutants shards do not match: --envelope 1: no shard field"])
+
+    def test_a_shard_index_out_of_its_range_is_one_ci_entry(self):
+        rc, env, ci = self.merge(2, self.shard("s0", "0/2"),
+                                 self.edited("s1", "1/2", shard={"k": 3, "n": 2, "max_mutants": 40}))
+        self.assertEqual(rc, 1)
+        self.assertEqual([e["problem"] for e in ci],
+                         ["mutants shards do not match: shard 3/2 out of range; shard 1/2 missing"])
+
+    def test_one_shard_index_given_twice_on_the_command_line_is_a_usage_error(self):
+        s0, s1 = self.shard("s0", "0/2"), self.shard("s1", "1/2")
+        rc, out, err = call(["merge", "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack",
+                             "python", "--shards", "2", "--envelope", f"0={s0}", "--envelope", f"0={s1}"])
+        self.assertEqual((rc, out), (2, ""))
+        self.assertIn("--envelope 0 given twice", err)
+
+
 if __name__ == "__main__":
     unittest.main()
