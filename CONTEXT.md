@@ -18,6 +18,14 @@ _Avoid_: detected stack, existing stack
 A stack the user means to build with that the repo's files don't show yet: a new project, a migration target, or an added service.
 _Avoid_: intended stack, future stack, target stack
 
+**Retiring stack**:
+A current stack the user is migrating away from: still checked, and expected to lose its manifests.
+_Avoid_: legacy stack, old stack, deprecated stack
+
+**Stack plan**:
+The one file in a repo that lists its stacks (planned, current and retiring), where each lives, which adapter checks it and its target OS.
+_Avoid_: verification plan, stack config, ci-doctor-stack
+
 **Adapter file**:
 A declarative file in the user's repo that tells ekit's checks everything stack-specific about one stack.
 _Avoid_: config, stack file, plugin
