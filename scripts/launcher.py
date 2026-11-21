@@ -60,15 +60,14 @@ def pick(probe=None):
     probe = probe or version_of
     for name in ORDER:
         v = probe(name.split())
-        if v and tuple(v[:2]) >= NEED:
+        if v and tuple(v) >= NEED:
             return name
     return None
 
 
 def shown(path):
     """`path` as a command argument both bash and PowerShell read the same: forward slashes, quoted when needed."""
-    if os.name == "nt":
-        path = path.replace("\\", "/")
+    path = path.replace(os.sep, "/")  # Windows' backslashes; nothing on POSIX
     return path if re.fullmatch(r"[\w./:@%+=,-]+", path) else f'"{path}"'
 
 
