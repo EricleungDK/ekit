@@ -15,8 +15,11 @@ not green block every `done` report. stop_hook_active (the stop right after a bl
 let through, except one that gives a `done` report again. Saying done twice proves nothing, so its checks run each
 time; `## Finish: blocked` is the way out, and Claude Code itself ends a run of consecutive blocks.
 Runner errors fail closed (block), except for a `blocked` report. A runner that cannot run on this host (a runner
-error, scenarios that failed only on what the host lacks, a verify command `n/a (env)`) is named as such, with
-`## Finish: blocked` and the debt named as the way out. Printed commands start the Python the hook found (launcher).
+error, scenarios that failed only on what the host lacks, a verify command `n/a (env)`, and nothing else red) is
+named as such, with `## Finish: blocked` and the debt named as the way out. That debt is kept for the tree it was
+found on: a blocked report on that tree stands only when its `Verification debt:` block names each item (each
+scenario id, each command, the scenario runner), the stop right after a block included; it goes once met or once the
+files change. Printed commands start the Python the hook found (launcher).
 A stop while a subagent still runs (the payload's `background_tasks`) is a wait for its report, not the end of the
 work: it is allowed and asks nothing. A payload without that list (an older Claude Code) is gated as any stop.
 Test seams: EKIT_SCENARIOS_PY overrides the runner path, EKIT_TASK_VERIFY_PY the verifier's.
@@ -151,22 +154,46 @@ def block(reason):
 NA_LINE = re.compile(r"`(.*)`: n/a \(env\): [^`]*")  # task-verify.py check: a command this host cannot run
 
 
-def owe(p, items):
-    """Keep the debt a blocked report must name: [(how it is named to the agent, a regex the report must match)];
-    none: no file."""
+DEBT_LINE = re.compile(r"^[ \t>*_-]*verification debt[*_]*\s*:", re.I | re.M)
+NEXT_FIELD = re.compile(r"^\s*(?:#|\||[*_]*[A-Z][\w /-]{0,40}[*_]*\s*:)")  # the report's next line, table or heading
+
+
+def debt_block(msg):
+    """The report's `Verification debt:` block (finish skill): its line and the lines under it, up to the next field,
+    table or heading. "" when the report has none."""
+    m = DEBT_LINE.search(msg)
+    if not m:
+        return ""
+    lines = msg[m.end():].split("\n")
+    out = [lines[0]]
+    for line in lines[1:]:
+        if NEXT_FIELD.match(line):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def owe(p, items, tree=""):
+    """Keep the debt a blocked report on `tree` must name: [(how it is named to the agent, a regex the report's debt
+    block must match)]; none: no file."""
     if items:
-        write(p, json.dumps(items))
+        write(p, json.dumps({"tree": tree, "items": items}))
     elif os.path.exists(p):
         os.remove(p)
 
 
-def unnamed(p, msg):
-    """The debt items the report `msg` does not name ([] when none is owed)."""
+def unnamed(p, msg, tree=""):
+    """The debt items the debt block of the report `msg` does not name ([] when none is owed for `tree`: a debt for
+    other files is dropped)."""
     try:
-        items = json.loads(read(p) or "[]")
+        debt = json.loads(read(p) or "{}")
     except ValueError:
-        items = []
-    return [shown for shown, pattern in items if not re.search(pattern, msg, re.I)]
+        debt = {}
+    if not isinstance(debt, dict) or debt.get("tree") != tree:
+        owe(p, [])
+        return []
+    block = debt_block(msg)
+    return [shown for shown, pattern in debt.get("items", []) if not re.search(pattern, block, re.I)]
 
 
 def named(text):
@@ -196,8 +223,9 @@ def main():
     top = os.path.normpath(top)  # git says C:/x on Windows: the OS's own spelling, as the runner and verifier get it
     if not baseline and data.get("hook_event_name") == "SubagentStop":
         return  # a subagent's stop (an older install may still register it): nothing to hash
-    if not baseline and data.get("stop_hook_active") and report_kind(data) != "done":
-        return  # the loop guard: the stop after a block ends the turn, unless it claims done again
+    if not baseline and data.get("stop_hook_active") and report_kind(data) not in ("done", "blocked"):
+        return  # the loop guard: the stop after a block ends the turn, unless it claims done again or gives a blocked
+        # report, which must still name the debt the gate asked for
     if not baseline and waiting(data):
         return
     key = hashlib.sha1(os.path.realpath(top).encode()).hexdigest()[:12]
@@ -212,13 +240,14 @@ def main():
                 "(ekit:taste-it). ")
     kind = report_kind(data)
     if kind == "blocked":
-        missing = unnamed(debt, last_message(data))
+        missing = unnamed(debt, last_message(data), cur if rc == 0 else "")
         if missing:  # the gate said what cannot run here: the way out names it
             return block(f"A blocked report names its verification debt: {', '.join(missing)}. Name them, then stop.")
     if rc != 0:
         if kind == "blocked":
-            return
-        owe(debt, [("the scenarios (the scenario runner cannot run on this host)", r"\bscenario")])
+            return owe(debt, [])  # named: met
+        owe(debt, [("the scenario runner (scenarios.py cannot run on this host)",
+                    r"scenarios\.py|scenario runner|\.ekit/scenarios")])
         return block(f"scenario runner error: {cur.splitlines()[-1] if cur else f'exit {rc}'}. {run_hint}{HOST}{ASK}")
     if cur in (read(base), read(reported)):
         return
@@ -226,7 +255,7 @@ def main():
         rc, why = runner(top, "check")
         if rc == 1 and why.startswith(NOT_HERE):
             ids = [part.split(": ", 1)[0] for part in why[len(NOT_HERE):].split("; ")]
-            owe(debt, [(f"`{i}`", named(i)) for i in ids])
+            owe(debt, [(f"`{i}`", named(i)) for i in ids], cur)
             return block(f"Scenarios cannot run on this host: {why[len(NOT_HERE):]}. Give `## Finish: blocked`, "
                          f"naming the scenarios as verification debt. {ASK}")
         if rc == 1:
@@ -238,7 +267,7 @@ def main():
         tool = f"{launcher.line(VERIFY)} --repo {launcher.shown(top)}"
         na = [m.group(1) for m in map(NA_LINE.fullmatch, why.splitlines()) if m]
         if rc == 1 and na and len(na) == len(why.splitlines()):  # every red one only lacks this host
-            owe(debt, [(f"`{c}`", named(c)) for c in na])
+            owe(debt, [(f"`{c}`", named(c)) for c in na], cur)
             return block(f"A verify command cannot run on this host: {why}. Give `## Finish: blocked`, naming it as "
                          f"verification debt. {ASK}")
         if rc == 4:

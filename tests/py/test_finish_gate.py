@@ -342,9 +342,19 @@ class TestScenarios(GateCase):
         self.assertIn("It cannot run on this host → `## Finish: blocked`, naming it as verification debt.",
                       out["reason"])
         out = self.stop(BLOCKED)
-        self.assertEqual(out["reason"], "[ekit] A blocked report names its verification debt: the scenarios (the "
-                                        "scenario runner cannot run on this host). Name them, then stop.")
-        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: the scenarios, the runner cannot run here"))
+        self.assertEqual(out["reason"], "[ekit] A blocked report names its verification debt: the scenario runner "
+                                        "(scenarios.py cannot run on this host). Name them, then stop.")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: the scenario runner cannot run here"))
+
+    def test_the_runner_debt_is_named_only_in_the_debt_block(self):
+        self.scenarios()
+        self.start()
+        self.runner.tree = (3, "OSError: no bash")
+        self.stop(DONE)
+        self.assertEqual(self.stop("## Finish: blocked\nBlocker: the scenarios will not start\nVerification debt: "
+                                   "none")["decision"], "block")
+        self.assertIsNone(self.stop("## Finish: blocked\nBlocker: x\nVerification debt: scenarios.py cannot run "
+                                    "here (no bash)"))
 
     def test_scenarios_this_host_cannot_run_say_so_and_take_a_blocked_report(self):
         self.scenarios()
@@ -363,9 +373,9 @@ class TestScenarios(GateCase):
         self.runner.tree, self.runner.check = (0, "T1"), (1, "cannot run here: a/b: bash is not on this machine (env); "
                                                              "c: bash is not on this machine (env)")
         self.stop(DONE)
-        self.assertEqual(self.stop(BLOCKED + "\nDebt: a/b")["reason"],
+        self.assertEqual(self.stop(BLOCKED + "\nVerification debt: a/b")["reason"],
                          "[ekit] A blocked report names its verification debt: `c`. Name them, then stop.")
-        self.assertIsNone(self.stop(BLOCKED + "\nDebt: a/b and c"))
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: a/b and c"))
 
     def test_a_check_error_is_a_runner_error_not_a_red_scenario(self):
         self.scenarios()
@@ -390,6 +400,32 @@ class TestVerifyCommands(GateCase):
                       "machine. Give `## Finish: blocked`, naming it as verification debt.", out["reason"])
         self.assertIn("`npm test`", self.stop(BLOCKED)["reason"])
         self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `npm test` (no zsh here)"))
+
+    def owe_pytest(self):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.verifier.result = (1, "`pytest -q`: n/a (env): its shell zsh is not on this machine")
+        self.stop(DONE)
+
+    def test_an_unnamed_blocked_report_never_passes_not_even_on_the_retry(self):
+        self.owe_pytest()
+        self.assertEqual(self.stop(BLOCKED)["decision"], "block")
+        self.assertEqual(self.stop(BLOCKED, stop_hook_active=True)["decision"], "block")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt: `pytest -q`", stop_hook_active=True))
+
+    def test_a_command_named_outside_the_debt_block_is_not_named(self):
+        self.owe_pytest()
+        done_row = "## Finish: blocked\n| Criterion | Status | Evidence |\n|---|---|---|\n| Done | ✅ | `pytest -q` |\n"
+        self.assertEqual(self.stop(done_row + "Verification debt: none\nOpen: none")["decision"], "block")
+        self.assertIsNone(self.stop(done_row + "Verification debt:\n- `pytest -q`: no zsh here\nOpen: none"))
+
+    def test_the_debt_goes_with_its_tree(self):
+        self.owe_pytest()
+        self.runner.tree = (0, "T2")  # a later turn's work
+        self.verifier.result = (0, "")
+        self.assertIsNone(self.stop(DONE))
+        self.runner.tree = (0, "T3")
+        self.assertIsNone(self.stop(BLOCKED))
 
     def test_one_real_red_among_the_n_a_ones_is_fixed_not_reported_blocked(self):
         self.start()
