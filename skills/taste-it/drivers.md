@@ -26,7 +26,7 @@ r = subprocess.run([os.path.join(bin_, "<cmd>"), "--help"], capture_output=True,
 assert r.returncode == 0, r.stderr                                     # a failed assert exits 1: FAIL (the runner unsets PYTHONOPTIMIZE)
 ```
 
-Start other tools through `shutil.which("npm")`, `shutil.which("cargo")` (on Windows `npm` is `npm.cmd`, which a bare name does not find); a server goes in `subprocess.Popen(...)`, stopped in a `finally` (the runner also stops what is left when the scenario ends). `tmux` and `expect` exist on POSIX only: a TUI scenario that needs them stays a `run.sh`.
+Start other tools through `shutil.which("npm")`, `shutil.which("cargo")` (on Windows `npm` is `npm.cmd`, which a bare name does not find); a server goes in `subprocess.Popen(...)`, stopped in a `finally` (the runner also stops what is left when the scenario ends). `tmux` and `expect` exist on POSIX only: a TUI scenario that needs them stays a `run.sh`. A `run.ps1` (only when the user asks for PowerShell) exits with the last native command's exit code unless it says `exit N`: one that handles a native command's failure (`git diff --quiet; if ($LASTEXITCODE) {...}`, `robocopy`'s exit 1 for "copied") ends with `exit 0`.
 
 Not an install a user gets, so not a taste:
 - **Editable or linked** (`pip install -e`, `npm link`, a bare `npm install <folder>`): the source tree is what runs, and packaging mistakes (a file missing from the wheel or tarball) stay hidden.

@@ -162,8 +162,10 @@ def not_here(res):
 
 def argv(name, exe, path):
     """How `exe` runs the run file at `path`. run.ps1: called from -Command, not run with -File (which exits 0 on
-    normal termination whatever the last native command gave), and its last exit code passed on, as bash passes on
-    its last status; an error that stops it is exit 1."""
+    normal termination whatever the last native command gave). The exit code is the script's own `exit N`, else 1
+    when an error stops it, else the exit code of the last native command it ran (0 if none). Not bash's last-status
+    rule: a native failure the script handled, then cmdlets, reads FAIL with that code (a false FAIL, never a false
+    PASS), and a `$LASTEXITCODE = 0` in the script sets only a script-scope copy: such a script ends with `exit 0`."""
     if name in shells.PS_SHELLS:
         # one line, `;` between: cmd.exe (a .cmd shim in the way) ends a command line at a line feed
         line = f"$global:LASTEXITCODE = 0; & {shells.ps_call_path(path)}; {shells.PS_EXIT.strip()}; exit $LASTEXITCODE"
