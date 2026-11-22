@@ -5,7 +5,7 @@ can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes 
 seeded: the same read of ID and its children on the files as they are (a seeded scenario fails until its feature
 works); 2 also for a scenario with no `- feature:` line in its SCENARIO.md.
 A `- feature: <name>` line marks a scenario's feature: `run` (unfiltered) and `check` (fresh, full run) end with
-`features: N of M working`, N the marked features whose scenarios all PASS; no line when none is marked.
+`N of M features working`, N the marked features whose scenarios all PASS; no line when none is marked.
 
 Runs .ekit/scenarios/<slug>/run.py (the Python running this runner), run.sh (bash) or run.ps1 (PowerShell) in fresh
 temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
@@ -281,14 +281,17 @@ def feature(repo, sid):
     return (m.group(1) or None) if m else None
 
 
-def features_line(results):
-    """`features: N of M working`: M marked features, N of them with every scenario marked with it a PASS; None when
-    no scenario is marked."""
+def features_line(results, valid=True):
+    """`N of M features working`: M marked features (a name counts once whatever its case and spacing), N of them with
+    every scenario marked with it a PASS; None when no scenario is marked. valid=False: the run proves no scenario (it
+    modified the repo), so no feature works. A row that is not a dict, or whose feature is not a string, marks none."""
     works = {}
     for r in results:
-        if r.get("feature"):
-            works[r["feature"]] = works.get(r["feature"], True) and not r.get("reason")
-    return f"features: {sum(works.values())} of {len(works)} working" if works else None
+        name = r.get("feature") if isinstance(r, dict) else None
+        if isinstance(name, str) and name.split():
+            key = " ".join(name.split()).casefold()
+            works[key] = works.get(key, True) and valid and not r.get("reason")
+    return f"{sum(works.values())} of {len(works)} features working" if works else None
 
 
 def cmd_run(repo, only=None):
@@ -330,7 +333,7 @@ def cmd_run(repo, only=None):
         json.dump(doc, f, indent=1)
     prune(out, th)
     print(f"{doc['verdict']}: {sum(not r.get('reason') for r in results)}/{len(results)} scenarios")
-    line = features_line(results)
+    line = features_line(results, valid="reason" not in doc)
     if line and not only:  # a filtered run sees only some of a feature's scenarios
         print(line)
     return doc["verdict"] != "PASS"
@@ -457,7 +460,7 @@ def cmd_check(repo):
         print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
     else:
         rc = 0
-    line = features_line(ran)
+    line = features_line(ran, valid=not res.get("reason"))
     if line and fresh:  # after the verdict line, which the Stop gate reads first
         print(line)
     return rc

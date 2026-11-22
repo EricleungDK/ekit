@@ -45,7 +45,7 @@ Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchest
 | <criterion> | 👤 human-only | <what the user checks>; Needs-you block below |
 Mech <head sha>: R1 <status> · R2 <status> · R3 <status> · R4 <status>
 TDD: <test> red (`<failure line>`) → green (`<cmd>` exit 0)
-Features: <N of M working, from the `features:` line `RUN check` printed>
+<the `N of M features working` line `RUN check` printed, as printed>
 Env: <the line `preflight.py --env` printed>
 Verification debt: <items, or none>
 Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
@@ -53,7 +53,7 @@ Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
 
 Scenario row evidence: `RUN run <id>` → `PASS <id>`, `<results.json / transcript path>`, `RUN check` exit 0. A scenario with `artifacts` in results.json (screenshots): add their paths to the row.
 
-`Features:` line: copy the `features: N of M working` line `RUN check` printed ([scenarios.md](scenarios.md)); never count by hand. `RUN check` printed none → leave the line out.
+Features line: copy the `N of M features working` line `RUN check` printed, as printed ([scenarios.md](scenarios.md)); never count by hand. `RUN check` printed none → leave the line out.
 
 Each 👤 row gets a Needs-you block (same shape as in Blocked; Run/Expect become the exact steps and expected result, Why = what the check protects). Verdict stays "done except the rows marked ⚠️/👤".
 

@@ -933,7 +933,7 @@ PASSES, FAILS = "pass\n", "raise SystemExit(1)\n"  # run.py bodies
 
 
 class TestFeatures(unittest.TestCase):
-    """#60: a scenario's `feature` marker in SCENARIO.md, the `features: N of M working` line, and `seeded`."""
+    """#60: a scenario's `feature` marker in SCENARIO.md, the `N of M features working` line, and `seeded`."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -964,14 +964,46 @@ class TestFeatures(unittest.TestCase):
         self.scenario("tidy", PASSES)  # no marker: no feature
         code, out = self.cli("run")
         self.assertEqual((code, out), (1, "PASS login\nFAIL logout: exit 1\nPASS tidy\nFAIL: 2/3 scenarios\n"
-                                          "features: 1 of 2 working\n"))
+                                          "1 of 2 features working\n"))
 
     def test_a_feature_works_only_when_every_scenario_marked_with_it_passes(self):
         self.scenario("cart-add", PASSES, "cart")
         self.scenario("cart-remove", FAILS, "cart")
         self.scenario("search", PASSES, "search")
         _, out = self.cli("run")
-        self.assertEqual(out.splitlines()[-1], "features: 1 of 2 working")
+        self.assertEqual(out.splitlines()[-1], "1 of 2 features working")
+
+    def test_a_feature_whose_first_scenario_fails_and_last_passes_does_not_work(self):
+        self.scenario("cart-a", FAILS, "cart")
+        self.scenario("cart-b", PASSES, "cart")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "0 of 1 features working")
+
+    def test_feature_names_that_differ_only_in_case_and_spacing_are_one_feature(self):
+        self.scenario("a", PASSES, "Add Task")
+        self.scenario("b", PASSES, "add  task")
+        self.scenario("c", FAILS, " add task")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "0 of 1 features working")
+
+    def test_a_run_that_modified_the_repo_counts_no_feature_working(self):
+        self.scenario("writer", 'import os\nopen(os.path.join(os.environ["EKIT_REPO"], "todo.py"), "w").close()\n',
+                      "add a task")
+        code, out = self.cli("run")
+        self.assertEqual((code, out.splitlines()[-2:]), (1, ["FAIL: 1/1 scenarios", "0 of 1 features working"]))
+        os.remove(os.path.join(self.repo, "todo.py"))
+        self.assertEqual(self.cli("check"), (1, "last run FAIL\n0 of 1 features working\n"))
+
+    def test_check_reads_a_malformed_results_row_as_no_feature(self):
+        self.scenario("login", PASSES, "log in")
+        self.cli("run")
+        path = os.path.join(scenarios.outdir(self.repo), "results.json")
+        with open(path) as f:
+            doc = json.load(f)
+        doc["scenarios"] += [{"id": "x", "feature": ["x"]}, {"id": "y", "feature": 3}, "not a row"]
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(self.cli("check"), (0, "1 of 1 features working\n"))
 
     def test_no_marked_scenario_leaves_the_features_line_out(self):
         self.scenario("tidy", PASSES)
@@ -989,7 +1021,7 @@ class TestFeatures(unittest.TestCase):
         with open(os.path.join(self.repo, ".ekit/scenarios/windows/SCENARIO.md"), "w", newline="") as f:
             f.write("- story: s\r\n-  feature :  sign up \r\n- covers: c\r\n")
         _, out = self.cli("run")
-        self.assertEqual(out.splitlines()[-1], "features: 1 of 1 working")
+        self.assertEqual(out.splitlines()[-1], "1 of 1 features working")
         with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
             self.assertEqual([r.get("feature") for r in json.load(f)["scenarios"]], [None, "sign up"])
 
@@ -997,10 +1029,10 @@ class TestFeatures(unittest.TestCase):
         self.scenario("login", PASSES, "log in")
         self.scenario("logout", PASSES, "log out")
         self.cli("run")
-        self.assertEqual(self.cli("check"), (0, "features: 2 of 2 working\n"))
+        self.assertEqual(self.cli("check"), (0, "2 of 2 features working\n"))
         self.scenario("logout", FAILS, "log out")
         self.cli("run")
-        self.assertEqual(self.cli("check"), (1, "last run FAIL\nfeatures: 1 of 2 working\n"))
+        self.assertEqual(self.cli("check"), (1, "last run FAIL\n1 of 2 features working\n"))
 
     def test_check_leaves_the_features_line_out_when_the_run_is_stale_partial_or_marks_none(self):
         self.scenario("login", PASSES, "log in")
@@ -1020,7 +1052,7 @@ class TestFeatures(unittest.TestCase):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             self.cli("run")
         self.assertEqual(self.cli("check"),  # the Stop gate reads the ids from the first line
-                         (1, "cannot run here: login: bash is not on this machine (env)\nfeatures: 0 of 1 working\n"))
+                         (1, "cannot run here: login: bash is not on this machine (env)\n0 of 1 features working\n"))
 
     def test_a_seeded_scenario_that_fails_on_the_repo_as_it_is_is_seeded(self):
         self.scenario("login", FAILS, "log in")

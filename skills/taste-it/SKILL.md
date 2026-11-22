@@ -57,7 +57,7 @@ Name the scenarios read and the files created or edited before writing any.
 |---|---|
 | `RUN run` | all scenarios |
 | `RUN run <id>` | one scenario + its children (fix loop) |
-| `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run`; a run whose only reds are `NOT-RUN` says `cannot run here: <id>: <reason>; ...`. With a `- feature:` marker on any scenario, a full `RUN run` and a fresh `RUN check` end with `features: N of M working` (N: features whose scenarios all PASS) |
+| `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run`; a run whose only reds are `NOT-RUN` says `cannot run here: <id>: <reason>; ...`. With a `- feature:` marker on any scenario, a full `RUN run` and a fresh `RUN check` end with `N of M features working` (N: features whose scenarios all PASS) |
 | `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>`, `CANNOT FAIL <id>`: passes at baseline (exit 1), `N/A <id>: <reason> (env)`: could not run on this host, no proof either way (exit 4), or `ERROR <id>`: two or more run files (exit 2); the same for every run file |
 | `RUN seeded <id>` | a seeded scenario (§7) and its children, on the files as they are: `SEEDED ✓ <id>`: fails (exit 0); `CHECKS NOTHING YET <id>`: passes before its feature exists (exit 1); `N/A <id>` (env, exit 4); `ERROR <id>`: no `- feature:` line, or two or more run files (exit 2). Writes no results.json |
 | `RUN tree-hash` | current tree hash |
@@ -111,4 +111,4 @@ A new app, or features described before their code exists: seed user-level scena
    - `N/A <id>`: this host cannot run it: verification debt. `ERROR <id>`: fix the folder.
 6. Report each proposal: written as proposed, written as reworded, or rejected (not written), with each written one's `RUN seeded` line.
 
-Seeded scenarios stay red until their feature works; `RUN run` and `RUN check` count them in `features: N of M working`.
+Seeded scenarios stay red until their feature works; `RUN run` and `RUN check` count them in `N of M features working`.

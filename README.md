@@ -200,7 +200,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 |---|---|
 | [`failure-triage`](skills/failure-triage/SKILL.md) | A test, build or CI job goes red: classify it (sandbox/env, stale, flaky, unowned, real bug) before editing code. Reads mech-review JSON directly. |
 | [`taste-it`](skills/taste-it/SKILL.md) | Verify a deliverable by using it: black-box taster, `.ekit/scenarios/` regression suite, fix/human verdicts. A bug from use is checked with a scenario before any fix. A new app's features are seeded as scenarios from the user's stories before the code (only the approved wording; each must fail until its feature works). |
-| [`finish`](skills/finish/SKILL.md) | End-of-work report: done (evidence per criterion) or blocked (Needs-you block). With seeded scenarios, a `Features: N of M working` line copied from the runner. |
+| [`finish`](skills/finish/SKILL.md) | End-of-work report: done (evidence per criterion) or blocked (Needs-you block). With seeded scenarios, the `N of M features working` line copied from the runner. |
 | [`ci-doctor`](skills/ci-doctor/SKILL.md) | Set up or repair a repo's mech-review CI; ends in a PR a person merges. |
 | [`orchestrate-agent`](skills/orchestrate-agent/SKILL.md) | `/ekit:orchestrate-agent`: divide a task, delegate to subagents, verify acceptance. User-invoked only. |
 

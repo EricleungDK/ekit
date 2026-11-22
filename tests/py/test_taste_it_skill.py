@@ -89,16 +89,16 @@ class TestSeeding(unittest.TestCase):
     def test_the_run_table_has_the_seeded_check_with_each_exit(self):
         t = flat(section(read("taste-it", "SKILL.md"), "3. Run"))
         self.assertRegex(t, r"\| `RUN seeded <id>` \|[^|]*`SEEDED ✓ <id>`[^|]*`CHECKS NOTHING YET <id>`[^|]*\|")
-        self.assertIn("`features: N of M working`", t)
+        self.assertIn("`N of M features working`", t)
 
 
 class TestFinishFeaturesLine(unittest.TestCase):
     def test_the_done_template_has_the_features_line(self):
-        self.assertRegex(done_branch(), r"(?m)^Features: <")
+        self.assertRegex(done_branch(), r"(?m)^<the `N of M features working` line `RUN check` printed, as printed>$")
 
     def test_the_line_is_copied_from_check_never_counted_and_left_out_when_check_prints_none(self):
         for text in (flat(done_branch()), flat(read("finish", "scenarios.md"))):
-            self.assertIn("`features: N of M working`", text)
+            self.assertIn("`N of M features working`", text)
             self.assertIn("`RUN check`", text)
             self.assertIn("never count by hand", text)
             self.assertIn("leave the line out", text)
