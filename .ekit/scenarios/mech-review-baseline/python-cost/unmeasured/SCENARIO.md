@@ -1,0 +1,10 @@
+# mech-review-baseline/python-cost/unmeasured: failure, a python baseline that measured nothing keeps one shard per changed file (at most 4), says why in the note, and merge still accepts the shards
+
+- story: As a Python repo owner whose suite cannot be timed (no session time in the JUnit XML, `-p no:junitxml`, a red suite, a suite slower than the budget, mutmut broken, a listing that crashes, my own `[tool.mutmut]`), the baseline neither fails nor guesses: it keeps one shard per changed production file, at most 4, the note says what was not measured and why, and those shards merge as before.
+- covers: #64 64.3 (a baseline that measured nothing: one shard per changed file, at most 4 (1, 2, 5 -> 4), note `N changed production file(s) in M shard(s); test time not measured (<why>): one shard per changed file`, no `baseline_test_s`, no entry; whys: no session time in the XML, no XML, `ended with 1`, `did not finish within mutation-budget`, `mutmut not runnable`, the listing, `[tool.mutmut]`); 64.4 (merge accepts the unmeasured baseline's 2 shards: pass, each mutant once, a survivor is one MISSED; a missing shard is an entry naming `shard 1/2`, exit 1)
+- steps:
+  1. Parent's kit clone, fake mutmut + pytest and repo. Every run gives the fake a suite time of 600 s, which a measured baseline would turn into 4 shards.
+  2. Head changes `a.py` and `b.py`. `baseline --shards 4` with: the XML's `time` left out; no XML written; the suite exiting 1; the suite hanging (`--mutation-budget 0.05`, done in under 60 s); `mutmut --version` failing; `mutmut run` crashing; a head adding `[tool.mutmut]` to `pyproject.toml`. Each: `run` true, `count` 2, `mutants` null, the note as above naming the reason, no measured time, no entry.
+  3. Heads changing five modules and one module (time left out): counts 4 and 1.
+  4. From a 2-file unmeasured baseline: shards 0/2 and 1/2, `merge --baseline --shards 2`: exit 0, pass, `a`'s and `b`'s mutants once each; with `b`'s mutant surviving: exit 1, one MISSED on `src/calc/b.py:2`; with shard 1 missing: exit 1, an entry naming `shard 1/2`.
+- expected: as above; no traceback; the checkout untouched.
