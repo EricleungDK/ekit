@@ -80,10 +80,12 @@ eq "stryker entries" "$(jq -r '[.entries[] | select(.check=="R3")] | length' <<<
 eq "stryker lines" "$(jq -r '[.entries[].line] | unique | map(tostring) | join(",")' <<<"$out")" "2,6"
 hasnt "sub outside diff" "$(jq -r '[.entries[].problem] | join(" ")' <<<"$out")" "src/calc.ts:14"
 eq "stryker summary" "$(jq -r .summary <<<"$out")" "fail $MUT (5 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)"
-# declared limit (#26): ts accepts --max-mutants and ignores it (Stryker cannot pre-list): the same result
+# the cap (#63): ts picks changed lines, riskiest first, until max-mutants would be passed. The fixture's riskiest line
+# (calc.ts:6, `n > 0`) alone holds 4 mutants, so --max-mutants 1 picks no line: Stryker is not run, R3 partial 0/5
 capped=$(MECH_TEST_STUB="$STUB" python3 "$MR" mutants --repo "$R" --base "$BASE" --head "$MUT" --stack ts --test-paths 'tests/**' --mutants-cmd node_modules/.bin/stryker --max-mutants 1 2>cap.err); rc=$?
-eq "stryker capped exit" "$rc" 1
-eq "stryker capped same result" "$(jq -c '[.summary, .checks.R3.status, [.entries[].id]]' <<<"$capped")" "$(jq -c '[.summary, .checks.R3.status, [.entries[].id]]' <<<"$out")"
+eq "stryker capped exit" "$rc" 0
+eq "stryker capped partial" "$(jq -c '[.checks.R3.status, .checks.R3.tested, .checks.R3.total]' <<<"$capped")" '["partial",0,5]'
+eq "stryker capped no MISSED" "$(jq '[.entries[] | select(.severity == "fail")] | length' <<<"$capped")" 0
 hasnt "stryker capped no traceback" "$(cat cap.err)" "Traceback"
 
 # 5. plan: a ts production change runs the mutants job
