@@ -20,7 +20,7 @@ from .stack import ADAPTERS
 
 PATH = ".ekit/stack-plan.toml"
 STATUSES = ("planned", "current", "retiring")
-RETIRING_DAYS = 30  # spec default (#56): a stack retiring longer than this gets a reminder
+RETIRING_DAYS = 30  # spec default (#56): a stack retiring this long or longer gets a reminder
 DAY = 86400
 ENTRY_KEYS = ("name", "folder", "adapter", "status", "target-os")
 
@@ -246,9 +246,9 @@ def judge(plan, paths, since, now, names=None):
         elif e.status == "retiring":
             text = f"retiring {where}: its manifest {mine[0]} is still here: finish the migration, then remove its entry"
             start = since(e.name)
-            if start is not None and now - start > RETIRING_DAYS * DAY:
-                text += (f"; retiring for {int((now - start) // DAY)} days (over {RETIRING_DAYS}): finish the migration "
-                         f"or drop it")
+            if start is not None and now - start >= RETIRING_DAYS * DAY:
+                text += (f"; retiring for {int((now - start) // DAY)} days ({RETIRING_DAYS} or more): finish the "
+                         f"migration or drop it")
             messages.append(text)
     return uncovered, messages
 

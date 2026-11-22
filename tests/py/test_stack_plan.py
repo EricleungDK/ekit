@@ -430,7 +430,7 @@ class RetiringReminder(unittest.TestCase):
     def test_retiring_for_more_than_30_days_reminds_to_finish_or_drop_the_migration(self):
         sha = self.history((90, "current"), (41, "retiring"))
         self.assertEqual(self.text(sha), ["retiring stack `js` (.): its manifest package.json is still here: finish the "
-                                          "migration, then remove its entry; retiring for 41 days (over 30): finish "
+                                          "migration, then remove its entry; retiring for 41 days (30 or more): finish "
                                           "the migration or drop it"])
 
     def test_the_time_counts_from_when_it_became_retiring_not_from_the_last_plan_edit(self):
@@ -438,7 +438,17 @@ class RetiringReminder(unittest.TestCase):
         self.repo.commit({PLAN: plan(("js", ".", "ts", "retiring"), ("app", ".", "ts", "current"), ("x", "x", "rust",
                                                                                                     "planned"))},
                          "plan edit", when=self.now - 2 * DAY)
-        self.assertIn("retiring for 45 days (over 30)", self.text("HEAD")[0])
+        self.assertIn("retiring for 45 days (30 or more)", self.text("HEAD")[0])
+
+    def test_the_reminder_starts_at_exactly_30_days(self):
+        # review round 2, finding 12: "once an entry has been retiring for 30 days"
+        self.history((90, "current"))
+        sha = self.repo.commit(dict(self.files, **{PLAN: plan(("js", ".", "ts", "retiring"), ("app", ".", "ts", "current"))}),
+                               when=int(self.now) - 40 * DAY)
+        start = int(self.now) - 40 * DAY
+        at = lambda t: stack_plan.drift_at(self.repo.path, sha, now=t).messages[0]
+        self.assertIn("retiring for 30 days (30 or more)", at(start + 30 * DAY))
+        self.assertNotIn("days", at(start + 30 * DAY - 1))
 
     def test_retiring_for_30_days_or_less_is_no_reminder(self):
         sha = self.history((90, "current"), (29, "retiring"))
@@ -449,7 +459,7 @@ class RetiringReminder(unittest.TestCase):
             with self.subTest(broken=broken):
                 self.repo.commit({PLAN: broken}, "broken", when=self.now - 200 * DAY)
                 sha = self.history((41, "retiring"))
-                self.assertIn("retiring for 41 days (over 30)", self.text(sha)[0])
+                self.assertIn("retiring for 41 days (30 or more)", self.text(sha)[0])
 
     def test_a_merged_side_branch_that_edited_the_plan_does_not_reset_the_count(self):
         # review round 2, finding 4: the count follows the branch's own (first-parent) history
@@ -469,7 +479,7 @@ class RetiringReminder(unittest.TestCase):
             self.repo.git("add", "-A")
             self.repo.git("commit", "-q", "--no-edit", env=stamp)
         [m] = [m for m in stack_plan.drift_at(self.repo.path, "HEAD", now=t0 + 50 * DAY).messages if "`js`" in m]
-        self.assertIn("retiring for 49 days (over 30)", m)
+        self.assertIn("retiring for 49 days (30 or more)", m)
 
     def test_back_to_current_and_retiring_again_counts_from_the_last_time(self):
         sha = self.history((100, "retiring"), (60, "current"), (10, "retiring"))
@@ -723,7 +733,7 @@ class DriftAt(unittest.TestCase):
         now = time.time()
         repo.commit({"package.json": "{}", PLAN: plan(("js", ".", "ts", "retiring"))}, when=now - 40 * DAY)
         [m] = stack_plan.drift_at(repo.path, "HEAD", now=now).messages
-        self.assertIn("retiring for 40 days (over 30)", m)
+        self.assertIn("retiring for 40 days (30 or more)", m)
         [m] = stack_plan.drift_at(repo.path, "HEAD", now=now - 20 * DAY).messages
         self.assertNotIn("days", m)
 
