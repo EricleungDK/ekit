@@ -962,6 +962,455 @@ class TestRun(unittest.TestCase):
         self.assertTrue(os.path.isfile(kept))
 
 
+PASSES, FAILS = "pass\n", "raise SystemExit(1)\n"  # run.py bodies
+
+
+class TestFeatures(unittest.TestCase):
+    """#60: a scenario's `feature` marker in SCENARIO.md, the `N of M features working` line, and `seeded`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(self.tmp.name), "repo")
+        os.makedirs(self.repo)
+        git(self.repo, "init", "-q")
+        p = mock.patch.dict(os.environ, {"EKIT_STATE": os.path.join(os.path.realpath(self.tmp.name), "state")})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def scenario(self, sid, body, feature=None):
+        d = os.path.join(self.repo, ".ekit", "scenarios", sid)
+        os.makedirs(d, exist_ok=True)
+        marker = f"- feature: {feature}\n" if feature else ""
+        write(self.repo, f".ekit/scenarios/{sid}/SCENARIO.md", f"- story: s\n{marker}- covers: c\n")
+        write(self.repo, f".ekit/scenarios/{sid}/run.py", body)
+
+    def cli(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            scenarios.main(["--repo", self.repo, *args])
+        return int(e.exception.code or 0), out.getvalue()
+
+    def test_run_ends_with_how_many_marked_features_work(self):
+        self.scenario("login", PASSES, "log in")
+        self.scenario("logout", FAILS, "log out")
+        self.scenario("tidy", PASSES)  # no marker: no feature
+        code, out = self.cli("run")
+        self.assertEqual((code, out), (1, "PASS login\nFAIL logout: exit 1\nPASS tidy\nFAIL: 2/3 scenarios\n"
+                                          "1 of 2 features working\n"))
+
+    def test_a_feature_works_only_when_every_scenario_marked_with_it_passes(self):
+        self.scenario("cart-add", PASSES, "cart")
+        self.scenario("cart-remove", FAILS, "cart")
+        self.scenario("search", PASSES, "search")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "1 of 2 features working")
+
+    def test_a_feature_whose_first_scenario_fails_and_last_passes_does_not_work(self):
+        self.scenario("cart-a", FAILS, "cart")
+        self.scenario("cart-b", PASSES, "cart")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "0 of 1 features working")
+
+    def test_feature_names_that_differ_only_in_case_and_spacing_are_one_feature(self):
+        self.scenario("a", PASSES, "Add Task")
+        self.scenario("b", PASSES, "add  task")
+        self.scenario("c", FAILS, " add task")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "0 of 1 features working")
+
+    def test_a_run_that_modified_the_repo_counts_no_feature_working(self):
+        self.scenario("writer", 'import os\nopen(os.path.join(os.environ["EKIT_REPO"], "todo.py"), "w").close()\n',
+                      "add a task")
+        code, out = self.cli("run")
+        self.assertEqual((code, out.splitlines()[-2:]), (1, ["FAIL: 1/1 scenarios", "0 of 1 features working"]))
+        os.remove(os.path.join(self.repo, "todo.py"))
+        self.assertEqual(self.cli("check"), (1, "last run FAIL\n0 of 1 features working\n"))
+
+    def doc(self, sid, text):
+        with open(os.path.join(self.repo, ".ekit", "scenarios", sid, "SCENARIO.md"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_a_feature_line_inside_a_fenced_block_marks_nothing(self):
+        self.scenario("tidy", FAILS)
+        self.doc("tidy", "- story: s\n- steps:\n  ```\n  - feature: fake\n  ```\n~~~\n- feature: fake too\n~~~\n")
+        self.assertEqual(self.cli("run"), (1, "FAIL tidy: exit 1\nFAIL: 0/1 scenarios\n"))
+        self.assertEqual(self.cli("seeded", "tidy"), (2, "ERROR tidy: SCENARIO.md has no `- feature:` line\n"))
+
+    def feature_of(self, text):
+        """(run's features line, seeded's first line) for one scenario whose SCENARIO.md is `text`"""
+        self.scenario("login", FAILS)
+        self.doc("login", text)
+        return self.cli("run")[1].splitlines()[-1], self.cli("seeded", "login")[1].splitlines()[0]
+
+    def test_a_feature_line_after_a_closed_fence_is_read(self):
+        for text in ("```\n- feature: fake\n```\n- feature: real\n",  # a fence closes
+                     "```\n~~~\n- feature: fake\n```\n- feature: real\n",  # only a fence of its own kind closes it
+                     "````\n```\n- feature: fake\n````\n- feature: real\n"):  # and no shorter one
+            with self.subTest(text=text):
+                line, seeded = self.feature_of(text)
+                self.assertEqual((line, seeded[:15]), ("0 of 1 features working", "SEEDED ✓ login:"))
+
+    def test_a_fence_never_closed_above_a_feature_line_is_named(self):
+        err = "SCENARIO.md: the ``` fence opened above `- feature: add` is never closed"
+        self.assertEqual(self.feature_of("- story: s\n```\ncode\n- feature: add  \n"),
+                         ("FAIL: 0/1 scenarios", f"ERROR login: {err}"))
+        self.assertEqual(self.cli("run")[1].splitlines()[0], f"FAIL login: {err}")
+
+    def test_a_fence_left_open_with_no_feature_line_in_it_is_no_error(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n```\ncode, never closed\n")
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))  # read as before
+        line, seeded = self.feature_of("```\n- feature: fake\n```\n- feature: real\n```\nopen, nothing in it\n")
+        self.assertEqual((line, seeded[:15]), ("0 of 1 features working", "SEEDED ✓ login:"))
+
+    def test_a_feature_line_inside_an_html_comment_is_text(self):
+        # a comment opens where `<!--` starts a line (CommonMark's HTML block) and ends on the line holding `-->`
+        for text in ("<!--\n- feature: older\n-->\n- feature: real\n", "<!-- - feature: x -->\n- feature: real\n",
+                     "  <!-- note\n- feature: older\n  still the note -->\n- feature: real\n",
+                     "```\n<!--\n```\n- feature: real\n"):  # inside a fence, <!-- opens nothing
+            with self.subTest(text=text):
+                self.scenario("login", PASSES)
+                self.doc("login", text)
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][0].get("feature"), "real")
+
+    def test_a_comment_opener_inside_a_line_opens_no_comment(self):
+        # e2e: a failing feature's `<!--` in its expected line hid its marker, so M lost it (1 of 1 for 1 of 2)
+        self.scenario("a", PASSES, "add note")
+        self.scenario("b", FAILS)
+        self.doc("b", "- story: s\n- expected: the file keeps each note's `<!--` header\n- feature: export notes\n")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "1 of 2 features working")
+        self.assertEqual(self.cli("seeded", "b")[1].splitlines()[0][:11], "SEEDED ✓ b:")
+        for text in ("- steps: type <!-- in the box\n- feature: real\n",
+                     "- steps: an empty comment <!--> then text\n- feature: real\n",
+                     "<!-->\n- feature: real\n", "<!--->\n- feature: real\n"):  # an empty comment closes itself
+            with self.subTest(text=text):
+                self.doc("b", text)
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][1].get("feature"), "real")
+
+    def test_a_feature_line_keeps_its_whole_text(self):
+        for name in ("parse `<!--` tags", "real <!-- was: older -->"):
+            with self.subTest(name=name):
+                self.scenario("login", PASSES)
+                self.doc("login", f"- story: s\n- feature: {name}\n")
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][0].get("feature"), name)
+
+    def test_a_comment_never_closed_above_a_feature_line_is_named(self):
+        err = "SCENARIO.md: the <!-- comment opened above `- feature: add` is never closed"
+        self.assertEqual(self.feature_of("- story: s\n<!-- notes\n- feature: add\n"),
+                         ("FAIL: 0/1 scenarios", f"ERROR login: {err}"))
+        self.assertEqual(self.cli("run")[1].splitlines()[0], f"FAIL login: {err}")
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n<!-- notes, never closed, no marker in it\n")
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
+        self.doc("login", "<!--\n- feature: old\n-->\n- feature: real\n<!-- open, nothing in it\n")  # a closed one's line
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n1 of 1 features working\n"))
+
+    def test_a_line_that_opens_and_closes_a_comment_ends_it_there(self):
+        # the comment's line is the whole HTML block: a feature line after it is read, so two lines are named
+        self.scenario("login", PASSES)
+        self.doc("login", "<!-- a --> <!--\n- feature: older\n--> \n- feature: real\n")
+        self.assertEqual(self.cli("run")[1].splitlines()[0],
+                         "FAIL login: SCENARIO.md has more than one feature line (older, real): keep one")
+
+    def test_seeded_says_an_empty_feature_line_is_empty(self):
+        self.assertEqual(self.feature_of("- story: s\n- feature:\n"),
+                         ("FAIL: 0/1 scenarios", "ERROR login: SCENARIO.md feature line `- feature:` is empty"))
+
+    def test_a_bom_before_a_first_line_marker_is_not_part_of_it(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "﻿- feature: log in\n- story: s\n")
+        self.assertEqual(self.cli("run")[1].splitlines()[-1], "1 of 1 features working")
+
+    def test_two_feature_lines_are_a_named_error_in_run_and_seeded_never_a_pick(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n- feature: log in\n- feature: log out\n")
+        err = "SCENARIO.md has more than one feature line (log in, log out): keep one"
+        self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL: 0/1 scenarios\n"))
+        self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+
+    def test_a_feature_line_the_runner_cannot_read_is_a_named_error_in_run_and_seeded(self):
+        for line in ("- Feature: log in", "- **feature**: log in", "- *Feature:* log in", "-feature :log in  "):
+            with self.subTest(line=line):
+                self.scenario("login", PASSES)
+                self.doc("login", f"- story: s\n{line}\n")
+                err = f"SCENARIO.md feature line `{line.rstrip()}` is not `- feature: <name>`"
+                self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL: 0/1 scenarios\n"))
+                self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+
+    def test_gherkin_nested_and_other_bullet_feature_lines_are_no_marker_and_pass_as_before(self):
+        # an existing repo's scenarios (Gherkin `Feature:`, a nested bullet) read as they did before #60
+        for text in ("Feature: Login\n  Scenario: user logs in\n", "- story: s\n- expected: e\n  * Feature: greyed out\n",
+                     "- story: s\n  - feature: nested\n", "* feature: star bullet\n", "+ feature: plus bullet\n",
+                     "- story: s\n- featured: no\n"):
+            with self.subTest(text=text):
+                self.scenario("login", PASSES)
+                self.doc("login", text)
+                self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
+
+    def unreadable_doc(self):
+        """open() of a SCENARIO.md fails as an I/O error does; every other file opens as usual"""
+        real = open
+
+        def fake(path, *a, **kw):
+            if str(path).endswith("SCENARIO.md"):
+                raise OSError(5, "Input/output error")
+            return real(path, *a, **kw)
+        return mock.patch.object(scenarios, "open", fake, create=True)
+
+    def test_a_scenario_md_that_cannot_be_read_is_that_scenarios_named_fail_not_a_crash(self):
+        self.scenario("login", PASSES, "log in")
+        self.scenario("other", PASSES)
+        err = "SCENARIO.md cannot be read: Input/output error"
+        with self.unreadable_doc():
+            self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL other: {err}\nFAIL: 0/2 scenarios\n"))
+            self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            self.assertEqual(json.load(f)["verdict"], "FAIL")
+
+    def test_seeded_names_a_missing_scenario_md(self):
+        self.scenario("login", FAILS, "log in")
+        os.remove(os.path.join(self.repo, ".ekit", "scenarios", "login", "SCENARIO.md"))
+        self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {scenarios.NODOC}\n"))
+
+    def test_check_hashes_the_tree_only_when_its_answer_needs_it(self):
+        # the Stop gate calls check on every stop: a hash of a big tree is its cost
+        self.scenario("tidy", FAILS)
+        self.cli("run")
+        with mock.patch.object(scenarios, "tree_hash", wraps=scenarios.tree_hash) as h:
+            self.assertEqual(self.cli("check"), (1, "last run FAIL\n"))
+            self.assertEqual(h.call_count, 0)
+            self.scenario("tidy", PASSES)
+            self.cli("run", "tidy")
+            h.reset_mock()
+            self.assertEqual(self.cli("check"), (1, "partial run: only 'tidy' was run; run all scenarios\n"))
+            self.assertEqual(h.call_count, 0)
+            self.scenario("tidy", FAILS, "tidy up")
+            self.cli("run")
+            h.reset_mock()
+            self.assertEqual(self.cli("check"), (1, "last run FAIL\n0 of 1 features working\n"))
+            self.assertEqual(h.call_count, 1)  # the features line is said of the files as they are only
+
+    def test_check_reads_a_malformed_results_row_as_no_feature(self):
+        self.scenario("login", PASSES, "log in")
+        self.cli("run")
+        path = os.path.join(scenarios.outdir(self.repo), "results.json")
+        with open(path) as f:
+            doc = json.load(f)
+        doc["scenarios"] += [{"id": "x", "feature": ["x"]}, {"id": "y", "feature": 3}, "not a row"]
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        self.assertEqual(self.cli("check"), (0, "1 of 1 features working\n"))
+
+    def test_no_marked_scenario_leaves_the_features_line_out(self):
+        self.scenario("tidy", PASSES)
+        self.assertEqual(self.cli("run"), (0, "PASS tidy\nPASS: 1/1 scenarios\n"))
+
+    def test_a_filtered_run_leaves_the_features_line_out(self):
+        self.scenario("login", PASSES, "log in")
+        self.scenario("logout", FAILS, "log out")
+        self.assertEqual(self.cli("run", "login"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
+
+    def test_an_empty_feature_field_marks_nothing_and_a_crlf_one_reads_as_its_name(self):
+        self.scenario("blank", PASSES)
+        write(self.repo, ".ekit/scenarios/blank/SCENARIO.md", "- story: s\n- feature:\n- covers: c\n")
+        self.scenario("windows", PASSES)
+        with open(os.path.join(self.repo, ".ekit/scenarios/windows/SCENARIO.md"), "w", newline="") as f:
+            f.write("- story: s\r\n-  feature :  sign up \r\n- covers: c\r\n")
+        _, out = self.cli("run")
+        self.assertIn("PASS blank\n", out)  # an empty feature line marks nothing: no FAIL for it in run
+        self.assertEqual(out.splitlines()[-1], "1 of 1 features working")
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            self.assertEqual([r.get("feature") for r in json.load(f)["scenarios"]], [None, "sign up"])
+
+    def test_check_gives_the_features_line_after_its_verdict_for_a_full_run_on_the_files_as_they_are(self):
+        self.scenario("login", PASSES, "log in")
+        self.scenario("logout", PASSES, "log out")
+        self.cli("run")
+        self.assertEqual(self.cli("check"), (0, "2 of 2 features working\n"))
+        self.scenario("logout", FAILS, "log out")
+        self.cli("run")
+        self.assertEqual(self.cli("check"), (1, "last run FAIL\n1 of 2 features working\n"))
+
+    def test_check_leaves_the_features_line_out_when_the_run_is_stale_partial_or_marks_none(self):
+        self.scenario("login", PASSES, "log in")
+        self.cli("run")
+        write(self.repo, "app.py", "edited since the run\n")
+        self.assertEqual(self.cli("check"), (1, "stale: tree changed since run\n"))
+        self.cli("run", "login")
+        self.assertEqual(self.cli("check"), (1, "partial run: only 'login' was run; run all scenarios\n"))
+        self.scenario("login", PASSES)
+        self.cli("run")
+        self.assertEqual(self.cli("check"), (0, ""))
+
+    def test_check_after_a_run_this_host_could_not_do_keeps_cannot_run_here_first(self):
+        self.scenario("login", PASSES, "log in")
+        os.rename(os.path.join(self.repo, ".ekit/scenarios/login/run.py"),
+                  os.path.join(self.repo, ".ekit/scenarios/login/run.sh"))
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.cli("run")
+        self.assertEqual(self.cli("check"),  # the Stop gate reads the ids from the first line
+                         (1, "cannot run here: login: bash is not on this machine (env)\n0 of 1 features working\n"))
+
+    def kept(self, sid):
+        return os.path.join(scenarios.outdir(self.repo), "failed", sid.replace("/", "%2F") + ".log")
+
+    def test_a_seeded_scenario_that_fails_on_the_repo_as_it_is_is_seeded(self):
+        self.scenario("login", FAILS, "log in")
+        self.assertEqual(self.cli("seeded", "login"),
+                         (0, f"SEEDED ✓ login: fails on the repo as it is: exit 1\n  transcript: {self.kept('login')}\n"))
+
+    def test_seeded_says_why_each_one_failed_and_keeps_its_transcript(self):
+        self.scenario("login", "import sys\nprint('setting up', file=sys.stderr)\n"
+                               "print('todo.py: no such file', file=sys.stderr)\nsys.exit(3)\n", "log in")
+        self.assertEqual(self.cli("seeded", "login"),
+                         (0, "SEEDED ✓ login: fails on the repo as it is: exit 3: todo.py: no such file\n"
+                             f"  transcript: {self.kept('login')}\n"))
+        with open(self.kept("login")) as f:
+            self.assertIn("setting up\ntodo.py: no such file\n", f.read())
+
+    def seeded_line(self, body):
+        self.scenario("login", body, "log in")
+        return self.cli("seeded", "login")[1].splitlines()[0]
+
+    def test_a_seeded_scenario_silent_on_stderr_gives_its_last_stdout_line(self):
+        self.assertEqual(self.seeded_line("print('setting up')\nprint('todo.py is missing')\nraise SystemExit(1)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: todo.py is missing")
+        self.assertEqual(self.seeded_line("import sys\nprint('out')\nprint('err', file=sys.stderr)\nsys.exit(1)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: err")
+
+    def test_a_long_last_line_is_cut_to_200_characters(self):
+        self.assertEqual(self.seeded_line("import sys\nsys.exit('x' * 300)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: " + "x" * 200)
+
+    def test_a_seeded_run_py_that_is_not_python_says_so(self):
+        self.scenario("broken", "def (\n", "log in")
+        code, out = self.cli("seeded", "broken")
+        self.assertEqual(code, 0)
+        self.assertRegex(out.splitlines()[0], r"^SEEDED ✓ broken: fails on the repo as it is: exit 1: SyntaxError: ")
+
+    def test_a_seeded_scenario_that_writes_into_the_repo_is_an_error_naming_the_file(self):
+        self.scenario("writer", 'import os\nopen(os.path.join(os.environ["EKIT_REPO"], "todo.py"), "w").close()\n'
+                                "raise SystemExit(1)\n", "add a task")
+        self.assertEqual(self.cli("seeded", "writer"),
+                         (2, "ERROR writer: modified the repo (todo.py): run in the temp cwd\n"))
+
+    def test_seeded_names_what_it_wrote_into_the_repo_and_not_the_bytecode_beside_it(self):
+        self.scenario("writer", "import os\nfor name in ('a', 'cache.pyc', 'old.pyo'):\n"
+                                "    open(os.path.join(os.environ['EKIT_REPO'], name), 'w').close()\n", "add a task")
+        self.assertEqual(self.cli("seeded", "writer"),
+                         (2, "ERROR writer: modified the repo (a): run in the temp cwd\n"))
+
+    def writer(self, body):
+        self.scenario("writer", "import os, subprocess\nrepo = os.environ['EKIT_REPO']\n" + body, "add a task")
+        return self.cli("seeded", "writer")
+
+    def test_seeded_names_a_dirty_file_written_again_an_untracked_one_removed_and_a_spaced_path_as_is(self):
+        write(self.repo, "notes.txt", "one\n")
+        git(self.repo, "add", "notes.txt")
+        git(self.repo, "commit", "-q", "-m", "notes")
+        write(self.repo, "notes.txt", "dirty before the run\n")
+        write(self.repo, "old.txt", "untracked before the run\n")
+        self.assertEqual(self.writer("open(os.path.join(repo, 'notes.txt'), 'a').write('more\\n')\n"
+                                     "os.remove(os.path.join(repo, 'old.txt'))\n"
+                                     "open(os.path.join(repo, 'my file.txt'), 'w').close()\n"),
+                         (2, "ERROR writer: modified the repo (my file.txt, notes.txt, old.txt): run in the temp cwd\n"))
+
+    def test_seeded_names_a_rename_a_tracked_pyc_and_a_deleted_tracked_file(self):
+        for name in ("notes.txt", "cache.pyc", "gone.txt"):
+            write(self.repo, name, "tracked\n")
+        git(self.repo, "add", "notes.txt", "gone.txt")
+        git(self.repo, "add", "-f", "cache.pyc")
+        git(self.repo, "commit", "-q", "-m", "tracked")
+        self.assertEqual(self.writer("subprocess.run(['git', '-C', repo, 'mv', 'notes.txt', 'moved.txt'], check=True)\n"
+                                     "open(os.path.join(repo, 'cache.pyc'), 'a').write('x')\n"
+                                     "os.remove(os.path.join(repo, 'gone.txt'))\n"),
+                         (2, "ERROR writer: modified the repo (cache.pyc, gone.txt, moved.txt): run in the temp cwd\n"))
+
+    def test_seeded_names_a_commit_as_head(self):
+        self.assertEqual(self.writer("subprocess.run(['git', '-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t',"
+                                     " 'commit', '-q', '--allow-empty', '-m', 'x'], check=True)\n"),
+                         (2, "ERROR writer: modified the repo (HEAD): run in the temp cwd\n"))
+
+    def test_seeded_names_each_scenarios_own_write_and_not_the_one_before_it(self):
+        self.scenario("cart", "import os\nopen(os.path.join(os.environ['EKIT_REPO'], 'a'), 'w').close()\n", "cart")
+        self.scenario("cart/kid", FAILS, "cart")
+        self.scenario("cart/kid2", "import os\nopen(os.path.join(os.environ['EKIT_REPO'], 'b'), 'w').close()\n", "cart")
+        code, out = self.cli("seeded", "cart")
+        self.assertEqual((code, [x for x in out.splitlines() if not x.startswith("  transcript:")]),
+                         (2, ["ERROR cart: modified the repo (a): run in the temp cwd",
+                              "SEEDED ✓ cart/kid: fails on the repo as it is: exit 1",
+                              "ERROR cart/kid2: modified the repo (b): run in the temp cwd"]))
+
+    def test_seeded_reads_git_status_not_a_tree_hash_per_scenario(self):
+        # a tree hash is the cost of a big repo (0.9 s at 60k files); seeded runs it for none of its scenarios
+        for sid in ("cart", "cart/a", "cart/b"):
+            self.scenario(sid, FAILS, "cart")
+        with mock.patch.object(scenarios, "tree_hash", wraps=scenarios.tree_hash) as h:
+            self.assertEqual(self.cli("seeded", "cart")[0], 0)
+        self.assertEqual(h.call_count, 0)
+
+    def test_seeded_exit_is_error_over_checks_nothing_yet_over_n_a(self):
+        self.scenario("mix", FAILS)  # no marker: ERROR
+        self.scenario("mix/kid", PASSES, "kid")
+        self.assertEqual(self.cli("seeded", "mix"), (2, "ERROR mix: SCENARIO.md has no `- feature:` line\n"
+                                                        "CHECKS NOTHING YET mix/kid: passes on the repo as it is\n"))
+        self.scenario("other", "exit 0\n", "other")
+        os.rename(os.path.join(self.repo, ".ekit/scenarios/other/run.py"),
+                  os.path.join(self.repo, ".ekit/scenarios/other/run.sh"))
+        self.scenario("other/kid", PASSES, "kid")
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.assertEqual(self.cli("seeded", "other")[0], 1)
+            self.scenario("other/kid", FAILS, "kid")
+            self.assertEqual(self.cli("seeded", "other")[0], 4)
+
+    def test_a_seeded_scenario_that_already_passes_checks_nothing_yet(self):
+        self.scenario("login", PASSES, "log in")
+        self.assertEqual(self.cli("seeded", "login"),
+                         (1, "CHECKS NOTHING YET login: passes on the repo as it is\n"))
+
+    def test_seeded_checks_the_scenario_and_its_children_and_records_no_run(self):
+        self.scenario("cart", FAILS, "cart")
+        self.scenario("cart/empty", PASSES, "cart")
+        self.scenario("cartography", PASSES, "maps")
+        self.assertEqual(self.cli("seeded", "cart"),
+                         (1, f"SEEDED ✓ cart: fails on the repo as it is: exit 1\n  transcript: {self.kept('cart')}\n"
+                             "CHECKS NOTHING YET cart/empty: passes on the repo as it is\n"))
+        self.assertFalse(os.path.exists(os.path.join(scenarios.outdir(self.repo), "results.json")))  # check unmoved
+
+    def test_a_scenario_with_no_feature_marker_is_no_seeded_one(self):
+        self.scenario("tidy", FAILS)
+        self.assertEqual(self.cli("seeded", "tidy"), (2, "ERROR tidy: SCENARIO.md has no `- feature:` line\n"))
+
+    def test_a_seeded_scenario_with_two_run_files_is_an_error_not_a_seed(self):
+        self.scenario("login", FAILS, "log in")
+        write(self.repo, ".ekit/scenarios/login/run.sh", "exit 1\n")
+        self.assertEqual(self.cli("seeded", "login"),
+                         (2, "ERROR login: more than one run file (run.py, run.sh): keep one\n"))
+
+    def test_a_seeded_scenario_this_host_cannot_run_is_n_a(self):
+        self.scenario("login", FAILS, "log in")
+        os.rename(os.path.join(self.repo, ".ekit/scenarios/login/run.py"),
+                  os.path.join(self.repo, ".ekit/scenarios/login/run.sh"))
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.assertEqual(self.cli("seeded", "login"), (4, "N/A login: bash is not on this machine (env)\n"))
+
+    def test_seeded_needs_a_scenario_that_exists(self):
+        self.scenario("login", FAILS, "log in")
+        self.assertEqual(self.cli("seeded", "logon"), (2, "no scenario 'logon' (or children) under .ekit/scenarios/\n"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.cli("seeded"), (2, ""))
+        self.assertIn("seeded ID", err.getvalue())
+
+
 class TestPrune(unittest.TestCase):
     NOW = 1_800_000_000
 
