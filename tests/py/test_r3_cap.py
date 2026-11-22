@@ -574,7 +574,7 @@ if args[:1] == ["results"] and os.environ.get("STUB_RESULTS_RC"):
 if args[:1] == ["results"]:
     print("".join(f"    {n}: {'killed' if n in ran else 'not checked'}\n" for n in spec["names"]), end="")
     sys.exit(0)
-if args[:1] == ["run"] and args[1:] == [spec["list_only"]] and os.environ.get("STUB_LISTING"):
+if args[:1] == ["run"] and args[1:] == [spec["list_only"]] and os.environ.get("STUB_LISTING", "early") != "early":
     if os.environ["STUB_LISTING"] == "hang":
         import time
         time.sleep(30)
@@ -592,7 +592,10 @@ if args[:1] == ["run"] and args[1:] == [spec["list_only"]]:
         f.write(spec["copies"])
     with open(os.path.join("mutants", "calc.py.meta"), "w") as f:
         json.dump({"exit_code_by_key": dict.fromkeys(spec["names"])}, f)
-    print("Filtered for specific mutants, but nothing matches")
+    if os.environ.get("STUB_LISTING") == "early":  # no test reaches a mutated function: mutants written, none run
+        print("Stopping early, because tests recorded trampoline hits but none match any mutant key.")
+    else:
+        print("Filtered for specific mutants, but nothing matches")
     sys.exit(1)
 if args[:1] == ["run"]:
     ran += [n for n in spec["names"] if any(fnmatch.fnmatchcase(n, p) for p in args[1:])]
@@ -657,11 +660,17 @@ class TestPythonBaselineShardCount(PyCli):
     def test_a_large_pr_gets_at_most_4(self):
         self.assertEqual(self.count(600), 4)
 
+    def test_a_listing_that_stops_early_still_counts_as_the_check_reads_it(self):
+        # mutmut stops early when no test reaches a mutated function; its mutants are written and the check runs on
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_LISTING="early", STUB_TEST_S="90")
+        self.assertEqual((env["run"], env["count"], env["mutants"]), (True, 2, 5))
+
     def test_the_time_is_the_junit_reports_whatever_the_terminal_shows(self):
         # addopts `-q` (pytest -qq: no summary line), colour, a summary without `passed`, an old wording, a huge line
         for shown in (".                                    [100%]",
                       "\x1b[32m.\x1b[0m\n\x1b[32m\x1b[1m3 passed\x1b[0m\x1b[32m in 0.05s\x1b[0m",
-                      "2 xpassed in 0.10s", "5 skipped in 0.1s", "3 passed in 0.12 seconds", "1 passed " * 10000):  # 90 KB: an env var holds at most 128 KB
+                      "2 xpassed in 0.10s", "5 skipped in 0.1s", "3 passed in 0.12 seconds",
+                      "1 passed " * 10000):  # 90 KB (an env var holds 128 KB)
             env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_PYTEST=shown,
                            STUB_TEST_S="90.0")
             self.assertEqual((env["count"], env["checks"]["R3"]["timing"]["baseline_test_s"]), (2, 90.0), shown[:40])
@@ -790,13 +799,15 @@ class TestPythonBaselineMeasuredNothing(PyCli):
         self.assertIn("mutmut not runnable: `mutmut`", self.unmeasured(STUB_VERSION="bash: mutmut: command not found"))
 
     def test_a_listing_that_stops(self):
-        note = self.unmeasured(STUB_LISTING="Stopping early, because tests recorded trampoline hits but none match")
-        self.assertIn("mutmut's listing ended with 1: Stopping early", note)
+        note = self.unmeasured(STUB_LISTING="failed to collect stats. runner returned 1")
+        self.assertEqual(note, "1 changed production file(s) in 1 shard(s); test time not measured (mutmut's listing "
+                               "ended with 1: failed to collect stats. runner returned 1): one shard per changed file")
 
     def test_a_listing_the_budget_ends(self):
         out = self.cli("baseline", "--shards", "4", "--mutation-budget", "0.02", STUB_LISTING="hang")
-        self.assertIn("test time not measured (mutmut's listing ended with timeout: ): one shard per changed file",
-                      out["checks"]["R3"]["note"])
+        self.assertEqual(out["checks"]["R3"]["note"],
+                         "1 changed production file(s) in 1 shard(s); test time not measured (mutmut's listing did "
+                         "not finish within mutation-budget (0.02 min)): one shard per changed file")
         self.assertEqual((out["run"], out["count"]), (True, 1))
 
     def test_results_that_cannot_be_read(self):

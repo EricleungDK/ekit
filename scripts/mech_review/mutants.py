@@ -1296,7 +1296,9 @@ def _py_measure(rv, files, cmd, runner, wt, budget):
     if why:
         return why
     rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
-    if rc == "timeout" or _run_stopped(rc, text, (NO_MATCH,)):
+    if rc == "timeout":
+        return f"mutmut's listing did not finish within mutation-budget ({budget / 60:g} min)"
+    if _run_stopped(rc, text, (EARLY, NO_MATCH)):  # the ends the check's step 1 reads as a listing
         return f"mutmut's listing ended with {rc}: {_first_line(text)}"
     rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
     if rrc != 0:
