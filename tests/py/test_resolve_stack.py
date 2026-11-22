@@ -227,6 +227,21 @@ class TestResolveTargetOs(unittest.TestCase):
                 self.assertEqual((r.returncode, r.stdout), (2, ""))
                 self.assertIn("name: `auto` is reserved", r.stderr)
 
+    def test_an_adapter_file_named_like_a_built_in_gives_its_own_target_os(self):
+        with open(os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml")) as f:
+            text = f.read()
+        self.assertIn('name = "ts"\n', text)
+        path = os.path.join(self.repo, "..", os.path.basename(self.repo) + "-ts-macos.toml")
+        with open(path, "w") as f:
+            f.write(text.replace('name = "ts"\n', 'name = "ts"\ntarget-os = "macos"\n'))
+        self.addCleanup(os.remove, path)
+        rc, got = self.run_cli("--stack", "ts", "--adapter", path)
+        self.assertEqual((rc, got["stack"], got["target_os"]), (0, "ts", "macos"))
+
+    def test_a_set_project_dir_is_kept_with_an_adapter_file(self):
+        rc, got = self.run_cli("--stack", "mini", "--adapter", self.adapter("windows"), "--project-dir", "sub/x")
+        self.assertEqual((rc, got), (0, {"stack": "mini", "project_dir": "sub/x", "error": None, "target_os": "windows"}))
+
     def test_the_stack_must_be_the_adapter_files_name(self):
         r = _kit.run_cli(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts",
                           "--adapter", self.adapter("macos")])
