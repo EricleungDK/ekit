@@ -903,7 +903,7 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
     rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and (every or m[5:] != ["upper"])]
     if os.environ.get("STUB_BAD_ROW"):  # a row as the given JSON, its file the first file asked
         bad = json.loads(os.environ["STUB_BAD_ROW"])
-        rows.append([args[4]] + bad if isinstance(bad, list) else bad)
+        rows.append([args[4]] + bad if isinstance(bad, list) and len(bad) < 5 else bad)
     print("ekit-stryker-listing " + json.dumps(rows).replace('"Infinity"', "Infinity"))
     sys.exit(0)
 if args == ["--version"]:
@@ -1186,7 +1186,8 @@ class TestTsListing(TsCli):
 
     def test_a_malformed_row_is_no_listing_and_the_note_says_so(self):
         for row in ('["M", "r", "Infinity", 2]', '["M", "r", 3, 1]', '["M", "r", 1.5, 2]', '["M", "r", true, 2]',
-                    '["M", "r", 0, 2]', '["M", "r", 2]', 'null', '["M", 7, 1, 2]'):
+                    '["M", "r", 0, 2]', '["M", "r", 2]', 'null', '["M", 7, 1, 2]',
+                    '["/elsewhere/x.ts", "M", "r", 1, 2]'):  # a file that was not asked for
             r3 = self.cli("--max-mutants", "5", STUB_BAD_ROW=row)["checks"]["R3"]
             self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), row)  # no cap: every changed line
             self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 8, 8), row)
