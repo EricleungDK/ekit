@@ -145,8 +145,9 @@ def parse(data, read):
         else:
             target = adapter.target_os if adapter else None
         # one entry per stack, folder and status: two would leave the target OS to their order (a retiring and a
-        # current entry for one stack and folder are a migration, not a duplicate)
-        stack = adapter.name if adapter else s["adapter"]
+        # current entry for one stack and folder are a migration, not a duplicate). The stack is its adapter's name;
+        # an adapter file not proven yet is its path, `./` and all spellings of it one
+        stack = adapter.name if adapter else _folder(s["adapter"], f"{label}, field adapter")
         key = (stack, folder, status)
         if key in keys:
             raise PlanError(f"{label}, field folder: stack `{stack}` in {folder} is already {keys[key]} with "

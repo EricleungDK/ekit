@@ -586,6 +586,21 @@ class Malformed(unittest.TestCase):
                 self.assertEqual(self.err(plan(a, b)), "stack[1] `b`, field folder: stack `python` in api is "
                                                        "already stack[0] `a` with status " + a[3])
 
+    def test_two_entries_whose_adapters_name_one_stack_are_named(self):
+        # review round 3, finding 6 (M8): the stack is the adapter's name, not the value as written
+        self.repo.commit({".ekit/adapters/mini2.toml": mini()})  # a second file that also declares stack `mini`
+        a = ("a", "lib", ".ekit/adapters/mini.toml", "current")
+        for b in (("b", "lib", "./.ekit/adapters/mini.toml", "current"),
+                  ("b", "lib", ".ekit/adapters/mini2.toml", "current")):
+            with self.subTest(b=b):
+                self.assertEqual(self.err(plan(a, b)), "stack[1] `b`, field folder: stack `mini` in lib is already "
+                                                       "stack[0] `a` with status current")
+        # an adapter file not written yet is its path, however it is spelled
+        self.assertEqual(self.err(plan(("a", "m", ".ekit/adapters/kotlin.toml", "planned"),
+                                       ("b", "m", "./.ekit/adapters/kotlin.toml", "planned"))),
+                         "stack[1] `b`, field folder: stack `.ekit/adapters/kotlin.toml` in m is already stack[0] `a` "
+                         "with status planned")
+
     def test_the_same_stack_and_folder_in_another_status_is_a_migration_not_a_duplicate(self):
         sha = self.repo.commit({PLAN: plan(("js", "api", "python", "retiring"), ("py", "api", "python", "current"))})
         r, env = drift(self.repo, sha, sha)
@@ -600,6 +615,10 @@ class Malformed(unittest.TestCase):
              "stack[0] `app`, field folder: `web/app` is under ignore[0] `web`: the drift check reads no manifest there"),
             (plan(("demo", "examples/app", "ts", "planned")),
              "stack[0] `demo`, field folder: `examples/app` is under `examples`, a fixture, vendor or build folder: the "
+             "drift check reads no manifest there"),
+            # review round 3, finding 6 (M7): the folder itself, not only a folder below it
+            (plan(("demo", "examples", "ts", "planned")),
+             "stack[0] `demo`, field folder: `examples` is under `examples`, a fixture, vendor or build folder: the "
              "drift check reads no manifest there"),
         ]
         for text, want in cases:
@@ -795,6 +814,13 @@ class ResolveTargetOs(unittest.TestCase):
                                                                  ("app", ".", "ts", "current", "macos"))})
         r, got = self.resolve(sha, sha)
         self.assertEqual((r.returncode, got["stack"], got["target_os"]), (0, "ts", "macos"))
+
+    def test_a_planned_entry_whose_adapter_file_is_not_there_yet_sets_nothing(self):
+        # review round 3, finding 6 (M1): it names no stack yet, so it is no entry for the settled one, and no crash
+        sha = self.repo.commit({"pyproject.toml": "", PLAN: plan(("mob", ".", ".ekit/adapters/kotlin.toml", "planned",
+                                                                  "windows"), ("app", ".", "python", "planned"))})
+        r, got = self.resolve(sha, sha)
+        self.assertEqual((r.returncode, got["stack"], got["target_os"]), (0, "python", "linux"), r.stderr)
 
     def test_a_bad_base_plan_is_a_usage_error(self):
         sha = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current", "amiga"))})
