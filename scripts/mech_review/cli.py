@@ -37,7 +37,7 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       suite once (its session time from pytest's --junit-xml) and mutmut's listing (the mutants on changed lines) give
       the same count, no mutant on a changed line runs no shard; a baseline that measured nothing keeps one shard per
       changed file, at most --shards, and its note says why. Cap --max-mutants N
-      (default 40; rust, python): the riskiest N run (branch conditions, returns and booleans, arithmetic, the rest,
+      (default 40; rust, python; ts by changed lines, #63): the riskiest N run (branch conditions, returns and booleans, arithmetic, the rest,
       strings and arguments last), dealt round-robin over the shards; the rest are untested: partial. Per-mutant timeout: --mutant-timeout SEC, else derived from the
       measured baseline (cargo-mutants' rule). Budget `--mutation-budget MIN` (default 10, per shard and for the baseline;
       python's baseline gives it to the suite run and to the listing each, so it can take about twice that).
@@ -159,7 +159,7 @@ def build_parser():
                         "(the shards then skip the baseline: it was measured by `baseline`)")
     p.add_argument("--max-mutants", type=max_mutants_arg, default=40, metavar="N",
                    help="R3 (mutants, baseline): the most mutants tested per PR (default 40), riskiest first; past it R3 "
-                        "is partial (rust, python; ts: not applied)")
+                        "is partial (rust, python; ts: riskiest changed lines, their mutants estimated)")
     p.add_argument("--shard", metavar="K/N", help="R3 only: run shard K of N (0-based, as cargo-mutants numbers them)")
     p.add_argument("--shards", type=int, default=None, metavar="N",
                    help="baseline: the most mutants shards (default 4; fewer when there are fewer mutants); merge: the number "
