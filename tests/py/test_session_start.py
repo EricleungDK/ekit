@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -66,15 +67,17 @@ class StackPlan(unittest.TestCase):
     setUp = Context.setUp
     context = Context.context
 
-    def commit(self, files):
+    def commit(self, files, when=None):
+        """files: {path: text}; when: the commit's time (unix seconds), else now"""
         for rel, text in files.items():
             full = os.path.join(self.repo, rel)
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w", newline="\n") as f:
                 f.write(text)
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        stamp = {} if when is None else {"GIT_COMMITTER_DATE": f"@{int(when)} +0000", "GIT_AUTHOR_DATE": f"@{int(when)} +0000"}
         subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
-                        "commit", "-q", "-m", "c"], check=True)
+                        "commit", "-q", "-m", "c"], check=True, env=dict(os.environ, **stamp))
 
     def commit_path(self, path, text):
         """commit a file at `path` through the index only: any name git takes (a newline in it), on any OS"""
@@ -298,6 +301,18 @@ class StackPlan(unittest.TestCase):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
         subprocess.run(["git", "-C", self.repo, "config", "remote.origin.promisor", "False"], check=True)
         self.assertIn("unchecked manifest api/pyproject.toml", self.context())
+
+    def test_in_a_shallow_clone_a_retiring_stack_says_its_day_count_may_be_short(self):
+        note = "in this shallow clone the days retiring count only the history here"
+        self.commit({"web/package.json": "{}", PLAN: plan(("web", "web", "ts", "retiring"))}, when=time.time() - 40 * 86400)
+        self.commit({"web/a.js": ""})
+        [full] = [line for line in self.context().splitlines() if line.startswith("- retiring stack `web`")]
+        self.assertNotIn(note, full)
+        shallow = os.path.join(os.path.dirname(self.repo), "shallow")
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + self.repo, shallow], check=True)
+        self.repo = shallow
+        [line] = [line for line in self.context().splitlines() if line.startswith("- retiring stack `web`")]
+        self.assertTrue(line.endswith(f"; {note}"), line)
 
 
 if __name__ == "__main__":

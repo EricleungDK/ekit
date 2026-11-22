@@ -101,7 +101,9 @@ def _drift(cwd):
         return []
     items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
               f"entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
-    items += [f"- {shown(m)}" for m in d.messages]
+    shallow = gitio.git(top, "rev-parse", "--is-shallow-repository").strip() == "true"  # the history is cut
+    items += [f"- {shown(m)}" + ("; in this shallow clone the days retiring count only the history here"
+                                 if shallow and m.startswith("retiring ") else "") for m in d.messages]
     if len(items) > MAX_ITEMS:
         cmd = launcher.line(os.path.join(HERE, "mech-review.py"), "drift", "--repo", launcher.shown(top), "--base HEAD",
                             "--head HEAD --format text")
