@@ -121,6 +121,8 @@ class StackPlan(unittest.TestCase):
 
     def test_a_folder_that_is_no_git_repo_adds_nothing(self):
         self.repo = os.path.dirname(self.repo)
+        with open(os.path.join(self.repo, "HEAD"), "w"):  # a HEAD file alone, or an objects dir alone, is no git dir
+            pass
         self.assertNotIn("[ekit] Stack plan", self.context())
 
     def test_on_a_python_without_tomllib_one_line_says_311_is_needed_and_ci_still_checks(self):
@@ -174,6 +176,7 @@ class StackPlan(unittest.TestCase):
             finally:
                 os.dup2(saved, 2)
         self.assertIn("[ekit] Preflight (this env):", ctx)
+        self.assertIn("[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it", ctx)
 
     def started(self):
         """(the session's context, the program of every process the hook started, every address it connected to)"""
@@ -254,6 +257,26 @@ class StackPlan(unittest.TestCase):
         self.assertRegex(added[0], r"^\[ekit\] Stack plan: ")
         self.assertIn(f"{PLAN} is in HEAD's tree but cannot be read", added[0])
         self.assertIn("CI still runs it", added[0])
+
+    def test_a_git_failure_that_is_not_a_missing_repo_is_one_line(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        bare = os.path.join(os.path.dirname(self.repo), "bare.git")
+        subprocess.run(["git", "clone", "-q", "--bare", self.repo, bare], check=True)
+        cases = {"inside .git": os.path.join(self.repo, ".git"), "a bare repo": bare}
+        for case, cwd in cases.items():
+            with self.subTest(case=case):
+                self.repo = cwd
+                lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
+                self.assertEqual(len(lines), 1, lines)
+                self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: .*work tree")
+
+    def test_a_broken_git_config_is_one_line(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        with open(os.path.join(self.repo, ".git", "config"), "a") as f:
+            f.write("[broken\n")
+        lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: .*bad config")
 
 
 if __name__ == "__main__":

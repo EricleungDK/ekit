@@ -39,11 +39,38 @@ def has_tomllib():
 
 def drift(cwd):
     """The `[ekit]` lines for the stack plan's drift (#57): the committed tree at HEAD of the repo holding cwd against
-    the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network."""
+    the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network. Nothing when cwd is in no git
+    repo, the repo has no commit, there is no plan, or it is clean; any other failure is one line, never a clean read."""
     try:
-        top = gitio.git(cwd, "rev-parse", "--show-toplevel").strip()
+        return _drift(cwd)
+    except OSError:
+        return ["[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it on every PR."]
+    except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook or read as clean
+        return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {shown(e)}); CI still "
+                f"runs it on every PR."]
+
+
+def in_git(cwd):
+    """cwd or a folder above it holds a `.git`, or is a git dir itself (HEAD and objects/: a bare repo, a .git dir).
+    Read from the disk, so a git that fails there (dubious ownership, a bad config) is a failure, not "no repo"."""
+    d = os.path.abspath(cwd)
+    while True:
+        if os.path.lexists(os.path.join(d, ".git")) or (
+                os.path.isfile(os.path.join(d, "HEAD")) and os.path.isdir(os.path.join(d, "objects"))):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+def _drift(cwd):
+    if not in_git(cwd):  # a folder outside git: nothing to judge
+        return []
+    top = gitio.git(cwd, "rev-parse", "--show-toplevel").strip()
+    try:
         gitio.resolve(top, "HEAD")
-    except (gitio.Die, OSError):  # not a git repo, no commit yet, or no git here: no committed plan to read
+    except gitio.Die:  # no commit yet: no committed plan to read
         return []
     try:
         d = stack_plan.drift_at(top, "HEAD")
@@ -54,9 +81,6 @@ def drift(cwd):
                     f"is {v[0]}.{v[1]}: nothing here says what is unchecked. CI still runs the drift check on every PR."]
         return [f"[ekit] Stack plan does not read, so nothing here says what is unchecked: {shown(e)}. Fix it "
                 f"({FIX}); CI's drift check stops on it too."]
-    except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook or read as clean
-        return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {shown(e)}); CI still "
-                f"runs it on every PR."]
     if not d.has_plan and gitio.git(top, "ls-tree", "-z", "HEAD", "--", stack_plan.PATH):
         return [f"[ekit] Stack plan: {stack_plan.PATH} is in HEAD's tree but cannot be read as a file (a missing object "
                 f"in a partial or broken clone, or not a file), so nothing here says what is unchecked; CI still runs it on every PR."]
