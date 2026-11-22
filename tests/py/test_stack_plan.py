@@ -416,6 +416,26 @@ class RetiringReminder(unittest.TestCase):
                 sha = self.history((41, "retiring"))
                 self.assertIn("retiring for 41 days (over 30)", self.text(sha)[0])
 
+    def test_a_merged_side_branch_that_edited_the_plan_does_not_reset_the_count(self):
+        # review round 2, finding 4: the count follows the branch's own (first-parent) history
+        t0 = self.now - 100 * DAY
+        two = lambda status, **kw: plan(("js", ".", "ts", status), ("app", ".", "ts", "current"), **kw)
+        self.repo.commit(dict(self.files, **{PLAN: two("current")}), "start", when=t0)
+        self.repo.git("checkout", "-q", "-b", "side")
+        self.repo.commit({PLAN: two("current", ignore=["docs"])}, "side edit", when=t0 + 40 * DAY)
+        self.repo.git("checkout", "-q", "main")
+        self.repo.commit({PLAN: two("retiring")}, "retire js", when=t0 + DAY)
+        stamp = {"GIT_COMMITTER_DATE": f"@{int(t0 + 46 * DAY)} +0000", "GIT_AUTHOR_DATE": f"@{int(t0 + 46 * DAY)} +0000"}
+        try:
+            self.repo.git("merge", "-q", "--no-edit", "side", env=stamp)
+        except subprocess.CalledProcessError:
+            with open(os.path.join(self.repo.path, PLAN), "w") as f:
+                f.write(two("retiring", ignore=["docs"]))
+            self.repo.git("add", "-A")
+            self.repo.git("commit", "-q", "--no-edit", env=stamp)
+        [m] = [m for m in stack_plan.drift_at(self.repo.path, "HEAD", now=t0 + 50 * DAY).messages if "`js`" in m]
+        self.assertIn("retiring for 49 days (over 30)", m)
+
     def test_back_to_current_and_retiring_again_counts_from_the_last_time(self):
         sha = self.history((100, "retiring"), (60, "current"), (10, "retiring"))
         self.assertNotIn("days", self.text(sha)[0])

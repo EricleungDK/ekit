@@ -241,10 +241,11 @@ def _status_in(raw, name):
 
 
 def retiring_since(repo, sha, name):
-    """unix time (commit time) of the oldest plan commit, in the newest unbroken run of commits up to sha that have the
-    entry `name` retiring: when it became retiring. None when the plan at sha does not have it retiring."""
+    """unix time (commit time) of the oldest plan commit, in the newest unbroken run of first-parent commits up to sha
+    that have the entry `name` retiring: when it became retiring. None when the plan at sha does not have it retiring."""
     start = None
-    for line in gitio.git(repo, "log", "--format=%H %ct", sha, "--", PATH).splitlines():
+    # first-parent: the branch's own history; a merged side branch's older plan edits would interleave by date
+    for line in gitio.git(repo, "log", "--first-parent", "--format=%H %ct", sha, "--", PATH).splitlines():
         commit, stamp = line.split()
         raw = _blob(repo, commit, PATH)
         if raw is None or _status_in(raw, name) != "retiring":
