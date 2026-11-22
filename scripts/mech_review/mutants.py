@@ -1237,7 +1237,9 @@ def junit_seconds(path):
         times = [_secs(float(t.get("time"))) for t in suites]
     except (TypeError, ValueError):
         return None
-    return sum(times) if times and None not in times else None
+    if not times or None in times or not math.isfinite(sum(times)):  # `inf` and `1e400` are no duration
+        return None
+    return sum(times)
 
 
 def _suite_seconds(runner, crate, budget):

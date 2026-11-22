@@ -660,6 +660,19 @@ class TestPythonBaselineShardCount(PyCli):
     def test_a_large_pr_gets_at_most_4(self):
         self.assertEqual(self.count(600), 4)
 
+    def test_a_junit_report_whose_root_is_the_testsuite(self):
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10",
+                       STUB_JUNIT="<testsuite name='pytest' tests='3' time='90.0'/>")
+        self.assertEqual((env["count"], env["checks"]["R3"]["timing"]["baseline_test_s"]), (2, 90.0))
+
+    def test_the_junit_report_is_removed_after_it_is_read(self):
+        from unittest import mock
+        side = tempfile.TemporaryDirectory()
+        self.addCleanup(side.cleanup)
+        with mock.patch.object(tempfile, "tempdir", side.name):
+            self.count(90)
+        self.assertEqual([n for n in os.listdir(side.name) if n.startswith("mech-junit-")], [])
+
     def test_a_listing_that_stops_early_still_counts_as_the_check_reads_it(self):
         # mutmut stops early when no test reaches a mutated function; its mutants are written and the check runs on
         env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_LISTING="early", STUB_TEST_S="90")
@@ -806,7 +819,10 @@ class TestPythonBaselineMeasuredNothing(PyCli):
 
     def test_a_suite_that_writes_no_junit_report(self):
         # a repo whose addopts holds `-p no:junitxml`: green, but no time to read
-        for junit in ("none", "<testsuites><testsuite name='pytest'/></testsuites>", "<testsuites", "<x time='-1'/>"):
+        for junit in ("none", "<testsuites><testsuite name='pytest'/></testsuites>", "<testsuites", "<x time='-1'/>",
+                      "<testsuites><testsuite name='pytest' time='-1'/></testsuites>",
+                      "<testsuites><testsuite name='pytest' time='inf'/></testsuites>",
+                      "<testsuites><testsuite name='pytest' time='1e400'/></testsuites>"):
             self.assertEqual(self.unmeasured(STUB_JUNIT=junit),
                              f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} "
                              "wrote no session time in its JUnit XML): one shard per changed file", junit)
