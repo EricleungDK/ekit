@@ -730,8 +730,9 @@ class TestRun(unittest.TestCase):
 
     # PowerShell's -File exits 0 on normal termination whatever the last native command gave (about_Pwsh): the
     # script is called from -Command and its last exit code passed on, as bash passes on its last status
-    PS_LINE = ("$global:LASTEXITCODE = 0; & '{}'\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
-               "else {{ exit 1 }} }}\nexit $LASTEXITCODE")
+    # one line: cmd.exe (the .cmd fake on Windows) ends a command line at a line feed
+    PS_LINE = ("$global:LASTEXITCODE = 0; & '{}'; if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
+               "else {{ exit 1 }} }}; exit $LASTEXITCODE")
 
     def test_a_run_ps1_runs_in_pwsh_else_windows_powershell_its_last_exit_code_kept(self):
         script = os.path.join(self.repo, ".ekit", "scenarios", "one", "run.ps1")

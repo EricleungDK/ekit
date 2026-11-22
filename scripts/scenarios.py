@@ -161,7 +161,8 @@ def argv(name, exe, path):
     normal termination whatever the last native command gave), and its last exit code passed on, as bash passes on
     its last status; an error that stops it is exit 1."""
     if name in shells.PS_SHELLS:
-        line = f"$global:LASTEXITCODE = 0; & {shells.ps_literal(path)}{shells.PS_EXIT}\nexit $LASTEXITCODE"
+        # one line, `;` between: cmd.exe (a .cmd shim in the way) ends a command line at a line feed
+        line = f"$global:LASTEXITCODE = 0; & {shells.ps_literal(path)}; {shells.PS_EXIT.strip()}; exit $LASTEXITCODE"
         return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", line]
     return [exe, path]
 
