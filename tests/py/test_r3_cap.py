@@ -538,6 +538,234 @@ class TestPythonCap(PyRepo):
                                                        [], []))
 
 
+PY_STUB = r"""#!/usr/bin/env python3
+import fnmatch, json, os, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as f:
+    f.write(json.dumps(args) + "\n")
+spec = json.load(open(os.environ["STUB_SPEC"]))
+if args[:1] == ["-B"]:  # the whole suite (mutants.SUITE with this stub for python3): pytest's own last line
+    print(os.environ.get("STUB_PYTEST", "3 passed in 0.05s"))
+    sys.exit(int(os.environ.get("STUB_PYTEST_RC", "0")))
+if args == ["--version"]:
+    print(os.environ.get("STUB_VERSION", "mutmut, version 3.8.1"))
+    sys.exit(0)
+ran_path = os.path.join("mutants", "ran.json")
+ran = json.load(open(ran_path)) if os.path.exists(ran_path) else []
+if args[:1] == ["results"] and os.environ.get("STUB_RESULTS_RC"):
+    print("Traceback (most recent call last):")
+    sys.exit(int(os.environ["STUB_RESULTS_RC"]))
+if args[:1] == ["results"]:
+    print("".join(f"    {n}: {'killed' if n in ran else 'not checked'}\n" for n in spec["names"]), end="")
+    sys.exit(0)
+if args[:1] == ["run"] and args[1:] == [spec["list_only"]] and os.environ.get("STUB_LISTING"):
+    if os.environ["STUB_LISTING"] == "hang":
+        import time
+        time.sleep(30)
+    print(os.environ["STUB_LISTING"])  # e.g. mutmut's "Stopping early, ..."
+    sys.exit(1)
+if args[:1] == ["run"] and args[1:] == [spec["list_only"]]:
+    os.makedirs("mutants", exist_ok=True)
+    with open(os.path.join("mutants", "calc.py"), "w") as f:
+        f.write(spec["copies"])
+    with open(os.path.join("mutants", "calc.py.meta"), "w") as f:
+        json.dump({"exit_code_by_key": dict.fromkeys(spec["names"])}, f)
+    print("Filtered for specific mutants, but nothing matches")
+    sys.exit(1)
+if args[:1] == ["run"]:
+    ran += [n for n in spec["names"] if any(fnmatch.fnmatchcase(n, p) for p in args[1:])]
+    json.dump(ran, open(ran_path, "w"))
+    print("done")
+    sys.exit(0)
+print(f"unexpected {args}")
+sys.exit(2)
+"""
+
+
+class PyCli(PyRepo):
+    """R3 for python at the CLI (in-process, `_kit.run_cli`), mutmut and pytest a stub (MECH_TEST_STUB): pytest prints
+    STUB_PYTEST as its last line; mutmut's list-only run writes the function copies of `mutants` (CopyingMutmut's)."""
+
+    def setUp(self):
+        super().setUp()
+        side = tempfile.TemporaryDirectory()  # outside the repo (the repo is self.tmp)
+        self.addCleanup(side.cleanup)
+        self.stub = os.path.join(side.name, "stub.py")
+        with open(self.stub, "w") as f:
+            f.write(PY_STUB)
+        self.log = os.path.join(side.name, "calls.log")
+        self.spec_path = os.path.join(side.name, "spec.json")
+        self.spec(PY_MUTANTS)
+
+    def spec(self, mutants, head=PY_HEAD, orig=PY_ORIG):
+        copies = head + "\n\ndef x_f__mutmut_orig(a, b):\n" + orig + "".join(
+            f"\n\ndef x_f__mutmut_{n}(a, b):\n" + body for n, body in sorted(mutants.items()))
+        with open(self.spec_path, "w") as f:
+            json.dump({"names": [PY_NAME(n) for n in sorted(mutants)], "copies": copies,
+                       "list_only": _kit_mutants().LIST_ONLY}, f)
+
+    def cli(self, *args, **env):
+        from unittest import mock
+        e = {"MECH_TEST_STUB": self.stub, "STUB_LOG": self.log, "STUB_SPEC": self.spec_path, **env}
+        with mock.patch.dict(os.environ, e):
+            r = _kit.run_cli([*args, "--repo", self.repo, "--base", "HEAD~1", "--head", "HEAD", "--stack", "python",
+                              "--test-paths", "tests/**"])
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return json.loads(r.stdout)
+
+
+class TestPythonBaselineShardCount(PyCli):
+    """#64, as #26's rust shard count: min(4, mutants, ceil(estimated minutes / (budget / 2))), the estimate being the
+    mutants R3 tests (those on changed lines, under the cap) times the suite's test time, measured by the baseline."""
+
+    def count(self, test_s, *extra):
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", *extra,
+                       STUB_PYTEST=f"3 passed in {test_s:.2f}s")
+        self.assertTrue(env["run"], env["checks"]["R3"])
+        return env["count"]
+
+    def test_a_small_pr_gets_one_shard(self):
+        self.assertEqual(self.count(0.05), 1)  # 5 mutants x 0.05 s
+
+    def test_the_estimate_sets_the_count(self):
+        # 5 x 90 s = 7.5 min, 5 min a shard: 2 shards; 5 x 150 s = 12.5 min: 3
+        self.assertEqual((self.count(90), self.count(150)), (2, 3))
+
+    def test_a_large_pr_gets_at_most_4(self):
+        self.assertEqual(self.count(600), 4)
+
+    def test_never_more_shards_than_mutants(self):
+        self.spec({n: PY_MUTANTS[n] for n in (1, 2)})
+        self.assertEqual(self.count(600), 2)
+
+    def test_the_estimate_counts_only_the_mutants_under_the_cap(self):
+        # 5 listed, 2 tested: 2 x 120 s = 4 min, one shard; all 5: 10 min, 2
+        self.assertEqual((self.count(120, "--max-mutants", "2"), self.count(120)), (1, 2))
+
+    def test_only_the_mutants_on_changed_lines_are_counted(self):
+        # OFF_MUTANTS: 7 in the touched function, 3 on its changed line
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write("def f(a, b):\n" + OFF_ORIG.replace("return z > 0", "return z"))
+        git(self.repo, "commit", "-q", "-am", "base 2")
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write("def f(a, b):\n" + OFF_ORIG)
+        git(self.repo, "commit", "-q", "-am", "head 2")
+        self.spec(OFF_MUTANTS, head="def f(a, b):\n" + OFF_ORIG, orig=OFF_ORIG)
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_PYTEST="3 passed in 600.00s")
+        self.assertEqual((env["run"], env["count"], env["mutants"]), (True, 3, 3))
+
+    def test_the_measured_time_is_in_the_baseline_json(self):
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10",
+                       STUB_PYTEST="3 passed, 1 warning in 90.00s")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((env["count"], env["mutants"], env["timeout"]), (2, 5, None))
+        self.assertEqual(r3["timing"]["baseline_test_s"], 90.0)
+        self.assertIsInstance(r3["timing"]["wall_s"], float)
+        self.assertTrue(r3["note"].startswith("baseline ok: 5 mutants on changed lines, 5 under max-mutants 40, in 2 "
+                                              "shard(s) (estimated 7.5 min"), r3["note"])
+
+
+class TestPythonShardsFromTheBaseline(PyCli):
+    """#64: the baseline's count is the shards the mutants job runs; each lists every changed file and runs its
+    round-robin share of the capped, risk-ordered list; merge takes them with #42's checks."""
+
+    def ran(self):
+        with open(self.log) as f:
+            calls = [json.loads(line) for line in f]
+        return [a[1:] for a in calls if a[:1] == ["run"] and a[1:] != [_kit_mutants().LIST_ONLY]]
+
+    def test_the_counted_shards_run_the_capped_mutants_once_each_and_merge(self):
+        base = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", "--max-mutants", "3",
+                        STUB_PYTEST="3 passed in 240.00s")  # 3 x 240 s = 12 min: 3 shards
+        self.assertEqual(base["count"], 3)
+        side = tempfile.TemporaryDirectory()
+        self.addCleanup(side.cleanup)
+        with open(os.path.join(side.name, "baseline.json"), "w") as f:
+            json.dump(base, f)
+        files, ran = [], []
+        for k in range(3):
+            open(self.log, "w").close()
+            env = self.cli("mutants", "--shard", f"{k}/3", "--max-mutants", "3", "--mutation-budget", "10")
+            ran.append(self.ran())
+            path = os.path.join(side.name, f"s{k}.json")
+            with open(path, "w") as f:
+                json.dump(env, f)
+            files += ["--envelope", f"{k}={path}"]
+        self.assertEqual(ran, [[[PY_RISK_ORDER[k]]] for k in range(3)])
+        merged = self.cli("merge", "--shards", "3", "--baseline", os.path.join(side.name, "baseline.json"), *files)
+        r3 = merged["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 3, 5))
+        self.assertEqual(r3["timing"]["baseline_test_s"], 240.0)
+        self.assertEqual([e["check"] for e in merged["entries"] if e["check"] == "CI"], [])
+
+
+class TestPythonBaselineMeasuredNothing(PyCli):
+    """#64: a baseline that measured no test time keeps the file rule (one shard per changed production file, at most
+    4) and its note says so."""
+
+    def unmeasured(self, **env):
+        out = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", **env)
+        r3 = out["checks"]["R3"]
+        self.assertEqual((out["run"], out["count"], out["mutants"], r3["status"]), (True, 1, None, "skipped"))
+        self.assertTrue(r3["note"].startswith("1 changed production file(s) in 1 shard(s); test time not measured ("),
+                        r3["note"])
+        self.assertTrue(r3["note"].endswith("): one shard per changed file"), r3["note"])
+        self.assertNotIn("timing", r3)
+        return r3["note"]
+
+    def test_a_red_suite(self):
+        self.assertIn("ended with 1", self.unmeasured(STUB_PYTEST="1 failed, 2 passed in 3.00s", STUB_PYTEST_RC="1"))
+
+    def test_a_suite_that_prints_no_time(self):
+        self.assertIn("ended with 0 and no time", self.unmeasured(STUB_PYTEST="no tests ran"))
+
+    def test_no_mutmut(self):
+        self.assertIn("mutmut not runnable: `mutmut`", self.unmeasured(STUB_VERSION="bash: mutmut: command not found"))
+
+    def test_a_listing_that_stops(self):
+        note = self.unmeasured(STUB_LISTING="Stopping early, because tests recorded trampoline hits but none match")
+        self.assertIn("mutmut's listing ended with 1: Stopping early", note)
+
+    def test_a_listing_the_budget_ends(self):
+        out = self.cli("baseline", "--shards", "4", "--mutation-budget", "0.02", STUB_LISTING="hang")
+        self.assertIn("test time not measured (mutmut's listing ended with timeout: ): one shard per changed file",
+                      out["checks"]["R3"]["note"])
+        self.assertEqual((out["run"], out["count"]), (True, 1))
+
+    def test_results_that_cannot_be_read(self):
+        self.assertIn("(mutmut results ended with 1)", self.unmeasured(STUB_RESULTS_RC="1"))
+
+    def test_a_repo_that_configures_mutmut_itself(self):
+        with open(os.path.join(self.repo, "pyproject.toml"), "a") as f:
+            f.write("\n[tool.mutmut]\npaths_to_mutate = ['calc.py']\n")
+        with open(os.path.join(self.repo, "calc.py"), "a") as f:
+            f.write("\n\ndef g():\n    return 1\n")
+        git(self.repo, "commit", "-q", "-am", "own config")
+        out = self.cli("baseline", "--shards", "4")
+        self.assertIn("(the repo already configures mutmut ([tool.mutmut]))", out["checks"]["R3"]["note"])
+
+    def test_a_project_dir_without_a_manifest(self):
+        git(self.repo, "rm", "-q", "pyproject.toml")
+        with open(os.path.join(self.repo, "calc.py"), "a") as f:
+            f.write("\n\ndef g():\n    return 1\n")
+        git(self.repo, "commit", "-q", "-am", "no manifest")
+        self.assertIn("(no pyproject.toml", self.unmeasured())
+
+    def test_no_production_file_under_project_dir_runs_nothing(self):
+        out = self.cli("baseline", "--shards", "4", "--project-dir", "app")
+        self.assertEqual((out["run"], out["count"], out["checks"]["R3"]["status"]), (False, 0, "pass"))
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_five_files_keep_at_most_4_shards(self):
+        for k in range(5):
+            with open(os.path.join(self.repo, f"m{k}.py"), "w") as f:
+                f.write(f"def g{k}():\n    return {k}\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "more files")
+        out = self.cli("baseline", "--shards", "4", STUB_PYTEST="no tests ran")  # the head commit adds the 5
+        self.assertEqual(out["count"], 4)
+
+
 class TestPythonRisk(unittest.TestCase):
     """the risk class of a mutmut edit (removed line, added line); expected classes are the spec's order."""
 

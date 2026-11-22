@@ -260,7 +260,10 @@ Evidence (#26): one PR made 505 mutants; its largest shard took 20 min against t
 - **Unreached is untested.** A mutant the budget never reached is untested (`partial`), with no MISSED entry. A mutant that really ran and survived is still MISSED. For python, a mutant mutmut reports missed is final only after its whole-suite retry, so one still waiting for that retry (or whose retry the budget cut short) is untested too.
 - **Shard count** (`baseline` job) = `min(4, mutants, ceil(estimated minutes / (budget / 2)))`, at least 1: each shard aims at half its budget, so a small PR gets one shard, a large one at most 4, and none is empty.
   - rust: `mutants` is the listed count capped at `max-mutants`; the estimate is that count times the baseline's measured build plus test seconds (the clean build over-estimates an incremental mutant build).
-  - python, ts: the `baseline` job installs no toolchain for them and measures nothing, so there is no estimate: the count stays one shard per changed production file, at most 4. A python shard whose share of the capped list is empty (fewer mutants than shards) reads `0 mutants in this shard` and still pays one listing run.
+  - python (#64): the `baseline` job runs the whole suite once at head (`python3 -B -m pytest -x -q -p no:cacheprovider --ignore=mutants`) and takes pytest's own session time (`N passed in S s`) as the measured test time (`checks.R3.timing.baseline_test_s`); mutmut's listing step (step 1) gives the mutants on changed lines (`mutants` in the baseline JSON). `mutants` is that count capped at `max-mutants`; the estimate is that count times the suite's test time (mutmut runs only the tests that reach a mutant, so the whole suite over-estimates). The suite and the listing each run within `mutation-budget`. The per-mutant timeout stays mutmut's own (`timeout` is null). Every shard lists every changed file itself and runs its round-robin share of the capped, risk-ordered list.
+  - python, a baseline that measured nothing (mutmut not runnable, a suite that is red or prints no time, a listing that stopped or the budget ended, unreadable results, a repo that configures `[tool.mutmut]` itself, no manifest in project-dir): the count stays one shard per changed production file, at most 4, and the note says why: `... in N shard(s); test time not measured (<why>): one shard per changed file`. The shards then report what they find.
+  - ts: the `baseline` job measures nothing: one shard per changed production file, at most 4.
+  - A python shard whose share of the capped list is empty (fewer mutants than shards) reads `0 mutants in this shard` and still pays one listing run.
 - **ts (Stryker) does not apply the cap or the order.** Stryker lists no mutant before its run and selects none by name (`--mutate` takes ranges), so its mutants are known only from its report, after they ran. A budget hit before its report is `partial` with no MISSED (tested unknown).
 
 ## What each stack mutates
@@ -275,7 +278,7 @@ The three tools do not make the same mutants, so R3 is not equally strict across
 | Module-level code | n/a | yes | no (functions only) |
 | A repo can switch a mutator off | config (an R2 `needs-human` change) | `excludedMutations` in the repo's Stryker config (same) | no: there is no such option |
 | `max-mutants` cap and risk order | yes, from `--list --json` before the run | no: no mutant list before the run | yes, from mutmut's copies after its listing step |
-| Shard count | cost-based, from the measured baseline | one per changed file (no baseline measured) | one per changed file (no baseline measured) |
+| Shard count | cost-based, from the measured baseline | one per changed file (no baseline measured) | cost-based, from the suite's measured test time (#64); one per changed file when nothing was measured |
 
 In ekit's own code, most python string and argument mutants that survived were real gaps (a dictionary key, a git flag, an environment variable name), so they block like any other. The ones that are not gaps are equivalent mutants: see the R3 row of the [forbidden cheats](testing-standard.md#3-forbidden-cheats) for what to do with one.
 

@@ -1206,14 +1206,79 @@ def _crate_path(project_dir, path):
     return path if project_dir == "." else path[len(project_dir) + 1:]
 
 
+def changed_line_mutants(cands, ranks, sources, changed, project_dir):
+    """(the candidates whose edit is on a changed line, or whose line mutmut's copies do not give, count of the rest):
+    only a mutant on a changed line can become a finding, so only those take a cap slot. A mutant that cannot be
+    located stays a candidate (the post-run check names it unlocated). ranks: MutantFiles."""
+    kept, left_out = [], 0
+    for n in cands:
+        got = ranks.change(n)
+        if got:
+            f = _repo_path(project_dir, got[0])
+            ln = line_at(sources.get(f), n, got[1], got[2])
+            if ln is not None and ln not in {x for x, _ in changed.get(f, [])}:
+                left_out += 1
+                continue
+        kept.append(n)
+    return kept, left_out
+
+
+PYTEST_TIME = re.compile(r"^.*\b\d+ passed\b.* in (\d+(?:\.\d+)?)s\b", re.M)  # "3 passed, 1 warning in 0.12s"
+
+
+def pytest_seconds(text):
+    """the session time pytest prints on its last summary line (`N passed ... in S s`), or None."""
+    found = PYTEST_TIME.findall(text or "")
+    return float(found[-1]) if found else None
+
+
 def _files_baseline(rv, shards):
-    """The baseline step for the file-sharded stacks (mutmut, Stryker, #46): one shard per changed production file, at most
-    `shards`, so no shard is empty. Git only: no toolchain runs here."""
+    """The baseline step by files (Stryker, #46; mutmut when it measured nothing, #64): one shard per changed
+    production file, at most `shards`, so no shard is empty. Git only: no toolchain runs here."""
     prod = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, rv.project_dir)})
     if not prod:
         return _payload(False, 0, None, None, _check("pass", "0 mutants in the diff (no changed production file)", 0, 0), [])
     count = min(max(1, shards), len(prod))
     return _payload(True, count, None, None, _check("skipped", f"{len(prod)} changed production file(s) in {count} shard(s)"), [])
+
+
+def _unmeasured(rv, shards, why):
+    """the file rule's baseline (one shard per changed production file, at most shards), its note saying why."""
+    p = _files_baseline(rv, shards)
+    if p["run"]:
+        p["check"]["note"] += f"; test time not measured ({why}): one shard per changed file"
+    return p
+
+
+def _py_measure(rv, cmd, runner, wt, budget):
+    """(the suite's test seconds, mutants on changed lines) in the worktree wt at head, or why not (a str)."""
+    repo, mb, head, adapter, test_globs, project_dir = rv
+    crate, bad = crate_check(rv, wt)
+    if bad:
+        return bad[0]["note"]
+    files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
+    base = shlex.split(cmd)
+    rc, text = runner(base + ["--version"], crate, PROBE_TIMEOUT)
+    if rc != 0 or not text.startswith("mutmut, version"):
+        return f"mutmut not runnable: `{cmd}`"
+    rc, text = runner(SUITE, crate, budget)
+    test_s = pytest_seconds(text) if rc == 0 else None
+    if test_s is None:
+        return f"`{' '.join(SUITE)}` ended with {rc}" + ("" if rc != 0 else " and no time")
+    paths = [_crate_path(project_dir, f) for f in files]
+    if not _write_config(crate, paths, lambda sources: also_copy(repo, head, project_dir, sources)):
+        return "the repo already configures mutmut ([tool.mutmut])"
+    rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
+    if rc == "timeout" or _run_stopped(rc, text, (NO_MATCH,)):
+        return f"mutmut's listing ended with {rc}: {_first_line(text)}"
+    rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
+    if rrc != 0:
+        return f"mutmut results ended with {rrc}"
+    changed = added_lines(repo, mb, head)
+    sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
+    inside = [n for n, _ in parse_results(rtext) if not outside_diff(n, sources, changed)]
+    kept, _ = changed_line_mutants(inside, MutantFiles(crate, paths), sources, changed, project_dir)
+    return test_s, len(kept)
 
 
 class Mutmut:
@@ -1225,7 +1290,30 @@ class Mutmut:
     default_cmd = "mutmut"
 
     def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
-        return _files_baseline(rv, shards)
+        """The baseline step (python, #64): the whole suite runs once at head (pytest's own session time is the
+        measured test time) and step 1 lists the mutants on changed lines; the shard count follows from their cost, as
+        for rust. A baseline that measures nothing (no mutmut, a suite that is red or prints no time, a listing that
+        does not end) keeps the file rule, and the note says why."""
+        repo, mb, head, adapter, test_globs, project_dir = rv
+        if not any(ch.new and _under(ch.new, project_dir) for ch in red.prod_changes(rv)):
+            return _files_baseline(rv, shards)  # no production file under project-dir: no mutant
+        cmd = cmd or self.default_cmd
+        runner = runner or default_runner()
+        budget = None if budget_min is None else budget_min * 60
+        t0 = time.monotonic()
+        with red.worktree(repo, head) as wt:
+            got = _py_measure(rv, cmd, runner, wt, budget)
+        if isinstance(got, str):
+            return _unmeasured(rv, shards, got)
+        test_s, mutants = got
+        tested = min(mutants, max_mutants)
+        est_min = tested * test_s / 60
+        count = shard_count(shards, tested, est_min, budget_min)
+        chk = _check("skipped", f"baseline ok: {mutants} mutants on changed lines, {tested} under max-mutants "
+                                f"{max_mutants}, in {count} shard(s) (estimated {est_min:.1f} min: the suite's test "
+                                f"time per mutant)")
+        chk["timing"] = {"wall_s": round(time.monotonic() - t0, 2), "baseline_test_s": round(test_s, 2)}
+        return _payload(True, count, mutants, None, chk, [])
 
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
         repo, mb, head, adapter, test_globs, project_dir = rv
@@ -1262,20 +1350,7 @@ class Mutmut:
             keep, extra, off = None, 0, 0
 
             def on_changed_lines(cands):
-                """(the candidates whose edit is on a changed line, or whose line mutmut's copies do not give, count of
-                the rest): only a mutant on a changed line can become a finding, so only those take a cap slot. A
-                mutant that cannot be located stays a candidate (the post-run check names it unlocated)."""
-                kept, left_out = [], 0
-                for n in cands:
-                    got = ranks.change(n)
-                    if got:
-                        f = _repo_path(project_dir, got[0])
-                        ln = line_at(sources.get(f), n, got[1], got[2])
-                        if ln is not None and ln not in {x for x, _ in changed.get(f, [])}:
-                            left_out += 1
-                            continue
-                    kept.append(n)
-                return kept, left_out
+                return changed_line_mutants(cands, ranks, sources, changed, project_dir)
             if rc != "timeout":
                 rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
                 if rrc != 0:

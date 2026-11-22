@@ -33,7 +33,9 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
   R3  mutation on the diff (`mutants`): cargo-mutants `--in-diff` (rust), mutmut (python), Stryker 10.0.0 (ts: changed
       lines, `--mutate` ranges), run in a worktree at head. `baseline` (#46) runs first, once: rust measures the unmutated
       tree and counts the mutants; the shards then skip the baseline (`--baseline skip`, `--timeout` from the baseline)
-      and run round-robin over min(shards, mutants, ceil(estimated min / (budget / 2))) shards. Cap --max-mutants N
+      and run round-robin over min(shards, mutants, ceil(estimated min / (budget / 2))) shards. python (#64): the whole
+      suite once (pytest's session time) and mutmut's listing (the mutants on changed lines) give the same count; a
+      baseline that measured nothing keeps one shard per changed file, at most --shards, and its note says why. Cap --max-mutants N
       (default 40; rust, python): the riskiest N run (branch conditions, returns and booleans, arithmetic, the rest,
       strings and arguments last), dealt round-robin over the shards; the rest are untested: partial. Per-mutant timeout: --mutant-timeout SEC, else derived from the
       measured baseline (cargo-mutants' rule). Budget `--mutation-budget MIN` (default 10, per shard and for the baseline).
