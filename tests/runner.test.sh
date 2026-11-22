@@ -13,6 +13,8 @@ out="$(sc run 2>&1)"; rc=$?
 eq "$rc" "2" "no scenarios → exit 2"
 has "$out" ".ekit/scenarios/<slug>/SCENARIO.md" "none → layout shown"
 has "$out" "run.sh" "none → run.sh shown"
+has "$out" "run.py" "none → run.py shown"
+has "$out" "run.ps1" "none → run.ps1 shown"
 
 # pass / fail
 mk good 'echo hi'
@@ -24,6 +26,20 @@ out="$(sc run)"; rc=$?
 eq "$rc" "1" "any fail → exit 1"
 has "$out" "FAIL bad: exit 3" "FAIL line with reason"
 has "$out" "PASS good" "PASS still listed"
+
+# run.py: the Python running the runner, pass and fail as run.sh does; two run files: an error naming both
+rm -rf "$R/.ekit"
+mkp() { mkdir -p "$R/.ekit/scenarios/$1"; printf '%s\n' "$2" > "$R/.ekit/scenarios/$1/run.py"; echo "# $1" > "$R/.ekit/scenarios/$1/SCENARIO.md"; }
+mkp pygood 'print("hi")'; mkp pybad 'import sys; sys.exit(5)'
+out="$(sc run)"; rc=$?
+eq "$rc" "1" "run.py fail → exit 1"
+has "$out" "PASS pygood" "run.py PASS line"; has "$out" "FAIL pybad: exit 5" "run.py FAIL line with its exit code"
+rm -rf "$R/.ekit/scenarios/pybad"; out="$(sc run)"; eq "$?" "0" "run.py pass → exit 0"
+echo 'exit 0' > "$R/.ekit/scenarios/pygood/run.sh"
+out="$(sc run)"; rc=$?
+eq "$rc" "1" "two run files → exit 1"
+has "$out" "FAIL pygood: more than one run file (run.py, run.sh): keep one" "two run files named"
+rm -rf "$R/.ekit"
 
 # fresh temp cwd + env
 rm -rf "$R/.ekit"

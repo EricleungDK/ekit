@@ -157,7 +157,8 @@ The Microsoft Store's `python3` stub, when it is all there is, fails the version
 | Optional tools preflight names | `sudo apt install jq ripgrep gh` / `sudo dnf install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
 
 `<kit>` is the plugin's folder, named by the `[ekit] Scenario runner:` line at session start. Preflight prints the OS,
-then one line per missing tool with this OS's install command. Scenarios (`run.sh`) need bash: Git Bash on Windows.
+then one line per missing tool with this OS's install command. Scenarios written as `run.py` (taste-it's default) need only that Python; a `run.sh` needs bash
+(Git Bash on Windows) and a `run.ps1` PowerShell, and reads `NOT-RUN … (env)` on a machine without it.
 
 ### Hooks and scripts outside Claude Code
 
@@ -198,8 +199,8 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | Skill | Use |
 |---|---|
 | [`failure-triage`](skills/failure-triage/SKILL.md) | A test, build or CI job goes red: classify it (sandbox/env, stale, flaky, unowned, real bug) before editing code. Reads mech-review JSON directly. |
-| [`taste-it`](skills/taste-it/SKILL.md) | Verify a deliverable by using it: black-box taster, `.ekit/scenarios/` regression suite, fix/human verdicts. A bug from use is checked with a scenario before any fix. |
-| [`finish`](skills/finish/SKILL.md) | End-of-work report: done (evidence per criterion) or blocked (Needs-you block). |
+| [`taste-it`](skills/taste-it/SKILL.md) | Verify a deliverable by using it: black-box taster, `.ekit/scenarios/` regression suite, fix/human verdicts. A bug from use is checked with a scenario before any fix. A new app's features are seeded as scenarios from the user's stories before the code (only the approved wording; each must fail until its feature works). |
+| [`finish`](skills/finish/SKILL.md) | End-of-work report: done (evidence per criterion) or blocked (Needs-you block). With seeded scenarios, the `N of M features working` line copied from the runner. |
 | [`ci-doctor`](skills/ci-doctor/SKILL.md) | Set up or repair a repo's mech-review CI; ends in a PR a person merges. |
 | [`orchestrate-agent`](skills/orchestrate-agent/SKILL.md) | `/ekit:orchestrate-agent`: divide a task, delegate to subagents, verify acceptance. User-invoked only. |
 
@@ -238,7 +239,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | Script | Does |
 |---|---|
 | `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
-| `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. |
+| `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `seeded ID`, `tree-hash`. Each scenario has one run file: `run.py` (this Python), `run.sh` (bash) or `run.ps1` (PowerShell). Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. A `- feature: <name>` line in SCENARIO.md marks a seeded scenario: a full `run` and a fresh `check` end with `N of M features working`; `seeded ID` reads one that already passes `CHECKS NOTHING YET`. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
 | `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail / 2 setup or usage. |

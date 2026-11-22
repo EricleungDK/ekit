@@ -408,6 +408,65 @@ class TestScenarios(GateCase):
         self.assertIn("scenario runner error: exit 2. ", self.stop(DONE)["reason"])
 
 
+class TestScenariosThisHostCannotRun(GateCase):
+    """#59 with the real runner (in-process): a run.ps1 on a host with no PowerShell, or a run.sh with no bash, is
+    not run here; the gate asks for `## Finish: blocked` naming it, and takes that, never a done."""
+
+    def setUp(self):
+        super().setUp()
+        from scripts import scenarios
+        self.scen = scenarios
+        for p in (mock.patch.object(fg, "runner", self.real_runner),
+                  mock.patch.object(scenarios.shells, "find", return_value=None),  # no bash, no PowerShell here
+                  mock.patch.dict(os.environ, {"EKIT_STATE": os.path.join(self.tmp.name, "scen")})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def real_runner(self, repo, cmd):
+        r = _kit.run_cli(["--repo", repo, cmd], main=self.scen.main)
+        return r.returncode, (r.stdout.strip() or r.stderr.strip())
+
+    def scenario(self, sid, run_file, text="exit 0\n"):
+        d = os.path.join(self.repo, ".ekit", "scenarios", sid)
+        os.makedirs(d)
+        for name, body in (("SCENARIO.md", "- story: s\n"), (run_file, text)):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(body)
+
+    def test_a_run_ps1_with_no_powershell_takes_blocked_naming_it_never_done(self):
+        self.scenario("win", "run.ps1")
+        self.scenario("posix", "run.sh")
+        self.scenario("any", "run.py", "pass\n")
+        self.start()
+        with open(os.path.join(self.repo, "work.txt"), "w") as f:
+            f.write("work\n")
+        self.assertEqual(self.real_runner(self.repo, "run")[0], 1)
+        self.verifier.result = (0, "")
+        out = self.stop(DONE)
+        self.assertTrue(out["reason"].startswith(
+            "[ekit] Scenarios cannot run on this host: posix: bash is not on this machine (env); win: PowerShell is "
+            "not on this machine (env). Give `## Finish: blocked`, naming the scenarios as verification debt. "),
+            out["reason"])
+        self.assertEqual(self.stop(BLOCKED + "\nVerification debt: scenario posix (no bash here)")["reason"],
+                         "[ekit] A blocked report names its verification debt: `win`. Name them, then stop.")
+        self.assertEqual(self.stop(DONE)["decision"], "block")
+        self.assertIsNone(self.stop(BLOCKED + "\nVerification debt:\n- posix: no bash here\n- win: no PowerShell here"))
+
+
+    def test_files_changed_after_a_run_with_a_not_run_scenario_are_not_green_not_host_debt(self):
+        self.scenario("win", "run.ps1")
+        self.scenario("any", "run.py", "pass\n")
+        self.start()
+        self.assertEqual(self.real_runner(self.repo, "run")[0], 1)
+        with open(os.path.join(self.repo, ".ekit", "scenarios", "any", "run.py"), "w") as f:
+            f.write("raise SystemExit(1)\n")  # a rerun would FAIL any: the run on record says nothing about it
+        self.verifier.result = (0, "")
+        out = self.stop(DONE)
+        self.assertTrue(out["reason"].startswith("[ekit] Scenarios not green: stale: tree changed since run. "),
+                        out["reason"])
+        self.assertNotIn("cannot run on this host", out["reason"])
+
+
 class TestVerifyCommands(GateCase):
     """A `done` report stands only when every verify command of the session passed on the files as they are."""
 
