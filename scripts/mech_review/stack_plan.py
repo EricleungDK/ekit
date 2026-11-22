@@ -211,6 +211,25 @@ def manifest_names(*plans):
     return names
 
 
+def listed_by_bad_plan(repo, sha):
+    """the manifest names the adapter files of a plan at sha that does not read list, entry by entry: each [[stack]]
+    `adapter` that is an adapter file there and loads (another entry or field may be the bad one). A plan that is not
+    TOML names none."""
+    try:
+        data = _toml(_blob(repo, sha, PATH), PATH)
+    except PlanError:
+        return set()
+    names = set()
+    stacks = data.get("stack")
+    for s in stacks if isinstance(stacks, list) else ():
+        if isinstance(s, dict):
+            try:
+                names.update(_adapter(s.get("adapter"), PATH, lambda p: _blob(repo, sha, p), False).manifests)
+            except PlanError:
+                pass  # no adapter file there (or a bad value): it lists nothing
+    return names
+
+
 def manifests(paths, names, ignore=()):
     """the paths of manifests that count: outside SKIP_DIRS and the ignore folders, sorted."""
     out = []
@@ -332,6 +351,8 @@ def check_pr(repo, base_ref, head_ref, now=None):
     # a manifest is a file name a built-in or either plan's adapter files list, whichever plan judges: a PR can hide
     # none by adding or dropping the adapter that lists it
     names = manifest_names(base_plan, head_plan)
+    if base_error is not None:  # the PR that fixes it is held to the names a good base would hold it to
+        names |= listed_by_bad_plan(repo, base)
     paths = tracked(repo, head)
     if _own_plan(repo, mb, head, head_plan, names):
         uncovered, messages = judge(head_plan, paths, lambda n: retiring_since(repo, head, n), now, names)

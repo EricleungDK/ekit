@@ -316,6 +316,28 @@ class ManifestNamesFromBothPlans(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: lib/mini.json")
 
+    def test_a_pr_that_fixes_a_bad_base_plan_cannot_hide_a_manifest_its_adapter_listed(self):
+        # review round 3, finding 2: the base plan's adapter files list manifest names even when the plan does not read
+        # (here two entries for one stack, folder and status), so the fix PR is held to what a good base would hold it to
+        bad = {"good": (), "duplicate": (("api2", "api", "python", "current"),),
+               "no adapter file": (("mob", "mobile", ".ekit/adapters/kotlin.toml", "current"),)}
+        for why, extra in bad.items():
+            for drop in ({PLAN: plan(self.api)}, {PLAN: plan(self.api), ".ekit/adapters/mini.toml": None}):
+                with self.subTest(base=why, deletes_adapter=len(drop) == 2):
+                    repo = Repo(self)
+                    base = repo.commit({"api/pyproject.toml": "[project]\n", ".ekit/adapters/mini.toml": mini(),
+                                        "lib/mini.json": "{}", PLAN: plan(self.api, *extra, self.lib)})
+                    head = repo.commit(drop)
+                    r, env = drift(repo, base, head)
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: lib/mini.json")
+
+    def test_a_pr_that_fixes_a_base_plan_that_is_not_toml_is_judged_by_its_own_plan(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", PLAN: "[[stack]\n"})
+        head = self.repo.commit({PLAN: plan(self.api)})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual((r.returncode, env["entries"], env["checks"]["D"]["status"]), (0, [], "pass"), r.stderr)
+
 
 def messages(env):
     return env["checks"]["D"]["messages"]
