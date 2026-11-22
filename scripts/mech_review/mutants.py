@@ -1206,14 +1206,110 @@ def _crate_path(project_dir, path):
     return path if project_dir == "." else path[len(project_dir) + 1:]
 
 
+def changed_line_mutants(cands, ranks, sources, changed, project_dir):
+    """(the candidates whose edit is on a changed line, or whose line mutmut's copies do not give, count of the rest):
+    only a mutant on a changed line can become a finding, so only those take a cap slot. A mutant that cannot be
+    located stays a candidate (the post-run check names it unlocated). ranks: MutantFiles."""
+    kept, left_out = [], 0
+    for n in cands:
+        got = ranks.change(n)
+        if got:
+            f = _repo_path(project_dir, got[0])
+            ln = line_at(sources.get(f), n, got[1], got[2])
+            if ln is not None and ln not in {x for x, _ in changed.get(f, [])}:
+                left_out += 1
+                continue
+        kept.append(n)
+    return kept, left_out
+
+
+def junit_seconds(path):
+    """the session seconds in pytest's JUnit XML (`--junit-xml`): the summed `time` of its testsuite elements, or None
+    (no file, not XML, no testsuite, a time that is not a duration). Read from the file, not the terminal summary, which
+    the repo's own options (`-q` in addopts, colour) can drop or change."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    try:
+        times = [_secs(float(t.get("time"))) for t in suites]
+    except (TypeError, ValueError):
+        return None
+    if not times or None in times or not math.isfinite(sum(times)):  # `inf` and `1e400` are no duration
+        return None
+    return sum(times)
+
+
+def _suite_seconds(runner, crate, budget):
+    """(the whole suite's session seconds, None) at head in crate, or (None, why not)."""
+    shown = f"`{' '.join(SUITE)}`"
+    fd, xml = tempfile.mkstemp(prefix="mech-junit-", suffix=".xml")
+    os.close(fd)
+    os.remove(xml)  # pytest writes it; one left over from nothing is never read
+    try:
+        rc, _ = runner(SUITE + [f"--junit-xml={xml}"], crate, budget)
+        if rc == "timeout":
+            return None, f"{shown} did not finish within mutation-budget ({budget / 60:g} min)"
+        if rc != 0:
+            return None, f"{shown} ended with {rc}"
+        got = junit_seconds(xml)
+        return (got, None) if got is not None else (None, f"{shown} wrote no session time in its JUnit XML")
+    finally:
+        if os.path.exists(xml):
+            os.remove(xml)
+
+
 def _files_baseline(rv, shards):
-    """The baseline step for the file-sharded stacks (mutmut, Stryker, #46): one shard per changed production file, at most
-    `shards`, so no shard is empty. Git only: no toolchain runs here."""
+    """The baseline step by files (Stryker, #46; mutmut when it measured nothing, #64): one shard per changed
+    production file, at most `shards`, so no shard is empty. Git only: no toolchain runs here."""
     prod = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, rv.project_dir)})
     if not prod:
         return _payload(False, 0, None, None, _check("pass", "0 mutants in the diff (no changed production file)", 0, 0), [])
     count = min(max(1, shards), len(prod))
     return _payload(True, count, None, None, _check("skipped", f"{len(prod)} changed production file(s) in {count} shard(s)"), [])
+
+
+def _unmeasured(rv, shards, why):
+    """the file rule's baseline (one shard per changed production file, at most shards), its note saying why."""
+    p = _files_baseline(rv, shards)
+    if p["run"]:
+        p["check"]["note"] += f"; test time not measured ({why}): one shard per changed file"
+    return p
+
+
+def _py_measure(rv, files, cmd, runner, wt, budget):
+    """(the suite's test seconds, mutants on changed lines) in the worktree wt at head, or why not (a str). files: the
+    changed production files under project-dir (repo-root paths)."""
+    repo, mb, head, adapter, test_globs, project_dir = rv
+    crate, bad = crate_check(rv, wt)
+    if bad:
+        return bad[0]["note"]
+    base = shlex.split(cmd)
+    paths = [_crate_path(project_dir, f) for f in files]
+    # first the config: mutmut 3.8.1 reads it before any command, --version included
+    if not _write_config(crate, paths, lambda sources: also_copy(repo, head, project_dir, sources)):
+        return "the repo already configures mutmut ([tool.mutmut])"
+    rc, text = runner(base + ["--version"], crate, PROBE_TIMEOUT)
+    if rc != 0 or not text.startswith("mutmut, version"):
+        return f"mutmut not runnable: `{cmd}`"
+    test_s, why = _suite_seconds(runner, crate, budget)
+    if why:
+        return why
+    rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
+    if rc == "timeout":
+        return f"mutmut's listing did not finish within mutation-budget ({budget / 60:g} min)"
+    if _run_stopped(rc, text, (EARLY, NO_MATCH)):  # the ends the check's step 1 reads as a listing
+        return f"mutmut's listing ended with {rc}: {_first_line(text)}"
+    rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
+    if rrc != 0:
+        return f"mutmut results ended with {rrc}"
+    changed = added_lines(repo, mb, head)
+    sources = {f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in files}
+    inside = [n for n, _ in parse_results(rtext) if not outside_diff(n, sources, changed)]
+    kept, _ = changed_line_mutants(inside, MutantFiles(crate, paths), sources, changed, project_dir)
+    return test_s, len(kept)
 
 
 class Mutmut:
@@ -1225,7 +1321,33 @@ class Mutmut:
     default_cmd = "mutmut"
 
     def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
-        return _files_baseline(rv, shards)
+        """The baseline step (python, #64): the whole suite runs once at head (the session time in pytest's JUnit XML is
+        the measured test time) and step 1 lists the mutants on changed lines; the shard count follows from their cost,
+        as for rust, and no mutant on a changed line runs no shard. A baseline that measures nothing (no mutmut, a suite
+        that is red or writes no time, a listing that does not end) keeps the file rule, and the note says why."""
+        repo, mb, head, adapter, test_globs, project_dir = rv
+        files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
+        if not files:
+            return _files_baseline(rv, shards)  # no production file under project-dir: no mutant
+        cmd = cmd or self.default_cmd
+        runner = runner or default_runner()
+        budget = None if budget_min is None else budget_min * 60
+        t0 = time.monotonic()
+        with red.worktree(repo, head) as wt:
+            got = _py_measure(rv, files, cmd, runner, wt, budget)
+        if isinstance(got, str):
+            return _unmeasured(rv, shards, got)
+        test_s, mutants = got
+        if not mutants:  # as rust: no mutant, no shard
+            return _payload(False, 0, 0, None, _check("pass", "0 mutants on changed lines", 0, 0), [])
+        tested = min(mutants, max_mutants)
+        est_min = tested * test_s / 60
+        count = shard_count(shards, tested, est_min, budget_min)
+        chk = _check("skipped", f"baseline ok: {mutants} mutants on changed lines, {tested} under max-mutants "
+                                f"{max_mutants}, in {count} shard(s) (estimated {est_min:.1f} min: the suite's test "
+                                f"time per mutant)")
+        chk["timing"] = {"wall_s": round(time.monotonic() - t0, 2), "baseline_test_s": round(test_s, 2)}
+        return _payload(True, count, mutants, None, chk, [])
 
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
         repo, mb, head, adapter, test_globs, project_dir = rv
@@ -1262,20 +1384,7 @@ class Mutmut:
             keep, extra, off = None, 0, 0
 
             def on_changed_lines(cands):
-                """(the candidates whose edit is on a changed line, or whose line mutmut's copies do not give, count of
-                the rest): only a mutant on a changed line can become a finding, so only those take a cap slot. A
-                mutant that cannot be located stays a candidate (the post-run check names it unlocated)."""
-                kept, left_out = [], 0
-                for n in cands:
-                    got = ranks.change(n)
-                    if got:
-                        f = _repo_path(project_dir, got[0])
-                        ln = line_at(sources.get(f), n, got[1], got[2])
-                        if ln is not None and ln not in {x for x, _ in changed.get(f, [])}:
-                            left_out += 1
-                            continue
-                    kept.append(n)
-                return kept, left_out
+                return changed_line_mutants(cands, ranks, sources, changed, project_dir)
             if rc != "timeout":
                 rrc, rtext = runner(base + RESULTS, crate, PROBE_TIMEOUT)
                 if rrc != 0:
@@ -1491,6 +1600,37 @@ def stryker_config(crate):
     return None
 
 
+STRYKER_IGNORING = ("ignorers", "ignoreStatic")  # options that make a run ignore mutants only the run can name
+
+
+def stryker_exclusions(crate, config):
+    """(the mutator.excludedMutations of the repo's Stryker config, None): what the default listing leaves out so it
+    counts the mutants the run makes (#63). The config is read as data, never run: [] with no config or none excluded;
+    (None, why not) for a config that is code (js, mjs, cjs), one that is not the JSON Stryker reads (JSON.parse, an
+    object, the names a list of strings), and one that sets ignorers or ignoreStatic (the run then ignores mutants
+    no listing can name)."""
+    if config is None:
+        return [], None
+    if not config.endswith(".json"):
+        return None, f"the repo's Stryker config {config} is code: what it excludes cannot be read without running it"
+    try:
+        doc = json.loads(_read(os.path.join(crate, config)))
+    except (ValueError, RecursionError):  # nesting deeper than Python reads: V8 may read it, so the run goes on
+        doc = None
+    if not isinstance(doc, dict):
+        return None, f"the repo's Stryker config {config} is not a JSON object: what it excludes cannot be read"
+    mutator = doc.get("mutator", {})
+    excluded = mutator.get("excludedMutations", []) if isinstance(mutator, dict) else None
+    if not isinstance(excluded, list) or not all(isinstance(name, str) for name in excluded):
+        return None, (f"mutator.excludedMutations in the repo's Stryker config {config} is not a list of mutator "
+                      "names: what it excludes cannot be read")
+    for key in STRYKER_IGNORING:
+        if doc.get(key):
+            return None, (f"the repo's Stryker config {config} sets {key}: the run ignores mutants the listing "
+                          "cannot name")
+    return excluded, None
+
+
 def line_ranges(lines):
     """sorted line numbers as `a-b` runs of consecutive lines (the form Stryker's --mutate takes)."""
     runs = []
@@ -1500,6 +1640,148 @@ def line_ranges(lines):
         else:
             runs.append([n, n])
     return [f"{a}-{b}" for a, b in runs]
+
+
+# the mutants Stryker makes, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
+# the command names, parses each file at Stryker's default parser options and prints [file, mutator, replacement,
+# first line, last line] per mutant, twice. `ekit-stryker-listing`: at Stryker's defaults but for the repo config's
+# excludedMutations (read from ekit-stryker-options.json in node's own dir), the mutants neither they nor a comment
+# turn off: what the run makes. `ekit-stryker-upper`: every mutator counted as excluded, so none
+# is dropped for another: Stryker 10.0.0 keeps a call statement's CallExpression mutant only while no other mutant
+# there is left, so a repo's excludedMutations (or an ignorer) makes the real run hold it. That list is an upper bound
+# of any run's mutants. argv: the stryker binary, files.
+STRYKER_LIST = r"""
+import { createRequire } from "node:module";
+import { readFileSync, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [bin, ...files] = process.argv.slice(1);
+const req = createRequire(realpathSync(bin));
+const { Instrumenter } = await import(pathToFileURL(req.resolve("@stryker-mutator/instrumenter")).href);
+const no = () => {};
+const log = { isTraceEnabled: () => false, isDebugEnabled: () => false, isInfoEnabled: () => false,
+  isWarnEnabled: () => false, isErrorEnabled: () => false, isFatalEnabled: () => false,
+  trace: no, debug: no, info: no, warn: no, error: no, fatal: no };
+const list = async (excludedMutations) => (await new Instrumenter(log).instrument(
+  files.map((name) => ({ name, content: readFileSync(name, "utf8"), mutate: true })),
+  { plugins: null, excludedMutations, ignorers: [], noHeader: false })).mutants;
+const rows = (ms) => JSON.stringify(ms.map((m) => [m.fileName, m.mutatorName, m.replacement,
+  m.location.start.line + 1, m.location.end.line + 1]));
+const { excludedMutations } = JSON.parse(readFileSync("ekit-stryker-options.json", "utf8"));
+const plain = (await list(excludedMutations)).filter((m) => m.status !== "Ignored");
+const every = await list({ includes: () => true });
+process.stdout.write("\nekit-stryker-listing " + rows(plain) + "\nekit-stryker-upper " + rows(every) + "\n");
+"""
+STRYKER_OPTIONS = "ekit-stryker-options.json"
+# the lists' own lines; other output is log
+LISTED_LINE = re.compile(r"^(ekit-stryker-listing|ekit-stryker-upper) (.*)$", re.M)
+
+
+def _listing_row(row, full):
+    """(crate path, mutator, replacement, first line, last line) of one listed row, or None when it is not that:
+    a file that is not a name asked for, a line that is not a whole number from 1 (JSON's Infinity included), a
+    range that ends before it starts."""
+    if not (isinstance(row, list) and len(row) == 5):
+        return None
+    f, mutator, replacement, first, last = row
+    if (not isinstance(f, str) or f not in full or not isinstance(mutator, str) or not isinstance(replacement, str)
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in (first, last)) or not 1 <= first <= last):
+        return None
+    return full[f], mutator, replacement, first, last
+
+
+def _listing_rows(text, name, full):
+    """(rows, None) of the list marked `name` in the listing's output, or (None, why not: the list that is missing
+    by its name, with the first line that is not a list's own; a line that is there but is not a JSON list, quoted)."""
+    found = [body for marked, body in LISTED_LINE.findall(text) if marked == name]
+    if not found:
+        log = LISTED_LINE.sub("", text)
+        return None, f"no {name} list in its output: {_first_line(log) or 'no other output'}"
+    try:
+        doc = json.loads(found[-1])
+    except (ValueError, RecursionError):
+        doc = None
+    if not isinstance(doc, list):
+        return None, f"the {name} line in its output is not a JSON list: {_first_line(name + ' ' + found[-1])}"
+    rows = [_listing_row(row, full) for row in doc]
+    if None in rows:
+        bad = doc[rows.index(None)]
+        return None, f"a row that is not [file, mutator, replacement, first line, last line]: {json.dumps(bad)[:120]}"
+    return rows, None
+
+
+def stryker_listing(runner, cmd, crate, paths, excluded=()):
+    """((the mutants a run makes in paths with the mutators in `excluded` off, the upper bound of any run's), None),
+    each [(crate path, mutator, replacement, first line, last line)]; or (None, why not): node or the instrumenter
+    missing, or output that is not those lists. node runs in a dir of its own (absolute paths in and out; `excluded`
+    in a file there), so nothing it does lands in the crate dir Stryker then runs in."""
+    exe = shlex.split(cmd)[0]
+    exe = os.path.join(crate, exe) if os.sep in exe or "/" in exe else (shutil.which(exe) or exe)
+    full = {os.path.join(crate, p): p for p in paths}
+    tmp = tempfile.mkdtemp(prefix="mech-list-")
+    try:
+        with open(os.path.join(tmp, STRYKER_OPTIONS), "w", encoding="utf-8") as f:
+            json.dump({"excludedMutations": list(excluded)}, f)
+        rc, text = runner(["node", "--input-type=module", "-e", STRYKER_LIST, exe, *full], tmp, PROBE_TIMEOUT)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if rc != 0:
+        return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
+    plain, why = _listing_rows(text, "ekit-stryker-listing", full)
+    upper, why_upper = (None, None) if why else _listing_rows(text, "ekit-stryker-upper", full)
+    if why or why_upper:
+        return None, why or why_upper
+    return (plain, upper), None
+
+
+TS_RISK = {"ConditionalExpression": RISK_BRANCH, "EqualityOperator": RISK_BRANCH, "LogicalOperator": RISK_BRANCH,
+           "ArrowFunction": RISK_RETURN, "ArithmeticOperator": RISK_ARITH, "AssignmentOperator": RISK_ARITH,
+           "UpdateOperator": RISK_ARITH, "UnaryOperator": RISK_ARITH, "StringLiteral": RISK_LAST}
+
+
+def ts_risk(mutator, replacement):
+    """#26's risk class of a Stryker mutant, from its mutator: conditions, equality and logical operators are branch
+    conditions; a boolean literal flipped and an arrow function's value are returns (`!x` -> `x`, the negation dropped,
+    is a branch condition); arithmetic, assignment, update and unary operators are arithmetic; strings come last;
+    blocks, arrays, objects, method calls, optional chaining and regexes are the rest."""
+    if mutator == "BooleanLiteral":
+        return RISK_RETURN if replacement in ("true", "false") else RISK_BRANCH
+    return TS_RISK.get(mutator, RISK_REST)
+
+
+def ts_pick(listed, changed, max_mutants):
+    """The cap for ts (#63), by changed lines: (picked {file: lines} or None when every mutant on the changed lines
+    fits under max_mutants, the mutants the picked lines make, the mutants left untested). listed: the mutants
+    Stryker can make (repo paths), each made only when every line it spans is in --mutate. Mutants go riskiest first
+    (ties: file, first line, last line), each bringing every line it spans; a pick counts every listed mutant its
+    lines complete and is kept while that stays within max_mutants. The first mutant that would pass it ends the pick."""
+    lines = {f: {n for n, _ in rows} for f, rows in changed.items()}
+    cand = [m for m in listed if all(n in lines.get(m[0], ()) for n in range(m[3], m[4] + 1))]
+    if len(cand) <= max_mutants:
+        return None, cand, 0
+    waiting = {}  # (file, line) -> the mutants that span it
+    for k, m in enumerate(cand):
+        for n in range(m[3], m[4] + 1):
+            waiting.setdefault((m[0], n), []).append(k)
+    missing = [m[4] - m[3] + 1 for m in cand]  # lines each mutant still needs
+    picked, made = {}, []
+    for k in sorted(range(len(cand)), key=lambda k: (ts_risk(cand[k][1], cand[k][2]), cand[k][0], cand[k][3],
+                                                     cand[k][4], k)):
+        f = cand[k][0]
+        new = [n for n in range(cand[k][3], cand[k][4] + 1) if n not in picked.get(f, ())]
+        if not new:
+            continue  # made already, by the lines of a riskier mutant
+        need = {}
+        for n in new:
+            for j in waiting[(f, n)]:
+                need[j] = need.get(j, 0) + 1
+        done = [j for j, c in need.items() if c == missing[j]]
+        if len(made) + len(done) > max_mutants:
+            break
+        for j, c in need.items():
+            missing[j] -= c
+        made += [cand[j] for j in sorted(done)]
+        picked.setdefault(f, set()).update(new)
+    return picked, made, len(cand) - len(made)
 
 
 class Stryker:
@@ -1515,7 +1797,12 @@ class Stryker:
         return _files_baseline(rv, shards)
 
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
-        """max_mutants is not applied: Stryker lists no mutant before its run and selects none by name (#26)."""
+        """max_mutants (#63): Stryker's own instrumenter lists the mutants first (stryker_listing); the cap picks
+        changed lines over every changed file (ts_pick); each shard runs the picked lines of its own files, and shard 0
+        reports the mutants past the cap as untested. Under the cap every changed line runs, as before. The listing
+        leaves out the mutators the repo's Stryker config excludes (stryker_exclusions: read as data, never run).
+        With no listing, or a config that cannot be read so, the cap is not applied (the note says why): every
+        changed line runs, the budget the only stop."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         prod = sorted({ch.new for ch in red.prod_changes(rv)
@@ -1539,18 +1826,42 @@ class Stryker:
             if not os.path.isfile(os.path.join(crate, bin_path)):
                 return _check("n/a", f"{runner_name} not installed (env): `{bin_path}` not runnable; install the repo's "
                                      "dependencies (ts toolchain step) or set setup-command"), []
+            config = stryker_config(crate)
+            excluded, off = stryker_exclusions(crate, config)
+            listed = None
+            if excluded is not None:
+                listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod], excluded)
+                off = None if listed else f"Stryker's instrumenter listed no mutant ({why})"
+            if listed is None:
+                pick, own, extra = None, None, 0
+                capped = f"; max-mutants not applied: {off}"
+            else:
+                plain, upper = ([(_repo_path(project_dir, m[0]),) + m[1:] for m in rows] for rows in listed)
+                pick, made, extra = ts_pick(plain, changed, max_mutants)
+                own = [m for m in made if m[0] in files]  # the mutants this shard's ranges make
+                if shard_index(shard)[0] != 0:
+                    extra = 0  # shard 0 reports the mutants past the cap, so the merge counts them once
+                # the listing left out what the repo's config excludes: the count past the cap is the run's own
+                capped = cap_note(extra, max_mutants)
+                # the most any run can make on this shard's picked lines (the n/a guard below)
+                most = None if pick is None else sum(1 for m in upper if m[0] in files and all(
+                    n in pick.get(m[0], ()) for n in range(m[3], m[4] + 1)))
             ranges = []
             for f in files:
                 crate_f = _crate_path(project_dir, f)
                 if "," in crate_f:
                     return _check("n/a", f"{f}: a comma in a file name cannot be passed to stryker --mutate (env)"), []
-                ranges += [f"{crate_f}:{r}" for r in line_ranges([ln for ln, _ in changed.get(f, [])])]
+                lines = [ln for ln, _ in changed.get(f, [])] if pick is None else pick.get(f, ())
+                ranges += [f"{crate_f}:{r}" for r in line_ranges(lines)]
             if not ranges:
+                if pick is not None:
+                    shown = f"0/{extra} tested: " if extra else ""
+                    what = "0 mutants in this shard" if shard else "no changed line fits under the cap"
+                    return _check("partial" if extra else "pass", f"{shown}{what}{capped}", 0, extra), []
                 return _check("pass", "0 mutants in the diff", 0, 0), []
             report = os.path.join(crate, STRYKER_REPORT)
             if os.path.lexists(report):
                 os.remove(report)  # a report the repo itself committed is never read as this run's
-            config = stryker_config(crate)
             argv = shlex.split(cmd) + ["run", "--mutate", ",".join(ranges), "--reporters", "json",
                                        "--allowConsoleColors", "false", "--timeoutMS",
                                        str((STRYKER_TIMEOUT if mutant_timeout is None else mutant_timeout) * 1000)]
@@ -1569,8 +1880,9 @@ class Stryker:
             timing = {"wall_s": round(wall, 2)}
             if doc is None:
                 if rc == "timeout":
+                    total = total if own is None else len(own) + extra
                     note = (f"budget hit before Stryker wrote its report (it writes at the end of a run): "
-                            f"{total if total is not None else '?'} mutants, none read")
+                            f"{total if total is not None else '?'} mutants, none read" + capped)
                     return {"status": "partial", "note": note, "tested": None, "total": total, "timing": timing}, []
                 if STRYKER_BASELINE in (text or ""):
                     return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
@@ -1620,14 +1932,27 @@ class Stryker:
                                         "read checks.R3.note: the report gives no location for these mutants; check them by hand",
                                         "counting an unlocated mutant as outside the diff, or as a fail without a look")])
             fails = sum(1 for e in ents if e["severity"] == "fail")
-            if not rows:
+            if pick is not None and len(rows) > most:  # more than any run can make there: the pick was not kept
+                return _check("n/a", f"Stryker made {len(rows)} mutant(s) on the picked lines, more than the {most} "
+                                     "its instrumenter can make there (env): the cap was not kept; the listing parses at "
+                                     "Stryker's defaults, so a repo config that changes how files parse "
+                                     "(mutator.plugins, a babel config) can do this"), ents
+            if not rows and not extra and rc != "timeout":
                 return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
-            tested = len(rows)
-            note = (f"{tested}/{tested} tested: {fails} missed in the diff, {outside} missed outside the diff, "
+            # a mutant the budget left Pending was never run: untested, never a pass (#63). One the repo's config or a
+            # comment excludes (Ignored) is not R3's: in neither count
+            live = [m for _, m, _ in rows if m.get("status") != "Ignored"]
+            tested = sum(1 for m in live if m.get("status") != "Pending")
+            total = len(live) + extra
+            note = (f"{tested}/{total} tested: {fails} missed in the diff, {outside} missed outside the diff, "
                     f"{unlocated} unlocated, {caught} caught")
+            if rc == "timeout":
+                note += "; budget hit after Stryker wrote its report"
             if config is not None:
                 note += f" (repo config {config}: mutate and reporter set on the command line)"
-            check = _check("fail" if fails else "pass", note, tested, tested)
+            note += capped
+            status = "fail" if fails else "partial" if tested < total or rc == "timeout" else "pass"
+            check = _check(status, note, tested, total)
             check["timing"] = timing
             return check, ents
 
