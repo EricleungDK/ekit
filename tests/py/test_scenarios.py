@@ -729,7 +729,7 @@ class TestRun(unittest.TestCase):
         return path
 
     # PowerShell's -File exits 0 on normal termination whatever the last native command gave (about_Pwsh): the
-    # script is called from -Command and its last exit code passed on, as bash passes on its last status
+    # script is called from -Command: its own exit N, else 1 on an error, else the last native command's exit code
     # one line: cmd.exe (the .cmd fake on Windows) ends a command line at a line feed
     PS_LINE = ("$global:LASTEXITCODE = 0; & '{}'; if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
                "else {{ exit 1 }} }}; exit $LASTEXITCODE")
