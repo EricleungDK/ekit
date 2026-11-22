@@ -1,7 +1,8 @@
 ---
 type: regex
-target: {source: file, path: .ekit/stack-plan.toml}
-# the `js` [[stack]] table is still there, now retiring (keys in any order)
-pattern: '\[\[stack\]\](?=(?:(?!\[\[)[\s\S])*?name\s*=\s*["'']js["''])(?=(?:(?!\[\[)[\s\S])*?status\s*=\s*["'']retiring["''])'
+# setup.sh's post-commit hook: the committed plan has one `js` entry, status retiring
+target: {source: file, path: .git/ekit-eval-verdict.txt}
+pattern: '^js-retiring: yes$'
+flags: m
 arm: both
 ---
