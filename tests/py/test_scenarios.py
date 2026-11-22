@@ -750,7 +750,7 @@ class TestRun(unittest.TestCase):
 
     def test_a_run_ps1_path_with_quotes_is_one_powershell_literal(self):
         """a ' (or a typographic one, which PowerShell reads as a quote too) is doubled inside the '...' literal"""
-        d = os.path.join(self.repo, ".ekit", "scenarios", "it's \u2019q\u2018 $x")
+        d = os.path.join(self.repo, ".ekit", "scenarios", "it's \u2019q\u2018 \u201alow\u201b $x")  # ' ‘ ’ ‚ ‛: IsSingleQuote
         os.makedirs(d)
         write(d, "SCENARIO.md", "- story: s\n")
         write(d, "run.ps1", "exit 0\n")
@@ -759,7 +759,9 @@ class TestRun(unittest.TestCase):
             self.main("exit 0\n")
         with open(os.path.join(self.state, "argv.json")) as f:
             line = json.load(f)[-1]
-        quoted = os.path.join(d, "run.ps1").replace("'", "''").replace("\u2019", "\u2019\u2019").replace("\u2018", "\u2018\u2018")
+        quoted = os.path.join(d, "run.ps1")
+        for q in "'\u2018\u2019\u201a\u201b":
+            quoted = quoted.replace(q, q * 2)
         self.assertEqual(line, self.PS_LINE.format(quoted))
 
     def test_a_machine_without_powershell_does_not_run_a_run_ps1(self):
