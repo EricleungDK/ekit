@@ -12,6 +12,8 @@ FORMAT = 1
 BLOCK_STYLES = ("braces", "indent", "keywords")
 KINDS = ("eq", "ne", "other")
 COVERS = ("line", "next-line", "file")
+RESERVED = "auto"  # the stack input that means "find the stack" (resolve.AUTO): never a stack's own name
+TARGET_OS = ("linux", "macos", "windows")  # the stack job outputs one of these; the workflow maps it to a fixed runner
 
 
 class AdapterFileError(ValueError):
@@ -23,14 +25,15 @@ def _err(field, msg):
 
 
 def _table(d, field, allowed, required=()):
+    """field: the table's dotted name, "" for the top level (its keys are named bare)."""
     if not isinstance(d, dict):
         _err(field, "want a table")
     for k in d:
         if k not in allowed:
-            _err(f"{field}.{k}" if field else k, "unknown key")
+            _err(f"{field}.{k}".removeprefix("."), "unknown key")
     for k in required:
         if k not in d:
-            _err(f"{field}.{k}" if field else k, "missing")
+            _err(f"{field}.{k}".removeprefix("."), "missing")
     return d
 
 
@@ -285,16 +288,28 @@ def _mutation(d):
         _str(d["config_name"], f + ".config_name")
 
 
+def target_os(v, field="target-os"):
+    """one of TARGET_OS, exactly (no case folding: the value is passed on to the workflow as it is)."""
+    _str(v, field)
+    if v not in TARGET_OS:
+        _err(field, f"`{v}`: want linux, macos or windows")
+    return v
+
+
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
-    _table(data, "", ("format", "name", "manifests", "extensions", "lexer", "tests", "functions", "asserts",
+    _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
                       "suppressions", "mutation"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
     if not all(ch.isalnum() or ch in "_-" for ch in name):
         _err("name", f"`{name}`: want letters, digits, _ or -")
+    if name == RESERVED:
+        _err("name", f"`{name}` is reserved (stack: auto finds the stack): want another name")
     _strs(data.get("manifests", []), "manifests")
+    if "target-os" in data:
+        target_os(data["target-os"])
     exts = _strs(data["extensions"], "extensions", nonempty=True)
     for i, e in enumerate(exts):
         if not e.startswith(".") or len(e) < 2:
@@ -313,16 +328,22 @@ def parse(data):
 def load(path):
     """the DataAdapter the adapter file at path describes. AdapterFileError: unreadable, not TOML, invalid, or no tomllib."""
     try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
+    return loads(raw, path)
+
+
+def loads(raw, path):
+    """the DataAdapter of an adapter file's bytes (path names it in errors: a file on disk, or a repo path at a ref)."""
+    try:
         import tomllib
     except ImportError:
         raise AdapterFileError(f"adapter file {path}: reading an adapter file needs python 3.11 or newer (tomllib)") from None
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
         # a UTF-8 BOM (some Windows editors write one) is not part of the TOML text
         data = tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
-    except OSError as e:
-        raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
     except tomllib.TOMLDecodeError as e:
         raise AdapterFileError(f"adapter file {path}: not valid TOML: {e}") from None
     except UnicodeDecodeError as e:  # tomllib decodes the bytes as UTF-8 and lets this through

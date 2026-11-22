@@ -9,7 +9,10 @@ not a result. Otherwise the run's artifacts are downloaded (`gh run download`) t
 merges them (the R3 shards with the baseline, then the jobs), and printed: the summary line, each check's status and
 note, each shard's note, the fail entries grouped by file. The merged R3 artifact (mech-review-mutants-merged-json) is
 used when the run has one. The job list (`gh run view`) tells a baseline that never ran (plan: no production change)
-from one that crashed (R3 fails, as in the report). Waivers are not applied: the sticky comment applies /mech-waive.
+from one that crashed (R3 fails, as in the report). A drift result (mech-review-drift-json, #56) adds check D
+when it holds D (a plan on base or head) and its stack plan messages; one that does not read fails D; a run without one
+reads as before, whatever the guard job did (its drift step runs before R2 and stops the job when it leaves no result,
+so R2 has none either: docs/mech-review-ci.md#stack-plan). Waivers are not applied: the sticky comment applies /mech-waive.
 exit: 0 no fail entry; 1 a fail entry; 2 usage, gh error, run in progress, unreadable result, or no artifact.
 """
 import argparse
@@ -23,12 +26,15 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
-from mech_review import merge  # noqa: E402 - imported after the sys.path line above
+from mech_review import merge, report  # noqa: E402 - imported after the sys.path line above
 
 REPORT = "mech-review report"
 BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
 PLAN_JOB = "mech-review plan (R3 runs?)"
 JOBS = {"r2": ("mech-review-json", "mech-review.json"), "red": ("mech-review-red-json", "mech-review-red.json")}
+# the guard job's drift check (#56, the owner's upload step): merged when the run has it (D only when it holds D); a run
+# without it reads as before, as the report job reads it
+DRIFT = ("mech-review-drift-json", "mech-review-drift.json")
 BASELINE = ("mech-review-baseline-json", "mech-review-baseline.json")
 MERGED = ("mech-review-mutants-merged-json", "mutants-merged.json")  # the owner's upload step (docs/mech-review-ci.md)
 NO_BASELINE = "no baseline artifact: R3 not planned, or the baseline job crashed (see the run's jobs)"
@@ -143,15 +149,19 @@ def summarize(d, label, jobs=None):
         mut, shard_lines, r3_line = mutants_env(d, jobs, ends)
         if mut is not None:
             parts["mutants"] = mut
+        if os.path.exists(os.path.join(d, *DRIFT)):
+            parts["drift"] = _load(d, DRIFT)
+            reasons["drift"] = "no usable result file"
         if all(v is None for v in parts.values()):
             raise Stop(f"no mech-review artifact in {label}")
         env = merge.merge(parts, reasons)
         checks = [r3_line if name == "R3" and r3_line else _check_line(name, env["checks"][name])
-                  for name in ("R1", "R2", "R3", "R4")]
+                  for name in report.names(env["checks"])]
+        checks += [f"  stack plan: {m}" for m in (env["checks"].get("D") or {}).get("messages") or []]
     except (KeyError, TypeError, ValueError) as e:
         raise Stop(f"unreadable result in {label} ({type(e).__name__}: {e})")
     fails = [e for e in env["entries"] if e["severity"] == "fail"]
-    failed = [c for c in ("R1", "R2", "R3", "R4") if env["checks"][c]["status"] == "fail"]
+    failed = [c for c in report.names(env["checks"]) if env["checks"][c]["status"] == "fail"]
     print(f"{label}: {env['summary']}")  # report.summarize reads `fail` for a failed check with no fail entry
     for line in checks:
         print(line)

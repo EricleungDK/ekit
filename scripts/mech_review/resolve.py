@@ -5,8 +5,9 @@ manifests, fixture and vendored dirs skipped). It never guesses: several project
 something other than its base is an error naming what was found, and the caller sets `stack` and `project-dir`. A stack the caller set is used as given; a project dir the caller set is
 never replaced (`.` is the default and reads as unset).
 
-Result: {"stack": str | None, "project_dir": str, "error": str | None}. The workflow writes the values to job outputs,
-so a value never holds a control character (a newline would start another output)."""
+Result: {"stack": str | None, "project_dir": str, "error": str | None}; the `resolve` subcommand adds "target_os"
+(target_os below). The workflow writes the values to job outputs, so a value never holds a control character (a
+newline would start another output)."""
 from .stack import ADAPTERS
 
 SKIP_DIRS = {"node_modules", "vendor", "target", "tests", "test", "fixtures", "testdata", "examples", "third_party", "dist", "build"}
@@ -92,3 +93,11 @@ def pick_pr(base_paths, head_paths, stack=AUTO, project_dir="."):
     if base != head:
         return _fail(project_dir, f"base finds {_names([base])}, head finds {_names([head])}")
     return {"stack": head[0], "project_dir": head[1], "error": None}
+
+
+def target_os(got, adapter=None):
+    """The OS the settled stack's tests run on (#58): the adapter file's `target-os` (validated: linux, macos or
+    windows), else the built-in's (linux). None when no stack was settled."""
+    if got["stack"] is None:
+        return None
+    return (adapter or ADAPTERS[got["stack"]]).target_os

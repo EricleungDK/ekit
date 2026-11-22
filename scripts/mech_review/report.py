@@ -5,6 +5,15 @@ import os
 
 PLUGIN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".claude-plugin", "plugin.json"))
 CHECKS = ("R1", "R2", "R3", "R4")
+# checks an envelope holds only when they apply: D (the stack plan's drift check, #56) only when a plan exists, so a
+# repo with no plan reads exactly as before
+OPTIONAL = ("D",)
+ALL = CHECKS + OPTIONAL
+
+
+def names(checks):
+    """the checks a result reports, in order: R1-R4 always, then each optional one it holds."""
+    return CHECKS + tuple(c for c in OPTIONAL if c in checks)
 
 
 def ekit_version():
@@ -55,15 +64,16 @@ def summarize(head, checks, entries):
     `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran, a partial one too.
     n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass. A check with status
     `fail` makes it `fail` even with no fail entry (one lost on the way must not turn the result green)."""
+    order = names(checks)
     fails = sum(1 for e in entries if e["severity"] == "fail")
     waived = sum(1 for e in entries if e["severity"] == "waived")
     confirms = len(entries) - fails - waived
-    if not entries and all(checks[c]["status"] == "pass" for c in CHECKS):
+    if not entries and all(checks[c]["status"] == "pass" for c in order):
         return f"all pass {head}"
-    skipped = [c for c in CHECKS if checks[c]["status"] == "skipped"]
-    na = [c for c in CHECKS if checks[c]["status"] == "n/a"]
-    partial = [c for c in CHECKS if checks[c]["status"] == "partial"]
-    ran = [c for c in CHECKS if c not in skipped and c not in na]
+    skipped = [c for c in order if checks[c]["status"] == "skipped"]
+    na = [c for c in order if checks[c]["status"] == "n/a"]
+    partial = [c for c in order if checks[c]["status"] == "partial"]
+    ran = [c for c in order if c not in skipped and c not in na]
     counts = f"{fails} fail, {confirms} confirm" + (f", {waived} waived" if waived else "")
     parts = f"{counts}; ran: {' '.join(ran) or 'none'}"
     if partial:
@@ -72,7 +82,7 @@ def summarize(head, checks, entries):
         parts += f"; skipped: {' '.join(skipped)}"
     if na:
         parts += f"; n/a: {' '.join(na)}"
-    failed = fails or any(checks[c]["status"] == "fail" for c in CHECKS)  # a failed check never reads pass
+    failed = fails or any(checks[c]["status"] == "fail" for c in order)  # a failed check never reads pass
     return f"{'fail' if failed else 'pass'} {head} ({parts})"
 
 

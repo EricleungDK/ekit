@@ -67,3 +67,12 @@ Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry 
 Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say the PR's own mech-review check goes red `needs-human` by design (it edits `.github/**`): the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green.
 
 Report the PR URL via finish. Stopped before the PR (blocked, no remote, asked to) → the final report itself carries the full caller YAML and PR body.
+
+## Stack plan
+
+`.ekit/stack-plan.toml` lists the repo's stacks; CI's drift check fails a PR whose manifest (`package.json`, `pyproject.toml`, `Cargo.toml`, ...) no entry covers. Format: `<kit>/docs/mech-review-ci.md#stack-plan`. When the repo's stacks change, edit it in the same work:
+
+- Migration (JS to TS, say): add an entry for the new stack (`current` once its manifest is there, else `planned`) and set the old one to `retiring`. Remove the old entry only once its code is gone and the user agrees the migration is finished. One folder may hold both entries: the built-in `ts` covers JS and TS.
+- A new project: an entry with its folder and an adapter that lists its manifest (`python`, `rust`, `ts`, or an adapter file's path); a folder of samples goes in `ignore`.
+
+Commit, then run `<py> -I <kit>/scripts/mech-review.py drift --repo <repo> --base HEAD --head HEAD --format text` (it reads the committed plan). Clean: `pass` with no fail entry. Its `message:` lines are notes: a retiring stack's stays until the migration ends. The session's `[ekit] Stack plan` lines are the same check at session start.

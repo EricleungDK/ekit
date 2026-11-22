@@ -436,6 +436,69 @@ class Jobs(Run):
         r = self.main("--dir", self.art)
         self.assertIn("confirm entries: 1 (see the PR comment)", r.stdout.splitlines())
 
+    def test_a_drift_result_adds_d_its_messages_and_its_entry(self):
+        self.green_jobs()
+        d = env("drift", {})
+        d["checks"]["D"] = {"status": "fail", "note": "judged by the base branch's plan",
+                            "messages": ["planned stack `web` (web): its checks start"]}
+        d["entries"] = [dict(ent("D", ".ekit/stack-plan.toml", 0, "manifests no stack in .ekit/stack-plan.toml covers: "
+                                 "cli/Cargo.toml", id_="D-55555555"), **{"class": "adapter-fix"})]
+        self.put("mech-review-drift-json", "mech-review-drift.json", d)
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        out = r.stdout.splitlines()
+        self.assertEqual(out[0], f"{self.art}: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)")
+        self.assertEqual(out[5:7], ["D fail: judged by the base branch's plan",
+                                    "  stack plan: planned stack `web` (web): its checks start"])
+        self.assertIn("    D-55555555 :0 manifests no stack in .ekit/stack-plan.toml covers: cli/Cargo.toml", out)
+
+    def test_no_drift_artifact_is_no_d_whatever_the_guard_job_did(self):
+        # review round 3, finding 3: a guard job that failed for an R2 reason (or was skipped or cancelled) is no sign of
+        # a plan; with no plan on base or head D is in no summary. The drift step leaves a result on every run that has
+        # one, before R2, and stops the job when it cannot: then R2 has no result either (docs/mech-review-ci.md)
+        for concl in ("failure", "skipped", "cancelled"):
+            for r2_crashed in (False, True):
+                with self.subTest(guard=concl, r2_crashed=r2_crashed):
+                    self.green_jobs()
+                    if r2_crashed:
+                        shutil.rmtree(os.path.join(self.art, "mech-review-json"))
+                    self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed",
+                                      "conclusion": concl})
+                    r = self.main("555")
+                    out = r.stdout.splitlines()
+                    self.assertEqual(out[0], f"run 555: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4)" if r2_crashed
+                                     else f"run 555: all pass {HEAD}", r.stderr)
+                    self.assertEqual((r.returncode, [x for x in out if x.startswith("D ") or "drift" in x]),
+                                     (1 if r2_crashed else 0, []))
+                    self.jobs.pop()
+
+    def test_a_drift_result_with_no_d_reads_as_before(self):
+        # a repo with no plan: the drift step uploads its result all the same, and it holds no D
+        self.green_jobs()
+        self.put("mech-review-drift-json", "mech-review-drift.json", env("drift", {}))
+        r = self.main("--dir", self.art)
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (0, f"{self.art}: all pass {HEAD}"))
+
+    def test_a_drift_artifact_that_does_not_read_fails_d(self):
+        self.green_jobs()
+        self.put("mech-review-drift-json", "mech-review-drift.json", "{not json")
+        r = self.main("--dir", self.art)
+        out = r.stdout.splitlines()
+        self.assertEqual((r.returncode, out[0]), (1, f"{self.art}: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)"))
+        self.assertIn("D fail: no result from drift job: no usable result file", out)
+
+    def test_no_drift_artifact_from_a_guard_job_that_passed_reads_as_before(self):
+        self.green_jobs()
+        self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed", "conclusion": "success"})
+        r = self.main("555")
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (0, f"run 555: all pass {HEAD}"), r.stderr)
+
+    def test_no_drift_artifact_reads_as_before(self):
+        self.green_jobs()
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.stdout.splitlines()[0], f"{self.art}: all pass {HEAD}")
+        self.assertFalse(any(x.startswith("D ") for x in r.stdout.splitlines()))
+
     def test_a_shard_with_no_wall_time_has_no_wall_note(self):
         self.red_run()
         s = shard(1, "bare")

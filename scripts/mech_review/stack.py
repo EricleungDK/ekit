@@ -29,6 +29,7 @@ Adapter interface:
   r3_tool: R3Tool(kind, packages, env, mutants_cmd) or None: the R3 tool as the workflow installs it, pinned (kind:
       venv = pip into a venv, npm = npm install --prefix, cargo = cargo install); env: set for the R3 runs;
       mutants_cmd: the tool's binary under the install dir, or None (on PATH). scripts/r3-local.py reads it (#35)
+  target_os: the OS the stack's tests run on (#58): linux, macos or windows. Default linux (every built-in)
 
 Keep this interface narrow: a new check rule needs new data (a marker, an assertion kind) from these methods, not a
 new method for its message text.
@@ -189,6 +190,7 @@ class Adapter:
     manifests = ()  # files that make a directory a project of this stack (a missing one is named by a hint)
     from_file = False  # True: described by an adapter file (data_adapter); a file it cannot read is needs-human
     r3_tool = None  # no R3 tool: an adapter file stack (R2 only)
+    target_os = "linux"  # the OS the stack's tests run on (#58): linux, macos or windows; the built-ins are linux
 
     def classify(self, path, test_globs):
         raise NotImplementedError
