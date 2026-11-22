@@ -59,7 +59,7 @@ Name the scenarios read and the files created or edited before writing any.
 | `RUN run <id>` | one scenario + its children (fix loop) |
 | `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run`; a run whose only reds are `NOT-RUN` says `cannot run here: <id>: <reason>; ...`. With a `- feature:` marker on any scenario, a full `RUN run` and a fresh `RUN check` end with `N of M features working` (N: features whose scenarios all PASS) |
 | `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>`, `CANNOT FAIL <id>`: passes at baseline (exit 1), `N/A <id>: <reason> (env)`: could not run on this host, no proof either way (exit 4), or `ERROR <id>`: two or more run files (exit 2); the same for every run file |
-| `RUN seeded <id>` | a seeded scenario (§7) and its children, on the files as they are: `SEEDED ✓ <id>`: fails (exit 0); `CHECKS NOTHING YET <id>`: passes before its feature exists (exit 1); `N/A <id>` (env, exit 4); `ERROR <id>`: no `- feature:` line, or two or more run files (exit 2). Writes no results.json |
+| `RUN seeded <id>` | a seeded scenario (§7) and its children, on the files as they are: `SEEDED ✓ <id>: fails on the repo as it is: <reason>: <its last line>` (stderr, else stdout), then its kept transcript (exit 0); `CHECKS NOTHING YET <id>`: passes before its feature exists (exit 1); `N/A <id>` (env, exit 4); `ERROR <id>`: no or an empty `- feature:` line, a feature line in another form, two or more run files, or a write into the repo, each named (exit 2). Writes no results.json |
 | `RUN tree-hash` | current tree hash |
 
 Evidence is the runner's `PASS`/`FAIL` lines and results.json (`<git dir>/ekit/`, transcripts beside it; each scenario's last failed transcript stays in `failed/` until it fails again), never the taster's say-so. Any file edit makes the PASS stale; committing the tested tree does not (the hash is the tree's content). The Stop gate wants a **fresh PASS**. Missing driver tool (preflight warns) → scenario unrunnable: verification debt (finish skill), not skipped.
@@ -72,7 +72,7 @@ Done when all hold:
 - every scenario whose **covers** include this change's criteria is `CAN-FAIL ✓` at the baseline; one that `CANNOT FAIL` proves nothing → rewrite its assertion, rerun `can-fail`. A `CANNOT FAIL` scenario covering only pre-existing behaviour is expected (regression guard).
 - `RUN run` exit 0, then `RUN check` exit 0
 
-A seeding task (§7) has its own bar: its scenarios fail by design until their features work. Done when every approved proposal is written, each one's last `RUN seeded <id>` is `SEEDED ✓`, and a full `RUN run`, then `RUN check`, print `0 of M features working`.
+A seeding task (§7) has its own bar: its scenarios fail by design until their features work. Done when every approved proposal is written, each one's last `RUN seeded <id>` is `SEEDED ✓`, and after a full `RUN run`, `RUN check`'s features line shows none of the newly seeded features works: N as before the seeding, M grown by the features seeded (`0 of M` in a new app).
 
 ## 5. Verdicts
 

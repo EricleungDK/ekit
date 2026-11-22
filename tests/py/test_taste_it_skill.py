@@ -85,6 +85,14 @@ class TestSeeding(unittest.TestCase):
         bar = flat(section(read("taste-it", "SKILL.md"), "4. Quality bar"))
         self.assertIn("A seeding task (§7) has its own bar", bar)
 
+    def test_the_seeding_bar_holds_in_an_app_whose_other_features_already_work(self):
+        # an app with a marked working feature prints 1 of 2 after one more is seeded: `0 of M` cannot be the bar
+        for text in (flat(section(read("taste-it", "SKILL.md"), "4. Quality bar")), flat(read("finish", "scenarios.md"))):
+            self.assertIn('none of the newly seeded features works: N as before the seeding, M grown by the features seeded', text)
+            self.assertIn("`0 of M` in a new app", text)
+            self.assertNotIn("print `0 of M features working`", text)
+            self.assertNotIn("prints `0 of M features working`", text)
+
     def test_answers_given_with_the_request_are_the_answers(self):
         self.assertIn("Answers given with the request count", seed())
 
@@ -103,8 +111,15 @@ class TestSeeding(unittest.TestCase):
 
     def test_the_run_table_has_the_seeded_check_with_each_exit(self):
         t = flat(section(read("taste-it", "SKILL.md"), "3. Run"))
-        self.assertRegex(t, r"\| `RUN seeded <id>` \|[^|]*`SEEDED ✓ <id>`[^|]*`CHECKS NOTHING YET <id>`[^|]*\|")
+        self.assertRegex(t, r"\| `RUN seeded <id>` \|[^|]*`SEEDED ✓ <id>[:`][^|]*`CHECKS NOTHING YET <id>`[^|]*\|")
         self.assertIn("`N of M features working`", t)
+
+    def test_the_seeded_row_names_every_error_and_the_line_with_its_reason(self):
+        row = [x for x in read("taste-it", "SKILL.md").splitlines() if x.startswith("| `RUN seeded <id>` |")][0]
+        self.assertIn("`SEEDED ✓ <id>: fails on the repo as it is: <reason>: <its last line>`", row)
+        for error in ("no or an empty `- feature:` line", "a feature line in another form", "two or more run files",
+                      "a write into the repo"):
+            self.assertIn(error, row)
 
 
 class TestFinishFeaturesLine(unittest.TestCase):
@@ -125,10 +140,12 @@ class TestFinishFeaturesLine(unittest.TestCase):
         s = flat(read("finish", "scenarios.md"))
         self.assertIn("A seeding task (taste-it §7: scenarios written, no feature built) is done when", s)
         self.assertIn("each written scenario's last `RUN seeded <id>` is `SEEDED ✓`", s)
-        self.assertIn("`0 of M features working`", s)
 
     def test_the_features_line_goes_in_either_branch(self):
         self.assertIn("in either branch", flat(read("finish", "scenarios.md")))
+        text = read("finish", "SKILL.md")
+        blocked = text[text.index("### Blocked"): text.index("## Verification debt")]
+        self.assertRegex(blocked, r"(?m)^<the `N of M features working` line `RUN check` printed, as printed>$")
 
 
 if __name__ == "__main__":
