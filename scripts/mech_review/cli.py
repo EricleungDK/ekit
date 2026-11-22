@@ -354,6 +354,7 @@ def _drift(argv):
     p.add_argument("--head", required=True, help="head ref")
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
     args = p.parse_args(argv)
+    rc = None
     try:
         env = engine.drift(args.repo, args.base, args.head)
     except gitio.Die as e:
@@ -361,16 +362,14 @@ def _drift(argv):
         return 2
     except stack_plan.PlanError as e:  # a usage error, and a failing result beside it: never read as no plan
         print(f"mech-review: {e}", file=sys.stderr)
-        env = engine.drift_error(args.repo, args.base, args.head, e)
-        print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
-        return 2
+        env, rc = engine.drift_error(args.repo, args.base, args.head, e), 2
     if args.format == "json":
-        print(json.dumps(env, indent=2))
+        print(json.dumps(env))  # compact: every reader parses it
     else:
         print(render_text(env))
-        for m in (env["checks"].get("D") or {}).get("messages", []):
+        for m in env["checks"].get("D", {}).get("messages", []):
             print(f"message: {m}")
-    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+    return rc or (1 if any(e["severity"] == "fail" for e in env["entries"]) else 0)
 
 
 def main(argv):
