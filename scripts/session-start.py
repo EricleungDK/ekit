@@ -28,7 +28,7 @@ DRIFT_SECONDS = 3  # the drift check's share of the hook (it takes ~0.1 s): past
 def shown(text):
     """repo- or PR-controlled text (a path, a plan value) as printable text: every character that is not printable
     (newline, CR, other C0 and C1 controls, DEL, line separators) escaped, so it can never start a session line."""
-    out = "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
+    out = "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(text))  # "\n" -> \n, "\u2028" -> \u2028
     return out if len(out) <= MAX_TEXT else f"{out[:MAX_TEXT]}… (cut: {len(out)} characters)"
 
 
@@ -85,7 +85,7 @@ def partial_clone(top):
         found = gitio.git(top, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
     except gitio.Die:  # exit 1: no such key
         return False
-    return any(line.split(" ", 1)[-1].strip().lower() != "false" for line in found.splitlines())
+    return any(not line.lower().endswith(" false") for line in found.splitlines())  # `<key> <value>` lines
 
 
 def _drift(cwd):

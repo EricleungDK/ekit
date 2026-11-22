@@ -180,7 +180,8 @@ class StackPlan(unittest.TestCase):
             finally:
                 os.dup2(saved, 2)
         self.assertIn("[ekit] Preflight (this env):", ctx)
-        self.assertIn("[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it", ctx)
+        self.assertIn("[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it on "
+                      "every PR.", ctx.splitlines())
 
     def started(self):
         """(the session's context, every process the drift check started, every address the hook connected to, the
@@ -280,13 +281,24 @@ class StackPlan(unittest.TestCase):
         items = [line for line in lines if line.startswith("- unchecked manifest ")]
         self.assertEqual([line.split()[3].rstrip(":") for line in items], [f"m{i:02}/package.json" for i in range(20)])
         more = lines[lines.index(items[-1]) + 1]
-        self.assertRegex(more, r"^- and 5 more: run `.*mech-review\.py drift --repo .* --base HEAD --head HEAD --format text`")
+        self.assertRegex(more, r"^- and 5 more: run `.* --base HEAD --head HEAD --format text`$")
+        self.assertIn(f" {launcher.shown(os.path.join(_kit.SCRIPTS, 'mech-review.py'))} drift --repo ", more)
 
     def test_20_lines_are_all_shown(self):
         self.commit({**{f"m{i:02}/package.json": "{}" for i in range(20)}, PLAN: plan(("web", "web", "ts", "planned"))})
         lines = self.context().splitlines()
         self.assertEqual(len([line for line in lines if line.startswith("- unchecked manifest ")]), 20)
         self.assertFalse([line for line in lines if " more: run " in line])
+
+    def test_a_path_of_500_characters_and_one_not_ascii_show_as_they_are(self):
+        exact = "/".join(["p" * 199, "q" * 199, "r" * (500 - 2 * 200 - len("/package.json"))]) + "/package.json"
+        self.assertEqual(len(exact), 500)
+        self.commit({PLAN: plan(("web", "web", "ts", "planned"))})
+        self.commit_path(exact, "{}")
+        self.commit_path("café/package.json", "{}")
+        items = [line for line in self.context().splitlines() if line.startswith("- unchecked manifest ")]
+        self.assertTrue(any(line.startswith(f"- unchecked manifest {exact}: ") for line in items), items)
+        self.assertTrue(any(line.startswith("- unchecked manifest café/package.json: ") for line in items), items)
 
     def test_a_very_long_path_is_cut(self):
         long = "/".join(c * 200 for c in "abc") + "/package.json"
@@ -374,6 +386,8 @@ class StackPlan(unittest.TestCase):
         self.assertEqual(lines, ["[ekit] Stack plan: the drift check did not finish in 0 s here, so nothing here says "
                                  "what is unchecked; CI still runs it on every PR."])
         self.assertNotIn("api/pyproject.toml", ctx)
+        left = [t for t in threading.enumerate() if t is not threading.main_thread() and t.is_alive()]
+        self.assertTrue(all(t.daemon for t in left), left)  # a check left running never holds the hook's exit
 
 
 if __name__ == "__main__":
