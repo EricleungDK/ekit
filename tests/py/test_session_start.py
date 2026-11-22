@@ -243,6 +243,18 @@ class StackPlan(unittest.TestCase):
         self.assertNotIn("c" * 200, item)
         self.assertIn(f"… (cut: {len(long)} characters)", item)
 
+    def test_a_plan_in_the_tree_whose_content_cannot_be_read_is_one_line_never_clean(self):
+        before = self.context()
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        blob = subprocess.run(["git", "-C", self.repo, "rev-parse", f"HEAD:{PLAN}"], capture_output=True, text=True,
+                              check=True).stdout.strip()
+        os.remove(os.path.join(self.repo, ".git", "objects", blob[:2], blob[2:]))  # a partial or broken clone
+        added = [line for line in self.context().splitlines() if line not in before.splitlines()]
+        self.assertEqual(len(added), 1, added)
+        self.assertRegex(added[0], r"^\[ekit\] Stack plan: ")
+        self.assertIn(f"{PLAN} is in HEAD's tree but cannot be read", added[0])
+        self.assertIn("CI still runs it", added[0])
+
 
 if __name__ == "__main__":
     unittest.main()

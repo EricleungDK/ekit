@@ -57,6 +57,9 @@ def drift(cwd):
     except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook or read as clean
         return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {shown(e)}); CI still "
                 f"runs it on every PR."]
+    if not d.has_plan and gitio.git(top, "ls-tree", "-z", "HEAD", "--", stack_plan.PATH):
+        return [f"[ekit] Stack plan: {stack_plan.PATH} is in HEAD's tree but cannot be read as a file (a missing object "
+                f"in a partial or broken clone, or not a file), so nothing here says what is unchecked; CI still runs it on every PR."]
     if not d.uncovered and not d.messages:
         return []
     items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
