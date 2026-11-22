@@ -59,9 +59,15 @@ doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base 
   {ekit, head, detected, inputs, trial, entries, summary}: `inputs` is what the caller needs, each entry names one exact fix.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
-resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D]`): the workflow's `stack` job. An explicit
-  --stack is printed as given; auto finds the one project at base and at head (doctor's detection, tracked files, git only).
-  Prints {stack, project_dir, error}. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
+  `stack` job. An explicit --stack is printed as given; auto finds the one project at base and at head (doctor's detection,
+  tracked files, git only). Prints {stack, project_dir, error, target_os}: target_os (linux, macos or windows) is the base
+  stack plan's entry's target-os, else the adapter's (--adapter: its target-os, --stack names its stack), else linux; null
+  with no stack. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+
+drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
+  only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
+  planned, retiring and vanished stacks. Exit 0 clean or messages only, 1 the adapter-fix entry, 2 bad plan, usage or git.
 
 envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summary.
 
