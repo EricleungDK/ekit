@@ -1191,6 +1191,20 @@ class TestFeatures(unittest.TestCase):
         with open(self.kept("login")) as f:
             self.assertIn("setting up\ntodo.py: no such file\n", f.read())
 
+    def seeded_line(self, body):
+        self.scenario("login", body, "log in")
+        return self.cli("seeded", "login")[1].splitlines()[0]
+
+    def test_a_seeded_scenario_silent_on_stderr_gives_its_last_stdout_line(self):
+        self.assertEqual(self.seeded_line("print('setting up')\nprint('todo.py is missing')\nraise SystemExit(1)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: todo.py is missing")
+        self.assertEqual(self.seeded_line("import sys\nprint('out')\nprint('err', file=sys.stderr)\nsys.exit(1)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: err")
+
+    def test_a_long_last_line_is_cut_to_200_characters(self):
+        self.assertEqual(self.seeded_line("import sys\nsys.exit('x' * 300)\n"),
+                         "SEEDED ✓ login: fails on the repo as it is: exit 1: " + "x" * 200)
+
     def test_a_seeded_run_py_that_is_not_python_says_so(self):
         self.scenario("broken", "def (\n", "log in")
         code, out = self.cli("seeded", "broken")

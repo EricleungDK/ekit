@@ -464,20 +464,23 @@ def changed(repo):
     return out
 
 
-def last_stderr(transcript):
-    """the last non-blank line the scenario wrote to stderr, cut to 200 characters ("" when none)"""
+def last_said(transcript):
+    """the last non-blank line the scenario wrote to stderr, else to stdout, cut to 200 characters ("" when none)"""
     with open(transcript, encoding="utf-8", errors="replace") as f:
         text = f.read()
-    err = text.split("\n--- stderr ---\n", 1)[-1].rsplit("\n--- exit:", 1)[0]
-    lines = [x.strip() for x in err.splitlines() if x.strip()]
-    return lines[-1][:200] if lines else ""
+    out, _, err = text.split("\n--- stdout ---\n", 1)[-1].partition("\n--- stderr ---\n")
+    for stream in (err.rsplit("\n--- exit:", 1)[0], out):
+        lines = [x.strip() for x in stream.splitlines() if x.strip()]
+        if lines:
+            return lines[-1][:200]
+    return ""
 
 
 def cmd_seeded(repo, only=None):
     """A seeded scenario proves something only while its feature is missing: each scenario under `only` (it and its
     children) is run on the files as they are. exit 0 each one fails, 1 one passes (it checks nothing yet), 4 none
     passes but one could not run here, 2 one has no feature marker (or a bad one), more than one run file, or modified
-    the repo. A FAIL names its reason and the last stderr line, and its transcript is kept as `run` keeps one. Writes
+    the repo. A FAIL names its reason and the last line it wrote (stderr, else stdout), and its transcript is kept as `run` keeps one. Writes
     no results.json: `check` still reads the last full run."""
     if not only:
         usage()
@@ -514,7 +517,7 @@ def cmd_seeded(repo, only=None):
                 print(f"ERROR {sid}: {res['reason']}")
                 bad = True
             elif res.get("reason"):
-                why = last_stderr(res["transcript"])
+                why = last_said(res["transcript"])
                 print(f"SEEDED ✓ {sid}: fails on the repo as it is: {res['reason']}" + (f": {why}" if why else ""))
                 if res.get("failed_transcript"):
                     print(f"  transcript: {res['failed_transcript']}")
