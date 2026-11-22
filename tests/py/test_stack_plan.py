@@ -251,6 +251,57 @@ class WhichPlanJudges(unittest.TestCase):
         self.assertIn("base branch's plan", env["checks"]["D"]["note"])
 
 
+
+class ManifestNamesFromBothPlans(unittest.TestCase):
+    """Review round 2, findings 1-3: a file is a manifest when a built-in or the base or the head plan's adapter files
+    list its name, whichever plan judges, so a PR cannot hide a manifest by adding or dropping the adapter that lists it."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+        self.lib = ("lib", "lib", ".ekit/adapters/mini.toml", "current")
+        self.api = ("api", "api", "python", "current")
+
+    def test_a_new_adapter_its_entry_and_its_manifest_together_are_blocked(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(self.api)})
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini(), "lib/mini.json": "{}", PLAN: plan(self.api, self.lib)})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: lib/mini.json")
+
+    def test_the_same_with_no_plan_on_base_is_blocked(self):
+        base = self.repo.commit({"README.md": "x\n"})
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini(), "lib/mini.json": "{}", PLAN: plan(self.lib)})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: lib/mini.json")
+
+    def test_an_uncovered_manifest_of_a_new_adapter_cannot_reach_the_base(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(self.api)})
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini(), "lib/mini.json": "{}", "other/mini.json": "{}",
+                                 PLAN: plan(self.api, self.lib)})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("other/mini.json", fails(env)[0]["problem"])
+
+    def test_a_manifest_name_added_to_an_adapter_counts_outside_its_entrys_folder(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", ".ekit/adapters/mini.toml": mini(),
+                                 "lib/mini.json": "{}", PLAN: plan(self.api, self.lib)})
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini().replace('manifests = ["mini.json"]',
+                                                                           'manifests = ["mini.json", "x.json"]'),
+                                 "zzz/x.json": "{}"})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: zzz/x.json")
+
+    def test_dropping_an_adapter_file_entry_while_its_code_stays_leaves_the_manifest_uncovered(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", ".ekit/adapters/mini.toml": mini(),
+                                 "lib/mini.json": "{}", PLAN: plan(self.api, self.lib)})
+        head = self.repo.commit({PLAN: plan(self.api)})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: lib/mini.json")
+
+
 def messages(env):
     return env["checks"]["D"]["messages"]
 

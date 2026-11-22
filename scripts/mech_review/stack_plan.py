@@ -197,12 +197,14 @@ def _either(words):
     return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} or {words[-1]}"
 
 
-def judge(plan, paths, since, now):
+def judge(plan, paths, since, now, names=None):
     """(uncovered manifest paths, messages) of one tree against a plan (None: no plan, nothing covered).
-    since(name) -> unix time the entry became retiring, or None; now: unix time."""
+    since(name) -> unix time the entry became retiring, or None; now: unix time; names: the manifest names (default:
+    the built-ins' and this plan's)."""
+    names = manifest_names(plan) if names is None else names
     if plan is None:
-        return manifests(paths, manifest_names()), []
-    found = manifests(paths, manifest_names(plan), plan.ignore)
+        return manifests(paths, names), []
+    found = manifests(paths, names, plan.ignore)
     uncovered = [p for p in found if not any(covers(e, p) for e in plan.entries)]
     messages = []
     for e in plan.entries:
@@ -263,11 +265,10 @@ def drift_entry(uncovered):
         "renaming the manifest so the check does not see it")
 
 
-def _own_plan(repo, base, mb, head, head_plan):
+def _own_plan(repo, mb, head, head_plan, names):
     """True when the PR edits the plan or one of its adapter files and adds no manifest: its own plan judges it (the
-    setup PR). A plan that is unchanged names the same adapter files on base and head, so head's list is enough. A
-    manifest is a file name a built-in or either plan's adapter files list (a base plan that does not read adds none:
-    the PR that fixes it is judged by its own)."""
+    setup PR). A plan that is unchanged names the same adapter files on base and head, so head's list is enough.
+    names: the manifest names of the built-ins and both plans."""
     if head_plan is None:
         return False
     changed = gitio.changes(repo, mb, head)
@@ -276,13 +277,7 @@ def _own_plan(repo, base, mb, head, head_plan):
     if PATH not in touched and not adapters & touched:
         return False
     added = [c.new for c in changed if c.status in "ACR" and c.new]
-    if manifests(added, manifest_names(head_plan)):
-        return False
-    try:
-        base_plan = at(repo, base)
-    except PlanError:
-        base_plan = None
-    return not manifests(added, manifest_names(base_plan))
+    return not manifests(added, names)
 
 
 def check_pr(repo, base_ref, head_ref, now=None):
@@ -292,15 +287,25 @@ def check_pr(repo, base_ref, head_ref, now=None):
     base, head, mb = gitio.merge_base(repo, base_ref, head_ref)
     now = time.time() if now is None else now
     head_plan = at(repo, head)
-    base_has = _blob(repo, base, PATH) is not None
-    if head_plan is None and not base_has:
+    base_plan = base_error = None
+    if _blob(repo, base, PATH) is not None:
+        try:
+            base_plan = at(repo, base)
+        except PlanError as e:  # the PR that fixes it is judged by its own plan; any other PR stops on it below
+            base_error = e
+    if head_plan is None and base_plan is None and base_error is None:
         return False, "no stack plan", [], []
-    if _own_plan(repo, base, mb, head, head_plan):
-        uncovered, messages = judge(head_plan, tracked(repo, head), lambda n: retiring_since(repo, head, n), now)
+    # a manifest is a file name a built-in or either plan's adapter files list, whichever plan judges: a PR can hide
+    # none by adding or dropping the adapter that lists it
+    names = manifest_names(base_plan, head_plan)
+    paths = tracked(repo, head)
+    if _own_plan(repo, mb, head, head_plan, names):
+        uncovered, messages = judge(head_plan, paths, lambda n: retiring_since(repo, head, n), now, names)
         return True, "judged by its own plan (the PR edits the plan or an adapter file and adds no manifest)", \
             uncovered, messages
-    base_plan = at(repo, base)
-    uncovered, messages = judge(base_plan, tracked(repo, head), lambda n: retiring_since(repo, base, n), now)
+    if base_error is not None:
+        raise base_error
+    uncovered, messages = judge(base_plan, paths, lambda n: retiring_since(repo, base, n), now, names)
     note = "judged by the base branch's plan" + ("" if base_plan else " (none there: no manifest is covered)")
     return True, note, uncovered, messages
 
