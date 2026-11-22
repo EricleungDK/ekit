@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -215,14 +216,8 @@ class StackPlan(unittest.TestCase):
 
     def test_no_git_on_the_path_is_no_crash(self):
         self.commit({"web/package.json": "{}", PLAN: plan(("api", "api", "python", "current"))})
-        saved = os.dup(2)  # finish-gate.py, a child of the hook, prints its own traceback without git: not this test's
-        self.addCleanup(os.close, saved)
-        with open(os.devnull, "w") as null, mock.patch.dict(os.environ, {"PATH": ""}):
-            os.dup2(null.fileno(), 2)
-            try:
-                ctx = self.context()
-            finally:
-                os.dup2(saved, 2)
+        with mock.patch.dict(os.environ, {"PATH": ""}):
+            ctx = self.quiet_context()
         self.assertIn("[ekit] Preflight (this env):", ctx)
         self.assertIn("[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it on "
                       "every PR.", ctx.splitlines())
@@ -365,7 +360,7 @@ class StackPlan(unittest.TestCase):
         [item] = [line for line in self.context().splitlines() if line.startswith("- unchecked manifest ")]
         self.assertIn("a" * 200 + "/" + "b" * 200, item)
         self.assertNotIn("c" * 200, item)
-        self.assertIn(f"… (cut: {len(long)} characters)", item)
+        self.assertIn(f"{long[:500]}… (cut: {len(long)} characters)", item)  # its first 500 characters, then the mark
 
     def test_a_plan_in_the_tree_whose_content_cannot_be_read_is_one_line_never_clean(self):
         before = self.context()
@@ -463,6 +458,52 @@ class StackPlan(unittest.TestCase):
         self.assertTrue(all(t.daemon for t in left), left)  # a check left running never holds the hook's exit
         for t in left:  # it ends here, not inside a later test (or mutmut's stats run after the last one)
             t.join(30)
+
+    def quiet_context(self):
+        """the context, fd 2 silenced: finish-gate.py, a child of the hook, prints its own traceback when git does not
+        run (not this test's)"""
+        saved = os.dup(2)
+        self.addCleanup(os.close, saved)
+        with open(os.devnull, "w") as null:
+            os.dup2(null.fileno(), 2)
+            try:
+                return self.context()
+            finally:
+                os.dup2(saved, 2)
+
+    def fake_git(self, body):
+        """a `git` first on PATH (POSIX): a bash script with `body`, then the real git"""
+        if os.name != "posix":
+            self.skipTest("a bash script as git: POSIX only")
+        bin_dir = os.path.join(os.path.dirname(self.repo), "bin")
+        os.makedirs(bin_dir, exist_ok=True)
+        path = os.path.join(bin_dir, "git")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/bash\n{body}\nexec {shutil.which('git')} \"$@\"\n")
+        return path
+
+    def test_a_git_found_but_not_runnable_is_the_could_not_run_line(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        # fake_git leaves the file without the execute bit: found on PATH, not runnable
+        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(self.fake_git(""))}):
+            lines = [line for line in self.quiet_context().splitlines() if line.startswith("[ekit] Stack plan")]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(PermissionError: ")
+
+    def test_a_drift_check_slower_than_3_s_is_cut_off_at_3_s(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        git = self.fake_git('for a in "$@"; do [ "$a" = ls-tree ] && sleep 5; done')
+        os.chmod(git, 0o755)
+        start = time.monotonic()
+        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(git) + os.pathsep + os.environ["PATH"]}):
+            ctx = self.context()
+        took = time.monotonic() - start
+        self.assertIn("[ekit] Stack plan: the drift check did not finish in 3 s here, so nothing here says what is "
+                      "unchecked; CI still runs it on every PR.", ctx.splitlines())
+        self.assertLess(took, 5)
+        for t in threading.enumerate():  # the check left running ends inside this test
+            if t is not threading.main_thread() and t.daemon:
+                t.join(30)
 
 
 if __name__ == "__main__":
