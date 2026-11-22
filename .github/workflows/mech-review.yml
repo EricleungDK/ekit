@@ -74,9 +74,9 @@ jobs:
       stack: ${{ steps.resolve.outputs.stack }}
       project-dir: ${{ steps.resolve.outputs.project-dir }}
       error: ${{ steps.resolve.outputs.error }}
+      target-os: ${{ steps.resolve.outputs.target-os }}
     steps:
       - name: caller checkout (full history, PR head)
-        if: inputs.stack == 'auto'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -112,7 +112,8 @@ jobs:
           import sys
 
           r = json.load(open("stack.json"))
-          values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": r["error"] or ""}
+          values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": r["error"] or "",
+                    "target-os": r.get("target_os") or ""}
           assert not any(c in v for v in values.values() for c in "\r\n"), values  # one line each: an output per line
           with open(sys.argv[1], "a") as out:
               for k, v in values.items():
@@ -145,6 +146,35 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: ekit
           persist-credentials: false
+      - name: drift check (stack plan, D)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" drift --repo "$GITHUB_WORKSPACE/caller" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" > mech-review-drift.json 2> mech-review-drift.err || rc=$?
+          cat mech-review-drift.err >&2
+          # exit 0 clean, messages only or no plan (no D in it), 1 the fail entry, 2 with a result (a bad plan: D fails
+          # with a CI entry): kept. Nothing on stdout (a git error, a crash): no result, and the job stops here, before
+          # R2, so the report fails on R2's missing result
+          [ -s mech-review-drift.json ] || rm -f mech-review-drift.json
+          if [ ! -f mech-review-drift.json ]; then
+            echo "::error::mech-review drift exit $rc: no result"
+            exit "$(( rc > 0 ? rc : 2 ))"
+          fi
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::the stack plan does not read: D fails (the error is above)"
+          fi
+      - name: upload drift result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mech-review-drift-json
+          path: mech-review-drift.json
+          if-no-files-found: ignore
+          overwrite: true
       - name: R2 guard
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -182,7 +212,7 @@ jobs:
   red-first:
     name: mech-review red-first (R1, R4)
     needs: [stack]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
     # runs PR code (cargo test): read-only token, so a PR test cannot edit the comment or PR content
     permissions:
       contents: read
@@ -252,7 +282,7 @@ jobs:
             exit 2
           fi
       - name: extra apt packages
-        if: inputs.extra-apt-packages != ''
+        if: runner.os == 'Linux' && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -352,7 +382,7 @@ jobs:
     name: mech-review baseline (R3, once)
     needs: [stack, plan]
     if: ${{ needs.plan.outputs.run == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
     # rust: runs PR code (cargo-mutants lists the mutants and runs the unmutated tests once): read-only token, as the
     # other PR-code jobs. Sets the shard count and the per-mutant timeout the mutants shards use (#46).
     permissions:
@@ -383,7 +413,7 @@ jobs:
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: extra apt packages
-        if: needs.stack.outputs.stack == 'rust' && inputs.extra-apt-packages != ''
+        if: runner.os == 'Linux' && needs.stack.outputs.stack == 'rust' && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -463,7 +493,7 @@ jobs:
     name: mech-review mutants (R3 shard ${{ matrix.shard }})
     needs: [stack, plan, baseline]
     if: ${{ needs.baseline.outputs.run == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
     # runs PR code (cargo mutants runs its tests): read-only token, same as red-first
     permissions:
       contents: read
@@ -537,7 +567,7 @@ jobs:
             exit 2
           fi
       - name: extra apt packages
-        if: inputs.extra-apt-packages != ''
+        if: runner.os == 'Linux' && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -633,6 +663,12 @@ jobs:
         with:
           name: mech-review-json
           path: r2-result
+      - name: fetch drift result
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: mech-review-drift-json
+          path: drift-result
       - name: fetch red-first result
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -697,6 +733,9 @@ jobs:
           extra=()
           if [ "$RUN" = "true" ] || [ "$PLAN_RESULT" != "success" ]; then
             extra+=(--envelope mutants=mutants-merged.json)
+          fi
+          if [ -f drift-result/mech-review-drift.json ]; then
+            extra+=(--envelope drift=drift-result/mech-review-drift.json)
           fi
           python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
             --envelope r2=r2-result/mech-review.json \
