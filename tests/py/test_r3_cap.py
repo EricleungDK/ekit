@@ -918,7 +918,9 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
     lists = {"ekit-stryker-listing": json.dumps(rows).replace('"Infinity"', "Infinity"),
              "ekit-stryker-upper": json.dumps(every)}
     for name, text in lists.items():
-        if name != os.environ.get("STUB_NO_LIST"):  # a listing whose output lacks one of the two lists
+        if name == os.environ.get("STUB_CUT_LIST"):  # a list line that is there but cut short
+            print(name + " " + text[:30])
+        elif name != os.environ.get("STUB_NO_LIST"):  # a listing whose output lacks one of the two lists
             print(name + " " + text)
     sys.exit(0)
 if args == ["--version"]:
@@ -1222,6 +1224,14 @@ class TestTsListing(TsCli):
             self.assertTrue(r3["note"].endswith(f"listed no mutant (no {name} list in its output: no other output)"),
                             r3["note"])
 
+    def test_a_list_line_that_is_cut_short_is_no_listing_and_the_note_quotes_it(self):
+        # review round 6, second pass: a list that is there but is not JSON is malformed, not missing
+        for name in ("ekit-stryker-listing", "ekit-stryker-upper"):
+            r3 = self.cli("--max-mutants", "5", STUB_CUT_LIST=name, STUB_QUIET="1")["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), name)  # no cap: every changed line
+            self.assertRegex(r3["note"], "; max-mutants not applied: Stryker's instrumenter listed no mutant \\(the "
+                             + name + " line in its output is not a JSON list: " + name + r' \[\["/[^ ]{1,27}\)$')
+
     def test_a_run_that_makes_more_than_the_listing_held_is_not_a_result(self):
         env = self.cli("--max-mutants", "5", STUB_MORE="1")
         r3 = env["checks"]["R3"]
@@ -1257,8 +1267,8 @@ class TestTsExcludedMutations(TsCli):
         git(self.repo, "commit", "-q", "--amend", "--no-edit")
 
     def test_the_cap_is_kept_and_never_na_with_the_repos_excluded_mutations(self):
-        # the default listing (6 on lines 2-4): line 3 (4 branch mutants), then the string of line 2 fit under 5. The
-        # run makes line 2's CallExpression for its excluded string: 5 tested, the Ignored string is not one of them
+        # the listing with the config's StringLiteral off (6 on lines 2-4): line 3 (4 branch mutants), then line 2's
+        # CallExpression, made for its excluded string, fit under 5: 5 tested, the Ignored string is not one of them
         self.with_config()
         r3 = self.cli("--max-mutants", "5", STUB_EXCLUDE="StringLiteral")["checks"]["R3"]
         self.assertEqual(self.mutate(), ts_lines([2, 3]))
