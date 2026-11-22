@@ -51,23 +51,31 @@ def holds(folder, path):
     return folder == "." or path.startswith(folder + "/")
 
 
-def _adapter(ref, where, read):
+def _adapter(ref, where, read, planned):
     """the Adapter a plan's `adapter` value names: a built-in, or the adapter file at that repo path (read(path) -> bytes
-    or None when there is no such file)."""
+    or None when there is no such file). planned: a planned stack may name an adapter file that is not there or does not
+    read yet: None (not proven: it covers nothing and starts no check). A bad value or path is an error whatever the
+    status."""
     if not isinstance(ref, str) or not ref:
         raise PlanError(f"{where}: want a built-in stack ({', '.join(sorted(ADAPTERS))}) or an adapter file path")
     if ref in ADAPTERS:
         return ADAPTERS[ref]()
     path = _folder(ref, where)
     raw = read(path)
-    if raw is None:
-        raise PlanError(f"{where}: `{ref}` is not a built-in stack ({', '.join(sorted(ADAPTERS))}) and no file is there")
     try:
-        a = adapter_file.loads(raw, path)
-    except adapter_file.AdapterFileError as e:
-        raise PlanError(f"{where}: {e}") from None
-    if not a.manifests:
-        raise PlanError(f"{where}: adapter file {path} lists no manifests: the plan cannot find its stack")
+        if raw is None:
+            raise PlanError(f"{where}: `{ref}` is not a built-in stack ({', '.join(sorted(ADAPTERS))}) and no file is "
+                            f"there")
+        try:
+            a = adapter_file.loads(raw, path)
+        except adapter_file.AdapterFileError as e:
+            raise PlanError(f"{where}: {e}") from None
+        if not a.manifests:
+            raise PlanError(f"{where}: adapter file {path} lists no manifests: the plan cannot find its stack")
+    except PlanError:
+        if planned:
+            return None
+        raise
     return a
 
 
@@ -123,14 +131,7 @@ def parse(data, read):
         status = s["status"]
         if status not in STATUSES:
             raise PlanError(f"{label}, field status: `{status}`: want planned, current or retiring")
-        try:
-            adapter = _adapter(s["adapter"], f"{label}, field adapter", read)
-        except PlanError:
-            # a planned stack may name an adapter file not written (or not reading) yet: not proven, it covers nothing
-            # and starts no check. A current or retiring stack's adapter must read.
-            if status != "planned" or not isinstance(s["adapter"], str) or not s["adapter"]:
-                raise
-            adapter = None
+        adapter = _adapter(s["adapter"], f"{label}, field adapter", read, status == "planned")
         if "target-os" in s:
             try:
                 target = adapter_file.target_os(s["target-os"], f"{label}, field target-os")

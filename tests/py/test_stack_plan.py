@@ -542,6 +542,11 @@ class Malformed(unittest.TestCase):
              "stack[0] `mob`, field adapter: want a built-in stack (python, rust, ts) or an adapter file path"),
             ('[[stack]]\nname = "mob"\nfolder = "m"\nadapter = ""\nstatus = "planned"\n',
              "stack[0] `mob`, field adapter: want a built-in stack (python, rust, ts) or an adapter file path"),
+            (plan(("mob", "../m", "python", "planned")),
+             "stack[0] `mob`, field folder: `../m`: want a folder under the repo root, `/`-separated (no .., not absolute)"),
+            (plan(("mob", "m", "../kotlin.toml", "planned")),
+             "stack[0] `mob`, field adapter: `../kotlin.toml`: want a folder under the repo root, `/`-separated (no .., "
+             "not absolute)"),
             (plan(("api", "api", "python", "current", "beos")),
              "stack[0] `api`, field target-os: `beos`: want linux, macos or windows"),
             (plan(good, ignore=["."]), "ignore[0]: `.` is the repo root: want a folder below it"),
