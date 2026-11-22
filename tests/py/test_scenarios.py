@@ -1209,6 +1209,55 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual(self.cli("seeded", "writer"),
                          (2, "ERROR writer: modified the repo (a): run in the temp cwd\n"))
 
+    def writer(self, body):
+        self.scenario("writer", "import os, subprocess\nrepo = os.environ['EKIT_REPO']\n" + body, "add a task")
+        return self.cli("seeded", "writer")
+
+    def test_seeded_names_a_dirty_file_written_again_an_untracked_one_removed_and_a_spaced_path_as_is(self):
+        write(self.repo, "notes.txt", "one\n")
+        git(self.repo, "add", "notes.txt")
+        git(self.repo, "commit", "-q", "-m", "notes")
+        write(self.repo, "notes.txt", "dirty before the run\n")
+        write(self.repo, "old.txt", "untracked before the run\n")
+        self.assertEqual(self.writer("open(os.path.join(repo, 'notes.txt'), 'a').write('more\\n')\n"
+                                     "os.remove(os.path.join(repo, 'old.txt'))\n"
+                                     "open(os.path.join(repo, 'my file.txt'), 'w').close()\n"),
+                         (2, "ERROR writer: modified the repo (my file.txt, notes.txt, old.txt): run in the temp cwd\n"))
+
+    def test_seeded_names_a_rename_a_tracked_pyc_and_a_deleted_tracked_file(self):
+        for name in ("notes.txt", "cache.pyc", "gone.txt"):
+            write(self.repo, name, "tracked\n")
+        git(self.repo, "add", "notes.txt", "gone.txt")
+        git(self.repo, "add", "-f", "cache.pyc")
+        git(self.repo, "commit", "-q", "-m", "tracked")
+        self.assertEqual(self.writer("subprocess.run(['git', '-C', repo, 'mv', 'notes.txt', 'moved.txt'], check=True)\n"
+                                     "open(os.path.join(repo, 'cache.pyc'), 'a').write('x')\n"
+                                     "os.remove(os.path.join(repo, 'gone.txt'))\n"),
+                         (2, "ERROR writer: modified the repo (cache.pyc, gone.txt, moved.txt): run in the temp cwd\n"))
+
+    def test_seeded_names_a_commit_as_head(self):
+        self.assertEqual(self.writer("subprocess.run(['git', '-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t',"
+                                     " 'commit', '-q', '--allow-empty', '-m', 'x'], check=True)\n"),
+                         (2, "ERROR writer: modified the repo (HEAD): run in the temp cwd\n"))
+
+    def test_seeded_names_each_scenarios_own_write_and_not_the_one_before_it(self):
+        self.scenario("cart", "import os\nopen(os.path.join(os.environ['EKIT_REPO'], 'a'), 'w').close()\n", "cart")
+        self.scenario("cart/kid", FAILS, "cart")
+        self.scenario("cart/kid2", "import os\nopen(os.path.join(os.environ['EKIT_REPO'], 'b'), 'w').close()\n", "cart")
+        code, out = self.cli("seeded", "cart")
+        self.assertEqual((code, [x for x in out.splitlines() if not x.startswith("  transcript:")]),
+                         (2, ["ERROR cart: modified the repo (a): run in the temp cwd",
+                              "SEEDED ✓ cart/kid: fails on the repo as it is: exit 1",
+                              "ERROR cart/kid2: modified the repo (b): run in the temp cwd"]))
+
+    def test_seeded_reads_git_status_not_a_tree_hash_per_scenario(self):
+        # a tree hash is the cost of a big repo (0.9 s at 60k files); seeded runs it for none of its scenarios
+        for sid in ("cart", "cart/a", "cart/b"):
+            self.scenario(sid, FAILS, "cart")
+        with mock.patch.object(scenarios, "tree_hash", wraps=scenarios.tree_hash) as h:
+            self.assertEqual(self.cli("seeded", "cart")[0], 0)
+        self.assertEqual(h.call_count, 0)
+
     def test_seeded_exit_is_error_over_checks_nothing_yet_over_n_a(self):
         self.scenario("mix", FAILS)  # no marker: ERROR
         self.scenario("mix/kid", PASSES, "kid")

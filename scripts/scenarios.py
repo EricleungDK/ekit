@@ -445,9 +445,23 @@ def cmd_can_fail(repo, ref=None):
 
 
 def changed(repo):
-    """the paths `git status` names (untracked bytecode left out, as the tree hash leaves it out)"""
-    out = git(repo, "status", "--porcelain", "-uall")
-    return {line[3:] for line in out.splitlines() if line[3:] and not line.endswith((".pyc", ".pyo"))}
+    """{path: (status, size, mtime)} of each path `git status` names, unquoted (untracked bytecode left out, as the
+    tree hash leaves it out): a file already changed before a run that the run changes again, or removes, differs."""
+    top = git(repo, "rev-parse", "--show-toplevel").strip() or repo
+    entries = git(repo, "status", "--porcelain", "-z", "-uall").split("\0")
+    out, i = {}, 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 2 if entry[:1] in ("R", "C") else 1  # a rename or copy: its source path follows
+        path = entry[3:]
+        if not path or entry.startswith("??") and path.endswith((".pyc", ".pyo")):
+            continue
+        try:
+            st = os.lstat(os.path.join(top, path))
+            out[path] = (entry[:2], st.st_size, st.st_mtime_ns)
+        except OSError:
+            out[path] = (entry[:2], None, None)
+    return out
 
 
 def last_stderr(transcript):
@@ -475,6 +489,9 @@ def cmd_seeded(repo, only=None):
         return 2
     flagged = na = 0
     bad = False
+    # what a scenario must leave untouched: HEAD and what git status shows, with each path's size and mtime. Cheaper
+    # than run's tree hash (a scenario each here), and it finds the same writes; each "after" is the next "before"
+    head, status = git(repo, "rev-parse", "HEAD").strip(), changed(repo)
     with tempfile.TemporaryDirectory(prefix="ekit-seeded-") as tmp:
         for sid in ids:
             name, err = marker(repo, sid)
@@ -482,12 +499,14 @@ def cmd_seeded(repo, only=None):
                 print(f"ERROR {sid}: {err or 'SCENARIO.md has no `- feature:` line'}")
                 bad = True
                 continue
-            before, status = repo_state(repo), changed(repo)
             res = run_one(repo, sid, known, tmp, os.path.join(outdir(repo), FAILED))
-            if repo_state(repo) != before:  # its FAIL may be its own write, not the missing feature
-                names = sorted(changed(repo) - status) or ["HEAD"]
-                print(f"ERROR {sid}: modified the repo ({', '.join(names)}): run in the temp cwd")
+            now_head, now = git(repo, "rev-parse", "HEAD").strip(), changed(repo)
+            if (now_head, now) != (head, status):  # its FAIL may be its own write, not the missing feature
+                names = sorted(p for p in set(now) | set(status) if now.get(p) != status.get(p))
+                names += ["HEAD"] if now_head != head else []
+                print(f"ERROR {sid}: modified the repo" + (f" ({', '.join(names)})" if names else "") + ": run in the temp cwd")
                 bad = True
+                head, status = now_head, now
             elif not_here(res):
                 print(f"N/A {sid}: {res['reason']}")
                 na += 1
