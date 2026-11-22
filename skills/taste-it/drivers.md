@@ -14,6 +14,20 @@ Install the deliverable the way a user gets it, **into the scenario's temp cwd**
 | Batch job | run the entrypoint on fixture input | shell | output files, row counts, rerun idempotence |
 | Claude plugin | `claude plugin marketplace add <repo>`, `claude plugin install` (the one row that cannot stay in the temp cwd: a plugin installs into the user's Claude config, so uninstall it when the scenario ends) | `claude -p "<prompt>"` | output text, hook JSON, files |
 
+The table's commands are shell lines. In a `run.py` (the default run file) each is an argv list run from the temp cwd, so it runs the same on every OS:
+
+```python
+import os, shutil, subprocess, sys
+repo = os.environ["EKIT_REPO"]
+subprocess.run([sys.executable, "-m", "venv", "v"], check=True)        # Python CLI: python3 -m venv v
+bin_ = os.path.join("v", "Scripts" if os.name == "nt" else "bin")      # v/bin/ on POSIX, v\Scripts\ on Windows
+subprocess.run([os.path.join(bin_, "pip"), "install", repo], check=True)
+r = subprocess.run([os.path.join(bin_, "<cmd>"), "--help"], capture_output=True, text=True)
+assert r.returncode == 0, r.stderr                                     # a failed assert exits 1: FAIL (the runner unsets PYTHONOPTIMIZE)
+```
+
+Start other tools through `shutil.which("npm")`, `shutil.which("cargo")` (on Windows `npm` is `npm.cmd`, which a bare name does not find); a server goes in `subprocess.Popen(...)`, stopped in a `finally` (the runner also stops what is left when the scenario ends). `tmux` and `expect` exist on POSIX only: a TUI scenario that needs them stays a `run.sh`. A `run.ps1` (only when the user asks for PowerShell) exits with the last native command's exit code unless it says `exit N`: one that handles a native command's failure (`git diff --quiet; if ($LASTEXITCODE) {...}`, `robocopy`'s exit 1 for "copied") ends with `exit 0`.
+
 Not an install a user gets, so not a taste:
 - **Editable or linked** (`pip install -e`, `npm link`, a bare `npm install <folder>`): the source tree is what runs, and packaging mistakes (a file missing from the wheel or tarball) stay hidden.
 - **Global** (`npm i -g`, `pip install` outside a venv, `cargo install` with no `--root`): it changes the user's machine, and the next run tests whatever was left there.

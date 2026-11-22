@@ -9,7 +9,10 @@ Each check prints `ok` or `FAIL`; exit 1 when any fails. Not Windows: nothing to
 - task-verify: a command holding && declared in PowerShell and in Git Bash, each re-run in its own shell (found from
   the real process tree); a native exit code through PowerShell;
 - shells: bash is Git Bash, never WSL's; the shell found under bash and under PowerShell; Git Bash's tools on PATH;
-- a scenario timeout with only Git's cmd dir on PATH stops the whole tree in time and is a FAIL.
+- a scenario timeout with only Git's cmd dir on PATH stops the whole tree in time and is a FAIL;
+- run.py scenarios in plain PowerShell with no bash on PATH: a pass, a fail with its exit code, a run.ps1 beside
+  them (one whose last native command fails: a FAIL with that code), and a timeout that stops the tree (a background
+  child included) and is a FAIL.
 """
 import json
 import os
@@ -271,6 +274,51 @@ def scenario_timeout(tmp):
     check("the whole tree stopped in time (Git\\bin\\bash.exe starts the real shell: both in the job)", took < 20, took)
 
 
+def scenario_run_py(tmp):
+    print("scenarios: run.py in plain PowerShell, no bash on PATH")
+    # a ', a $ and [ ]: each run.ps1 is called as that very file. The runner takes pwsh first, so on a machine with
+    # pwsh (GitHub's runner) this covers pwsh 7, which looks the literal path up; Windows PowerShell 5.1's escaped
+    # form runs only where pwsh is missing, and is covered by reading PowerShell's source only
+    repo = os.path.join(tmp, "py'repo $x [1]")
+    mark = os.path.join(tmp, "late-child")
+    child = f"import time; time.sleep(6); open({mark!r}, 'w')"
+    for sid, run_file, text in (
+            ("a/pass", "run.py", "import os\nprint('hi')\n"
+                                 "open(os.path.join(os.environ['EKIT_ARTIFACT_DIR'], 'shot.png'), 'w').write('png')\n"),
+            ("a/fail", "run.py", "import sys\nsys.exit(3)\n"),
+            ("a/ps", "run.ps1", "Write-Output 'from PowerShell'\nexit 0\n"),
+            ("a/psfail", "run.ps1", "Write-Output 'the last native command fails, no exit'\ngit -C no-such-dir status\n"),
+            ("slow", "run.py", f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                               "time.sleep(30)\n")):
+        d = os.path.join(repo, ".ekit", "scenarios", *sid.split("/"))
+        os.makedirs(d)
+        for name, body in (("SCENARIO.md", "- story: s\n"), (run_file, text)):
+            with open(os.path.join(d, name), "w", newline="\n") as f:
+                f.write(body)
+    env = {k: v for k, v in os.environ.items() if k not in ("EKIT_SCENARIO_TIMEOUT", "MSYSTEM", "SHELL")}
+    env.update(PATH=bare_path(), EKIT_STATE=os.path.join(tmp, "pystate"), GIT_CONFIG_GLOBAL=os.devnull,
+               GIT_CONFIG_SYSTEM=os.devnull)
+    for args in (["init", "-q"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "s"]):
+        subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, env=env)
+    found = shutil.which("bash", path=env["PATH"])
+    check("no Git Bash on PATH", found is None or "system32" in found.lower(), found)
+    run = (f"& {shells.ps_call_path(sys.executable, shells._name(powershell()))} -I {shells.ps_literal(os.path.join(SCRIPTS, 'scenarios.py'))} "
+           f"--repo {shells.ps_literal(repo)} run")
+    rc, out, err = ps(run + " a", env)
+    check("a run.py passes, a run.py fails with its exit code, a run.ps1 runs in PowerShell",
+          rc == 1 and "PASS a/pass" in out and "FAIL a/fail: exit 3" in out and "PASS a/ps" in out
+          and "FAIL: 2/4 scenarios" in out and "Traceback" not in err, (rc, out, err))
+    check("a run.ps1 whose last native command fails is a FAIL with that exit code (not -File's 0)",
+          "FAIL a/psfail: exit 128" in out, (rc, out, err))
+    t0 = time.time()
+    rc, out, err = ps(run + " slow", dict(env, EKIT_SCENARIO_TIMEOUT="2"))
+    took = time.time() - t0
+    check("a run.py timeout is a FAIL, in time", rc == 1 and "FAIL slow: timeout after 2s" in out and took < 30,
+          (rc, out, err, took))
+    time.sleep(8)
+    check("the run.py's background child was stopped with it", not os.path.exists(mark), mark)
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # → in a check's name, on a pipe read as cp1252
@@ -289,6 +337,7 @@ def main():
         verify_shells(tmp)
         shells_for_real()
         scenario_timeout(tmp)
+        scenario_run_py(tmp)
     print(f"windows-smoke: {'FAIL ' + str(len(FAILS)) if FAILS else 'ALL PASS'}")
     return 1 if FAILS else 0
 
