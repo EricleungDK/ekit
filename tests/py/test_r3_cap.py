@@ -548,6 +548,10 @@ if args[:1] == ["-B"]:  # the whole suite (mutants.SUITE with this stub for pyth
     print(os.environ.get("STUB_PYTEST", "3 passed in 0.05s"))
     sys.exit(int(os.environ.get("STUB_PYTEST_RC", "0")))
 if args == ["--version"]:
+    # mutmut 3.8.1 reads its config before any command: with no [tool.mutmut] (and no src/) even --version fails
+    if "[tool.mutmut]" not in (open("pyproject.toml").read() if os.path.exists("pyproject.toml") else ""):
+        print("FileNotFoundError: Could not figure out where the code to mutate is.")
+        sys.exit(1)
     print(os.environ.get("STUB_VERSION", "mutmut, version 3.8.1"))
     sys.exit(0)
 ran_path = os.path.join("mutants", "ran.json")

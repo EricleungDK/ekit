@@ -1258,6 +1258,10 @@ def _py_measure(rv, cmd, runner, wt, budget):
         return bad[0]["note"]
     files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
     base = shlex.split(cmd)
+    paths = [_crate_path(project_dir, f) for f in files]
+    # first the config: mutmut 3.8.1 reads it before any command, --version included
+    if not _write_config(crate, paths, lambda sources: also_copy(repo, head, project_dir, sources)):
+        return "the repo already configures mutmut ([tool.mutmut])"
     rc, text = runner(base + ["--version"], crate, PROBE_TIMEOUT)
     if rc != 0 or not text.startswith("mutmut, version"):
         return f"mutmut not runnable: `{cmd}`"
@@ -1265,9 +1269,6 @@ def _py_measure(rv, cmd, runner, wt, budget):
     test_s = pytest_seconds(text) if rc == 0 else None
     if test_s is None:
         return f"`{' '.join(SUITE)}` ended with {rc}" + ("" if rc != 0 else " and no time")
-    paths = [_crate_path(project_dir, f) for f in files]
-    if not _write_config(crate, paths, lambda sources: also_copy(repo, head, project_dir, sources)):
-        return "the repo already configures mutmut ([tool.mutmut])"
     rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
     if rc == "timeout" or _run_stopped(rc, text, (NO_MATCH,)):
         return f"mutmut's listing ended with {rc}: {_first_line(text)}"
