@@ -69,10 +69,13 @@ def _guarded(cwd):
 def partial_clone(top):
     """the repo has a promisor remote: git fetches any object it lacks from there (a lazy fetch, a network call)."""
     try:
-        found = gitio.git(top, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
+        keys = gitio.git(top, "config", "--name-only", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
     except gitio.Die:  # exit 1: no such key
         return False
-    return any(not line.lower().endswith(" false") for line in found.splitlines())  # `<key> <value>` lines
+    for key in keys.split():
+        if key == "extensions.partialclone" or gitio.git(top, "config", "--bool", "--get", key).strip() == "true":
+            return True  # a promisor set to 0, no, off or false is none: git reads the value as a boolean
+    return False
 
 
 def _drift(cwd):

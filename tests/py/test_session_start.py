@@ -403,8 +403,23 @@ class StackPlan(unittest.TestCase):
 
     def test_a_promisor_remote_set_to_false_is_no_partial_clone(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
-        subprocess.run(["git", "-C", self.repo, "config", "remote.origin.promisor", "False"], check=True)
-        self.assertIn("unchecked manifest api/pyproject.toml", self.context())
+        for value in ("False", "0", "no", "off"):  # each is false to git
+            with self.subTest(value=value):
+                subprocess.run(["git", "-C", self.repo, "config", "remote.origin.promisor", value], check=True)
+                self.assertIn("unchecked manifest api/pyproject.toml", self.context())
+
+    def test_one_promisor_remote_among_others_is_a_partial_clone(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        subprocess.run(["git", "-C", self.repo, "config", "remote.a.promisor", "false"], check=True)
+        subprocess.run(["git", "-C", self.repo, "config", "remote.b.promisor", "yes"], check=True)
+        self.assertIn("[ekit] Stack plan: the drift check is skipped here: this is a partial clone",
+                      self.context())
+
+    def test_extensions_partialclone_alone_is_a_partial_clone(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        subprocess.run(["git", "-C", self.repo, "config", "extensions.partialClone", "origin"], check=True)
+        self.assertIn("[ekit] Stack plan: the drift check is skipped here: this is a partial clone",
+                      self.context())
 
     def test_in_a_shallow_clone_a_retiring_stack_says_its_day_count_may_be_short(self):
         note = "in this shallow clone the days retiring count only the history here"
