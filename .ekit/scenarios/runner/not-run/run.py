@@ -4,9 +4,10 @@ import shutil
 import subprocess
 import sys
 
-if os.name == "nt":  # Git Bash is found beside git.exe whatever PATH says: no bash-less PATH to make here
-    print("not-run: Windows finds Git Bash beside git.exe; the unit tests cover a host with no bash")
-    sys.exit(0)
+if os.name == "nt":  # checked nothing: a FAIL that says why, never a PASS
+    sys.exit("CANNOT CHECK: native Windows has no host to make without the shells: the runner finds Git Bash beside "
+             "git.exe whatever PATH says, and Windows PowerShell under SystemRoot. Run this scenario on Linux, macOS "
+             "or WSL; on native Windows it is verification debt.")
 
 KIT = os.environ["EKIT_REPO"]
 RUNNER = os.path.join(KIT, "scripts", "scenarios.py")
