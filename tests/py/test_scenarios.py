@@ -695,6 +695,17 @@ class TestRun(unittest.TestCase):
         self.assertEqual((code, doc["scenarios"][0]["reason"]),
                          (1, "more than one run file (run.py, run.sh, run.ps1): keep one"))
 
+    def test_a_directory_named_like_a_run_file_is_not_a_second_run_file(self):
+        d = os.path.join(self.repo, ".ekit", "scenarios", "one")
+        os.makedirs(os.path.join(d, "run.py"))
+        write(self.repo, ".ekit/scenarios/one/run.py/notes.txt", "data\n")
+        code, out, _ = self.main("exit 0\n")
+        self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+        os.makedirs(os.path.join(self.repo, "data"))
+        symlink(self, os.path.join(self.repo, "data"), os.path.join(d, "run.ps1"))  # a link to a directory
+        code, out, _ = self.main("exit 0\n")
+        self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+
     def test_can_fail_on_a_folder_with_two_run_files_is_the_error_not_a_proof(self):
         write(self.repo, ".ekit/scenarios/one/run.py", "raise SystemExit(1)\n")
         code, out = self.can_fail("exit 1\n")

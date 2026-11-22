@@ -167,8 +167,9 @@ def run_one(repo, sid, ids, tdir, kept=None):
     parent's dir. kept: the dir that holds each scenario's last failed transcript (none: not kept)."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
-    # lexists, as find() saw it: a dangling link is still the run file the author wrote, and fails as itself
-    found = [f for f in RUN_FILES if os.path.lexists(os.path.join(d, f))]
+    # files and links to files, as find() sees them: a dangling link is still the run file the author wrote (it fails
+    # as itself); a directory, or a link to one, is not a run file
+    found = [f for f in RUN_FILES if os.path.lexists(os.path.join(d, f)) and not os.path.isdir(os.path.join(d, f))]
     run_file = found[0]
     name, exe = program(run_file)
     command = f"{name} {run_file}"
