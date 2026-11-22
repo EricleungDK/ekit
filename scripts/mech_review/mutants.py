@@ -1611,12 +1611,13 @@ def line_ranges(lines):
     return [f"{a}-{b}" for a, b in runs]
 
 
-# the mutants Stryker can make, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
+# the mutants Stryker makes, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
 # the command names, parses each file at Stryker's default parser options and prints [file, mutator, replacement,
-# first line, last line] per mutant. Every mutator counts as excluded, so no mutant is dropped for another: Stryker
-# 10.0.0 keeps a call statement's CallExpression mutant only while no other mutant there is left, so a repo's
-# excludedMutations (or an ignorer) makes the real run hold it. The list is an upper bound of any run's mutants.
-# argv: the stryker binary, files.
+# first line, last line] per mutant, twice. `ekit-stryker-listing`: at Stryker's defaults, the mutants a comment does
+# not disable (what a run with no repo config makes). `ekit-stryker-upper`: every mutator counted as excluded, so none
+# is dropped for another: Stryker 10.0.0 keeps a call statement's CallExpression mutant only while no other mutant
+# there is left, so a repo's excludedMutations (or an ignorer) makes the real run hold it. That list is an upper bound
+# of any run's mutants. argv: the stryker binary, files.
 STRYKER_LIST = r"""
 import { createRequire } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
@@ -1628,13 +1629,17 @@ const no = () => {};
 const log = { isTraceEnabled: () => false, isDebugEnabled: () => false, isInfoEnabled: () => false,
   isWarnEnabled: () => false, isErrorEnabled: () => false, isFatalEnabled: () => false,
   trace: no, debug: no, info: no, warn: no, error: no, fatal: no };
-const res = await new Instrumenter(log).instrument(
+const list = async (excludedMutations) => (await new Instrumenter(log).instrument(
   files.map((name) => ({ name, content: readFileSync(name, "utf8"), mutate: true })),
-  { plugins: null, excludedMutations: { includes: () => true }, ignorers: [], noHeader: false });
-process.stdout.write("\nekit-stryker-listing " + JSON.stringify(res.mutants.map((m) => [m.fileName, m.mutatorName,
-  m.replacement, m.location.start.line + 1, m.location.end.line + 1])) + "\n");
+  { plugins: null, excludedMutations, ignorers: [], noHeader: false })).mutants;
+const rows = (ms) => JSON.stringify(ms.map((m) => [m.fileName, m.mutatorName, m.replacement,
+  m.location.start.line + 1, m.location.end.line + 1]));
+const plain = (await list([])).filter((m) => m.status !== "Ignored");
+const every = await list({ includes: () => true });
+process.stdout.write("\nekit-stryker-listing " + rows(plain) + "\nekit-stryker-upper " + rows(every) + "\n");
 """
-LISTING = re.compile(r"^ekit-stryker-listing (.*)$", re.M)  # the listing's own line; any other output is log
+LISTINGS = {"plain": re.compile(r"^ekit-stryker-listing (.*)$", re.M),  # the lists' own lines; other output is log
+            "upper": re.compile(r"^ekit-stryker-upper (.*)$", re.M)}
 
 
 def _listing_row(row, full):
@@ -1650,21 +1655,9 @@ def _listing_row(row, full):
     return full[f], mutator, replacement, first, last
 
 
-def stryker_listing(runner, cmd, crate, paths):
-    """(the mutants Stryker makes in paths: [(crate path, mutator, replacement, first line, last line)], None), or
-    (None, why not): node or the instrumenter missing, or output that is not that list. node runs in a dir of its own
-    (absolute paths in and out), so nothing it does lands in the crate dir Stryker then runs in."""
-    exe = shlex.split(cmd)[0]
-    exe = os.path.join(crate, exe) if os.sep in exe or "/" in exe else (shutil.which(exe) or exe)
-    full = {os.path.join(crate, p): p for p in paths}
-    tmp = tempfile.mkdtemp(prefix="mech-list-")
-    try:
-        rc, text = runner(["node", "--input-type=module", "-e", STRYKER_LIST, exe, *full], tmp, PROBE_TIMEOUT)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    if rc != 0:
-        return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
-    found = LISTING.findall(text or "")
+def _listing_rows(text, rx, full):
+    """(rows, None) of one marked list in the listing's output, or (None, why not)."""
+    found = rx.findall(text or "")
     try:
         doc = json.loads(found[-1]) if found else None
     except ValueError:
@@ -1676,6 +1669,28 @@ def stryker_listing(runner, cmd, crate, paths):
         bad = doc[rows.index(None)]
         return None, f"a row that is not [file, mutator, replacement, first line, last line]: {json.dumps(bad)[:120]}"
     return rows, None
+
+
+def stryker_listing(runner, cmd, crate, paths):
+    """((the mutants a run at Stryker's defaults makes in paths, the upper bound of any run's), None), each
+    [(crate path, mutator, replacement, first line, last line)]; or (None, why not): node or the instrumenter missing,
+    or output that is not those lists. node runs in a dir of its own (absolute paths in and out), so nothing it does
+    lands in the crate dir Stryker then runs in."""
+    exe = shlex.split(cmd)[0]
+    exe = os.path.join(crate, exe) if os.sep in exe or "/" in exe else (shutil.which(exe) or exe)
+    full = {os.path.join(crate, p): p for p in paths}
+    tmp = tempfile.mkdtemp(prefix="mech-list-")
+    try:
+        rc, text = runner(["node", "--input-type=module", "-e", STRYKER_LIST, exe, *full], tmp, PROBE_TIMEOUT)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if rc != 0:
+        return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
+    plain, why = _listing_rows(text, LISTINGS["plain"], full)
+    upper, why_upper = (None, None) if why else _listing_rows(text, LISTINGS["upper"], full)
+    if why or why_upper:
+        return None, why or why_upper
+    return (plain, upper), None
 
 
 TS_RISK = {"ConditionalExpression": RISK_BRANCH, "EqualityOperator": RISK_BRANCH, "LogicalOperator": RISK_BRANCH,
@@ -1770,16 +1785,20 @@ class Stryker:
                 return _check("n/a", f"{runner_name} not installed (env): `{bin_path}` not runnable; install the repo's "
                                      "dependencies (ts toolchain step) or set setup-command"), []
             listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod])
+            config = stryker_config(crate)
             if listed is None:
                 pick, own, extra = None, None, 0
                 capped = f"; max-mutants not applied: Stryker's instrumenter listed no mutant ({why})"
             else:
-                pick, made, extra = ts_pick([(_repo_path(project_dir, m[0]),) + m[1:] for m in listed], changed,
-                                            max_mutants)
+                plain, upper = ([(_repo_path(project_dir, m[0]),) + m[1:] for m in rows] for rows in listed)
+                pick, made, extra = ts_pick(plain, changed, max_mutants)
                 own = [m for m in made if m[0] in files]  # the mutants this shard's ranges make
                 if shard_index(shard)[0] != 0:
                     extra = 0  # shard 0 reports the mutants past the cap, so the merge counts them once
                 capped = cap_note(extra, max_mutants)
+                # the most any run can make on this shard's picked lines (the n/a guard below)
+                most = None if pick is None else sum(1 for m in upper if m[0] in files and all(
+                    n in pick.get(m[0], ()) for n in range(m[3], m[4] + 1)))
             ranges = []
             for f in files:
                 crate_f = _crate_path(project_dir, f)
@@ -1796,7 +1815,6 @@ class Stryker:
             report = os.path.join(crate, STRYKER_REPORT)
             if os.path.lexists(report):
                 os.remove(report)  # a report the repo itself committed is never read as this run's
-            config = stryker_config(crate)
             argv = shlex.split(cmd) + ["run", "--mutate", ",".join(ranges), "--reporters", "json",
                                        "--allowConsoleColors", "false", "--timeoutMS",
                                        str((STRYKER_TIMEOUT if mutant_timeout is None else mutant_timeout) * 1000)]
@@ -1867,16 +1885,18 @@ class Stryker:
                                         "read checks.R3.note: the report gives no location for these mutants; check them by hand",
                                         "counting an unlocated mutant as outside the diff, or as a fail without a look")])
             fails = sum(1 for e in ents if e["severity"] == "fail")
-            if pick is not None and len(rows) > len(own):  # more than the listing gave: the pick was not kept
-                return _check("n/a", f"Stryker made {len(rows)} mutant(s) on the picked lines, more than the {len(own)} "
+            if pick is not None and len(rows) > most:  # more than any run can make there: the pick was not kept
+                return _check("n/a", f"Stryker made {len(rows)} mutant(s) on the picked lines, more than the {most} "
                                      "its instrumenter can make there (env): the cap was not kept; the listing parses at "
                                      "Stryker's defaults, so a repo config that changes how files parse "
                                      "(mutator.plugins, a babel config) can do this"), ents
             if not rows and not extra and rc != "timeout":
                 return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
-            # a mutant the budget left Pending was never run: untested, never a pass (#63)
-            tested = sum(1 for _, m, _ in rows if m.get("status") != "Pending")
-            total = len(rows) + extra
+            # a mutant the budget left Pending was never run: untested, never a pass (#63). One the repo's config or a
+            # comment excludes (Ignored) is not R3's: in neither count
+            live = [m for _, m, _ in rows if m.get("status") != "Ignored"]
+            tested = sum(1 for m in live if m.get("status") != "Pending")
+            total = len(live) + extra
             note = (f"{tested}/{total} tested: {fails} missed in the diff, {outside} missed outside the diff, "
                     f"{unlocated} unlocated, {caught} caught")
             if rc == "timeout":

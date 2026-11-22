@@ -896,15 +896,19 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
         sys.exit(1)
     print("(node:1) ExperimentalWarning: a log line before the listing")
     print('[BABEL] Note: the code generator has deoptimised the styling of a file as it exceeds the max of 500KB.')
-    # ekit passes absolute paths and gets them back; the spec names the files from the crate dir. A 6th field "upper":
-    # a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement; the real
-    # instrumenter lists it only when every mutant counts as excluded (`excludedMutations: { includes: () => true }`)
-    every = "includes: () => true" in args[2]
-    rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and (every or m[5:] != ["upper"])]
+    # ekit passes absolute paths and gets them back; the spec names the files from the crate dir. Two lists, as the
+    # real instrumenter makes them: at Stryker's defaults, and with every mutator excluded (the upper bound). A 6th
+    # field "upper": a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement,
+    # so only the upper bound holds it
+    rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and m[5:] != ["upper"]]
+    every = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0])]
     if os.environ.get("STUB_BAD_ROW"):  # a row as the given JSON, its file the first file asked
         bad = json.loads(os.environ["STUB_BAD_ROW"])
         rows.append([args[4]] + bad if isinstance(bad, list) and len(bad) < 5 else bad)
+    if "ekit-stryker-upper" not in args[2]:  # a script that lists the upper bound alone, as 81df7bf's did
+        rows = every
     print("ekit-stryker-listing " + json.dumps(rows).replace('"Infinity"', "Infinity"))
+    print("ekit-stryker-upper " + json.dumps(every))
     sys.exit(0)
 if args == ["--version"]:
     print("10.0.0")
@@ -1211,11 +1215,10 @@ class TestTsListing(TsCli):
 
 
 class TestTsExcludedMutations(TsCli):
-    """#63 review round 4: a repo config with mutator.excludedMutations. Stryker 10.0.0 then reports the excluded
-    mutants as Ignored and makes a CallExpression mutant on each call statement they leave alone; its default listing
-    holds neither. The real run (scratchpad u5me/excl, `excludedMutations: ["StringLiteral"]`, `--mutate src/a.ts:2-4`)
-    made StringLiteral x2 (Ignored), CallExpression x2 and the 4 of line 3; a listing with every mutant excluded holds
-    the same 8."""
+    """#63 review rounds 4 and 5: a repo config with mutator.excludedMutations. Stryker 10.0.0 then reports the
+    excluded mutants as Ignored and makes a CallExpression mutant on each call statement they leave alone. Real run
+    (scratchpad u5me/excl, `excludedMutations: ["StringLiteral"]`, `--mutate src/a.ts:2-4`): StringLiteral x2
+    (Ignored), CallExpression x2 and the 4 of line 3, so 6 run on lines 2-4; with no config the 2 strings and the 4."""
     BASE = "export function f(a: number): void {\n\n\n\n  return;\n}\n"
     LINES = [('  console.log("hi");', [("StringLiteral", '""')]), ("  const t = a > 0;", [
         ("ConditionalExpression", "true"), ("ConditionalExpression", "false"), ("EqualityOperator", "a >= 0"),
@@ -1225,13 +1228,45 @@ class TestTsExcludedMutations(TsCli):
     MORE = [["src/calc.ts", "BlockStatement", "{}", 1, 6], ["src/calc.ts", "CallExpression", ";", 2, 2, "upper"],
             ["src/calc.ts", "CallExpression", ";", 4, 4, "upper"]]
 
-    def test_the_cap_is_kept_with_and_without_the_repos_excluded_mutations(self):
-        # every mutant Stryker could make is listed (8 on lines 2-4): line 3 (4 branch mutants) fits under 5; the
-        # CallExpression of line 2 next brings that line's string too, 6
-        for env in ({"STUB_EXCLUDE": "StringLiteral"}, {}):
-            r3 = self.cli("--max-mutants", "5", **env)["checks"]["R3"]
-            self.assertEqual(self.mutate(), ts_lines([3]), env)
-            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 4, 8), env)
+    def with_config(self):
+        self.write("stryker.conf.json", '{"mutator": {"excludedMutations": ["StringLiteral"]}}\n')
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--amend", "--no-edit")
+
+    def test_the_cap_is_kept_and_never_na_with_the_repos_excluded_mutations(self):
+        # the default listing (6 on lines 2-4): line 3 (4 branch mutants), then the string of line 2 fit under 5. The
+        # run makes line 2's CallExpression for its excluded string: 5 tested, the Ignored string is not one of them
+        self.with_config()
+        r3 = self.cli("--max-mutants", "5", STUB_EXCLUDE="StringLiteral")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([2, 3]))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 5, 6))
+
+    def test_without_a_config_the_counts_are_the_runs(self):
+        r3 = self.cli("--max-mutants", "5")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([2, 3]))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 5, 6))
+        self.assertTrue(r3["note"].endswith("; 1 past the cap (max-mutants 5): untested"), r3["note"])
+
+
+class TestTsUnderTheCapWithCallStatements(TsCli):
+    """#63 review round 5, finding 1: the cap's decision counts the mutants Stryker makes at its defaults, not the upper
+    bound. Real @stryker-mutator/instrumenter 10.0.0 listing of HEAD (scratchpad u5e/a.ts): the block over lines 1-9,
+    one string per console.log line, and 4 on the return line, 11; the upper bound adds a CallExpression per call
+    statement, 17. Real run (rv5d/callrun100): 11."""
+    HEAD = ("export function f(a: number): number {\n" + "".join(f'  console.log("m{k}");\n' for k in range(6))
+            + "  return a > 0 ? 1 : 2;\n}\n")
+    FILES = {"src/calc.ts": ("export {};\n", HEAD, [])}
+    MORE = ([["src/calc.ts", "BlockStatement", "{}", 1, 9]]
+            + [["src/calc.ts", "StringLiteral", '""', n, n] for n in range(2, 8)]
+            + [["src/calc.ts", "CallExpression", ";", n, n, "upper"] for n in range(2, 8)]
+            + [["src/calc.ts", m, r, 8, 8] for m, r in (("ConditionalExpression", "true"),
+               ("ConditionalExpression", "false"), ("EqualityOperator", "a >= 0"), ("EqualityOperator", "a <= 0"))])
+
+    def test_a_pr_under_the_cap_tests_every_changed_line_mutant(self):
+        r3 = self.cli("--max-mutants", "12")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines(range(1, 10)))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 11, 11))
+        self.assertNotIn("past the cap", r3["note"])
 
 
 class TestTsMultiLineMutants(TsCli):
