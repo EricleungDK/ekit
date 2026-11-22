@@ -8,6 +8,21 @@ ctx="$(jq -r .hookSpecificOutput.additionalContext <<<"$out")"
 has "$ctx" "[ekit] Scenario runner: python3 $ROOT/scripts/scenarios.py" "runner line, absolute path"
 lacks "$ctx" "taste-it" "no always-on taste-it rule (orchestrate-only)"
 has "$ctx" "failure-triage" "triage rule stays always-on"
+lacks "$ctx" "Stack plan" "no commit, no plan: no stack plan line"
+
+# stack plan (#57): the committed tree's drift against its plan, named in the context; a clean plan adds nothing
+P="$T/planned"; mkdir -p "$P/web" "$P/api" "$P/.ekit"; git -C "$P" init -q
+echo '{}' > "$P/web/package.json"; echo '[project]' > "$P/api/pyproject.toml"
+printf '[[stack]]\nname = "web"\nfolder = "web"\nadapter = "ts"\nstatus = "retiring"\n' > "$P/.ekit/stack-plan.toml"
+git -C "$P" add -A; git -C "$P" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm plan
+pctx="$(echo "{\"cwd\":\"$P\"}" | python3 -I "$ROOT/scripts/session-start.py" | jq -r .hookSpecificOutput.additionalContext)"
+has "$pctx" "unchecked manifest api/pyproject.toml" "uncovered manifest named"
+has "$pctx" "retiring stack \`web\` (web)" "retiring stack message"
+printf '\n[[stack]]\nname = "api"\nfolder = "api"\nadapter = "python"\nstatus = "current"\n' >> "$P/.ekit/stack-plan.toml"
+sed -i.bak 's/retiring/current/' "$P/.ekit/stack-plan.toml"; rm -f "$P/.ekit/stack-plan.toml.bak"
+git -C "$P" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qam clean
+cctx="$(echo "{\"cwd\":\"$P\"}" | python3 -I "$ROOT/scripts/session-start.py" | jq -r .hookSpecificOutput.additionalContext)"
+lacks "$cctx" "Stack plan" "clean plan: no stack plan line"
 
 # cloud install: hook command from settings.json yields the kit's absolute runner path
 bash "$ROOT/cloud/install.sh" "$R" >/dev/null
