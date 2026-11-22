@@ -26,10 +26,6 @@ def shown(text):
     return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
 
 
-def one_line(e):
-    return " ".join(str(e).split())
-
-
 def has_tomllib():
     try:
         import tomllib  # noqa: F401 - only whether it imports
@@ -53,10 +49,10 @@ def drift(cwd):
             v = sys.version_info
             return [f"[ekit] Stack plan: the drift check at session start needs python 3.11 or newer (tomllib), this "
                     f"is {v[0]}.{v[1]}: nothing here says what is unchecked. CI still runs the drift check on every PR."]
-        return [f"[ekit] Stack plan does not read, so nothing here says what is unchecked: {one_line(e)}. Fix it "
+        return [f"[ekit] Stack plan does not read, so nothing here says what is unchecked: {shown(e)}. Fix it "
                 f"({FIX}); CI's drift check stops on it too."]
     except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook or read as clean
-        return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {one_line(e)}); CI still "
+        return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {shown(e)}); CI still "
                 f"runs it on every PR."]
     if not d.uncovered and not d.messages:
         return []
