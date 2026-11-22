@@ -38,7 +38,7 @@ import time
 from . import red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
-from .stack import ts_runner
+from .stack import js_scan, ts_runner
 
 DEFAULT_CMD = "cargo mutants"
 PROBE_TIMEOUT = 120  # seconds for `cargo mutants --version`
@@ -1609,6 +1609,79 @@ def line_ranges(lines):
     return [f"{a}-{b}" for a, b in runs]
 
 
+# ts line risk (#63): Stryker lists no mutant before its run, so the cap works on changed lines. Each rule reads the
+# line with comments and literals blanked (js_scan) and gives its risk class and the mutants Stryker 10.0.0 makes for
+# one match (an estimate: `a > b` is EqualityOperator x2 plus ConditionalExpression x2, as a real report shows).
+TS_RULES = (
+    (re.compile(r"\s(?:<=|>=|<|>)\s"), RISK_BRANCH, 4),  # a comparison (spaced, so `Array<T>` is no comparison)
+    (re.compile(r"===|!==|(?<![=!<>])==|!="), RISK_BRANCH, 3),  # EqualityOperator, ConditionalExpression x2
+    (re.compile(r"(?:&&|\|\||\?\?)(?!=)"), RISK_BRANCH, 3),  # LogicalOperator, ConditionalExpression x2
+    (re.compile(r"!(?!=)"), RISK_BRANCH, 1),  # the negation dropped
+    (re.compile(r"\b(?:true|false)\b"), RISK_RETURN, 1),  # BooleanLiteral
+    (re.compile(r"=>\s*(?!\{|$)"), RISK_RETURN, 1),  # ArrowFunction: an expression body replaced by undefined
+    (re.compile(r"\s[-+*/%]\s|\+\+|--"), RISK_ARITH, 1),  # ArithmeticOperator, UpdateOperator
+    (re.compile(r"(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])=(?!=)"), RISK_ARITH, 1),  # AssignmentOperator
+    (re.compile(r"\.\s*(?:charAt|endsWith|startsWith|every|some|filter|reverse|slice|sort|substr|substring|trim|"
+                r"trimEnd|trimStart|toLowerCase|toUpperCase|toLocaleLowerCase|toLocaleUpperCase|min|max|at)\s*\("),
+     RISK_REST, 1),  # MethodExpression
+    (re.compile(r"\?\."), RISK_REST, 1),  # OptionalChaining
+    (re.compile(r"\{[^{}]*[^{}\s][^{}]*\}"), RISK_REST, 1),  # ObjectLiteral, or a one-line BlockStatement
+)
+TS_TEST = re.compile(r"\b(?:if|while)\s*\(|(?<!\?)\?(?![.?:=])")  # a branch's test (if, while, a ternary)
+
+
+def ts_costs(text):
+    """{line: (risk class, estimated mutants)} for the lines of a ts/js source that hold any. A test with no
+    comparison or logical operator of its own (`if (x)`, `x ? a : b`) is ConditionalExpression x2. A string or a
+    template literal is StringLiteral (last); a regex literal is the rest."""
+    masked, comments, _ = js_scan(text)
+    inside = bytearray(len(text))
+    for a, b, _ in comments:
+        inside[a:b] = b"\x01" * (b - a)
+    lits = {}  # line -> [risk of each literal that starts there]
+    line = 1
+    for p, ch in enumerate(text):
+        if ch == "\n":
+            line += 1
+        elif (ch in "\"'`/" and masked[p] != ch and not inside[p]
+              and (p == 0 or masked[p - 1] == text[p - 1])):  # the first blanked char of a literal
+            lits.setdefault(line, []).append(RISK_REST if ch == "/" else RISK_LAST)
+    out = {}
+    for n, row in enumerate(masked.split("\n"), 1):
+        got = [(risk, each) for rx, risk, each in TS_RULES for _ in rx.finditer(row)]
+        if TS_TEST.search(row) and not any(r == RISK_BRANCH and each > 1 for r, each in got):
+            got.append((RISK_BRANCH, 2))
+        got += [(risk, 1) for risk in lits.get(n, [])]
+        if got:
+            out[n] = (min(r for r, _ in got), sum(each for _, each in got))
+    return out
+
+
+def ts_pick(sources, changed, max_mutants):
+    """The cap for ts (#63): (picked {file: lines} or None when the changed lines' estimated mutants fit under
+    max_mutants, estimated mutants left out, lines left out). Lines riskiest first, ties by file and line, added until
+    the next would pass max_mutants; a line with no mutant is never picked. sources: {repo file: head text}."""
+    cands = []
+    for f in sorted(sources):
+        costs = ts_costs(sources[f])
+        cands += [(costs[n][0], f, n, costs[n][1]) for n in sorted({n for n, _ in changed.get(f, [])}) if n in costs]
+    total = sum(c[3] for c in cands)
+    if total <= max_mutants:
+        return None, 0, 0
+    picked, used, lines = {}, 0, 0
+    for risk, f, n, each in sorted(cands):
+        if used + each > max_mutants:
+            break
+        picked.setdefault(f, set()).add(n)
+        used, lines = used + each, lines + 1
+    return picked, total - used, len(cands) - lines
+
+
+def ts_cap_note(extra, lines, max_mutants):
+    return (f"; ~{extra} mutant(s) on {lines} changed line(s) past the cap (max-mutants {max_mutants}): untested "
+            "(estimated from the lines: Stryker lists no mutant before its run)") if extra else ""
+
+
 class Stryker:
     """R3 for ts: Stryker 10.0.0 on the changed production lines. `--mutate file:start-end` per changed run: Stryker
     mutates the mutants fully inside a range, so the MISSED list is the changed lines and needs no filter. The repo's
@@ -1622,7 +1695,9 @@ class Stryker:
         return _files_baseline(rv, shards)
 
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
-        """max_mutants is not applied: Stryker lists no mutant before its run and selects none by name (#26)."""
+        """max_mutants (#63): Stryker lists no mutant before its run, so the cap picks changed lines (ts_pick) over
+        every changed file; each shard runs the picked lines of its own files, and shard 0 reports the estimated
+        mutants past the cap as untested. Under the cap every changed line runs, as before."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         prod = sorted({ch.new for ch in red.prod_changes(rv)
@@ -1646,13 +1721,23 @@ class Stryker:
             if not os.path.isfile(os.path.join(crate, bin_path)):
                 return _check("n/a", f"{runner_name} not installed (env): `{bin_path}` not runnable; install the repo's "
                                      "dependencies (ts toolchain step) or set setup-command"), []
+            pick, extra, left = ts_pick({f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in prod},
+                                        changed, max_mutants)
+            if shard_index(shard)[0] != 0:
+                extra = left = 0  # shard 0 reports the lines past the cap, so the merge counts them once
+            capped = ts_cap_note(extra, left, max_mutants)
             ranges = []
             for f in files:
                 crate_f = _crate_path(project_dir, f)
                 if "," in crate_f:
                     return _check("n/a", f"{f}: a comma in a file name cannot be passed to stryker --mutate (env)"), []
-                ranges += [f"{crate_f}:{r}" for r in line_ranges([ln for ln, _ in changed.get(f, [])])]
+                lines = [ln for ln, _ in changed.get(f, [])] if pick is None else pick.get(f, ())
+                ranges += [f"{crate_f}:{r}" for r in line_ranges(lines)]
             if not ranges:
+                if pick is not None:
+                    shown = f"0/{extra} tested: " if extra else ""
+                    what = "0 mutants in this shard" if shard else "no changed line fits under the cap"
+                    return _check("partial" if extra else "pass", f"{shown}{what}{capped}", 0, extra), []
                 return _check("pass", "0 mutants in the diff", 0, 0), []
             report = os.path.join(crate, STRYKER_REPORT)
             if os.path.lexists(report):
@@ -1676,8 +1761,9 @@ class Stryker:
             timing = {"wall_s": round(wall, 2)}
             if doc is None:
                 if rc == "timeout":
+                    total = None if total is None else total + extra
                     note = (f"budget hit before Stryker wrote its report (it writes at the end of a run): "
-                            f"{total if total is not None else '?'} mutants, none read")
+                            f"{total if total is not None else '?'} mutants, none read" + capped)
                     return {"status": "partial", "note": note, "tested": None, "total": total, "timing": timing}, []
                 if STRYKER_BASELINE in (text or ""):
                     return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
@@ -1727,14 +1813,20 @@ class Stryker:
                                         "read checks.R3.note: the report gives no location for these mutants; check them by hand",
                                         "counting an unlocated mutant as outside the diff, or as a fail without a look")])
             fails = sum(1 for e in ents if e["severity"] == "fail")
-            if not rows:
+            if not rows and not extra and rc != "timeout":
                 return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
-            tested = len(rows)
-            note = (f"{tested}/{tested} tested: {fails} missed in the diff, {outside} missed outside the diff, "
+            # a mutant the budget left Pending was never run: untested, never a pass (#63)
+            tested = sum(1 for _, m, _ in rows if m.get("status") != "Pending")
+            total = len(rows) + extra
+            note = (f"{tested}/{total} tested: {fails} missed in the diff, {outside} missed outside the diff, "
                     f"{unlocated} unlocated, {caught} caught")
+            if rc == "timeout":
+                note += "; budget hit after Stryker wrote its report"
             if config is not None:
                 note += f" (repo config {config}: mutate and reporter set on the command line)"
-            check = _check("fail" if fails else "pass", note, tested, tested)
+            note += capped
+            status = "fail" if fails else "partial" if tested < total or rc == "timeout" else "pass"
+            check = _check(status, note, tested, total)
             check["timing"] = timing
             return check, ents
 

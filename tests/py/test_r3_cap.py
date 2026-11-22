@@ -866,6 +866,287 @@ class TestPythonBaselineMeasuredNothing(PyCli):
         self.assertEqual(out["count"], 4)
 
 
+TS_STUB = r"""#!/usr/bin/env python3
+import json, os, sys, time
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a") as f:
+    f.write(json.dumps(args) + "\n")
+if args == ["--version"]:
+    print("10.0.0")
+    sys.exit(0)
+# Stryker 10.0.0 `run --mutate file:a-b,...`: it makes the mutants of the lines in the ranges (STUB_SPEC: the ones the
+# real tool makes, per `file:line`), runs them and writes the JSON report at the end
+spec = json.load(open(os.environ["STUB_SPEC"]))
+picked = []
+for item in args[args.index("--mutate") + 1].split(","):
+    path, _, span = item.rpartition(":")
+    a, b = (int(x) for x in span.split("-"))
+    picked += [(path, n) for n in range(a, b + 1)]
+missed = set(filter(None, os.environ.get("STUB_MISSED", "").split("|")))
+files, made = {}, 0
+for path, n in picked:
+    for k, (mutator, replacement) in enumerate(spec.get(f"{path}:{n}", [])):
+        status = "Survived" if f"{path}:{n}" in missed else "Killed"
+        if os.environ.get("STUB_PENDING") and made >= int(os.environ["STUB_PENDING"]):
+            status = "Pending"  # the budget stopped the run before this one
+        made += 1
+        loc = {"start": {"line": n, "column": 3 + k}, "end": {"line": n, "column": 9 + k}}
+        files.setdefault(path, {"source": open(path).read(), "mutants": []})["mutants"].append(
+            {"id": str(made), "mutatorName": mutator, "replacement": replacement, "location": loc, "status": status,
+             "coveredBy": ["0"], "testsCompleted": 1})
+print(f"INFO Instrumented {len(files)} source file(s) with {made} mutant(s)")
+if os.environ.get("STUB_HANG") == "before-report":
+    sys.stdout.flush()
+    time.sleep(30)
+os.makedirs(os.path.join("reports", "mutation"), exist_ok=True)
+with open(os.path.join("reports", "mutation", "mutation.json"), "w") as f:
+    json.dump({"schemaVersion": "2", "files": files}, f)
+if os.environ.get("STUB_HANG") == "after-report":
+    sys.stdout.flush()
+    time.sleep(30)
+sys.exit(0)
+"""
+
+TS_BASE = "export function f(a: number, b: number, s: string): number {\n  return a;\n}\n"
+# head: one line of each risk class, the riskiest last in the file; each with the mutants Stryker 10.0.0 makes there
+TS_LINES = [
+    ('  const msg = "hello";', [("StringLiteral", '""')]),                              # 2: a string
+    ("  const u = s.trim();", [("MethodExpression", "s")]),                             # 3: the rest
+    ("  const sum = a + b;", [("ArithmeticOperator", "a - b")]),                        # 4: arithmetic
+    ("  const t = true;", [("BooleanLiteral", "false")]),                               # 5: a boolean literal
+    ("  const big = a > b;", [("ConditionalExpression", "true"), ("ConditionalExpression", "false"),
+                              ("EqualityOperator", "a >= b"), ("EqualityOperator", "a <= b")]),  # 6: a branch condition
+]
+TS_HEAD = ("export function f(a: number, b: number, s: string): number {\n" + "".join(t + "\n" for t, _ in TS_LINES)
+           + "  return 0;\n}\n")  # 7: no mutant
+TS_RISK_ORDER = [6, 5, 4, 3, 2]  # branch, boolean, arithmetic, the rest, string
+
+
+class TsCli(unittest.TestCase):
+    """R3 for ts at the CLI (in-process, `_kit.run_cli`), Stryker a stub (MECH_TEST_STUB) that makes, for each line in
+    its --mutate ranges, the mutants the spec gives for that line."""
+    FILES = {"src/calc.ts": (TS_BASE, TS_HEAD, TS_LINES)}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = os.path.join(self.tmp.name, "repo")
+        os.makedirs(self.repo)
+        git(self.repo, "init", "-q")
+        self.write("package.json", '{"name":"calc","version":"0.0.1","devDependencies":{"vitest":"5.0.5"}}\n')
+        spec = {}
+        for path, (base, head, lines) in self.FILES.items():
+            self.write(path, base)
+            for k, (_, made) in enumerate(lines):
+                spec[f"{path}:{k + 2}"] = made
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "base")
+        for path, (base, head, lines) in self.FILES.items():
+            self.write(path, head)
+        git(self.repo, "commit", "-q", "-am", "head")
+        self.write("node_modules/.bin/vitest", "")  # installed, as the workflow's install step leaves it
+        self.stub = os.path.join(self.tmp.name, "stryker.py")
+        with open(self.stub, "w") as f:
+            f.write(TS_STUB)
+        self.log = os.path.join(self.tmp.name, "calls.log")
+        self.spec_path = os.path.join(self.tmp.name, "spec.json")
+        with open(self.spec_path, "w") as f:
+            json.dump(spec, f)
+
+    def write(self, rel, text):
+        path = os.path.join(self.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def cli(self, *args, **env):
+        from unittest import mock
+        open(self.log, "w").close()
+        e = {"MECH_TEST_STUB": self.stub, "STUB_LOG": self.log, "STUB_SPEC": self.spec_path, **env}
+        with mock.patch.dict(os.environ, e):
+            r = _kit.run_cli(["mutants", *args, "--repo", self.repo, "--base", "HEAD~1", "--head", "HEAD", "--stack",
+                              "ts", "--test-paths", "tests/**"])
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return json.loads(r.stdout)
+
+    def mutate(self):
+        """the --mutate ranges of the one Stryker run."""
+        with open(self.log) as f:
+            (argv,) = [a for a in (json.loads(line) for line in f) if a[:1] == ["run"]]
+        return argv[argv.index("--mutate") + 1].split(",")
+
+
+def ts_lines(lines, path="src/calc.ts"):
+    """lines as Stryker's --mutate ranges, consecutive ones joined."""
+    from scripts.mech_review.mutants import line_ranges
+    return [f"{path}:{r}" for r in line_ranges(lines)]
+
+
+class TestTsCap(TsCli):
+    def test_more_mutants_than_the_cap_runs_the_riskiest_lines_and_reads_partial(self):
+        env = self.cli("--max-mutants", "5")
+        r3 = env["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([5, 6]))  # the branch condition (4 mutants) and the boolean (1)
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 5, 8))
+        self.assertIn("partial: R3 (5/8)", env["summary"])
+        self.assertTrue(r3["note"].startswith("5/8 tested: 0 missed in the diff"), r3["note"])
+        self.assertIn("; ~3 mutant(s) on 3 changed line(s) past the cap (max-mutants 5): untested", r3["note"])
+        self.assertEqual([e["check"] for e in env["entries"] if e["severity"] == "fail"], [])
+
+    def test_the_same_lines_are_picked_on_every_run(self):
+        self.cli("--max-mutants", "6")
+        first = self.mutate()
+        self.cli("--max-mutants", "6")
+        self.assertEqual(self.mutate(), first)
+
+    def test_risk_order_branch_then_booleans_then_arithmetic_then_the_rest_then_strings(self):
+        for cap, picked in ((4, 1), (5, 2), (6, 3), (7, 4)):  # the branch line holds 4 mutants, each other line 1
+            r3 = self.cli("--max-mutants", str(cap))["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines(TS_RISK_ORDER[:picked]), cap)
+            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", cap, 8), cap)
+
+    def test_lines_are_added_until_the_cap_would_be_passed(self):
+        # cap 3: the riskiest line alone holds 4, so no line fits; nothing is tested and nothing passes
+        r3 = self.cli("--max-mutants", "3")["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 0, 8))
+        self.assertEqual(r3["note"], "0/8 tested: no changed line fits under the cap; ~8 mutant(s) on 5 changed line(s) "
+                                     "past the cap (max-mutants 3): untested (estimated from the lines: Stryker lists "
+                                     "no mutant before its run)")
+        with open(self.log) as f:
+            self.assertEqual([a for a in (json.loads(line) for line in f) if a[:1] == ["run"]], [])
+
+    def test_within_the_cap_every_changed_line_runs_as_before_and_a_clean_run_is_a_pass(self):
+        for cap in ("8", "40"):
+            r3 = self.cli("--max-mutants", cap)["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), cap)  # the changed lines, line 7 included
+            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 8, 8), cap)
+            self.assertNotIn("past the cap", r3["note"])
+
+    def test_a_capped_run_with_a_missed_mutant_fails_and_counts_the_lines_past_the_cap(self):
+        env = self.cli("--max-mutants", "5", STUB_MISSED="src/calc.ts:5")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("fail", 5, 8))
+        self.assertEqual([e["line"] for e in env["entries"] if e["severity"] == "fail"], [5])
+        self.assertIn("past the cap (max-mutants 5): untested", r3["note"])
+
+
+class TestTsBudget(TsCli):
+    """#63: a run the budget stops leaves the unreached mutants untested: partial, never pass, no MISSED for them."""
+
+    def test_a_run_stopped_before_its_report_is_partial_with_the_lines_past_the_cap(self):
+        env = self.cli("--max-mutants", "5", "--mutation-budget", "0.02", STUB_HANG="before-report",
+                       STUB_MISSED="src/calc.ts:6")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", None, 8))  # 5 made + 3 past the cap
+        self.assertTrue(r3["note"].startswith("budget hit before Stryker wrote its report"), r3["note"])
+        self.assertIn("past the cap (max-mutants 5): untested", r3["note"])
+        self.assertEqual([e["severity"] for e in env["entries"]], ["confirm"])  # the partial entry only
+
+    def test_mutants_the_budget_left_pending_are_untested_not_missed(self):
+        # lines 5 (1 mutant, caught) and 6 (4, all would survive) are picked; the budget leaves the last 2 pending
+        env = self.cli("--max-mutants", "5", "--mutation-budget", "0.02", STUB_HANG="after-report", STUB_PENDING="3",
+                       STUB_MISSED="src/calc.ts:6")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("fail", 3, 8))  # the 2 of line 6 that ran
+        self.assertEqual(len([e for e in env["entries"] if e["severity"] == "fail"]), 2)
+        env = self.cli("--max-mutants", "5", "--mutation-budget", "0.02", STUB_HANG="after-report", STUB_PENDING="2")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 2, 8))
+        self.assertTrue(r3["note"].startswith("2/8 tested: 0 missed in the diff"), r3["note"])
+        self.assertIn("budget hit after Stryker wrote its report", r3["note"])
+
+    def test_a_run_the_budget_stops_after_every_mutant_ran_is_still_not_a_pass(self):
+        r3 = self.cli("--mutation-budget", "0.02", STUB_HANG="after-report")["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 8, 8))
+
+
+TS_OTHER = "export function g(a: number): boolean {\n  return a;\n}\n"
+TS_OTHER_HEAD = "export function g(a: number): boolean {\n  const ok = a === 1;\n  const z = a * 2;\n  return ok;\n}\n"
+TS_OTHER_LINES = [("  const ok = a === 1;", [("ConditionalExpression", "true"), ("ConditionalExpression", "false"),
+                                            ("EqualityOperator", "a !== 1")]),
+                  ("  const z = a * 2;", [("ArithmeticOperator", "a / 2")])]
+
+
+class TestTsShards(TsCli):
+    """the pick is made over every changed file; a shard runs the picked lines of its own files (one per file, as the
+    baseline counts them) and shard 0 reports the ones past the cap."""
+    FILES = {"src/calc.ts": (TS_BASE, TS_HEAD, TS_LINES), "src/other.ts": (TS_OTHER, TS_OTHER_HEAD, TS_OTHER_LINES)}
+
+    def test_ties_go_by_file_then_line_and_each_shard_runs_its_files_picked_lines(self):
+        # branch lines: calc.ts:6 (4 mutants), other.ts:2 (3); cap 9 adds calc.ts:5 (boolean) and calc.ts:4 (arithmetic)
+        # before other.ts:3 (arithmetic, a later file) would pass it
+        r0 = self.cli("--max-mutants", "9", "--shard", "0/2")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([4, 5, 6]))
+        r1 = self.cli("--max-mutants", "9", "--shard", "1/2")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([2], "src/other.ts"))
+        self.assertEqual(((r0["status"], r0["tested"], r0["total"]), (r1["status"], r1["tested"], r1["total"])),
+                         (("partial", 6, 9), ("pass", 3, 3)))  # 12 in all: 3 past the cap, reported by shard 0
+
+    def test_the_merged_shards_read_partial_tested_over_total(self):
+        side = tempfile.TemporaryDirectory()
+        self.addCleanup(side.cleanup)
+        files = []
+        for k in (0, 1):
+            env = self.cli("--max-mutants", "9", "--shard", f"{k}/2")
+            path = os.path.join(side.name, f"s{k}.json")
+            with open(path, "w") as f:
+                json.dump(env, f)
+            files += ["--envelope", f"{k}={path}"]
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}):
+            r = _kit.run_cli(["merge", "--repo", self.repo, "--base", "HEAD~1", "--head", "HEAD", "--stack", "ts",
+                              "--shards", "2", *files])
+        env = json.loads(r.stdout)
+        r3 = env["checks"]["R3"]
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 9, 12))
+        self.assertIn("partial: R3 (9/12)", env["summary"])
+
+    def test_a_shard_whose_files_hold_no_picked_line_runs_nothing(self):
+        r1 = self.cli("--max-mutants", "4", "--shard", "1/2")["checks"]["R3"]  # cap 4: calc.ts:6 only
+        self.assertEqual((r1["status"], r1["tested"], r1["total"], r1["note"]), ("pass", 0, 0, "0 mutants in this shard"))
+        r0 = self.cli("--max-mutants", "4", "--shard", "0/2")["checks"]["R3"]
+        self.assertEqual((r0["status"], r0["tested"], r0["total"]), ("partial", 4, 12))
+
+
+class TestTsRisk(unittest.TestCase):
+    """the risk class and estimated mutants of a ts line (#63): #26's order; the counts are the mutants Stryker 10.0.0's
+    mutators make for the construct (tests/fixtures/stryker/missed: `return n > 0` makes 4, `return a + b` 1)."""
+
+    def test_each_kind_of_line(self):
+        M = _kit_mutants()
+        table = [
+            ("  return n > 0;", (M.RISK_BRANCH, 4)),           # EqualityOperator x2, ConditionalExpression x2
+            ("  if (a === b) {", (M.RISK_BRANCH, 3)),          # EqualityOperator, ConditionalExpression x2
+            ("  const ok = a && b;", (M.RISK_BRANCH, 3)),      # LogicalOperator, ConditionalExpression x2
+            ("  if (ready) {", (M.RISK_BRANCH, 2)),            # the test replaced by true, by false
+            ("  const v = x ? 1 : 2;", (M.RISK_BRANCH, 2)),
+            ("  const no = !x;", (M.RISK_BRANCH, 1)),          # the negation dropped
+            ("  return true;", (M.RISK_RETURN, 1)),            # BooleanLiteral
+            ("  const f = () => x;", (M.RISK_RETURN, 1)),      # ArrowFunction
+            ("  return a + b;", (M.RISK_ARITH, 1)),            # ArithmeticOperator
+            ("  n += 2;", (M.RISK_ARITH, 1)),                  # AssignmentOperator
+            ("  i++;", (M.RISK_ARITH, 1)),                     # UpdateOperator
+            ("  return s.trim();", (M.RISK_REST, 1)),          # MethodExpression
+            ("  return a?.b;", (M.RISK_REST, 1)),              # OptionalChaining
+            ("  const o = { a: 1 };", (M.RISK_REST, 1)),       # ObjectLiteral
+            ("  const r = /ab+/;", (M.RISK_REST, 1)),          # Regex
+            ('  const m = "hi";', (M.RISK_LAST, 1)),           # StringLiteral
+            ("  const t = `x`;", (M.RISK_LAST, 1)),
+            ('  if (s === "x") {', (M.RISK_BRANCH, 4)),        # the riskiest class on the line; every mutant counted
+        ]
+        for line, want in table:
+            self.assertEqual(M.ts_costs(line + "\n").get(1), want, line)
+
+    def test_no_mutant_on_a_plain_line_a_comment_or_a_generic(self):
+        M = _kit_mutants()
+        for line in ("  return x;", "  // a > b && c", "  const xs: Array<number> = ys;", "/* if (a) */"):
+            self.assertEqual(M.ts_costs(line + "\n"), {}, line)
+
+    def test_lines_are_numbered_from_one_and_a_literal_on_a_later_line_counts_there(self):
+        self.assertEqual(_kit_mutants().ts_costs('const a = 1;\nconst b = "x";\nconst c = a > 1;\n'),
+                         {2: (_kit_mutants().RISK_LAST, 1), 3: (_kit_mutants().RISK_BRANCH, 4)})
+
+
 class TestPythonRisk(unittest.TestCase):
     """the risk class of a mutmut edit (removed line, added line); expected classes are the spec's order."""
 
