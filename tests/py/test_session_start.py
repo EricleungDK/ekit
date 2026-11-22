@@ -388,6 +388,8 @@ class StackPlan(unittest.TestCase):
         self.assertNotIn("api/pyproject.toml", ctx)
         left = [t for t in threading.enumerate() if t is not threading.main_thread() and t.is_alive()]
         self.assertTrue(all(t.daemon for t in left), left)  # a check left running never holds the hook's exit
+        for t in left:  # it ends here, not inside a later test (or mutmut's stats run after the last one)
+            t.join(30)
 
 
 if __name__ == "__main__":
