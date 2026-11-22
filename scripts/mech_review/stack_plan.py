@@ -365,6 +365,24 @@ def check_pr(repo, base_ref, head_ref, now=None):
     return True, note, uncovered, messages
 
 
+def target_plan(repo, base_ref, head_ref):
+    """(plan or None, the base plan's PlanError or None): the plan whose entry sets resolve's target OS (#58). The base
+    branch's, so a PR cannot move its own runner. A base plan that does not read follows the drift check's rule for
+    which plan judges: the PR that fixes it (it edits the plan or an adapter file and adds no manifest, and its own plan
+    reads) gives its head plan; any other PR none (its drift check fails D)."""
+    try:
+        return at(repo, base_ref), None
+    except PlanError as e:
+        error = e
+    base, head, mb = gitio.merge_base(repo, base_ref, head_ref)
+    try:
+        head_plan = at(repo, head)
+    except PlanError:
+        return None, error
+    names = manifest_names(head_plan) | listed_by_bad_plan(repo, base)
+    return (head_plan if _own_plan(repo, mb, head, head_plan, names) else None), error
+
+
 def entry_for(plan, stack, folder):
     """the plan entry for a settled stack (its adapter's name) in a folder: current first, then retiring, then planned;
     None when no entry is for it."""

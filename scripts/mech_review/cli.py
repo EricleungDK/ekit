@@ -335,15 +335,23 @@ def _resolve(argv):
                                   args.project_dir)
         else:
             got = resolve.pick_pr([], [], args.stack, args.project_dir)
-        # #56: the base branch's plan entry for this stack and dir sets the target OS (a PR cannot pick its own runner).
+        # #56: the base branch's plan entry for this stack and dir sets the target OS (a PR cannot pick its own runner);
+        # a base plan that does not read never blocks the run (its drift check fails D): see stack_plan.target_plan.
         # An explicit stack with no git repo there (the workflow checks the caller out for auto only) reads no plan.
-        entry = None
+        entry = bad = plan = None
         if got["stack"] is not None and _is_repo(args.repo):
-            entry = stack_plan.entry_for(stack_plan.at(args.repo, args.base), got["stack"], got["project_dir"])
-    except (gitio.Die, stack_plan.PlanError) as e:
+            plan, bad = stack_plan.target_plan(args.repo, args.base, args.head)
+            entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"])
+    except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     got["target_os"] = entry.target_os if entry else resolve.target_os(got, adapter)
+    if bad is not None:  # named, so a bad plan never moves the runner silently
+        print(f"mech-review: {bad}", file=sys.stderr)
+        print("mech-review: the base branch's stack plan does not read: " + (
+            "this PR fixes it (it edits the plan or an adapter file and adds no manifest), so its own plan sets target_os"
+            if plan is not None else f"no entry sets target_os, the adapter's ({got['target_os']}) applies; the drift "
+                                     f"check fails D until a PR fixes the plan"), file=sys.stderr)
     print(json.dumps(got))
     return 1 if got["error"] else 0
 

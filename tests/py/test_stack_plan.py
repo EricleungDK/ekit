@@ -844,11 +844,40 @@ class ResolveTargetOs(unittest.TestCase):
         r, got = self.resolve(sha, sha)
         self.assertEqual((r.returncode, got["stack"], got["target_os"]), (0, "python", "linux"), r.stderr)
 
-    def test_a_bad_base_plan_is_a_usage_error(self):
+    def test_a_bad_base_plan_sets_no_target_os_and_says_so(self):
+        # review round 3, finding 1: the drift check fails D for this PR; resolve does not block the run on it (exit 2
+        # here failed the stack job and skipped every job after it). No entry of a bad plan sets the OS: the adapter's
         sha = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current", "amiga"))})
-        r, got = self.resolve(sha, sha)
-        self.assertEqual((r.returncode, r.stdout), (2, ""))
-        self.assertIn("stack[0] `app`, field target-os: `amiga`: want linux, macos or windows", r.stderr)
+        head = self.repo.commit({"src/x.py": "x = 1\n"})
+        for h in (sha, head):
+            with self.subTest(head=h):
+                r, got = self.resolve(sha, h)
+                self.assertEqual((r.returncode, got), (0, {"stack": "python", "project_dir": ".", "error": None,
+                                                           "target_os": "linux"}))
+                self.assertIn("stack[0] `app`, field target-os: `amiga`: want linux, macos or windows", r.stderr)
+                self.assertIn("the base branch's stack plan does not read: no entry sets target_os, the adapter's "
+                              "(linux) applies; the drift check fails D until a PR fixes the plan", r.stderr)
+
+    def test_a_pr_that_fixes_a_bad_base_plan_gets_its_own_plans_target_os(self):
+        # review round 3, finding 1: the PR the drift check judges by its own plan (it edits the plan, adds no manifest)
+        base = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current", "windows"),
+                                                                  ("app2", ".", "python", "current", "windows"))})
+        head = self.repo.commit({PLAN: plan(("app", ".", "python", "current", "macos"))})
+        r, got = self.resolve(base, head)
+        self.assertEqual((r.returncode, got["stack"], got["target_os"]), (0, "python", "macos"), r.stderr)
+        self.assertIn("stack[1] `app2`, field folder: stack `python` in . is already stack[0] `app`", r.stderr)
+        self.assertIn("the base branch's stack plan does not read: this PR fixes it (it edits the plan or an adapter "
+                      "file and adds no manifest), so its own plan sets target_os", r.stderr)
+        self.assertEqual(drift(self.repo, base, head)[0].returncode, 0)  # the same PR the drift check passes
+        broken = self.repo.commit({PLAN: plan(("app", ".", "python", "current", "beos"))})  # its plan does not read
+        self.repo.git("checkout", "-q", base)
+        more = self.repo.commit({"web/package.json": "{}", PLAN: plan(("app", ".", "python", "current", "macos"),
+                                                                     ("web", "web", "ts", "current"))})
+        for h in (broken, more):  # no fix PR: one adds a manifest (the base plan judges it, and cannot)
+            with self.subTest(head=h):
+                r, got = self.resolve(base, h)
+                self.assertEqual((r.returncode, got["target_os"]), (0, "linux"), r.stderr)
+                self.assertIn("no entry sets target_os, the adapter's (linux) applies", r.stderr)
 
     def test_an_explicit_stack_with_no_checkout_reads_no_plan_as_before(self):
         # the workflow's stack job checks the caller out only for stack auto
