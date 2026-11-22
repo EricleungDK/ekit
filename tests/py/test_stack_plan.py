@@ -358,6 +358,13 @@ class RetiringReminder(unittest.TestCase):
         sha = self.history((90, "current"), (29, "retiring"))
         self.assertNotIn("days", self.text(sha)[0])
 
+    def test_an_older_plan_that_does_not_read_ends_the_count(self):
+        for broken in ("stack = 1\n", "[[stack]\n", "[[stack]]\nname = \"other\"\n", "stack = [1]\n"):
+            with self.subTest(broken=broken):
+                self.repo.commit({PLAN: broken}, "broken", when=self.now - 200 * DAY)
+                sha = self.history((41, "retiring"))
+                self.assertIn("retiring for 41 days (over 30)", self.text(sha)[0])
+
     def test_back_to_current_and_retiring_again_counts_from_the_last_time(self):
         sha = self.history((100, "retiring"), (60, "current"), (10, "retiring"))
         self.assertNotIn("days", self.text(sha)[0])

@@ -231,7 +231,7 @@ def _status_in(raw, name):
         data = _toml(raw, PATH)
     except PlanError:
         return None
-    stacks = data.get("stack") if isinstance(data, dict) else None
+    stacks = data.get("stack")  # tomllib gives a table; an old plan may hold anything in it
     for s in stacks if isinstance(stacks, list) else ():
         if isinstance(s, dict) and s.get("name") == name:
             return s.get("status")
