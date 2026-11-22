@@ -1692,13 +1692,13 @@ def _listing_row(row, full):
 def _listing_rows(text, name, full):
     """(rows, None) of the list marked `name` in the listing's output, or (None, why not: the list that is missing
     by its name, and the first line that is not a list's own)."""
-    found = [body for marked, body in LISTED_LINE.findall(text or "") if marked == name]
+    found = [body for marked, body in LISTED_LINE.findall(text) if marked == name]
     try:
         doc = json.loads(found[-1]) if found else None
     except ValueError:
         doc = None
     if not isinstance(doc, list):
-        log = LISTED_LINE.sub("", text or "")
+        log = LISTED_LINE.sub("", text)
         return None, f"no {name} list in its output: {_first_line(log) or 'no other output'}"
     rows = [_listing_row(row, full) for row in doc]
     if None in rows:
