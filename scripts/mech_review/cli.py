@@ -298,9 +298,24 @@ def _resolve(argv):
     p.add_argument("--stack", default=resolve.AUTO, help="auto (default) or a language adapter: " + ", ".join(sorted(ADAPTERS)))
     p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
                    help="project dir (default .: auto may find it; a set dir is kept)")
+    p.add_argument("--adapter", metavar="FILE",
+                   help="an adapter file (TOML) that describes the stack named by --stack: its target-os is the output's")
     args = p.parse_args(argv)
+    adapter = None
+    if args.adapter is not None:
+        try:
+            adapter = adapter_file.load(args.adapter)
+        except adapter_file.AdapterFileError as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+        if adapter.name != args.stack:
+            print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
+                  file=sys.stderr)
+            return 2
     try:
-        if args.stack == resolve.AUTO:
+        if adapter is not None:
+            got = {"stack": adapter.name, "project_dir": args.project_dir, "error": None}
+        elif args.stack == resolve.AUTO:
             got = resolve.pick_pr(_tracked(args.repo, args.base), _tracked(args.repo, args.head), args.stack,
                                   args.project_dir)
         else:
@@ -308,6 +323,7 @@ def _resolve(argv):
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    got["target_os"] = resolve.target_os(got, adapter)
     print(json.dumps(got))
     return 1 if got["error"] else 0
 

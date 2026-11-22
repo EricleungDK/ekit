@@ -2,7 +2,7 @@
 
 Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each PR it runs up to seven jobs and merges them into one sticky comment (marker `<!-- mech-review -->`) and one check result:
 
-- `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it finds the one project from the tracked manifests; a set stack is passed through as is. Every later job reads the result from this job's outputs.
+- `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it finds the one project from the tracked manifests; a set stack is passed through as is. It also prints the stack's target OS (`target_os`: `linux`, `macos` or `windows`; #58): an adapter file's [`target-os`](#keys) (`resolve --adapter FILE`), else `linux`, as every built-in stack is. Every later job reads the result from this job's outputs. The jobs that run the user's tests (`red-first`, `baseline`, `mutants`) are meant to run on the target OS through a fixed map (`linux` → `ubuntu-latest`, `macos` → `macos-latest`, `windows` → `windows-latest`), never the raw value; `guard` and `report` stay on `ubuntu-latest`. That workflow step is not wired yet: every job still runs on `ubuntu-latest`.
 - `guard`: R2 test-diff guard (`scripts/mech-review.py r2`), git diffs only, no toolchain.
 - `red-first`: R1 red-first and R4 determinism (`scripts/mech-review.py red`). Compiles and runs the PR's new or changed tests, so it needs the stack toolchain (rust: stable; python: a venv with pytest; ts: node 22 and the repo's installed dependencies).
 - `plan`: decides whether R3 runs (a production file changed). Git only.
@@ -289,7 +289,7 @@ python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts
 ```
 
 - `--adapter FILE` takes the stack from the file in place of the built-in of that name. `--stack` must equal the file's `name`; a name that is not built in is allowed only with `--adapter`. Without `--adapter`, `rust`, `python` and `ts` run as before.
-- R2 only for now (`r2`): the run side of the file (test command, outcomes, mutation tool: R1, R3, R4) is not built yet, and `--adapter` with another subcommand is a usage error. The workflow does not pass `--adapter` yet.
+- R2 only for now (`r2`): the run side of the file (test command, outcomes, mutation tool: R1, R3, R4) is not built yet, and `--adapter` with another check subcommand is a usage error. `resolve --adapter FILE` reads the file's `target-os` only (#58). The workflow does not pass `--adapter` yet.
 - Reading the file needs python 3.11 or newer (`tomllib`); on an older python `--adapter` is a usage error that says so, and the built-in stacks keep working.
 - A file that is unreadable, not TOML, or invalid is a usage error (exit 2, nothing on stdout) that names the field: `adapter file x.toml: tests.cases: want at least one entry`. An unknown key is an error too, so a misspelt key never passes silently.
 - A source file whose masked text does not balance (a bracket never closed, an unterminated block comment or multiline string) is an R2 `fail` of class `needs-human`: the cause may be the file's lexer table, not the PR. The built-in stacks keep `agent-fixable`.
@@ -305,6 +305,7 @@ Top level (required unless marked):
 | `name` | the stack name (`--stack`): letters, digits, `_`, `-` |
 | `extensions` | file extensions of this stack, e.g. `[".ts", ".js"]`. A file of the stack is test code when it matches a `--test-paths` glob, production code otherwise |
 | `manifests` | optional: files that mark a project dir of this stack, e.g. `["package.json"]` |
+| `target-os` | optional, default `linux`: the OS the stack's tests run on, `linux`, `macos` or `windows` (exactly; any other value is a usage error naming `target-os`). `resolve --adapter FILE` prints it as `target_os`. Changing it is a person's call (#20) |
 
 `[lexer]`: how source is masked.
 

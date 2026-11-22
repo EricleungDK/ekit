@@ -319,6 +319,14 @@ class AdapterFileUsage(unittest.TestCase):
         self.assertIn("suppressions[0].problem: `{lints:{lints}<5}`: want plain `{lints}`", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_a_bad_target_os_is_a_usage_error_naming_the_field(self):
+        with open(MINI) as f:
+            text = f.read().replace('name = "mini"\n', 'name = "mini"\ntarget-os = "beos"\n')
+        r = r2(self.repo, self.base, self.base, adapter=self.write(text))
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("bad.toml: target-os: `beos`: want linux, macos or windows\n", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_a_file_that_is_not_toml_is_a_usage_error(self):
         r = r2(self.repo, self.base, self.base, adapter=self.write("name = [\n"))
         self.assertEqual(r.returncode, 2)

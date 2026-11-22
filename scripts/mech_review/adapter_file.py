@@ -12,6 +12,7 @@ FORMAT = 1
 BLOCK_STYLES = ("braces", "indent", "keywords")
 KINDS = ("eq", "ne", "other")
 COVERS = ("line", "next-line", "file")
+TARGET_OS = ("linux", "macos", "windows")  # the stack job outputs one of these; the workflow maps it to a fixed runner
 
 
 class AdapterFileError(ValueError):
@@ -285,9 +286,17 @@ def _mutation(d):
         _str(d["config_name"], f + ".config_name")
 
 
+def target_os(v, field="target-os"):
+    """one of TARGET_OS, exactly (no case folding: the value is passed on to the workflow as it is)."""
+    _str(v, field)
+    if v not in TARGET_OS:
+        _err(field, f"`{v}`: want linux, macos or windows")
+    return v
+
+
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
-    _table(data, "", ("format", "name", "manifests", "extensions", "lexer", "tests", "functions", "asserts",
+    _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
                       "suppressions", "mutation"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
@@ -295,6 +304,8 @@ def parse(data):
     if not all(ch.isalnum() or ch in "_-" for ch in name):
         _err("name", f"`{name}`: want letters, digits, _ or -")
     _strs(data.get("manifests", []), "manifests")
+    if "target-os" in data:
+        target_os(data["target-os"])
     exts = _strs(data["extensions"], "extensions", nonempty=True)
     for i, e in enumerate(exts):
         if not e.startswith(".") or len(e) < 2:

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-import _kit  # noqa: F401 - the import puts the repo root on sys.path
+import _kit
 from scripts.mech_review import cli, doctor, resolve
 
 
@@ -161,6 +161,64 @@ class TestResolveCli(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
             cli.main(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--project-dir", "../x"])
         self.assertEqual(cm.exception.code, 2)
+
+
+MINI = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.toml")
+
+
+class TestResolveTargetOs(unittest.TestCase):
+    """#58: the stack job's output carries the OS the stack's tests run on; the workflow maps it to a fixed runner."""
+
+    setUp, write, run_cli = TestResolveCli.setUp, TestResolveCli.write, TestResolveCli.run_cli
+
+    def adapter(self, target_os=None):
+        with open(MINI) as f:
+            text = f.read()
+        if target_os is not None:
+            text = text.replace('name = "mini"\n', f'name = "mini"\ntarget-os = "{target_os}"\n')
+        path = os.path.join(self.repo, "..", os.path.basename(self.repo) + "-mini.toml")
+        with open(path, "w") as f:
+            f.write(text)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_auto_gives_linux_for_the_built_in_stack_it_finds(self):
+        rc, got = self.run_cli("--stack", "auto")
+        self.assertEqual((rc, got["stack"], got["target_os"]), (0, "python", "linux"))
+
+    def test_each_built_in_stack_gives_linux(self):
+        for stack in ("rust", "python", "ts"):
+            with self.subTest(stack):
+                rc, got = self.run_cli("--stack", stack)
+                self.assertEqual((rc, got), (0, {"stack": stack, "project_dir": ".", "error": None, "target_os": "linux"}))
+
+    def test_an_adapter_file_with_target_os_macos_gives_macos(self):
+        rc, got = self.run_cli("--stack", "mini", "--adapter", self.adapter("macos"))
+        self.assertEqual((rc, got), (0, {"stack": "mini", "project_dir": ".", "error": None, "target_os": "macos"}))
+
+    def test_an_adapter_file_without_target_os_gives_linux(self):
+        rc, got = self.run_cli("--stack", "mini", "--adapter", self.adapter())
+        self.assertEqual((rc, got["stack"], got["target_os"]), (0, "mini", "linux"))
+
+    def test_no_stack_gives_no_target_os(self):
+        self.write("web/package.json", "{}")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "two")
+        rc, got = self.run_cli()
+        self.assertEqual((rc, got["stack"], got["target_os"]), (1, None, None))
+
+    def test_a_bad_target_os_is_a_usage_error_naming_the_field(self):
+        r = _kit.run_cli(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--stack", "mini",
+                          "--adapter", self.adapter("solaris")])
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("target-os: `solaris`: want linux, macos or windows", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_the_stack_must_be_the_adapter_files_name(self):
+        r = _kit.run_cli(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts",
+                          "--adapter", self.adapter("macos")])
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("describes stack `mini`, not `ts`", r.stderr)
 
 
 class TestDoctorWithAuto(unittest.TestCase):

@@ -385,5 +385,32 @@ class Invalid(unittest.TestCase):
         self.assertEqual(self.err(with_("lexer.regex", {"delimiter": "//"})), "lexer.regex.delimiter: want one character")
 
 
+class TargetOs(unittest.TestCase):
+    """`target-os` (#58): the OS a stack's tests run on. linux, macos or windows; missing reads linux."""
+
+    def test_each_of_the_three_values_parses(self):
+        for os_name in ("linux", "macos", "windows"):
+            with self.subTest(os_name):
+                self.assertEqual(parse(with_("target-os", os_name)).target_os, os_name)
+
+    def test_a_missing_target_os_reads_linux(self):
+        self.assertEqual(parse(GOOD).target_os, "linux")
+
+    def test_any_other_value_names_the_field(self):
+        cases = [
+            ("solaris", "target-os: `solaris`: want linux, macos or windows"),
+            ("Linux", "target-os: `Linux`: want linux, macos or windows"),
+            ("ubuntu-latest", "target-os: `ubuntu-latest`: want linux, macos or windows"),
+            ("", "target-os: want a non-empty string"),
+            (3, "target-os: want a non-empty string"),
+            (["linux"], "target-os: want a non-empty string"),
+        ]
+        for value, want in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(AdapterFileError) as e:
+                    parse(with_("target-os", value))
+                self.assertEqual(str(e.exception), want)
+
+
 if __name__ == "__main__":
     unittest.main()
