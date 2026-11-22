@@ -113,9 +113,9 @@ def _drift(cwd):
     if gitio.git(top, "rev-parse", "--is-shallow-repository").strip() == "true":  # the history is cut
         items = [i + SHALLOW if i.startswith("- retiring ") else i for i in items]
     if len(items) > MAX_ITEMS:
-        cmd = launcher.line(os.path.join(HERE, "mech-review.py"), "drift", "--repo", launcher.shown(top), "--base HEAD",
-                            "--head HEAD --format text")
-        items[MAX_ITEMS:] = [f"- and {len(items) - MAX_ITEMS} more: run `{shown(cmd)}`"]
+        # the kit's own path and fixed words, no repo-controlled text: printed whole, never cut
+        cmd = launcher.line(os.path.join(HERE, "mech-review.py"), "drift --repo . --base HEAD --head HEAD --format text")
+        items[MAX_ITEMS:] = [f"- and {len(items) - MAX_ITEMS} more: in the repo root, run `{cmd}`"]
     return [f"[ekit] Stack plan drift at HEAD ({stack_plan.PATH}; {FIX}):", *items]
 
 

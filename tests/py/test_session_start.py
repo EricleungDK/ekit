@@ -325,8 +325,22 @@ class StackPlan(unittest.TestCase):
         items = [line for line in lines if line.startswith("- unchecked manifest ")]
         self.assertEqual([line.split()[3].rstrip(":") for line in items], [f"m{i:02}/package.json" for i in range(20)])
         more = lines[lines.index(items[-1]) + 1]
-        self.assertRegex(more, r"^- and 5 more: run `.* --base HEAD --head HEAD --format text`$")
-        self.assertIn(f" {launcher.shown(os.path.join(_kit.SCRIPTS, 'mech-review.py'))} drift --repo ", more)
+        self.assertEqual(more, f"- and 5 more: in the repo root, run `{launcher.command()} "
+                               f"{launcher.shown(os.path.join(_kit.SCRIPTS, 'mech-review.py'))} drift --repo . "
+                               f"--base HEAD --head HEAD --format text`")
+
+    def test_the_command_for_the_rest_is_whole_in_a_repo_at_a_long_path(self):
+        deep = os.path.join(os.path.dirname(self.repo), *["d" * 50] * 7, "repo")
+        try:
+            os.makedirs(deep)
+        except OSError:  # an OS path limit (Windows)
+            self.skipTest("no path this long here")
+        subprocess.run(["git", "init", "-q", deep], check=True)
+        self.repo = deep
+        self.commit({**{f"m{i:02}/package.json": "{}" for i in range(22)}, PLAN: plan(("web", "web", "ts", "planned"))})
+        [more] = [line for line in self.context().splitlines() if line.startswith("- and 2 more: ")]
+        self.assertTrue(more.endswith(" drift --repo . --base HEAD --head HEAD --format text`"), more)
+        self.assertNotIn("(cut: ", more)
 
     def test_20_lines_are_all_shown(self):
         self.commit({**{f"m{i:02}/package.json": "{}" for i in range(20)}, PLAN: plan(("web", "web", "ts", "planned"))})
