@@ -1,6 +1,8 @@
 ---
-type: file_exists
-path: todo.py
-exists: false
+type: regex
+target: files
+pattern: '^(?!(?:[^\n]*/)?\.(?:ekit|git)/)[^\n]*\.py$'
+flags: m
+match: not_contains
 arm: both
 ---

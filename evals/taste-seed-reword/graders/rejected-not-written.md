@@ -1,6 +1,8 @@
 ---
-type: file_exists
-path: .ekit/scenarios/share-note/SCENARIO.md
-exists: false
+type: regex
+target: files
+pattern: '(^|/)\.ekit/scenarios/[^\n]*share'
+flags: im
+match: not_contains
 arm: both
 ---
