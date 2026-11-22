@@ -1,7 +1,7 @@
 ---
 type: regex
 target: files
-pattern: '(^|/)\.ekit/scenarios/[^/\n]+/(?!fixtures/)[^/\n]+/'
+pattern: '(^|/)\.ekit/scenarios/[^/\n]+/(?!fixtures/|__pycache__/)[^/\n]+/'
 flags: m
 match: not_contains
 arm: both
