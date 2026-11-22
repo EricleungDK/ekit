@@ -223,14 +223,14 @@ class StackPlan(unittest.TestCase):
                       "every PR.", ctx.splitlines())
 
     def started(self):
-        """(the session's context, every process the drift check started, every address the hook connected to, the
-        processes git itself started). The drift check's processes are those started off the main thread (its worker).
+        """(the session's context, every process the drift check started, every network call it made (a connect, a
+        send, a name lookup), the processes git itself started). The drift check's processes are those started off the main thread (its worker).
         A process is (program, GIT_NO_LAZY_FETCH it ran with) for git, (program,) else; one started through a shell is
         ("shell", the command line). Every way python starts a program is watched, and git's own children through
         GIT_TRACE."""
         os.environ.pop("GIT_NO_LAZY_FETCH", None)  # what the hook itself sets for its git calls, not left from a run before
         started, addresses = [], []
-        real_popen, real_connect = subprocess.Popen, socket.socket.connect
+        real_popen = subprocess.Popen
 
         def record(program, env=None, shell=None):
             if threading.current_thread() is threading.main_thread():
@@ -251,9 +251,12 @@ class StackPlan(unittest.TestCase):
                     record(k.get("executable") or (args[0] if isinstance(args, (list, tuple)) else args), k.get("env"))
                 super().__init__(args, *a, **k)
 
-        def connect(sock, address):
-            addresses.append(address)
-            return real_connect(sock, address)
+        def net(name, real):
+            def wrapped(*a, **k):
+                if threading.current_thread() is not threading.main_thread():
+                    addresses.append((name, a[1:] if name.startswith("socket.") else a))
+                return real(*a, **k)
+            return wrapped
 
         def watch(name, program_of, env_of=lambda a: None):
             real = getattr(os, name)
@@ -269,7 +272,15 @@ class StackPlan(unittest.TestCase):
         trace = os.path.join(os.path.dirname(self.repo), f"trace-{len(os.listdir(os.path.dirname(self.repo)))}")
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch("subprocess.Popen", Popen))
-            stack.enter_context(mock.patch.object(socket.socket, "connect", connect))
+            for name in ("connect", "connect_ex", "sendto", "sendmsg"):
+                if hasattr(socket.socket, name):
+                    wrapped = net(f"socket.{name}", getattr(socket.socket, name))
+                    stack.enter_context(mock.patch.object(socket.socket, name, wrapped))
+            for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex"):  # a name lookup (DNS) is a network call
+                stack.enter_context(mock.patch.object(socket, name, net(name, getattr(socket, name))))
+            for name in ("fork", "forkpty"):  # a child started by hand: what it runs is out of sight, so none may start
+                if hasattr(os, name):
+                    stack.enter_context(watch(name, lambda a, name=name: name))
             stack.enter_context(mock.patch.dict(os.environ, {"GIT_TRACE": trace}))
             stack.enter_context(watch("system", None))
             for name in ("execv", "execve", "spawnv", "spawnve", "posix_spawn", "posix_spawnp"):
