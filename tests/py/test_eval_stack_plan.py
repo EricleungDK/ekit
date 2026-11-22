@@ -1,6 +1,7 @@
-"""The eval stack-plan-js-to-ts grades the committed end state: its scaffold's post-commit hook reads the plan at HEAD
-with tomllib and runs the kit's drift check on HEAD, and writes the verdict its regex graders read. A wrong end state
-(a TS entry only in a comment, the js entry gone, an invalid plan, an edit not committed) must not pass."""
+"""The eval stack-plan-js-to-ts grades the end state at HEAD: its scaffold's ref hooks (on every commit, reset and
+checkout) read the plan at HEAD with tomllib and run the kit's drift check on HEAD, and write the verdict its regex
+graders read. A wrong end state (a TS entry only in a comment, the js entry gone, an invalid plan, an edit not
+committed, a migration reset away or left on another branch) and the start state must not pass."""
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" sta
 from test_eval_scaffold import case_dir
 
 CASE = case_dir("stack-plan-js-to-ts")
+VERDICT = ("ekit-eval", "verdict.txt")
 JS_RETIRING = '[[stack]]\nname = "js"\nfolder = "."\nadapter = "ts"\nstatus = "retiring"\n'
 TS = '\n[[stack]]\nname = "web"\nfolder = "."\nadapter = "ts"\nstatus = "current"\n'
 
@@ -36,18 +38,55 @@ class EndState(unittest.TestCase):
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "c"], check=True)
 
     def verdict(self):
-        with open(os.path.join(self.repo, ".git", "ekit-eval-verdict.txt")) as f:
+        with open(os.path.join(self.repo, ".git", *VERDICT)) as f:
             return f.read().splitlines()
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True)
 
     def test_ts_current_beside_js_retiring_passes_all_three(self):
         self.commit(JS_RETIRING + TS)
         lines = self.verdict()
         self.assertIn("ts-entry: yes", lines)
         self.assertIn("js-retiring: yes", lines)
-        self.assertRegex(lines[-1], r"^drift: clean \(exit 0, D pass, 0 entries, messages \[\"retiring stack `js`")
+        self.assertRegex(lines[2], r"^drift: clean \(exit 0, D pass, 0 entries, messages \[\"retiring stack `js`")
+        self.assertEqual(lines[-1], "migrated: yes")
 
-    def test_the_start_state_passes_none_but_the_drift_check(self):
+    def test_the_start_state_passes_no_grader(self):
+        lines = self.verdict()
+        self.assertEqual(lines[:2], ["ts-entry: no", "js-retiring: no"])
+        self.assertEqual(lines[-1], "migrated: no")  # its drift check is clean, but that alone is no end state
+
+    def test_a_migration_reset_away_or_left_on_another_branch_is_not_the_end_state(self):
+        self.commit(JS_RETIRING + TS)
+        self.git("reset", "-q", "--hard", "HEAD~1")
+        self.assertEqual(self.verdict()[-1], "migrated: no")
+        self.git("checkout", "-q", "-b", "side")
+        self.commit(JS_RETIRING + TS)
+        self.git("checkout", "-q", "main")
         self.assertEqual(self.verdict()[:2], ["ts-entry: no", "js-retiring: no"])
+        self.assertEqual(self.verdict()[-1], "migrated: no")
+        self.git("merge", "-q", "--ff-only", "side")
+        self.assertEqual(self.verdict()[-1], "migrated: yes")
+
+    def test_a_missing_kit_is_named_a_harness_problem(self):
+        with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
+            f.write("/no/kit/here")
+        self.commit(JS_RETIRING + TS)
+        lines = self.verdict()
+        self.assertRegex(lines[2], r"^drift: not run: harness: the kit's scripts/mech-review.py is not at '/no/kit/here'")
+        self.assertEqual(lines[-1], "migrated: no")
+
+    def test_a_kit_path_with_a_quote_works(self):
+        kit = os.path.join(os.path.dirname(self.repo), "it's kit")
+        try:
+            os.symlink(_kit.ROOT, kit, target_is_directory=True)
+        except OSError:  # Windows without the symlink privilege
+            self.skipTest("no symlink here")
+        with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
+            f.write(kit)
+        self.commit(JS_RETIRING + TS)
+        self.assertEqual(self.verdict()[-1], "migrated: yes")
 
     def test_wrong_end_states_fail(self):
         comment = "".join("# " + line + "\n" for line in TS.splitlines())
@@ -62,12 +101,14 @@ class EndState(unittest.TestCase):
                 lines = self.verdict()
                 self.assertEqual(lines[:2], [f"ts-entry: {ts}", f"js-retiring: {js}"])
                 self.assertTrue(lines[2].startswith(f"drift: {drift} "), lines[2])
+                self.assertEqual(lines[-1], "migrated: no")
 
     def test_an_invalid_plan_fails_the_drift_check(self):
         self.commit(JS_RETIRING + TS.replace('name = "web"', 'name = "js"'))  # two entries named js
         lines = self.verdict()
         self.assertIn("js-retiring: no", lines)
-        self.assertRegex(lines[-1], r"^drift: not clean \(exit 2: ")
+        self.assertRegex(lines[2], r"^drift: not clean \(exit 2: ")
+        self.assertEqual(lines[-1], "migrated: no")
 
     def test_an_edit_left_uncommitted_is_not_the_end_state(self):
         self.commit(JS_RETIRING + TS)
