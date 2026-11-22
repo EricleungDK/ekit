@@ -124,10 +124,16 @@ def scenario_files(d):
 
 
 def runs(files, tool):
-    """True when a scenario script runs `tool`: the word in command position (line start, after ; | & ( ` or a
-    shell keyword), so the word in a string or in another language's code is not a use."""
-    pat = re.compile(r"(^|[;|&(`]|(^|\s)(if|while|until|then|do|else|exec|!))\s*" + re.escape(tool) + r"(\s|$)", re.M)
-    return any(pat.search(read(f)) for f in files)
+    """True when a scenario script runs `tool`, read in the script's own language, so the word in a string or in
+    another language's code is not a use. A shell script (run.sh, helpers): the word in command position (line start,
+    after ; | & ( ` or a shell keyword). PowerShell (.ps1): line start, after ; | & ( { (`tool.exe` too). Python
+    (.py): the first item of an argv list (`["tool", ...]`) or a `which("tool")` lookup; a command line in one
+    string (`shell=True`) is not read."""
+    t = re.escape(tool)
+    sh = re.compile(r"(^|[;|&(`]|(^|\s)(if|while|until|then|do|else|exec|!))\s*" + t + r"(\s|$)", re.M)
+    ps = re.compile(r"(^|[;|&({])\s*" + t + r"(\.exe)?(\s|$)", re.M | re.I)
+    py = re.compile(r"(\[|\bwhich\()\s*['\"]" + t + r"(\.exe)?['\"]")
+    return any((py if f.endswith(".py") else ps if f.lower().endswith(".ps1") else sh).search(read(f)) for f in files)
 
 
 def uses(files, word):

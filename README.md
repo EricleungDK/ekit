@@ -157,7 +157,8 @@ The Microsoft Store's `python3` stub, when it is all there is, fails the version
 | Optional tools preflight names | `sudo apt install jq ripgrep gh` / `sudo dnf install jq ripgrep gh` | `python3 -I <kit>/scripts/preflight.py` |
 
 `<kit>` is the plugin's folder, named by the `[ekit] Scenario runner:` line at session start. Preflight prints the OS,
-then one line per missing tool with this OS's install command. Scenarios (`run.sh`) need bash: Git Bash on Windows.
+then one line per missing tool with this OS's install command. Scenarios written as `run.py` (taste-it's default) need only that Python; a `run.sh` needs bash
+(Git Bash on Windows) and a `run.ps1` PowerShell, and reads `NOT-RUN … (env)` on a machine without it.
 
 ### Hooks and scripts outside Claude Code
 
@@ -238,7 +239,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | Script | Does |
 |---|---|
 | `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
-| `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. |
+| `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `tree-hash`. Each scenario has one run file: `run.py` (this Python), `run.sh` (bash) or `run.ps1` (PowerShell). Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
 | `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail / 2 setup or usage. |

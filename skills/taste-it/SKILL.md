@@ -27,7 +27,7 @@ Layout, committed in the repo:
 
 ```
 .ekit/scenarios/<use-case>/SCENARIO.md
-                        /run.sh        # real install + drive + assert; exit 0 = pass
+                        /run.py        # real install + drive + assert; exit 0 = pass
                         /fixtures/
 .ekit/scenarios/<use-case>/<child>/...   # branch
 ```
@@ -38,7 +38,7 @@ Layout, committed in the repo:
 - **steps**: what the user does
 - **expected**: observable result
 
-No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a `run.sh` of its own. `run.sh` gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR`, `EKIT_ARTIFACT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run (untracked Python bytecode excepted). They run with `PYTHONDONTWRITEBYTECODE=1`: one that tests bytecode caching must `unset` it. Files a person should see, screenshots first, go in `EKIT_ARTIFACT_DIR`: the runner keeps them beside the transcript and lists them under `artifacts` in results.json.
+Write the run file as `run.py`: it runs with the Python the hooks found, on any OS, bash or not. Write `run.sh` (bash; Git Bash on Windows) or `run.ps1` (PowerShell: `pwsh`, else Windows PowerShell) only when the user asks for that shell; existing ones keep running wherever their shell is. One run file per folder: two or more → FAIL naming them. A host without the run file's shell → `NOT-RUN <id>: ... (env)`, never PASS: verification debt (finish skill). No `SCENARIO.md` → FAIL. Nothing under a `fixtures/` dir is a scenario, even a sample project with a run file of its own. The run file gets `EKIT_REPO`, `EKIT_SCENARIO_DIR`, `EKIT_PARENT_DIR`, `EKIT_ARTIFACT_DIR` in a fresh temp cwd; a child reuses its parent's setup and fixtures via `EKIT_PARENT_DIR`. Scenarios write to their temp cwd only; writing into `EKIT_REPO` fails the run (untracked Python bytecode excepted). They run with `PYTHONDONTWRITEBYTECODE=1`: one that tests bytecode caching must unset it (`unset`, `os.environ.pop`). Files a person should see, screenshots first, go in `EKIT_ARTIFACT_DIR`: the runner keeps them beside the transcript and lists them under `artifacts` in results.json.
 
 ### Reuse before write
 
@@ -56,8 +56,8 @@ Name the scenarios read and the files created or edited before writing any.
 |---|---|
 | `RUN run` | all scenarios |
 | `RUN run <id>` | one scenario + its children (fix loop) |
-| `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run` |
-| `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>`, `CANNOT FAIL <id>`: passes at baseline (exit 1), or `N/A <id>: <reason> (env)`: could not run on this host, no proof either way (exit 4) |
+| `RUN check` | exit 0 iff fresh PASS for the current tree; a filtered `run <id>` leaves it "partial run" → finish with a full `RUN run`; a run whose only reds are `NOT-RUN` says `cannot run here: <id>: <reason>; ...` |
+| `RUN can-fail <baseline-ref>` | `CAN-FAIL ✓ <id>`, `CANNOT FAIL <id>`: passes at baseline (exit 1), `N/A <id>: <reason> (env)`: could not run on this host, no proof either way (exit 4), or `ERROR <id>`: two or more run files (exit 2); the same for every run file |
 | `RUN tree-hash` | current tree hash |
 
 Evidence is the runner's `PASS`/`FAIL` lines and results.json (`<git dir>/ekit/`, transcripts beside it; each scenario's last failed transcript stays in `failed/` until it fails again), never the taster's say-so. Any file edit makes the PASS stale; committing the tested tree does not (the hash is the tree's content). The Stop gate wants a **fresh PASS**. Missing driver tool (preflight warns) → scenario unrunnable: verification debt (finish skill), not skipped.

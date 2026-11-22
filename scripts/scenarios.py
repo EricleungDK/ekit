@@ -1,8 +1,10 @@
 """Scenario runner: `scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF`.
 
-can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes but one could not run here (n/a).
+can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes but one could not run here (n/a),
+2 a scenario folder holds more than one run file (or no worktree at REF).
 
-Runs .ekit/scenarios/<slug>/run.sh in fresh temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
+Runs .ekit/scenarios/<slug>/run.py (the Python running this runner), run.sh (bash) or run.ps1 (PowerShell) in fresh
+temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
 Repo-local so the Stop hook (plugin env) and sandboxed Bash (read-only HOME) agree on one location.
 """
 import hashlib
@@ -18,8 +20,11 @@ from urllib.parse import quote
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 import shells  # noqa: E402 - the sys.path line above has to run first
 
-LAYOUT = ".ekit/scenarios/<slug>/SCENARIO.md + run.sh"
+# run.sh first only because scenarios already match this text (runner/no-layout); run.py is what taste-it writes
+LAYOUT = ".ekit/scenarios/<slug>/SCENARIO.md + run.sh, run.py or run.ps1 (one of them)"
+RUN_FILES = ("run.py", "run.sh", "run.ps1")  # a scenario's one run file: what makes a dir a scenario
 NODOC = "missing SCENARIO.md — document it (story, covers, steps, expected)"
+MANY = "more than one run file"
 
 
 def git(repo, *args):
@@ -111,13 +116,13 @@ def root(repo):
 
 
 def find(repo):
-    """ids of the repo's scenarios: each dir under the root that holds a run.sh, a parent before its children.
+    """ids of the repo's scenarios: each dir under the root that holds a run file, a parent before its children.
     A `fixtures` dir is a scenario's data: nothing inside one is a scenario, whatever it holds."""
     base = root(repo)
     ids = []
     for d, dirs, fs in os.walk(base):
         dirs[:] = [name for name in dirs if name != "fixtures"]
-        if "run.sh" in fs:
+        if any(f in fs for f in RUN_FILES):
             ids.append(os.path.relpath(d, base).replace(os.sep, "/"))  # an id reads the same on every OS
     return sorted(ids, key=lambda i: i.split("/"))
 
@@ -129,18 +134,55 @@ def timeout():
         return 300.0
 
 
+def program(run_file):
+    """(name, executable or None) that runs `run_file`: run.py the Python running this runner (the one the hooks
+    found), run.sh bash (Git Bash on Windows, never WSL's), run.ps1 pwsh, else Windows PowerShell."""
+    if run_file == "run.py":
+        return "python", sys.executable or None
+    if run_file == "run.sh":
+        return "bash", shells.find("bash")
+    for name in shells.PS_SHELLS:
+        exe = shells.find(name)
+        if exe:
+            return name, exe
+    return "powershell", None
+
+
+LABEL = {"python": "Python", "powershell": "PowerShell"}  # how a missing program is named; bash as it is
+
+
+def not_here(res):
+    """True when the scenario was not run: this host lacks what runs it (env), so no proof either way."""
+    return str(res.get("reason", "")).endswith("(env)")
+
+
+def argv(name, exe, path):
+    if name in shells.PS_SHELLS:
+        return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
+    return [exe, path]
+
+
 def run_one(repo, sid, ids, tdir, kept=None):
     """ids: every scenario in the repo, not only the ones this run was filtered to: a child run alone still gets its
     parent's dir. kept: the dir that holds each scenario's last failed transcript (none: not kept)."""
     d = os.path.join(root(repo), sid)
     res = {"id": sid, "exit": None, "duration": 0.0, "transcript": os.path.join(tdir, sid.replace("/", "__") + ".log")}
-    bash = shells.find("bash")  # on Windows: Git for Windows' bash, never WSL's
-    if not os.path.isfile(os.path.join(d, "SCENARIO.md")):
+    # lexists, as find() saw it: a dangling link is still the run file the author wrote, and fails as itself
+    found = [f for f in RUN_FILES if os.path.lexists(os.path.join(d, f))]
+    run_file = found[0]
+    name, exe = program(run_file)
+    command = f"{name} {run_file}"
+    if len(found) > 1:  # never a silent pick: which one the author meant is theirs to say
+        res.update(exit=1, reason=f"{MANY} ({', '.join(found)}): keep one")
+        out = err = b""
+        cwd = ""
+        command = "none"
+    elif not os.path.isfile(os.path.join(d, "SCENARIO.md")):
         res.update(exit=1, reason=NODOC)
         out = err = b""
         cwd = ""
-    elif not bash:
-        res.update(exit=None, reason="bash is not on this machine (env)")
+    elif not exe:
+        res.update(exit=None, reason=f"{LABEL.get(name, name)} is not on this machine (env)")
         out = err = b""
         cwd = ""
     else:
@@ -159,8 +201,8 @@ def run_one(repo, sid, ids, tdir, kept=None):
         # output to files, not pipes: a child the stop misses can hold no pipe open, and what the scenario printed
         # before a timeout stays for the transcript
         fo, fe = tempfile.TemporaryFile(), tempfile.TemporaryFile()
-        p = shells.spawn([bash, os.path.join(d, "run.sh")], cwd=cwd, env=shells.env_for(bash, "bash", env), stdout=fo,
-                         stderr=fe)
+        p = shells.spawn(argv(name, exe, os.path.join(d, run_file)), cwd=cwd, env=shells.env_for(exe, name, env),
+                         stdout=fo, stderr=fe)
         try:
             p.wait(timeout=limit)
             res["exit"] = p.returncode
@@ -185,7 +227,7 @@ def run_one(repo, sid, ids, tdir, kept=None):
                 shutil.rmtree(art, ignore_errors=True)
         if res["exit"] and "reason" not in res:
             res["reason"] = f"exit {res['exit']}"
-    text = (f"command: bash run.sh\nscenario: {d}\ncwd: {cwd}\n--- stdout ---\n".encode() + out
+    text = (f"command: {command}\nscenario: {d}\ncwd: {cwd}\n--- stdout ---\n".encode() + out
             + b"\n--- stderr ---\n" + err + f"\n--- exit: {res['exit'] if res['exit'] is not None else 'timeout'} ---\n".encode())
     with open(res["transcript"], "wb") as f:
         f.write(text)
@@ -225,10 +267,12 @@ def cmd_run(repo, only=None):
     os.makedirs(tdir, exist_ok=True)
     results = [run_one(repo, sid, known, tdir, os.path.join(out, FAILED)) for sid in ids]
     for r in results:
-        print(f"FAIL {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
+        print(f"{'NOT-RUN' if not_here(r) else 'FAIL'} {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}
-    if any(r.get("reason") for r in results):
+    if any(r.get("reason") and not not_here(r) for r in results):
         doc["verdict"] = "FAIL"
+    elif any(r.get("reason") for r in results):
+        doc["verdict"] = "NOT-RUN"  # nothing failed, but this host could not run each scenario: never a PASS
     after = repo_state(repo)
     if after != before:
         doc.update(verdict="FAIL", reason="scenarios modified the repo: run in the temp cwd")
@@ -240,7 +284,7 @@ def cmd_run(repo, only=None):
         json.dump(doc, f, indent=1)
     prune(out, th)
     print(f"{doc['verdict']}: {sum(not r.get('reason') for r in results)}/{len(results)} scenarios")
-    return doc["verdict"] == "FAIL"
+    return doc["verdict"] != "PASS"
 
 
 KEEP_DAYS = 14
@@ -274,18 +318,21 @@ def cmd_can_fail(repo, ref=None):
             return 2
         shutil.rmtree(root(wt), ignore_errors=True)
         shutil.copytree(root(repo), root(wt))
-        flagged = na = 0
+        flagged = na = bad = 0
         for sid in ids:
             res = run_one(wt, sid, ids, tmp)
-            if str(res.get("reason", "")).endswith("(env)"):  # it never ran: no proof either way
+            if not_here(res):  # it never ran: no proof either way
                 print(f"N/A {sid}: {res['reason']}")
                 na += 1
+            elif str(res.get("reason", "")).startswith(MANY):  # fails on any tree: the folder is to be fixed
+                print(f"ERROR {sid}: {res['reason']}")
+                bad += 1
             elif res.get("reason"):
                 print(f"CAN-FAIL ✓ {sid}")
             else:
                 print(f"CANNOT FAIL {sid}: passes on baseline {ref}")
                 flagged += 1
-        return 1 if flagged else 4 if na else 0
+        return 2 if bad else 1 if flagged else 4 if na else 0
     finally:
         subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", wt], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -309,7 +356,7 @@ def cmd_check(repo):
         return 1
     failed = [r for r in res.get("scenarios") or [] if isinstance(r, dict) and r.get("reason")]
     if res.get("verdict") != "PASS" and failed and not res.get("reason") \
-            and all(str(r["reason"]).endswith("(env)") for r in failed):
+            and all(not_here(r) for r in failed):
         # every failure is what this host lacks: the Stop gate takes a blocked report naming it
         print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
     elif res.get("verdict") != "PASS":

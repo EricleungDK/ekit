@@ -212,6 +212,28 @@ class ScenarioDrivers(Case):
         for t in ("tmux", "expect", "curl", "playwright"):
             self.assertNotIn(f"{t}:", out)
 
+    def test_a_run_py_uses_a_tool_it_starts_by_name_in_an_argv_or_looks_up(self):
+        self.write(".ekit/scenarios/a/run.py", 'import shutil, subprocess\nsubprocess.run(["tmux", "new", "-d"])\n'
+                   "subprocess.run(\n    [\n        'curl', '-s', 'localhost'])\nassert shutil.which('expect')\n")
+        out = self.run_pf()
+        for t in ("tmux", "expect", "curl"):
+            self.assertIn(f"{t}: missing → scenarios needing {t} can't run here → human verdict / verification debt", out)
+
+    def test_a_run_py_naming_a_tool_in_a_string_or_a_comment_is_not_a_use(self):
+        self.write(".ekit/scenarios/a/run.py", 'print("curl here, tmux neither")\n# expect output\n'
+                   'subprocess.run(["python3", "-c", "tmux"])\nexpect = 1\n')
+        out = self.run_pf()
+        for t in ("tmux", "expect", "curl"):
+            self.assertNotIn(f"{t}:", out)
+
+    def test_a_run_ps1_uses_a_tool_in_command_position(self):
+        self.write(".ekit/scenarios/a/run.ps1", 'Write-Output "expect nothing"\ntmux new -d\n'
+                   "if ($LASTEXITCODE) { & Curl.exe -s localhost }\n")
+        out = self.run_pf()
+        for t in ("tmux", "curl"):
+            self.assertIn(f"{t}: missing → scenarios needing {t} can't run here → human verdict / verification debt", out)
+        self.assertNotIn("expect:", out)
+
     def test_a_playwright_scenario_triggers_the_playwright_check(self):
         self.write(".ekit/scenarios/a/run.sh", "npx playwright test\n")
         self.assertIn("playwright: no chromium", self.run_pf())

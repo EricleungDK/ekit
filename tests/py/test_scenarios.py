@@ -3,6 +3,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -11,6 +12,8 @@ from unittest import mock
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts import scenarios
 from _kit import symlink  # a skip naming the refusal where the OS will not make links
+
+RUN_FILES = ("run.py", "run.sh", "run.ps1")  # #59: the formats a scenario may be written in
 
 
 def git(repo, *args):
@@ -296,6 +299,24 @@ class TestFind(unittest.TestCase):
             self.assertEqual(scenarios.find(repo), ["a", "a/b", "a-x"])
 
 
+    def test_a_run_py_or_a_run_ps1_makes_a_scenario_too_and_another_python_file_does_not(self):
+        with tempfile.TemporaryDirectory() as repo:
+            for d, f in (("py", "run.py"), ("ps", "run.ps1"), ("sh", "run.sh"), ("helper", "drive.py"),
+                         ("py/fixtures/app", "run.py")):
+                os.makedirs(os.path.join(repo, ".ekit", "scenarios", d))
+                write(repo, f".ekit/scenarios/{d}/{f}", "\n")
+            self.assertEqual(scenarios.find(repo), ["ps", "py", "sh"])
+
+    def test_no_scenarios_names_every_run_file_in_the_layout(self):
+        with tempfile.TemporaryDirectory() as repo:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(scenarios.cmd_run(repo), 2)
+        self.assertEqual(out.getvalue(),
+                         "no scenarios found. expected layout: .ekit/scenarios/<slug>/SCENARIO.md + run.sh, run.py or "
+                         "run.ps1 (one of them)\n")
+
+
 class TestRun(unittest.TestCase):
     """cmd_run in-process: one scenario in a repo, results under EKIT_STATE."""
 
@@ -311,8 +332,8 @@ class TestRun(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def run_all(self, script):
-        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+    def run_all(self, script, run_file="run.sh"):
+        write(self.repo, f".ekit/scenarios/one/{run_file}", script)
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "scenario")
         out = io.StringIO()
@@ -326,6 +347,24 @@ class TestRun(unittest.TestCase):
         self.assertIs(failed, False)
         self.assertEqual(out, "PASS one\nPASS: 1/1 scenarios\n")
         self.assertEqual((doc["verdict"], doc["tree"]), ("PASS", scenarios.tree_hash(self.repo)))
+
+    def test_a_run_py_scenario_passes_and_fails_as_a_run_sh_one_does(self):
+        failed, out, doc = self.run_all("import sys\nprint('hi')\nsys.exit(0)\n", "run.py")
+        self.assertEqual((failed, out, doc["verdict"]), (False, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+        failed, out, doc = self.run_all("import sys\nprint('oops', file=sys.stderr)\nsys.exit(3)\n", "run.py")
+        self.assertEqual((failed, out, doc["verdict"]), (True, "FAIL one: exit 3\nFAIL: 0/1 scenarios\n", "FAIL"))
+        self.assertEqual(doc["scenarios"][0]["exit"], 3)
+
+    def test_run_py_runs_with_the_python_running_the_runner_and_the_scenario_env(self):
+        self.run_all("import json, os, sys\n"
+                     "keys = ('EKIT_REPO', 'EKIT_SCENARIO_DIR', 'EKIT_PARENT_DIR', 'PYTHONDONTWRITEBYTECODE')\n"
+                     "json.dump([sys.executable, os.getcwd()] + [os.environ[k] for k in keys],\n"
+                     "          open(os.path.join(os.environ['EKIT_STATE'], 'seen.json'), 'w'))\n", "run.py")
+        with open(os.path.join(self.state, "seen.json")) as f:
+            exe, cwd, repo, d, parent, nobytecode = json.load(f)
+        self.assertEqual((exe, repo, d, parent, nobytecode),
+                         (sys.executable, self.repo, os.path.join(self.repo, ".ekit", "scenarios", "one"), "", "1"))
+        self.assertFalse(os.path.realpath(cwd).startswith(self.repo))
 
     def test_a_run_clears_old_transcripts_of_other_trees_and_keeps_its_own(self):
         write(self.repo, ".ekit/scenarios/one/run.sh", "exit 0\n")
@@ -419,9 +458,9 @@ class TestRun(unittest.TestCase):
         self.assertEqual(doc["reason"], "scenarios modified the repo: run in the temp cwd")
         self.assertIn("FAIL: scenarios modified the repo: run in the temp cwd\n", out)
 
-    def main(self, script, *args):
+    def main(self, script, *args, run_file="run.sh"):
         """the runner's entry, in-process: (exit code, stdout, results.json)"""
-        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        write(self.repo, f".ekit/scenarios/one/{run_file}", script)
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")  # a rerun of the same script: same tree
         out = io.StringIO()
@@ -572,6 +611,54 @@ class TestRun(unittest.TestCase):
             code, _, doc = self.main("sleep 30\n")
         self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "timeout after 1s"))
 
+    def test_a_run_py_timeout_stops_its_whole_tree_a_background_child_included_and_is_a_fail(self):
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late")
+        child = f"import time; time.sleep(4); open({mark!r}, 'w')"
+        script = (f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                  "print('started', flush=True)\ntime.sleep(30)\n")
+        with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "1"}):
+            t0 = time.time()
+            code, out, doc = self.main(script, run_file="run.py")
+        self.assertEqual((code, out, doc["scenarios"][0]["reason"]),
+                         (1, "FAIL one: timeout after 1s\nFAIL: 0/1 scenarios\n", "timeout after 1s"))
+        self.assertLess(time.time() - t0, 20)
+        with open(doc["scenarios"][0]["failed_transcript"], "rb") as f:
+            text = f.read()
+        self.assertTrue(text.startswith(b"command: python run.py\n"), text)
+        self.assertTrue(text.endswith(b"\n--- stdout ---\nstarted\n\n--- stderr ---\n\n--- exit: timeout ---\n"), text)
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_a_run_py_background_child_does_not_outlive_its_scenario(self):
+        mark = os.path.join(os.path.realpath(self.tmp.name), "late")
+        child = f"import time; time.sleep(3); open({mark!r}, 'w')"
+        code, _, doc = self.main(f"import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n",
+                                 run_file="run.py")
+        self.assertEqual((code, doc["scenarios"][0].get("reason")), (0, None))
+        time.sleep(5)
+        self.assertFalse(os.path.exists(mark))
+
+    def test_a_run_py_keeps_its_failed_transcript_and_lists_its_artifacts(self):
+        code, _, doc = self.main("import os, sys\n"
+                                 "open(os.path.join(os.environ['EKIT_ARTIFACT_DIR'], 'shot.png'), 'w').write('png')\n"
+                                 "print('out'); print('err', file=sys.stderr); sys.exit(4)\n", run_file="run.py")
+        r = doc["scenarios"][0]
+        art = os.path.join(scenarios.outdir(self.repo), scenarios.tree_hash(self.repo), "one")
+        self.assertEqual((code, r["reason"], r["artifacts"]), (1, "exit 4", [os.path.join(art, "shot.png")]))
+        with open(r["failed_transcript"], "rb") as f:
+            text = f.read()
+        self.assertTrue(text.startswith(b"command: python run.py\n"), text)
+        self.assertTrue(text.endswith(b"\n--- stdout ---\nout\n\n--- stderr ---\nerr\n\n--- exit: 4 ---\n"), text)
+
+    def test_python_bytecode_a_run_py_leaves_in_the_repo_is_not_a_repo_change(self):
+        code, out, doc = self.main("import os\nd = os.path.join(os.environ['EKIT_REPO'], '__pycache__')\n"
+                                   "os.makedirs(d)\nopen(os.path.join(d, 'm.cpython-312.pyc'), 'w').write('b')\n",
+                                   run_file="run.py")
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
+        code, _, doc = self.main("import os\nopen(os.path.join(os.environ['EKIT_REPO'], 'stray.txt'), 'w')\n",
+                                 run_file="run.py")
+        self.assertEqual((code, doc["reason"]), (1, "scenarios modified the repo: run in the temp cwd"))
+
     def test_a_repo_path_that_does_not_exist_is_named_not_no_scenarios(self):
         missing = os.path.join(os.path.realpath(self.tmp.name), "nope")
         err = io.StringIO()
@@ -581,11 +668,103 @@ class TestRun(unittest.TestCase):
             self.assertEqual(e.exception.code, 2)
         self.assertEqual(err.getvalue(), f"scenarios.py: no such directory: {missing}\n" * 3)
 
-    def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
+    def test_a_machine_without_bash_does_not_run_the_scenario_naming_why(self):
+        """#59: not run here (env), never PASS and never a plain FAIL"""
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n")
-        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "bash is not on this machine (env)"))
-        self.assertIn("FAIL one: bash is not on this machine (env)", out)
+        self.assertEqual((code, out, doc["verdict"], doc["scenarios"][0]["reason"]),
+                         (1, "NOT-RUN one: bash is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n", "NOT-RUN",
+                          "bash is not on this machine (env)"))
+
+    def test_a_folder_with_two_or_more_run_files_is_an_error_naming_them_all(self):
+        """#59: never a silent pick, and not an env reason (nothing runs, whatever this host has)"""
+        mark = os.path.join(self.state, "ran")
+        write(self.repo, ".ekit/scenarios/one/run.py", f"open({mark!r}, 'w')\n")
+        code, out, doc = self.main(f"touch '{mark}'\n")
+        self.assertEqual((code, out, doc["verdict"]),
+                         (1, "FAIL one: more than one run file (run.py, run.sh): keep one\nFAIL: 0/1 scenarios\n", "FAIL"))
+        self.assertFalse(os.path.exists(mark))
+        with open(doc["scenarios"][0]["transcript"]) as f:
+            self.assertTrue(f.read().startswith("command: none\n"))
+        self.assertEqual(self.check(), (1, "last run FAIL\n"))
+        write(self.repo, ".ekit/scenarios/one/run.ps1", "exit 0\n")
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, doc["scenarios"][0]["reason"]),
+                         (1, "more than one run file (run.py, run.sh, run.ps1): keep one"))
+
+    def test_can_fail_on_a_folder_with_two_run_files_is_the_error_not_a_proof(self):
+        write(self.repo, ".ekit/scenarios/one/run.py", "raise SystemExit(1)\n")
+        code, out = self.can_fail("exit 1\n")
+        self.assertEqual((code, out.getvalue()), (2, "ERROR one: more than one run file (run.py, run.sh): keep one\n"))
+
+    def fake_shell(self, name):
+        """an executable `name` that records its arguments in $EKIT_STATE/argv.json and exits 7"""
+        bin_ = os.path.join(os.path.realpath(self.tmp.name), "bin")
+        os.makedirs(bin_, exist_ok=True)
+        rec = os.path.join(bin_, "rec.py")
+        write(bin_, "rec.py", "import json, os, sys\n"
+                              "json.dump(sys.argv[1:], open(os.path.join(os.environ['EKIT_STATE'], 'argv.json'), 'w'))\n"
+                              "sys.exit(7)\n")
+        if os.name == "nt":
+            path = os.path.join(bin_, name + ".cmd")
+            write(bin_, name + ".cmd", f'@"{sys.executable}" "{rec}" %*\r\n@exit /b %ERRORLEVEL%\r\n')
+        else:
+            path = os.path.join(bin_, name)
+            write(bin_, name, f'#!/bin/sh\nexec "{sys.executable}" "{rec}" "$@"\n')
+            os.chmod(path, 0o755)
+        return path
+
+    def test_a_run_ps1_runs_as_a_file_in_pwsh_else_windows_powershell_its_exit_code_kept(self):
+        script = os.path.join(self.repo, ".ekit", "scenarios", "one", "run.ps1")
+        for name in ("pwsh", "powershell"):
+            with self.subTest(shell=name):
+                fake = self.fake_shell(name)
+                with mock.patch.object(scenarios.shells, "find", lambda n, fake=fake, name=name: fake if n == name else None):
+                    code, out, doc = self.main("exit 7\n", run_file="run.ps1")
+                self.assertEqual((code, out), (1, "FAIL one: exit 7\nFAIL: 0/1 scenarios\n"))
+                with open(os.path.join(self.state, "argv.json")) as f:
+                    self.assertEqual(json.load(f), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                                    "-File", script])
+                with open(doc["scenarios"][0]["transcript"]) as f:
+                    self.assertTrue(f.read().startswith(f"command: {name} run.ps1\n"))
+
+    def test_a_machine_without_powershell_does_not_run_a_run_ps1(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("exit 0\n", run_file="run.ps1")
+        self.assertEqual((code, out, doc["verdict"]),
+                         (1, "NOT-RUN one: PowerShell is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n",
+                          "NOT-RUN"))
+        self.assertEqual(self.check(), (1, "cannot run here: one: PowerShell is not on this machine (env)\n"))
+
+    def test_a_scenario_this_host_cannot_run_beside_a_real_failure_is_a_failed_run(self):
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "two"))
+        write(self.repo, ".ekit/scenarios/two/SCENARIO.md", "- story: s\n")
+        write(self.repo, ".ekit/scenarios/two/run.py", "raise SystemExit(2)\n")
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("exit 0\n")
+        self.assertEqual((code, out, doc["verdict"]),
+                         (1, "NOT-RUN one: bash is not on this machine (env)\nFAIL two: exit 2\nFAIL: 0/2 scenarios\n",
+                          "FAIL"))
+        self.assertEqual(self.check(), (1, "last run FAIL\n"))
+
+    def test_a_python_that_cannot_name_its_own_executable_does_not_run_a_run_py(self):
+        with mock.patch.object(scenarios.sys, "executable", ""):
+            code, out, doc = self.main("pass\n", run_file="run.py")
+        self.assertEqual((code, out), (1, "NOT-RUN one: Python is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n"))
+
+    def test_a_dangling_run_py_link_is_the_scenario_and_fails_as_itself(self):
+        d = os.path.join(self.repo, ".ekit", "scenarios", "one")
+        symlink(self, os.path.join(d, "gone.py"), os.path.join(d, "run.py"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIs(scenarios.cmd_run(self.repo), True)
+        self.assertEqual(out.getvalue(), "FAIL one: exit 2\nFAIL: 0/1 scenarios\n")
+
+    def test_a_run_py_needs_no_shell(self):
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("print('no shell needed')\n", run_file="run.py")
+        self.assertEqual((code, out, doc["verdict"]), (0, "PASS one\nPASS: 1/1 scenarios\n", "PASS"))
 
     def check(self):
         out = io.StringIO()
@@ -604,9 +783,9 @@ class TestRun(unittest.TestCase):
         self.main("exit 0\n")
         self.assertEqual(self.check(), (0, ""))
 
-    def can_fail(self, script, stdout=None):
+    def can_fail(self, script, stdout=None, run_file="run.sh"):
         """`can-fail HEAD` in-process: (exit code, what it printed). stdout: the stream it writes to."""
-        write(self.repo, ".ekit/scenarios/one/run.sh", script)
+        write(self.repo, f".ekit/scenarios/one/{run_file}", script)
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "scenario")
         out = stdout or io.StringIO()
@@ -618,6 +797,21 @@ class TestRun(unittest.TestCase):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out = self.can_fail("exit 0\n")
         self.assertEqual((code, out.getvalue()), (4, "N/A one: bash is not on this machine (env)\n"))
+
+    def test_can_fail_reads_the_same_for_every_run_file(self):
+        for run_file, passes, fails in (("run.py", "pass\n", "raise SystemExit(1)\n"), ("run.sh", "exit 0\n", "exit 1\n")):
+            with self.subTest(run_file=run_file):
+                for other in RUN_FILES:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(os.path.join(self.repo, ".ekit", "scenarios", "one", other))
+                code, out = self.can_fail(fails, run_file=run_file)
+                self.assertEqual((code, out.getvalue()), (0, "CAN-FAIL ✓ one\n"))
+                code, out = self.can_fail(passes, run_file=run_file)
+                self.assertEqual((code, out.getvalue()), (1, "CANNOT FAIL one: passes on baseline HEAD\n"))
+        os.remove(os.path.join(self.repo, ".ekit", "scenarios", "one", "run.sh"))
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out = self.can_fail("exit 0\n", run_file="run.ps1")
+        self.assertEqual((code, out.getvalue()), (4, "N/A one: PowerShell is not on this machine (env)\n"))
 
     def test_can_fail_writes_its_mark_to_a_windows_pipe(self):
         """a pipe on Windows reads as cp1252 (as under Claude Code): ✓ must not raise"""
