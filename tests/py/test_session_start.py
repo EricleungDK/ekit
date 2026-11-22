@@ -3,7 +3,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -345,17 +344,15 @@ class StackPlan(unittest.TestCase):
                                f"--base HEAD --head HEAD --format text`")
 
     def test_the_command_for_the_rest_is_whole_in_a_repo_at_a_long_path(self):
-        deep = os.path.join(os.path.dirname(self.repo), *["d" * 50] * 7, "repo")
-        try:
-            os.makedirs(deep)
-        except OSError:  # an OS path limit (Windows)
-            self.skipTest("no path this long here")
+        deep = os.path.join(os.path.dirname(self.repo), *["d d" * 13] * 3, "repo")  # long, with spaces; any OS holds it
+        os.makedirs(deep)
         subprocess.run(["git", "init", "-q", deep], check=True)
         self.repo = deep
         self.commit({**{f"m{i:02}/package.json": "{}" for i in range(22)}, PLAN: plan(("web", "web", "ts", "planned"))})
         [more] = [line for line in self.context().splitlines() if line.startswith("- and 2 more: ")]
-        self.assertTrue(more.endswith(" drift --repo . --base HEAD --head HEAD --format text`"), more)
-        self.assertNotIn("(cut: ", more)
+        self.assertEqual(more, f"- and 2 more: in the repo root, run `{launcher.command()} "
+                               f"{launcher.shown(os.path.join(_kit.SCRIPTS, 'mech-review.py'))} drift --repo . "
+                               f"--base HEAD --head HEAD --format text`")  # whatever the repo's path: none of it here
 
     def test_20_lines_are_all_shown(self):
         self.commit({**{f"m{i:02}/package.json": "{}" for i in range(20)}, PLAN: plan(("web", "web", "ts", "planned"))})
@@ -489,37 +486,43 @@ class StackPlan(unittest.TestCase):
             finally:
                 os.dup2(saved, 2)
 
-    def fake_git(self, body):
-        """a `git` first on PATH (POSIX): a bash script with `body`, then the real git"""
-        if os.name != "posix":
-            self.skipTest("a bash script as git: POSIX only")
-        bin_dir = os.path.join(os.path.dirname(self.repo), "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        path = os.path.join(bin_dir, "git")
-        with open(path, "w") as f:
-            f.write(f"#!/bin/bash\n{body}\nexec {shutil.which('git')} \"$@\"\n")
-        return path
+    def git_in_drift(self, before):
+        """subprocess.Popen with `before(argv)` run first for every git the drift check starts (its own thread): the
+        boundary where git is started, the same on every OS"""
+        real = subprocess.Popen
+
+        class Popen(real):
+            def __init__(self, args, *a, **k):
+                if threading.current_thread() is not threading.main_thread() and \
+                        isinstance(args, (list, tuple)) and os.path.basename(args[0]) == "git":
+                    before(args)
+                super().__init__(args, *a, **k)
+        return mock.patch("subprocess.Popen", Popen)
 
     def test_a_git_found_but_not_runnable_is_the_could_not_run_line(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
-        # fake_git leaves the file without the execute bit: found on PATH, not runnable
-        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(self.fake_git(""))}):
-            lines = [line for line in self.quiet_context().splitlines() if line.startswith("[ekit] Stack plan")]
+
+        def refuse(argv):  # what starting a git without the execute bit raises
+            raise PermissionError(13, "Permission denied", argv[0])
+        with self.git_in_drift(refuse):
+            lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
         self.assertEqual(len(lines), 1, lines)
         self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(PermissionError: ")
 
     def test_a_drift_check_slower_than_3_s_is_cut_off_at_3_s(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
-        git = self.fake_git('for a in "$@"; do [ "$a" = ls-tree ] && sleep 5; done')
-        os.chmod(git, 0o755)
+
+        def slow(argv):  # a git that takes 5 s to list the tree
+            if "ls-tree" in argv:
+                time.sleep(5)
         start = time.monotonic()
-        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(git) + os.pathsep + os.environ["PATH"]}):
+        with self.git_in_drift(slow):
             ctx = self.context()
-        took = time.monotonic() - start
+            took = time.monotonic() - start
+            self.join_left_running()  # inside the patch: the check left running ends with it
         self.assertIn("[ekit] Stack plan: the drift check did not finish in 3 s here, so nothing here says what is "
                       "unchecked; CI still runs it on every PR.", ctx.splitlines())
         self.assertLess(took, 5)
-
 
 if __name__ == "__main__":
     unittest.main()
