@@ -305,7 +305,7 @@ Top level (required unless marked):
 | `name` | the stack name (`--stack`): letters, digits, `_`, `-`; not `auto` (the stack input that means "find it") |
 | `extensions` | file extensions of this stack, e.g. `[".ts", ".js"]`. A file of the stack is test code when it matches a `--test-paths` glob, production code otherwise |
 | `manifests` | optional: files that mark a project dir of this stack, e.g. `["package.json"]` |
-| `target-os` | optional, default `linux`: the OS the stack's tests run on, `linux`, `macos` or `windows` (exactly; any other value is a usage error naming `target-os`). `resolve --adapter FILE` prints it as `target_os`. Changing it is a person's call (#20) |
+| `target-os` | optional, default `linux`: the OS the stack's tests run on, `linux`, `macos` or `windows` (exactly; any other value is a usage error naming `target-os`). `resolve --adapter FILE` prints it as `target_os`. It reads the file it is given as is: the workflow must pass the base branch's copy, since a PR's checks read adapter files from the base (ADR 0001), or a PR could pick its own runner OS. Changing it will need a person: #20 enforces that, nothing does yet |
 
 `[lexer]`: how source is masked.
 
