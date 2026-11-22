@@ -205,15 +205,15 @@ def ps_literal(text):
     return "'" + "".join(c * 2 if c in PS_QUOTES else c for c in text) + "'"
 
 
-PS_WILDCARDS = "[]*?"  # what `&` reads as a wildcard pattern in a command path
+PS_GLOB = "[]*?`"  # Windows PowerShell 5.1 reads these in a command path as a wildcard pattern and its escape
 
 
-def ps_call_path(path):
-    """`path` as the literal `& <it>` runs as that very file: `&` looks a path holding [ ] * ? up as a wildcard pattern,
-    so those (and then each backtick, the pattern's escape) are escaped with a backtick, which the '...' literal keeps
-    for the lookup to read. A path with none of them is not a pattern: it goes as it is, a backtick included."""
-    if any(c in PS_WILDCARDS for c in path):
-        path = "".join("`" + c if c in PS_WILDCARDS + "`" else c for c in path)
+def ps_call_path(path, shell):
+    """`path` as the literal `& <it>` runs as that very file in `shell`. pwsh (7+) looks the literal path up first, so
+    it goes as it is. Windows PowerShell 5.1 globs every command path and removes the pattern's escapes, so there
+    [ ] * ? and each backtick get a backtick escape, which the '...' literal keeps for the lookup to read."""
+    if shell == "powershell":
+        path = "".join("`" + c if c in PS_GLOB else c for c in path)
     return ps_literal(path)
 
 

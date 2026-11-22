@@ -168,7 +168,7 @@ def argv(name, exe, path):
     PASS), and a `$LASTEXITCODE = 0` in the script sets only a script-scope copy: such a script ends with `exit 0`."""
     if name in shells.PS_SHELLS:
         # one line, `;` between: cmd.exe (a .cmd shim in the way) ends a command line at a line feed
-        line = f"$global:LASTEXITCODE = 0; & {shells.ps_call_path(path)}; {shells.PS_EXIT.strip()}; exit $LASTEXITCODE"
+        line = f"$global:LASTEXITCODE = 0; & {shells.ps_call_path(path, name)}; {shells.PS_EXIT.strip()}; exit $LASTEXITCODE"
         return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", line]
     return [exe, path]
 
