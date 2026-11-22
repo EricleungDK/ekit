@@ -356,8 +356,13 @@ def _drift(argv):
     args = p.parse_args(argv)
     try:
         env = engine.drift(args.repo, args.base, args.head)
-    except (gitio.Die, stack_plan.PlanError) as e:
+    except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    except stack_plan.PlanError as e:  # a usage error, and a failing result beside it: never read as no plan
+        print(f"mech-review: {e}", file=sys.stderr)
+        env = engine.drift_error(args.repo, args.base, args.head, e)
+        print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
         return 2
     if args.format == "json":
         print(json.dumps(env, indent=2))

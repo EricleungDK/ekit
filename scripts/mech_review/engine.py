@@ -1,5 +1,5 @@
 """Mechanical review engine: runs the checks a subcommand asks for and builds the contract envelope."""
-from . import mutants, red, stack_plan
+from . import mutants, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
@@ -82,3 +82,18 @@ def drift(repo, base_ref, head_ref, now=None):
     if has_plan:
         checks["D"] = {"status": "fail" if uncovered else "pass", "note": note, "messages": messages}
     return envelope(base, head, entries, checks)
+
+
+def drift_error(repo, base_ref, head_ref, error):
+    """The drift result of a plan that does not read (stack_plan.PlanError, e.g. no tomllib): D fails with one CI entry
+    naming the error. A CI entry is not waivable: the plan is fixed in a PR of its own, which its own plan judges. Written
+    beside the usage error (exit 2), so no reader takes a missing result for a repo with no plan."""
+    base = gitio.resolve(repo, base_ref)
+    head = gitio.resolve(repo, head_ref)
+    checks = {c: {"status": "skipped", "note": "not run by drift"} for c in CHECKS}
+    checks["D"] = {"status": "fail", "note": f"the stack plan does not read: {error}", "messages": []}
+    e = report.entry("CI", stack_plan.PATH, 0, "drift:bad-plan", "adapter-fix", "fail",
+                     f"the stack plan does not read: {error}",
+                     f"fix the named entry and field in {stack_plan.PATH}, in a PR that edits only the plan or its adapter "
+                     f"files (its own plan judges it)", "deleting the plan or the entry to make the check pass")
+    return envelope(base, head, finalize([e]), checks)

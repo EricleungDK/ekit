@@ -452,6 +452,23 @@ class Jobs(Run):
                                     "  stack plan: planned stack `web` (web): its checks start"])
         self.assertIn("    D-55555555 :0 manifests no stack in .ekit/stack-plan.toml covers: cli/Cargo.toml", out)
 
+    def test_no_drift_artifact_from_a_guard_job_that_failed_fails_d(self):
+        # review round 2, finding 11: the drift step leaves a result unless it crashed, and then the guard job fails
+        self.green_jobs()
+        self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed", "conclusion": "failure"})
+        r = self.main("555")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        out = r.stdout.splitlines()
+        self.assertIn("D fail: no result from drift job: no drift artifact and the guard job did not succeed (see its log)",
+                      out)
+        self.assertEqual(out[0], f"run 555: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)")
+
+    def test_no_drift_artifact_from_a_guard_job_that_passed_reads_as_before(self):
+        self.green_jobs()
+        self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed", "conclusion": "success"})
+        r = self.main("555")
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (0, f"run 555: all pass {HEAD}"), r.stderr)
+
     def test_no_drift_artifact_reads_as_before(self):
         self.green_jobs()
         r = self.main("--dir", self.art)

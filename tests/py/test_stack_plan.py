@@ -12,7 +12,7 @@ import time
 import unittest
 
 import _kit
-from scripts.mech_review import report, stack_plan
+from scripts.mech_review import report, stack_plan, waiver
 
 PLAN = ".ekit/stack-plan.toml"
 DAY = 86400
@@ -68,6 +68,21 @@ def drift(repo, base, head):
 
 def fails(env):
     return [e for e in env["entries"] if e["severity"] == "fail"]
+
+
+def bad_plan(test, r):
+    """a `drift` run on a plan that does not read: exit 2, the error on stderr, and on stdout an envelope that fails D
+    with one CI entry (not waivable) naming the same error, so no reader takes the missing result for no plan."""
+    test.assertEqual(r.returncode, 2, r.stderr)
+    test.assertNotIn("Traceback", r.stderr)
+    msg = r.stderr.removeprefix("mech-review: ").strip()
+    env = json.loads(r.stdout)
+    test.assertEqual(env["checks"]["D"]["status"], "fail")
+    [e] = env["entries"]
+    test.assertEqual((e["check"], e["class"], e["severity"], e["file"], e["line"]), ("CI", "adapter-fix", "fail", PLAN, 0))
+    test.assertEqual(e["problem"], f"the stack plan does not read: {msg}")
+    test.assertEqual(env["summary"].split(" (")[0], f"fail {env['head']}")
+    return r.stderr
 
 
 class NoPlan(unittest.TestCase):
@@ -498,8 +513,7 @@ class Malformed(unittest.TestCase):
         sha = self.repo.commit({PLAN: text})
         base, head = (self.base, sha) if side == "head" else (sha, sha)
         r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", head])
-        self.assertEqual((r.returncode, r.stdout), (2, ""), r.stderr)
-        self.assertNotIn("Traceback", r.stderr)
+        bad_plan(self, r)
         self.assertIn(f"{PLAN} at {sha[:12]}: ", r.stderr)
         return r.stderr.split(f"{PLAN} at {sha[:12]}: ", 1)[1].strip()
 
@@ -593,6 +607,23 @@ class Malformed(unittest.TestCase):
         r, env = drift(self.repo, base, head)
         self.assertEqual((r.returncode, env["entries"]), (0, []), r.stderr)
 
+    def test_a_bad_plan_entry_cannot_be_waived(self):
+        # review round 2, finding 11: it is a CI entry; the plan is fixed in a PR of its own (judged by its own plan)
+        sha = self.repo.commit({PLAN: plan(("api", "api", "python", "gone"))})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", sha, "--head", sha])
+        env = json.loads(r.stdout)
+        out = waiver.apply(env, {env["entries"][0]["id"]: {"by": "owner", "reason": "r", "url": ""}})
+        self.assertEqual((out["entries"][0]["severity"], out["checks"]["D"]["status"]), ("fail", "fail"))
+
+    def test_a_bad_plan_in_the_text_format_is_the_failing_summary_and_its_entry(self):
+        sha = self.repo.commit({PLAN: plan(("api", "api", "python", "gone"))})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", sha, "--head", sha, "--format", "text"])
+        self.assertEqual(r.returncode, 2)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"fail {sha} (1 fail, 0 confirm; ran: D; skipped: R1 R2 R3 R4)")
+        self.assertRegex(lines[1], rf"^fail CI-[0-9a-f]{{8}} {PLAN}:0 the stack plan does not read: {PLAN} at {sha[:12]}: "
+                                   r"stack\[0\] `api`, field status: `gone`")
+
     def test_a_git_error_exits_2(self):
         r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", "nosuch", "--head", "HEAD"])
         self.assertEqual((r.returncode, r.stdout), (2, ""))
@@ -607,9 +638,7 @@ class Edges(unittest.TestCase):
 
     def err(self, files):
         sha = self.repo.commit(files)
-        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", sha, "--head", sha])
-        self.assertEqual((r.returncode, r.stdout), (2, ""), r.stderr)
-        return r.stderr
+        return bad_plan(self, _kit.run_cli(["drift", "--repo", self.repo.path, "--base", sha, "--head", sha]))
 
     def test_a_control_character_or_a_backslash_in_a_folder_is_named(self):
         for toml, want in (('"a\\u001fb"', "'a\\x1fb' holds a control character"),
@@ -688,8 +717,7 @@ class OldPython(unittest.TestCase):
         repo = Repo(self)
         sha = repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current"))})
         r = self.run_without_tomllib(repo, sha)
-        self.assertEqual((r.returncode, r.stdout), (2, ""))
-        self.assertIn("reading the stack plan needs python 3.11 or newer (tomllib)", r.stderr)
+        self.assertIn("reading the stack plan needs python 3.11 or newer (tomllib)", bad_plan(self, r))
 
     def test_no_plan_needs_no_tomllib(self):
         repo = Repo(self)

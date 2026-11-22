@@ -10,7 +10,8 @@ merges them (the R3 shards with the baseline, then the jobs), and printed: the s
 note, each shard's note, the fail entries grouped by file. The merged R3 artifact (mech-review-mutants-merged-json) is
 used when the run has one. The job list (`gh run view`) tells a baseline that never ran (plan: no production change)
 from one that crashed (R3 fails, as in the report). A drift result (mech-review-drift-json, #56) adds check D and
-its stack plan messages; a run without one reads as before. Waivers are not applied: the sticky comment applies /mech-waive.
+its stack plan messages; a run without one reads as before, unless the guard job failed (its drift step leaves a
+result unless it crashed): then D fails, as in the report. Waivers are not applied: the sticky comment applies /mech-waive.
 exit: 0 no fail entry; 1 a fail entry; 2 usage, gh error, run in progress, unreadable result, or no artifact.
 """
 import argparse
@@ -29,6 +30,8 @@ from mech_review import merge, report  # noqa: E402 - imported after the sys.pat
 REPORT = "mech-review report"
 BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
 PLAN_JOB = "mech-review plan (R3 runs?)"
+GUARD_JOB = "mech-review guard (R2)"
+NO_DRIFT = "no drift artifact and the guard job did not succeed (see its log)"
 JOBS = {"r2": ("mech-review-json", "mech-review.json"), "red": ("mech-review-red-json", "mech-review-red.json")}
 # the guard job's drift check (#56, the owner's upload step): merged when the run has it; a run without it reads as before
 DRIFT = ("mech-review-drift-json", "mech-review-drift.json")
@@ -149,6 +152,9 @@ def summarize(d, label, jobs=None):
         if os.path.exists(os.path.join(d, *DRIFT)):
             parts["drift"] = _load(d, DRIFT)
             reasons["drift"] = "no usable result file"
+        elif (jobs or {}).get(GUARD_JOB, "success") != "success":
+            # the drift step leaves a result unless it crashed, and then the guard job fails: never read as no plan
+            parts["drift"], reasons["drift"] = None, NO_DRIFT
         if all(v is None for v in parts.values()):
             raise Stop(f"no mech-review artifact in {label}")
         env = merge.merge(parts, reasons)
