@@ -125,9 +125,53 @@ class StackPlan(unittest.TestCase):
 
     def test_a_folder_that_is_no_git_repo_adds_nothing(self):
         self.repo = os.path.dirname(self.repo)
-        with open(os.path.join(self.repo, "HEAD"), "w"):  # a HEAD file alone, or an objects dir alone, is no git dir
+        with open(os.path.join(self.repo, "HEAD"), "w"):  # a HEAD file and an objects dir that git does not take
             pass
+        os.mkdir(os.path.join(self.repo, "objects"))
         self.assertNotIn("[ekit] Stack plan", self.context())
+
+    def test_a_repo_above_a_git_ceiling_is_no_repo(self):
+        self.commit({"web/package.json": "{}", "api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        cwd = os.path.join(self.repo, "web")
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": self.repo}):  # git does not look above web/
+            self.repo = cwd
+            self.assertNotIn("[ekit] Stack plan", self.context())
+
+    def test_the_repo_git_finds_is_judged_wherever_cwd_names_it(self):
+        self.commit({"web/package.json": "{}", "api/pyproject.toml": "[project]\n",
+                     PLAN: plan(("web", "web", "ts", "retiring"))})
+        repo, outside = self.repo, os.path.join(os.path.dirname(self.repo), "outside")
+        os.mkdir(outside)
+        link = os.path.join(outside, "app")
+        try:
+            os.symlink(os.path.join(repo, "web"), link, target_is_directory=True)
+        except OSError:  # Windows without the symlink privilege
+            link = None
+        cases = {"through GIT_DIR and GIT_WORK_TREE": (outside, {"GIT_DIR": os.path.join(repo, ".git"),
+                                                                 "GIT_WORK_TREE": repo})}
+        if link:
+            cases["a symlink to a folder of the repo"] = (link, {})
+        for case, (cwd, env) in cases.items():
+            with self.subTest(case=case), mock.patch.dict(os.environ, env):
+                self.repo = cwd
+                text = "\n".join(self.drift_lines(self.context()))
+                self.assertIn("unchecked manifest api/pyproject.toml", text)
+                self.assertIn("retiring stack `web` (web)", text)
+
+    def test_a_linked_worktree_and_a_submodule_where_git_is_a_file_are_judged(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        git = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+               "-c", "protocol.file.allow=always"]
+        linked = os.path.join(os.path.dirname(self.repo), "linked")
+        subprocess.run(git + ["-C", self.repo, "worktree", "add", "-q", linked], check=True, capture_output=True)
+        outer = os.path.join(os.path.dirname(self.repo), "outer")
+        subprocess.run(["git", "init", "-q", outer], check=True)
+        subprocess.run(git + ["-C", outer, "submodule", "add", "-q", self.repo, "sub"], check=True, capture_output=True)
+        for cwd in (linked, os.path.join(outer, "sub")):
+            with self.subTest(cwd=os.path.basename(cwd)):
+                self.assertTrue(os.path.isfile(os.path.join(cwd, ".git")))  # .git is a file here
+                self.repo = cwd
+                self.assertIn("unchecked manifest api/pyproject.toml", self.context())
 
     def test_on_a_python_without_tomllib_one_line_says_311_is_needed_and_ci_still_checks(self):
         self.commit({"web/package.json": "{}", "api/pyproject.toml": "[project]\n"})

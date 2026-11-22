@@ -45,6 +45,7 @@ def drift(cwd):
     the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network. Nothing when cwd is in no git
     repo, the repo has no commit, there is no plan, or it is clean; any other failure is one line, never a clean read."""
     os.environ["GIT_NO_LAZY_FETCH"] = "1"  # git 2.44+: a missing object is an error, never a fetch (older: partial_clone)
+    os.environ.update(LC_ALL="C", LANGUAGE="")  # git's own words, unlocalized: "not a git repository" is read below
     out = []
     worker = threading.Thread(target=lambda: out.append(_guarded(cwd)), daemon=True)  # left behind on overrun
     worker.start()
@@ -65,20 +66,6 @@ def _guarded(cwd):
                 f"runs it on every PR."]
 
 
-def in_git(cwd):
-    """cwd or a folder above it holds a `.git`, or is a git dir itself (HEAD and objects/: a bare repo, a .git dir).
-    Read from the disk, so a git that fails there (dubious ownership, a bad config) is a failure, not "no repo"."""
-    d = os.path.abspath(cwd)
-    while True:
-        if os.path.lexists(os.path.join(d, ".git")) or (
-                os.path.isfile(os.path.join(d, "HEAD")) and os.path.isdir(os.path.join(d, "objects"))):
-            return True
-        parent = os.path.dirname(d)
-        if parent == d:
-            return False
-        d = parent
-
-
 def partial_clone(top):
     """the repo has a promisor remote: git fetches any object it lacks from there (a lazy fetch, a network call)."""
     try:
@@ -89,9 +76,12 @@ def partial_clone(top):
 
 
 def _drift(cwd):
-    if not in_git(cwd):  # a folder outside git: nothing to judge
-        return []
-    top = gitio.git(cwd, "rev-parse", "--show-toplevel").strip()
+    try:
+        top = gitio.git(cwd, "rev-parse", "--show-toplevel").strip()
+    except gitio.Die as e:
+        if "not a git repository (or any" in str(e):  # git's search found none (a ceiling, a filesystem boundary too)
+            return []
+        raise
     try:
         gitio.resolve(top, "HEAD")
     except gitio.Die:  # no commit yet: no committed plan to read
