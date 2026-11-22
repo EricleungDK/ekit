@@ -116,7 +116,9 @@ class EndState(unittest.TestCase):
         self.commit(JS_RETIRING + TS.replace('name = "web"', 'name = "js"'))  # two entries named js
         lines = self.verdict()
         self.assertIn("js-retiring: no", lines)
-        self.assertRegex(lines[2], r"^drift: not clean \(exit 2: ")
+        # a usage error (exit 2), whether the engine says why on stderr only or in its result's entry as well
+        self.assertRegex(lines[2], r"^drift: not clean \(exit 2: .*stack\[1\] `js`, field name: `js` is already "
+                                   r"stack\[0\]\)$")
         self.assertEqual(lines[-1], "migrated: no")
 
     def test_an_edit_left_uncommitted_is_not_the_end_state(self):

@@ -75,13 +75,19 @@ else:
     r = subprocess.run([sys.executable, "-I", engine, "drift", "--repo", repo, "--base", "HEAD", "--head", "HEAD",
                         "--format", "json"], capture_output=True, text=True, env=env)
     try:
-        env = json.loads(r.stdout)
-        d = env["checks"].get("D") or {}
-        clean = r.returncode == 0 and d.get("status") == "pass" and not env["entries"]
+        result = json.loads(r.stdout)
+        d = result["checks"].get("D") or {}
+        entries = result["entries"]
+    except (ValueError, KeyError, TypeError):  # no result on stdout
+        result, d, entries = None, {}, []
+    if r.returncode == 2 or result is None:  # a usage error: the reason is the result's entry, else stderr's first line
+        reason = entries[0].get("problem") if entries and isinstance(entries[0], dict) else None
+        reason = reason or (r.stderr.strip().splitlines() or ["no output"])[0]
+        lines.append(f"drift: not clean (exit {r.returncode}: {reason[:300]})")
+    else:
+        clean = r.returncode == 0 and d.get("status") == "pass" and not entries
         lines.append(f"drift: {'clean' if clean else 'not clean'} (exit {r.returncode}, D {d.get('status')}, "
-                     f"{len(env['entries'])} entries, messages {json.dumps(d.get('messages', []))})")
-    except (ValueError, KeyError):
-        lines.append(f"drift: not clean (exit {r.returncode}: {r.stderr.strip()[:300]})")
+                     f"{len(entries)} entries, messages {json.dumps(d.get('messages', []))})")
 lines.append(f"migrated: {'yes' if ts and retiring and clean else 'no'}")  # the one end state: all three at once
 with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")
