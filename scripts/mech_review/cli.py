@@ -34,11 +34,13 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       lines, `--mutate` ranges), run in a worktree at head. `baseline` (#46) runs first, once: rust measures the unmutated
       tree and counts the mutants; the shards then skip the baseline (`--baseline skip`, `--timeout` from the baseline)
       and run round-robin over min(shards, mutants, ceil(estimated min / (budget / 2))) shards. python (#64): the whole
-      suite once (pytest's session time) and mutmut's listing (the mutants on changed lines) give the same count; a
-      baseline that measured nothing keeps one shard per changed file, at most --shards, and its note says why. Cap --max-mutants N
+      suite once (its session time from pytest's --junit-xml) and mutmut's listing (the mutants on changed lines) give
+      the same count, no mutant on a changed line runs no shard; a baseline that measured nothing keeps one shard per
+      changed file, at most --shards, and its note says why. Cap --max-mutants N
       (default 40; rust, python): the riskiest N run (branch conditions, returns and booleans, arithmetic, the rest,
       strings and arguments last), dealt round-robin over the shards; the rest are untested: partial. Per-mutant timeout: --mutant-timeout SEC, else derived from the
-      measured baseline (cargo-mutants' rule). Budget `--mutation-budget MIN` (default 10, per shard and for the baseline).
+      measured baseline (cargo-mutants' rule). Budget `--mutation-budget MIN` (default 10, per shard and for the baseline;
+      python's baseline gives it to the suite run and to the listing each, so it can take about twice that).
       MISSED in a production file -> fail (agent-fixable), one entry per mutant; TIMEOUT and UNVIABLE ignored. Budget
       hit with no MISSED -> partial (tested/total), not blocking. A baseline that fails -> fail; one that times out ->
       n/a (names mutation-budget). Tool not installed -> n/a (env). No production file -> skipped.

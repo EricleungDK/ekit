@@ -1319,10 +1319,10 @@ class Mutmut:
     default_cmd = "mutmut"
 
     def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
-        """The baseline step (python, #64): the whole suite runs once at head (pytest's own session time is the
-        measured test time) and step 1 lists the mutants on changed lines; the shard count follows from their cost, as
-        for rust. A baseline that measures nothing (no mutmut, a suite that is red or prints no time, a listing that
-        does not end) keeps the file rule, and the note says why."""
+        """The baseline step (python, #64): the whole suite runs once at head (the session time in pytest's JUnit XML is
+        the measured test time) and step 1 lists the mutants on changed lines; the shard count follows from their cost,
+        as for rust, and no mutant on a changed line runs no shard. A baseline that measures nothing (no mutmut, a suite
+        that is red or writes no time, a listing that does not end) keeps the file rule, and the note says why."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
         if not files:
