@@ -273,6 +273,8 @@ FEATURE = re.compile(r"^-[^\S\n]+feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$")
 # so read or named, never dropped. Gherkin's `Feature:`, a nested bullet, `*` and `+` bullets are other text.
 FIELD_KEY = re.compile(r"^-[^\S\n]*([^:\n]*):")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+COMMENT = re.compile(r"<!--.*?-->")
+EMPTY = "SCENARIO.md feature line `- feature:` is empty"  # marks nothing in run (as no line); seeded names it
 
 
 def is_feature_field(line):
@@ -281,9 +283,10 @@ def is_feature_field(line):
 
 
 def marker(repo, sid):
-    """(feature, error) of a scenario's SCENARIO.md: the `- feature: <name>` line taste-it seeds it with (an empty one
-    marks nothing). Lines inside a fenced block are text, not fields. error: no SCENARIO.md, more than one feature line,
-    or a feature line not in that form, each named, never a silent pick or drop."""
+    """(feature, error) of a scenario's SCENARIO.md: the `- feature: <name>` line taste-it seeds it with. Lines inside a
+    fenced block or an HTML comment are text, not fields. error: no SCENARIO.md, one that cannot be read, more than one
+    feature line, one not in that form, a fence left open above one, or an empty one (EMPTY: run reads it as no line),
+    each named, never a silent pick or drop."""
     path = os.path.join(root(repo), sid, "SCENARIO.md")
     if not os.path.isfile(path):
         return None, NODOC
@@ -292,13 +295,29 @@ def marker(repo, sid):
             text = f.read()
     except OSError as e:  # a file the runner cannot read is named, never a crash after the scenarios ran
         return None, f"SCENARIO.md cannot be read: {e.strerror or e}"
-    found, fence = [], None
+    found, fence, hidden, comment = [], None, [], False
     for line in text.lstrip("\ufeff").splitlines():
         m = FENCE.match(line)
-        if m and (fence is None or m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)):
-            fence = None if fence else m.group(1)
-        elif not fence and is_feature_field(line):
+        if fence:  # inside a fenced block: text, until a fence of its kind, no shorter, closes it
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence, hidden = None, []
+            elif is_feature_field(line):
+                hidden.append(line.rstrip())
+            continue
+        if comment:  # inside an HTML comment, until its -->
+            if "-->" not in line:
+                continue
+            line, comment = line.split("-->", 1)[1], False
+        line = COMMENT.sub("", line)
+        if "<!--" in line:
+            line, comment = line.split("<!--", 1)[0], True
+        m = FENCE.match(line)
+        if m:
+            fence = m.group(1)
+        elif is_feature_field(line):
             found.append(line.rstrip())
+    if fence and hidden:  # an unclosed fence would hide the marker: named, not dropped
+        return None, f"SCENARIO.md: the {fence} fence opened above `{hidden[0]}` is never closed"
     if len(found) > 1:
         names = ", ".join(x.split(":", 1)[1].strip() for x in found)
         return None, f"SCENARIO.md has more than one feature line ({names}): keep one"
@@ -307,7 +326,9 @@ def marker(repo, sid):
     m = FEATURE.match(found[0])
     if not m:
         return None, f"SCENARIO.md feature line `{found[0]}` is not `- feature: <name>`"
-    return m.group(1) or None, None
+    if not m.group(1):
+        return None, EMPTY
+    return m.group(1), None
 
 
 def features_line(results, valid=True):
@@ -344,7 +365,7 @@ def cmd_run(repo, only=None):
         name, err = marker(repo, r["id"])
         if name:
             r["feature"] = name  # results.json keeps it: check counts the features from there
-        elif err and err != NODOC:  # no SCENARIO.md is run_one's FAIL already
+        elif err and err not in (NODOC, EMPTY):  # no SCENARIO.md is run_one's FAIL already; an empty line marks none
             r["reason"] = err  # the folder is to be fixed, whatever the run gave
     for r in results:
         print(f"{'NOT-RUN' if not_here(r) else 'FAIL'} {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")

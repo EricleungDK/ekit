@@ -1004,6 +1004,41 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual(self.cli("run"), (1, "FAIL tidy: exit 1\nFAIL: 0/1 scenarios\n"))
         self.assertEqual(self.cli("seeded", "tidy"), (2, "ERROR tidy: SCENARIO.md has no `- feature:` line\n"))
 
+    def feature_of(self, text):
+        """(run's features line, seeded's first line) for one scenario whose SCENARIO.md is `text`"""
+        self.scenario("login", FAILS)
+        self.doc("login", text)
+        return self.cli("run")[1].splitlines()[-1], self.cli("seeded", "login")[1].splitlines()[0]
+
+    def test_a_feature_line_after_a_closed_fence_is_read(self):
+        for text in ("```\n- feature: fake\n```\n- feature: real\n",  # a fence closes
+                     "```\n~~~\n- feature: fake\n```\n- feature: real\n",  # only a fence of its own kind closes it
+                     "````\n```\n- feature: fake\n````\n- feature: real\n"):  # and no shorter one
+            with self.subTest(text=text):
+                line, seeded = self.feature_of(text)
+                self.assertEqual((line, seeded[:15]), ("0 of 1 features working", "SEEDED ✓ login:"))
+
+    def test_a_fence_never_closed_above_a_feature_line_is_named(self):
+        err = "SCENARIO.md: the ``` fence opened above `- feature: add` is never closed"
+        self.assertEqual(self.feature_of("- story: s\n```\ncode\n- feature: add  \n"),
+                         ("FAIL: 0/1 scenarios", f"ERROR login: {err}"))
+        self.assertEqual(self.cli("run")[1].splitlines()[0], f"FAIL login: {err}")
+
+    def test_a_feature_line_inside_an_html_comment_is_text(self):
+        for text in ("<!--\n- feature: older\n-->\n- feature: real\n", "<!-- - feature: x -->\n- feature: real\n",
+                     "- feature: real <!-- was: older -->\n", "<!-- a --> <!--\n- feature: older\n--> \n- feature: real\n",
+                     "```\n<!--\n```\n- feature: real\n"):  # inside a fence, <!-- opens nothing
+            with self.subTest(text=text):
+                self.scenario("login", PASSES)
+                self.doc("login", text)
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][0].get("feature"), "real")
+
+    def test_seeded_says_an_empty_feature_line_is_empty(self):
+        self.assertEqual(self.feature_of("- story: s\n- feature:\n"),
+                         ("FAIL: 0/1 scenarios", "ERROR login: SCENARIO.md feature line `- feature:` is empty"))
+
     def test_a_bom_before_a_first_line_marker_is_not_part_of_it(self):
         self.scenario("login", PASSES)
         self.doc("login", "﻿- feature: log in\n- story: s\n")
@@ -1105,6 +1140,7 @@ class TestFeatures(unittest.TestCase):
         with open(os.path.join(self.repo, ".ekit/scenarios/windows/SCENARIO.md"), "w", newline="") as f:
             f.write("- story: s\r\n-  feature :  sign up \r\n- covers: c\r\n")
         _, out = self.cli("run")
+        self.assertIn("PASS blank\n", out)  # an empty feature line marks nothing: no FAIL for it in run
         self.assertEqual(out.splitlines()[-1], "1 of 1 features working")
         with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
             self.assertEqual([r.get("feature") for r in json.load(f)["scenarios"]], [None, "sign up"])
