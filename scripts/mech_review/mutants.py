@@ -1672,8 +1672,8 @@ const every = await list({ includes: () => true });
 process.stdout.write("\nekit-stryker-listing " + rows(plain) + "\nekit-stryker-upper " + rows(every) + "\n");
 """
 STRYKER_OPTIONS = "ekit-stryker-options.json"
-LISTINGS = {"plain": re.compile(r"^ekit-stryker-listing (.*)$", re.M),  # the lists' own lines; other output is log
-            "upper": re.compile(r"^ekit-stryker-upper (.*)$", re.M)}
+# the lists' own lines; other output is log
+LISTED_LINE = re.compile(r"^(ekit-stryker-listing|ekit-stryker-upper) (.*)$", re.M)
 
 
 def _listing_row(row, full):
@@ -1689,15 +1689,17 @@ def _listing_row(row, full):
     return full[f], mutator, replacement, first, last
 
 
-def _listing_rows(text, rx, full):
-    """(rows, None) of one marked list in the listing's output, or (None, why not)."""
-    found = rx.findall(text or "")
+def _listing_rows(text, name, full):
+    """(rows, None) of the list marked `name` in the listing's output, or (None, why not: the list that is missing
+    by its name, and the first line that is not a list's own)."""
+    found = [body for marked, body in LISTED_LINE.findall(text or "") if marked == name]
     try:
         doc = json.loads(found[-1]) if found else None
     except ValueError:
         doc = None
     if not isinstance(doc, list):
-        return None, f"no mutant list in its output: {_first_line(text) or 'no output'}"
+        log = LISTED_LINE.sub("", text or "")
+        return None, f"no {name} list in its output: {_first_line(log) or 'no other output'}"
     rows = [_listing_row(row, full) for row in doc]
     if None in rows:
         bad = doc[rows.index(None)]
@@ -1722,8 +1724,8 @@ def stryker_listing(runner, cmd, crate, paths, excluded=()):
         shutil.rmtree(tmp, ignore_errors=True)
     if rc != 0:
         return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
-    plain, why = _listing_rows(text, LISTINGS["plain"], full)
-    upper, why_upper = (None, None) if why else _listing_rows(text, LISTINGS["upper"], full)
+    plain, why = _listing_rows(text, "ekit-stryker-listing", full)
+    upper, why_upper = (None, None) if why else _listing_rows(text, "ekit-stryker-upper", full)
     if why or why_upper:
         return None, why or why_upper
     return (plain, upper), None

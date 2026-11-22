@@ -895,8 +895,9 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
     if os.environ.get("STUB_NO_LISTING"):
         print("Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@stryker-mutator/instrumenter'")
         sys.exit(1)
-    print("(node:1) ExperimentalWarning: a log line before the listing")
-    print('[BABEL] Note: the code generator has deoptimised the styling of a file as it exceeds the max of 500KB.')
+    if not os.environ.get("STUB_QUIET"):  # the real listing prints its two lists alone
+        print("(node:1) ExperimentalWarning: a log line before the listing")
+        print('[BABEL] Note: the code generator has deoptimised the styling of a file as it exceeds the max of 500KB.')
     # ekit passes absolute paths and gets them back; the spec names the files from the crate dir. Two lists, as the
     # real instrumenter makes them: at Stryker's defaults, and with every mutator excluded (the upper bound). A 6th
     # field "upper": a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement,
@@ -914,8 +915,11 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
         rows.append([args[4]] + bad if isinstance(bad, list) and len(bad) < 5 else bad)
     if "ekit-stryker-upper" not in args[2]:  # a script that lists the upper bound alone, as 81df7bf's did
         rows = every
-    print("ekit-stryker-listing " + json.dumps(rows).replace('"Infinity"', "Infinity"))
-    print("ekit-stryker-upper " + json.dumps(every))
+    lists = {"ekit-stryker-listing": json.dumps(rows).replace('"Infinity"', "Infinity"),
+             "ekit-stryker-upper": json.dumps(every)}
+    for name, text in lists.items():
+        if name != os.environ.get("STUB_NO_LIST"):  # a listing whose output lacks one of the two lists
+            print(name + " " + text)
     sys.exit(0)
 if args == ["--version"]:
     print("10.0.0")
@@ -1205,6 +1209,18 @@ class TestTsListing(TsCli):
             self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 8, 8), row)
             self.assertIn("; max-mutants not applied: Stryker's instrumenter listed no mutant (a row that is not "
                           "[file, mutator, replacement, first line, last line]: ", r3["note"])
+
+    def test_a_list_missing_from_the_output_is_no_listing_and_the_note_names_that_list(self):
+        # review round 6, finding C: the reason names the list that is missing and quotes a line that is not the other
+        for name in ("ekit-stryker-upper", "ekit-stryker-listing"):
+            r3 = self.cli("--max-mutants", "5", STUB_NO_LIST=name)["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), name)  # no cap: every changed line
+            self.assertTrue(r3["note"].endswith(
+                f"; max-mutants not applied: Stryker's instrumenter listed no mutant (no {name} list in its output: "
+                "(node:1) ExperimentalWarning: a log line before the listing)"), r3["note"])
+            r3 = self.cli("--max-mutants", "5", STUB_NO_LIST=name, STUB_QUIET="1")["checks"]["R3"]
+            self.assertTrue(r3["note"].endswith(f"listed no mutant (no {name} list in its output: no other output)"),
+                            r3["note"])
 
     def test_a_run_that_makes_more_than_the_listing_held_is_not_a_result(self):
         env = self.cli("--max-mutants", "5", STUB_MORE="1")
