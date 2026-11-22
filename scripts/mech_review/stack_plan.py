@@ -25,8 +25,10 @@ DAY = 86400
 ENTRY_KEYS = ("name", "folder", "adapter", "status", "target-os")
 
 # adapter_ref: the plan's `adapter` value; adapter: the Adapter it names (None: a planned entry's adapter file that is not
-# there or does not read yet, not proven); target_os: the entry's, else its adapter's (None with no adapter)
-Entry = namedtuple("Entry", "name folder adapter_ref adapter target_os status")
+# there or does not read yet, not proven; or a vanished stack's, see gone); target_os: the entry's, else its adapter's
+# (None with no adapter); gone: a current or retiring stack whose adapter file is gone with every manifest it listed:
+# those manifest names (its last version's), else ()
+Entry = namedtuple("Entry", "name folder adapter_ref adapter target_os status gone", defaults=((),))
 Plan = namedtuple("Plan", "entries ignore")
 # has_plan: a plan exists where it was read; uncovered: manifest paths no entry covers; messages: lines for the user
 Drift = namedtuple("Drift", "has_plan uncovered messages")
@@ -84,9 +86,10 @@ def _adapter(ref, where, read, planned):
     return a
 
 
-def parse(data, read):
+def parse(data, read, vanished):
     """the Plan a parsed plan file (a dict, as tomllib reads it) describes. read(path) -> bytes or None: an adapter file
-    at the plan's ref."""
+    at the plan's ref. vanished(ref, where, folder, ignore) -> the manifest names of an adapter file that is not there
+    any more, none of whose manifests is left in folder (a stack that is gone), else ()."""
     if not isinstance(data, dict):
         raise PlanError("want a table")
     for k in data:
@@ -136,7 +139,14 @@ def parse(data, read):
         status = s["status"]
         if status not in STATUSES:
             raise PlanError(f"{label}, field status: `{status}`: want planned, current or retiring")
-        adapter = _adapter(s["adapter"], f"{label}, field adapter", read, status == "planned")
+        where = f"{label}, field adapter"
+        try:
+            adapter, gone = _adapter(s["adapter"], where, read, status == "planned"), ()
+        except PlanError:
+            # a stack whose adapter file went with every manifest it listed is vanished (a message), as a built-in's
+            adapter, gone = None, vanished(s["adapter"], where, folder, folders)
+            if not gone:
+                raise
         if "target-os" in s:
             try:
                 target = adapter_file.target_os(s["target-os"], f"{label}, field target-os")
@@ -153,7 +163,7 @@ def parse(data, read):
             raise PlanError(f"{label}, field folder: stack `{stack}` in {folder} is already {keys[key]} with "
                             f"status {status}")
         keys[key] = label
-        entries.append(Entry(name, folder, s["adapter"], adapter, target, status))
+        entries.append(Entry(name, folder, s["adapter"], adapter, target, status, gone))
     return Plan(entries, folders)
 
 
@@ -183,6 +193,31 @@ def _blob(repo, sha, path):
     return gitio.blob(repo, sha, path).encode("utf-8", "surrogateescape")
 
 
+def _last_version(repo, sha, path):
+    """the file's bytes just before the newest first-parent commit up to sha that changed it (it is not at sha), or
+    None."""
+    commits = gitio.git(repo, "rev-list", "--first-parent", sha, "--", path).split()
+    return _blob(repo, f"{commits[0]}^", path) if commits else None
+
+
+def _vanished(repo, sha, read):
+    """parse's vanished(ref, where, folder, ignore) for the plan at sha: a path ref with no file at sha, whose last
+    version in the history loads as an adapter file, and none of whose manifests is left in folder at sha (outside the
+    ignore folders and SKIP_DIRS): that version's manifest names. Anything else (). A bad path raises, named."""
+    def vanished(ref, where, folder, ignore):
+        if not (isinstance(ref, str) and _path_like(ref)):
+            return ()
+        path = _folder(ref, where)
+        raw = None if read(path) is not None else _last_version(repo, sha, path)
+        try:
+            names = adapter_file.loads(raw, path).manifests if raw is not None else ()
+        except adapter_file.AdapterFileError:
+            return ()
+        left = [p for p in manifests(tracked(repo, sha), names, ignore) if holds(folder, p)]
+        return () if left else tuple(names)
+    return vanished
+
+
 def at(repo, ref):
     """the Plan at ref, or None when there is no plan file there. PlanError: unreadable or invalid (named)."""
     sha = gitio.resolve(repo, ref)
@@ -191,7 +226,9 @@ def at(repo, ref):
         return None
     where = f"{PATH} at {sha[:12]}"
     try:
-        return parse(_toml(raw, where), lambda p: _blob(repo, sha, p))
+        def read(path):
+            return _blob(repo, sha, path)
+        return parse(_toml(raw, where), read, _vanished(repo, sha, read))
     except PlanError as e:
         msg = str(e)
         raise PlanError(msg if msg.startswith(where) else f"{where}: {msg}") from None
@@ -267,7 +304,8 @@ def judge(plan, paths, since, now, names=None):
                 messages.append(f"planned {where}: its manifest {mine[0]} is here and its adapter `{e.adapter_ref}` is "
                                 f"proven, so its checks start: set its status to current")
         elif not mine:
-            messages.append(f"{where}: no {_either(e.adapter.manifests)} in {e.folder} any more: remove the entry "
+            listed = e.adapter.manifests if e.adapter else e.gone
+            messages.append(f"{where}: no {_either(listed)} in {e.folder} any more: remove the entry "
                             f"`{e.name}` from {PATH}")
         elif e.status == "retiring":
             text = f"retiring {where}: its manifest {mine[0]} is still here: finish the migration, then remove its entry"

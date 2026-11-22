@@ -419,6 +419,41 @@ class Messages(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("stack[0] `mob`, field adapter: `.ekit/adapters/kotlin.toml` is not a built-in stack", r.stderr)
 
+    def test_a_stack_whose_adapter_file_and_manifests_are_gone_names_the_entry_to_remove(self):
+        # review round 3, finding 5: as for a built-in stack (a message, never a fail), on this PR and on every later one
+        lib = ".ekit/adapters/mini.toml"
+        for status in ("current", "retiring"):
+            with self.subTest(status=status):
+                repo = Repo(self)
+                # the two left behind do not count: one under an ignore folder, one under a fixture folder
+                base = repo.commit({"api/pyproject.toml": "[project]\n", lib: mini(), "lib/mini.json": "{}",
+                                    "lib/demo/mini.json": "{}", "lib/tests/mini.json": "{}",
+                                    PLAN: plan(("api", "api", "python", "current"), ("lib", "lib", lib, status),
+                                               ignore=["lib/demo"])})
+                head = repo.commit({lib: None, "lib/mini.json": None})
+                later = repo.commit({"api/x.py": "x = 1\n"})
+                gone = [f"stack `lib` (lib): no mini.json in lib any more: remove the entry `lib` from {PLAN}"]
+                for b, h in ((base, head), (head, later)):
+                    r, env = drift(repo, b, h)
+                    self.assertEqual((r.returncode, env["entries"], env["checks"]["D"]["status"], messages(env)),
+                                     (0, [], "pass", gone), r.stderr)
+                self.assertEqual(stack_plan.drift_at(repo.path, later), stack_plan.Drift(True, [], gone))
+
+    def test_an_adapter_file_gone_while_its_manifest_stays_is_named(self):
+        # review round 3, finding 5: the entry covers nothing real, so it stays the usage error
+        lib = ".ekit/adapters/mini.toml"
+        base = self.repo.commit({"api/pyproject.toml": "[project]\n", lib: mini(), "lib/deep/mini.json": "{}",
+                                 PLAN: plan(("api", "api", "python", "current"), ("lib", "lib", lib, "current"))})
+        head = self.repo.commit({lib: None})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", head])
+        self.assertIn(f"stack[1] `lib`, field adapter: `{lib}` is not a built-in stack (python, rust, ts) and no file is "
+                      f"there", bad_plan(self, r))
+        # an adapter file still there that does not read is a bad adapter file, its manifests gone or not
+        self.repo.git("checkout", "-q", base)
+        head = self.repo.commit({lib: mini().replace("format = 1\n", "format = 9\n"), "lib/deep/mini.json": None})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", head])
+        self.assertIn(f"stack[1] `lib`, field adapter: adapter file {lib}: format: `9`: want 1", bad_plan(self, r))
+
     def test_a_planned_stack_names_a_built_in_or_an_adapter_file_path(self):
         # review round 3, finding 4: `typescript` (for `ts`) holds no `/` and no `.toml`, so it is no file path: named,
         # as on a current entry, not left unproven until its manifest lands and the block asks for an entry it has
