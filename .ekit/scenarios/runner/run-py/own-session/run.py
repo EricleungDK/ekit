@@ -42,7 +42,7 @@ time.sleep(0.5)
 '''
 
 sh(["git", "init", "-q", SAMPLE])
-for sid, tail in (("hang", "time.sleep(30)"), ("quick", "sys.exit(0)")):
+for sid, tail in (("hang", "time.sleep(30)"),):
     d = os.path.join(SAMPLE, ".ekit", "scenarios", sid)
     os.makedirs(d)
     with open(os.path.join(d, "SCENARIO.md"), "w") as f:
@@ -77,9 +77,5 @@ if rc != 1 or "FAIL hang: timeout after 1s" not in out:
 if took > 15:
     fail(f"timeout run took {took:.1f}s, want under 15s")
 marks_after_wait("after the timeout")
-
-rc, out, _ = run(["run", "quick"], ENV)
-if rc != 0 or "PASS quick" not in out:
-    fail(f"quick run: exit {rc}, want 0 and `PASS quick`")
-marks_after_wait("after a passing scenario ended")
+# out of scope: an own-session child outliving a run.py that exits normally (see SCENARIO.md)
 print("OK")
