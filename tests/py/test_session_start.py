@@ -416,9 +416,10 @@ class StackPlan(unittest.TestCase):
             with self.subTest(case=case), mock.patch.dict(os.environ, env):
                 self.repo = cwd
                 lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
-                self.assertEqual(len(lines), 1, lines)
-                self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: "
-                                           r"fatal: not a git repository: ")
+                self.assertEqual(len(lines), 1, lines)  # one line: never silent, so never read as "no repo"
+                # git's own words follow, and they differ by version (2.43: "not a git repository: <dir>"; 2.56, for
+                # a .git file: "gitfile does not point to a valid repository")
+                self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: fatal: ")
 
     def test_a_broken_git_config_is_one_line(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
