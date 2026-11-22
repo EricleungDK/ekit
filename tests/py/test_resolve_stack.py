@@ -214,6 +214,19 @@ class TestResolveTargetOs(unittest.TestCase):
         self.assertIn("target-os: `solaris`: want linux, macos or windows", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_an_adapter_file_named_auto_is_a_usage_error_naming_the_field(self):
+        path = self.adapter("macos")
+        with open(path) as f:
+            text = f.read().replace('name = "mini"\n', 'name = "auto"\n')
+        with open(path, "w") as f:
+            f.write(text)
+        for extra in ([], ["--stack", "auto"]):
+            with self.subTest(extra=extra):
+                r = _kit.run_cli(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--adapter", path,
+                                  *extra])
+                self.assertEqual((r.returncode, r.stdout), (2, ""))
+                self.assertIn("name: `auto` is reserved", r.stderr)
+
     def test_the_stack_must_be_the_adapter_files_name(self):
         r = _kit.run_cli(["resolve", "--repo", self.repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts",
                           "--adapter", self.adapter("macos")])
