@@ -45,12 +45,15 @@ Keep the `## Finish: done` / `## Finish: blocked` line as written: in an orchest
 | <criterion> | 👤 human-only | <what the user checks>; Needs-you block below |
 Mech <head sha>: R1 <status> · R2 <status> · R3 <status> · R4 <status>
 TDD: <test> red (`<failure line>`) → green (`<cmd>` exit 0)
+<the `N of M features working` line `RUN check` printed, as printed>
 Env: <the line `preflight.py --env` printed>
 Verification debt: <items, or none>
 Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
 ```
 
 Scenario row evidence: `RUN run <id>` → `PASS <id>`, `<results.json / transcript path>`, `RUN check` exit 0. A scenario with `artifacts` in results.json (screenshots): add their paths to the row.
+
+Features line: copy the `N of M features working` line `RUN check` printed, as printed ([scenarios.md](scenarios.md)); never count by hand. `RUN check` printed none → leave the line out. A seeding task (taste-it §7) is done with none of its seeded features working: scenarios.md says when.
 
 Each 👤 row gets a Needs-you block (same shape as in Blocked; Run/Expect become the exact steps and expected result, Why = what the check protects). Verdict stays "done except the rows marked ⚠️/👤".
 
@@ -71,6 +74,7 @@ Needs you:
   Then: <reply "done" / paste the output here>
   Why: <what it unblocks>
 Done so far: <criteria table, as above>
+<the `N of M features working` line `RUN check` printed, as printed>
 Verification debt: <blocked cmd → reason → where to rerun>
 ```
 

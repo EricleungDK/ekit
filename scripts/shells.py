@@ -197,6 +197,26 @@ def env_for(exe, name, env=None):
     return env
 
 
+PS_QUOTES = "'\u2018\u2019\u201a\u201b"  # PowerShell reads each as a single quote
+
+
+def ps_literal(text):
+    """`text` as one PowerShell single-quoted literal: each quote doubled, nothing else expanded ($, `, ")."""
+    return "'" + "".join(c * 2 if c in PS_QUOTES else c for c in text) + "'"
+
+
+PS_GLOB = "[]*?`"  # Windows PowerShell 5.1 reads these in a command path as a wildcard pattern and its escape
+
+
+def ps_call_path(path, shell):
+    """`path` as the literal `& <it>` runs as that very file in `shell`. pwsh (7+) looks the literal path up first, so
+    it goes as it is. Windows PowerShell 5.1 globs every command path and removes the pattern's escapes, so there
+    [ ] * ? and each backtick get a backtick escape, which the '...' literal keeps for the lookup to read."""
+    if shell == "powershell":
+        path = "".join("`" + c if c in PS_GLOB else c for c in path)
+    return ps_literal(path)
+
+
 def command(exe, name, line):
     """argv (or, for cmd.exe, the command string) that runs `line` with the shell `name` at `exe`."""
     if name in PS_SHELLS:
@@ -272,8 +292,54 @@ def finish(proc):
 REAP = 10  # seconds to wait for a stopped tree to go: a child that escaped the stop is left behind
 
 
+def _parents():
+    """{pid: parent pid} of every process, from `ps` (Linux and macOS alike); {} when ps does not answer."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    return {int(pid): int(ppid) for pid, ppid in (ln.split() for ln in out.splitlines() if len(ln.split()) == 2)}
+
+
+def descendants(table, pid):
+    """The pids below `pid` in `table` ({pid: parent pid}), parents before their children."""
+    out, todo = [], [pid]
+    while todo:
+        parent = todo.pop(0)
+        for child in sorted(p for p, pp in table.items() if pp == parent and p not in out and p != pid):
+            out.append(child)
+            todo.append(child)
+    return out
+
+
+def _signal(pid, sig):
+    try:
+        os.kill(pid, sig)
+    except OSError:  # gone already, or not ours
+        pass
+
+
+def _stop_descendants(proc):
+    """POSIX: SIGKILL to every descendant of `proc`, those in a session or group of their own included (a child
+    started with setsid or start_new_session is outside the process group). Each is stopped first (SIGSTOP), so it
+    starts nothing new and keeps its children's parent pid while the walk goes on; then all are killed."""
+    stopped = [proc.pid]
+    _signal(proc.pid, signal.SIGSTOP)
+    while True:
+        new = [p for p in descendants(_parents(), proc.pid) if p not in stopped]
+        if not new:
+            break
+        for p in new:
+            _signal(p, signal.SIGSTOP)
+        stopped += new
+    for p in stopped:
+        _signal(p, signal.SIGKILL)
+
+
 def kill_tree(proc):
-    """Stop `proc` and its children: the process group on POSIX; on Windows the job, else `taskkill /T`."""
+    """Stop `proc` and every descendant: on POSIX each one found by parent pid (own-session ones included), then
+    the process group; on Windows the job (which holds every descendant), else `taskkill /T`. A child that left
+    the tree before the stop (its parent gone, it in a session of its own) is not found on POSIX."""
     if WIN:
         job = getattr(proc, "ekit_job", None)
         if job:
@@ -285,6 +351,8 @@ def kill_tree(proc):
             except (OSError, subprocess.SubprocessError):
                 pass
     else:
+        if proc.poll() is None:  # still ours: a pid already reaped may name another process by now
+            _stop_descendants(proc)
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
