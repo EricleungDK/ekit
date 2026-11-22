@@ -1032,8 +1032,9 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual((line, seeded[:15]), ("0 of 1 features working", "SEEDED ✓ login:"))
 
     def test_a_feature_line_inside_an_html_comment_is_text(self):
+        # a comment opens where `<!--` starts a line (CommonMark's HTML block) and ends on the line holding `-->`
         for text in ("<!--\n- feature: older\n-->\n- feature: real\n", "<!-- - feature: x -->\n- feature: real\n",
-                     "- feature: real <!-- was: older -->\n", "<!-- a --> <!--\n- feature: older\n--> \n- feature: real\n",
+                     "  <!-- note\n- feature: older\n  still the note -->\n- feature: real\n",
                      "```\n<!--\n```\n- feature: real\n"):  # inside a fence, <!-- opens nothing
             with self.subTest(text=text):
                 self.scenario("login", PASSES)
@@ -1041,6 +1042,50 @@ class TestFeatures(unittest.TestCase):
                 self.cli("run")
                 with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
                     self.assertEqual(json.load(f)["scenarios"][0].get("feature"), "real")
+
+    def test_a_comment_opener_inside_a_line_opens_no_comment(self):
+        # e2e: a failing feature's `<!--` in its expected line hid its marker, so M lost it (1 of 1 for 1 of 2)
+        self.scenario("a", PASSES, "add note")
+        self.scenario("b", FAILS)
+        self.doc("b", "- story: s\n- expected: the file keeps each note's `<!--` header\n- feature: export notes\n")
+        _, out = self.cli("run")
+        self.assertEqual(out.splitlines()[-1], "1 of 2 features working")
+        self.assertEqual(self.cli("seeded", "b")[1].splitlines()[0][:11], "SEEDED ✓ b:")
+        for text in ("- steps: type <!-- in the box\n- feature: real\n",
+                     "- steps: an empty comment <!--> then text\n- feature: real\n",
+                     "<!-->\n- feature: real\n", "<!--->\n- feature: real\n"):  # an empty comment closes itself
+            with self.subTest(text=text):
+                self.doc("b", text)
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][1].get("feature"), "real")
+
+    def test_a_feature_line_keeps_its_whole_text(self):
+        for name in ("parse `<!--` tags", "real <!-- was: older -->"):
+            with self.subTest(name=name):
+                self.scenario("login", PASSES)
+                self.doc("login", f"- story: s\n- feature: {name}\n")
+                self.cli("run")
+                with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+                    self.assertEqual(json.load(f)["scenarios"][0].get("feature"), name)
+
+    def test_a_comment_never_closed_above_a_feature_line_is_named(self):
+        err = "SCENARIO.md: the <!-- comment opened above `- feature: add` is never closed"
+        self.assertEqual(self.feature_of("- story: s\n<!-- notes\n- feature: add\n"),
+                         ("FAIL: 0/1 scenarios", f"ERROR login: {err}"))
+        self.assertEqual(self.cli("run")[1].splitlines()[0], f"FAIL login: {err}")
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n<!-- notes, never closed, no marker in it\n")
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
+        self.doc("login", "<!--\n- feature: old\n-->\n- feature: real\n<!-- open, nothing in it\n")  # a closed one's line
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n1 of 1 features working\n"))
+
+    def test_a_line_that_opens_and_closes_a_comment_ends_it_there(self):
+        # the comment's line is the whole HTML block: a feature line after it is read, so two lines are named
+        self.scenario("login", PASSES)
+        self.doc("login", "<!-- a --> <!--\n- feature: older\n--> \n- feature: real\n")
+        self.assertEqual(self.cli("run")[1].splitlines()[0],
+                         "FAIL login: SCENARIO.md has more than one feature line (older, real): keep one")
 
     def test_seeded_says_an_empty_feature_line_is_empty(self):
         self.assertEqual(self.feature_of("- story: s\n- feature:\n"),

@@ -273,7 +273,7 @@ FEATURE = re.compile(r"^-[^\S\n]+feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$")
 # so read or named, never dropped. Gherkin's `Feature:`, a nested bullet, `*` and `+` bullets are other text.
 FIELD_KEY = re.compile(r"^-[^\S\n]*([^:\n]*):")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
-COMMENT = re.compile(r"<!--.*?-->")
+COMMENT_OPEN = re.compile(r"^\s*<!--")
 EMPTY = "SCENARIO.md feature line `- feature:` is empty"  # marks nothing in run (as no line); seeded names it
 
 
@@ -284,7 +284,7 @@ def is_feature_field(line):
 
 def marker(repo, sid):
     """(feature, error) of a scenario's SCENARIO.md: the `- feature: <name>` line taste-it seeds it with. Lines inside a
-    fenced block or an HTML comment are text, not fields. error: no SCENARIO.md, one that cannot be read, more than one
+    fenced block or an HTML comment (opened where `<!--` starts a line) are text, not fields; a field keeps its whole line. error: no SCENARIO.md, one that cannot be read, more than one
     feature line, one not in that form, a fence left open above one, or an empty one (EMPTY: run reads it as no line),
     each named, never a silent pick or drop."""
     path = os.path.join(root(repo), sid, "SCENARIO.md")
@@ -304,20 +304,23 @@ def marker(repo, sid):
             elif is_feature_field(line):
                 hidden.append(line.rstrip())
             continue
-        if comment:  # inside an HTML comment, until its -->
-            if "-->" not in line:
-                continue
-            line, comment = line.split("-->", 1)[1], False
-        line = COMMENT.sub("", line)
-        if "<!--" in line:
-            line, comment = line.split("<!--", 1)[0], True
-        m = FENCE.match(line)
+        if comment:  # inside an HTML comment: text, up to the line that holds its -->
+            if "-->" in line:
+                comment, hidden = False, []
+            elif is_feature_field(line):
+                hidden.append(line.rstrip())
+            continue
+        c = COMMENT_OPEN.match(line)
+        if c:  # a comment opens only where `<!--` starts a line (CommonMark's HTML block); `<!-->` is one too
+            comment = "-->" not in line[c.end() - 2:]
+            continue
         if m:
             fence = m.group(1)
         elif is_feature_field(line):
             found.append(line.rstrip())
-    if fence and hidden:  # an unclosed fence would hide the marker: named, not dropped
-        return None, f"SCENARIO.md: the {fence} fence opened above `{hidden[0]}` is never closed"
+    if (fence or comment) and hidden:  # an unclosed fence or comment would hide the marker: named, not dropped
+        what = f"{fence} fence" if fence else "<!-- comment"
+        return None, f"SCENARIO.md: the {what} opened above `{hidden[0]}` is never closed"
     if len(found) > 1:
         names = ", ".join(x.split(":", 1)[1].strip() for x in found)
         return None, f"SCENARIO.md has more than one feature line ({names}): keep one"
