@@ -80,10 +80,12 @@ eq "stryker entries" "$(jq -r '[.entries[] | select(.check=="R3")] | length' <<<
 eq "stryker lines" "$(jq -r '[.entries[].line] | unique | map(tostring) | join(",")' <<<"$out")" "2,6"
 hasnt "sub outside diff" "$(jq -r '[.entries[].problem] | join(" ")' <<<"$out")" "src/calc.ts:14"
 eq "stryker summary" "$(jq -r .summary <<<"$out")" "fail $MUT (5 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)"
-# declared limit (#26): ts accepts --max-mutants and ignores it (Stryker cannot pre-list): the same result
+# the cap (#63) counts the mutants Stryker's own instrumenter lists before the run; this fake Stryker has none, so
+# the cap is not applied: every changed line runs as before (the same result) and the note says so
 capped=$(MECH_TEST_STUB="$STUB" python3 "$MR" mutants --repo "$R" --base "$BASE" --head "$MUT" --stack ts --test-paths 'tests/**' --mutants-cmd node_modules/.bin/stryker --max-mutants 1 2>cap.err); rc=$?
 eq "stryker capped exit" "$rc" 1
 eq "stryker capped same result" "$(jq -c '[.summary, .checks.R3.status, [.entries[].id]]' <<<"$capped")" "$(jq -c '[.summary, .checks.R3.status, [.entries[].id]]' <<<"$out")"
+has "stryker capped not applied" "$(jq -r .checks.R3.note <<<"$capped")" "max-mutants not applied: Stryker's instrumenter listed no mutant"
 hasnt "stryker capped no traceback" "$(cat cap.err)" "Traceback"
 
 # 5. plan: a ts production change runs the mutants job
