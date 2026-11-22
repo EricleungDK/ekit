@@ -362,8 +362,8 @@ class TestRun(unittest.TestCase):
                      "          open(os.path.join(os.environ['EKIT_STATE'], 'seen.json'), 'w'))\n", "run.py")
         with open(os.path.join(self.state, "seen.json")) as f:
             exe, cwd, repo, d, parent, nobytecode = json.load(f)
-        self.assertEqual((exe, repo, d, parent, nobytecode),
-                         (sys.executable, self.repo, os.path.join(self.repo, ".ekit", "scenarios", "one"), "", "1"))
+        self.assertEqual((os.path.abspath(exe), repo, d, parent, nobytecode),  # abspath: the same file, `..` or not
+                         (os.path.abspath(sys.executable), self.repo, os.path.join(self.repo, ".ekit", "scenarios", "one"), "", "1"))
         self.assertFalse(os.path.realpath(cwd).startswith(self.repo))
 
     def test_a_run_clears_old_transcripts_of_other_trees_and_keeps_its_own(self):
