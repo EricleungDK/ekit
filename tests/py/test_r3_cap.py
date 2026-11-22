@@ -1403,12 +1403,33 @@ class TestTsRepoConfigExclusions(TsCli):
             self.assert_not_capped(why, text)
             self.assertEqual(self.listings(), [], text)
 
+    DEEP = '{"a": ' + "[" * 50 + "]" * 50 + "}"  # nested, and within what every Python's json reads
+
     def test_a_json_config_nested_deeper_than_python_reads_gets_no_cap_not_a_crash(self):
-        # review round 6, second pass: V8's JSON.parse reads this config, so the run goes on; json.loads raises
-        # RecursionError on it
-        self.config("stryker.conf.json", '{"a": ' + "[" * 100000 + "]" * 100000 + "}")
-        self.assert_not_capped("the repo's Stryker config stryker.conf.json is not a JSON object: what it excludes "
-                               "cannot be read")
+        # review round 6, second pass: V8's JSON.parse reads a config nested deeper than this Python's json does, so
+        # the run goes on. How deep that is depends on the interpreter and its stack (3.13 here stops near 20000
+        # levels; the one of CI's suite job read 100000), so the parser's limit is set here: json.loads raises
+        # RecursionError for the config's text and reads everything else
+        from unittest import mock
+        real = json.loads
+
+        def loads(text, *args, **kwargs):
+            if text == self.DEEP:
+                raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+            return real(text, *args, **kwargs)
+
+        self.config("stryker.conf.json", self.DEEP)
+        with mock.patch("scripts.mech_review.mutants.json.loads", loads):
+            self.assert_not_capped("the repo's Stryker config stryker.conf.json is not a JSON object: what it "
+                                   "excludes cannot be read")
+
+    def test_a_nested_json_config_that_python_reads_is_read_as_data(self):
+        # the same config where the parser reads it (CI's case): no exclusions, so the cap applies as with no config
+        self.config("stryker.conf.json", self.DEEP)
+        r3 = self.cli("--max-mutants", "12")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([2, 3, 4]))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 12, 14))
+        self.assertNotIn("not applied", r3["note"])
 
     def test_a_config_whose_run_ignores_mutants_no_listing_can_name_gets_no_cap(self):
         # ignorers (plugins that mark mutants Ignored) and ignoreStatic (static mutants Ignored, known only from the
