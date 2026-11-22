@@ -629,6 +629,36 @@ class TestRun(unittest.TestCase):
         time.sleep(5)
         self.assertFalse(os.path.exists(mark))
 
+    def test_a_timeout_stops_a_child_in_its_own_session_and_its_grandchild_for_every_format(self):
+        """#59 (taste): a child that starts its own session is outside the scenario's process group, yet still its
+        descendant: the timeout stops it and what it started"""
+        tmp = os.path.realpath(self.tmp.name)
+        helper = os.path.join(tmp, "own_session.py")
+        late = "import sys, time; time.sleep(4); open(sys.argv[1], 'w').close()"
+        write(tmp, "own_session.py",
+              "import subprocess, sys, time\n"
+              f"late = {late!r}\n"
+              "child = ('import subprocess, sys, time; '\n"
+              "         'subprocess.Popen([sys.executable, \"-c\", sys.argv[1], sys.argv[2] + \".grand\"]); '\n"
+              "         'time.sleep(4); open(sys.argv[2], \"w\").close()')\n"
+              "subprocess.Popen([sys.executable, '-c', child, late, sys.argv[1]], start_new_session=True)\n"
+              "time.sleep(30)\n")  # its parent lives on: the own-session child is a descendant when the timeout comes
+        py = sys.executable.replace(os.sep, "/")
+        for run_file, script in (
+                ("run.py", f"import subprocess, sys\nsubprocess.run([sys.executable, {helper!r}, sys.argv[0] + '.x'])\n"),
+                ("run.sh", f"'{py}' '{helper.replace(os.sep, '/')}' \"$EKIT_STATE/sh\"\n")):
+            with self.subTest(run_file=run_file):
+                mark = os.path.join(self.state, run_file)
+                script = script.replace("sys.argv[0] + '.x'", repr(mark)).replace('"$EKIT_STATE/sh"', f"'{mark}'")
+                for other in RUN_FILES:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(os.path.join(self.repo, ".ekit", "scenarios", "one", other))
+                with mock.patch.dict(os.environ, {"EKIT_SCENARIO_TIMEOUT": "2"}):
+                    code, out, _ = self.main(script, run_file=run_file)
+                self.assertEqual((code, out), (1, "FAIL one: timeout after 2s\nFAIL: 0/1 scenarios\n"))
+                time.sleep(5)
+                self.assertEqual([n for n in (mark, mark + ".grand") if os.path.exists(n)], [])
+
     def test_a_run_py_background_child_does_not_outlive_its_scenario(self):
         mark = os.path.join(os.path.realpath(self.tmp.name), "late")
         child = f"import time; time.sleep(3); open({mark!r}, 'w')"
