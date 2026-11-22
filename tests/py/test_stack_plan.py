@@ -347,6 +347,41 @@ class Messages(unittest.TestCase):
         self.assertEqual(messages(env), [f"stack `api` (api): no pyproject.toml, setup.py or setup.cfg in api any more: "
                                          f"remove the entry `api` from {PLAN}"])
 
+    def test_a_planned_stack_may_name_an_adapter_file_not_written_yet(self):
+        # review round 2, finding 7 (the owner's decision): a planned entry's adapter file may not exist or not read yet
+        for adapter in ({}, {".ekit/adapters/kotlin.toml": mini().replace("format = 1\n", "format = 9\n")}):
+            with self.subTest(adapter=sorted(adapter)):
+                base = self.repo.commit(dict(adapter, **{
+                    "api/pyproject.toml": "[project]\n",
+                    PLAN: plan(("api", "api", "python", "current"), ("mob", "mobile", ".ekit/adapters/kotlin.toml",
+                                                                    "planned"))}))
+                r, env = drift(self.repo, base, base)
+                self.assertEqual((r.returncode, env["entries"], messages(env)), (0, [], []), r.stderr)
+
+    def test_a_manifest_of_a_planned_stack_whose_adapter_is_not_proven_is_uncovered(self):
+        base = self.repo.commit({"mobile/package.json": "{}", PLAN: plan(("mob", "mobile", ".ekit/adapters/kotlin.toml",
+                                                                          "planned"))})
+        r, env = drift(self.repo, base, base)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: mobile/package.json")
+        self.assertEqual(messages(env), [])
+
+    def test_a_planned_stack_whose_adapter_file_lands_is_proven(self):
+        base = self.repo.commit({"mobile/mini.json": "{}", PLAN: plan(("mob", "mobile", ".ekit/adapters/mini.toml",
+                                                                       "planned"))})
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini()})
+        r, env = drift(self.repo, base, head)
+        self.assertEqual((r.returncode, env["entries"]), (0, []), r.stderr)
+        self.assertEqual(messages(env), ["planned stack `mob` (mobile): its manifest mobile/mini.json is here and its "
+                                         "adapter `.ekit/adapters/mini.toml` is proven, so its checks start: set its "
+                                         "status to current"])
+
+    def test_a_current_stack_still_needs_its_adapter_file(self):
+        base = self.repo.commit({PLAN: plan(("mob", "mobile", ".ekit/adapters/kotlin.toml", "current"))})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", base])
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("stack[0] `mob`, field adapter: `.ekit/adapters/kotlin.toml` is not a built-in stack", r.stderr)
+
     def test_a_planned_stack_with_no_manifest_yet_is_quiet(self):
         base = self.repo.commit({PLAN: plan(("web", "web", "ts", "planned"))})
         r, env = drift(self.repo, base, base)
@@ -479,6 +514,10 @@ class Malformed(unittest.TestCase):
              "no file is there"),
             (plan(("api", "api", ".ekit/adapters/bad.toml", "current")),
              "stack[0] `api`, field adapter: adapter file .ekit/adapters/bad.toml: format: `2`: want 1"),
+            ('[[stack]]\nname = "mob"\nfolder = "m"\nadapter = 3\nstatus = "planned"\n',
+             "stack[0] `mob`, field adapter: want a built-in stack (python, rust, ts) or an adapter file path"),
+            ('[[stack]]\nname = "mob"\nfolder = "m"\nadapter = ""\nstatus = "planned"\n',
+             "stack[0] `mob`, field adapter: want a built-in stack (python, rust, ts) or an adapter file path"),
             (plan(("api", "api", "python", "current", "beos")),
              "stack[0] `api`, field target-os: `beos`: want linux, macos or windows"),
             (plan(good, ignore=["."]), "ignore[0]: `.` is the repo root: want a folder below it"),

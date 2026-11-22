@@ -24,7 +24,8 @@ RETIRING_DAYS = 30  # spec default (#56): a stack retiring longer than this gets
 DAY = 86400
 ENTRY_KEYS = ("name", "folder", "adapter", "status", "target-os")
 
-# adapter_ref: the plan's `adapter` value; adapter: the Adapter it names; target_os: the entry's, else its adapter's
+# adapter_ref: the plan's `adapter` value; adapter: the Adapter it names (None: a planned entry's adapter file that is not
+# there or does not read yet, not proven); target_os: the entry's, else its adapter's (None with no adapter)
 Entry = namedtuple("Entry", "name folder adapter_ref adapter target_os status")
 Plan = namedtuple("Plan", "entries ignore")
 # has_plan: a plan exists where it was read; uncovered: manifest paths no entry covers; messages: lines for the user
@@ -122,19 +123,27 @@ def parse(data, read):
         status = s["status"]
         if status not in STATUSES:
             raise PlanError(f"{label}, field status: `{status}`: want planned, current or retiring")
-        adapter = _adapter(s["adapter"], f"{label}, field adapter", read)
+        try:
+            adapter = _adapter(s["adapter"], f"{label}, field adapter", read)
+        except PlanError:
+            # a planned stack may name an adapter file not written (or not reading) yet: not proven, it covers nothing
+            # and starts no check. A current or retiring stack's adapter must read.
+            if status != "planned" or not isinstance(s["adapter"], str) or not s["adapter"]:
+                raise
+            adapter = None
         if "target-os" in s:
             try:
                 target = adapter_file.target_os(s["target-os"], f"{label}, field target-os")
             except adapter_file.AdapterFileError as e:
                 raise PlanError(str(e)) from None
         else:
-            target = adapter.target_os
+            target = adapter.target_os if adapter else None
         # one entry per stack, folder and status: two would leave the target OS to their order (a retiring and a
         # current entry for one stack and folder are a migration, not a duplicate)
-        key = (adapter.name, folder, status)
+        stack = adapter.name if adapter else s["adapter"]
+        key = (stack, folder, status)
         if key in keys:
-            raise PlanError(f"{label}, field folder: stack `{adapter.name}` in {folder} is already {keys[key]} with "
+            raise PlanError(f"{label}, field folder: stack `{stack}` in {folder} is already {keys[key]} with "
                             f"status {status}")
         keys[key] = label
         entries.append(Entry(name, folder, s["adapter"], adapter, target, status))
@@ -191,7 +200,7 @@ def manifest_names(*plans):
     names = {m for a in ADAPTERS.values() for m in a.manifests}
     for p in plans:
         for e in (p.entries if p else ()):
-            names.update(e.adapter.manifests)
+            names.update(e.adapter.manifests if e.adapter else ())
     return names
 
 
@@ -206,7 +215,8 @@ def manifests(paths, names, ignore=()):
 
 
 def covers(entry, path):
-    return holds(entry.folder, path) and path.rsplit("/", 1)[-1] in entry.adapter.manifests
+    """an entry with no proven adapter (a planned one whose adapter file is not there yet) covers nothing."""
+    return entry.adapter is not None and holds(entry.folder, path) and path.rsplit("/", 1)[-1] in entry.adapter.manifests
 
 
 def _either(words):
@@ -330,7 +340,7 @@ def check_pr(repo, base_ref, head_ref, now=None):
 def entry_for(plan, stack, folder):
     """the plan entry for a settled stack (its adapter's name) in a folder: current first, then retiring, then planned;
     None when no entry is for it."""
-    mine = [e for e in (plan.entries if plan else ()) if e.folder == folder and e.adapter.name == stack]
+    mine = [e for e in (plan.entries if plan else ()) if e.folder == folder and e.adapter and e.adapter.name == stack]
     return min(mine, key=lambda e: ("current", "retiring", "planned").index(e.status), default=None)
 
 
