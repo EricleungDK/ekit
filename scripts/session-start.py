@@ -41,6 +41,7 @@ def drift(cwd):
     """The `[ekit]` lines for the stack plan's drift (#57): the committed tree at HEAD of the repo holding cwd against
     the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network. Nothing when cwd is in no git
     repo, the repo has no commit, there is no plan, or it is clean; any other failure is one line, never a clean read."""
+    os.environ["GIT_NO_LAZY_FETCH"] = "1"  # git 2.44+: a missing object is an error, never a fetch (older: partial_clone)
     try:
         return _drift(cwd)
     except OSError:
@@ -64,6 +65,15 @@ def in_git(cwd):
         d = parent
 
 
+def partial_clone(top):
+    """the repo has a promisor remote: git fetches any object it lacks from there (a lazy fetch, a network call)."""
+    try:
+        found = gitio.git(top, "config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
+    except gitio.Die:  # exit 1: no such key
+        return False
+    return any(line.split(" ", 1)[-1].strip().lower() != "false" for line in found.splitlines())
+
+
 def _drift(cwd):
     if not in_git(cwd):  # a folder outside git: nothing to judge
         return []
@@ -72,6 +82,9 @@ def _drift(cwd):
         gitio.resolve(top, "HEAD")
     except gitio.Die:  # no commit yet: no committed plan to read
         return []
+    if partial_clone(top):
+        return ["[ekit] Stack plan: the drift check is skipped here: this is a partial clone, where git would fetch the "
+                "objects it lacks (a network call); CI still runs it on every PR."]
     try:
         d = stack_plan.drift_at(top, "HEAD")
     except stack_plan.PlanError as e:

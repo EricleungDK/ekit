@@ -278,6 +278,27 @@ class StackPlan(unittest.TestCase):
         self.assertEqual(len(lines), 1, lines)
         self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: .*bad config")
 
+    def test_a_partial_clone_is_skipped_in_one_line_and_nothing_is_fetched(self):
+        self.commit({"web/package.json": "{}", PLAN: plan(("web", "web", "ts", "retiring"))})
+        self.commit({"web/old.js": "", "api/pyproject.toml": "[project]\n"})
+        subprocess.run(["git", "-C", self.repo, "config", "uploadpack.allowFilter", "true"], check=True)
+        clone = os.path.join(os.path.dirname(self.repo), "partial")
+        subprocess.run(["git", "clone", "-q", "--filter=blob:none", "file://" + self.repo, clone], check=True,
+                       capture_output=True)
+        trace = os.path.join(os.path.dirname(self.repo), "trace")
+        self.repo = clone
+        with mock.patch.dict(os.environ, {"GIT_TRACE": trace}):
+            lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
+        self.assertEqual(lines, ["[ekit] Stack plan: the drift check is skipped here: this is a partial clone, where git "
+                                 "would fetch the objects it lacks (a network call); CI still runs it on every PR."])
+        with open(trace, encoding="utf-8", errors="replace") as f:
+            self.assertNotRegex(f.read(), r"fetch|upload-pack|remote-")
+
+    def test_a_promisor_remote_set_to_false_is_no_partial_clone(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        subprocess.run(["git", "-C", self.repo, "config", "remote.origin.promisor", "False"], check=True)
+        self.assertIn("unchecked manifest api/pyproject.toml", self.context())
+
 
 if __name__ == "__main__":
     unittest.main()
