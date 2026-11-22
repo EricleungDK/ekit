@@ -90,7 +90,7 @@ def parse(data, read):
     stacks = data.get("stack", [])
     if not isinstance(stacks, list):
         raise PlanError("stack: want an array of tables ([[stack]])")
-    entries, names = [], {}
+    entries, names, keys = [], {}, {}
     for i, s in enumerate(stacks):
         label = f"stack[{i}]"
         if not isinstance(s, dict):
@@ -110,6 +110,15 @@ def parse(data, read):
             raise PlanError(f"{label}, field name: `{name}` is already {names[name]}")
         names[name] = f"stack[{i}]"
         folder = _folder(s["folder"], f"{label}, field folder")
+        # a folder whose manifests never count would always read vanished, and a planned one would never start
+        hidden = [f"ignore[{j}] `{f}`" for j, f in enumerate(folders) if holds(f, folder + "/")]
+        if hidden:
+            raise PlanError(f"{label}, field folder: `{folder}` is under {hidden[0]}: the drift check reads no manifest "
+                            f"there")
+        skip = [d for d in folder.split("/") if d in SKIP_DIRS]
+        if skip:
+            raise PlanError(f"{label}, field folder: `{folder}` is under `{skip[0]}`, a fixture, vendor or build folder: "
+                            f"the drift check reads no manifest there")
         status = s["status"]
         if status not in STATUSES:
             raise PlanError(f"{label}, field status: `{status}`: want planned, current or retiring")
@@ -121,6 +130,13 @@ def parse(data, read):
                 raise PlanError(str(e)) from None
         else:
             target = adapter.target_os
+        # one entry per stack, folder and status: two would leave the target OS to their order (a retiring and a
+        # current entry for one stack and folder are a migration, not a duplicate)
+        key = (adapter.name, folder, status)
+        if key in keys:
+            raise PlanError(f"{label}, field folder: stack `{adapter.name}` in {folder} is already {keys[key]} with "
+                            f"status {status}")
+        keys[key] = label
         entries.append(Entry(name, folder, s["adapter"], adapter, target, status))
     return Plan(entries, folders)
 

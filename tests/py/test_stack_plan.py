@@ -496,6 +496,38 @@ class Malformed(unittest.TestCase):
                 else:
                     self.assertEqual(got, want)
 
+    def test_two_entries_for_one_stack_folder_and_status_are_named(self):
+        # review round 2, finding 5: which one sets the target OS would hang on their order
+        for a, b in ((("a", "api", "python", "current", "linux"), ("b", "api", "python", "current", "windows")),
+                     (("a", "api", "python", "retiring"), ("b", "./api/", "python", "retiring"))):
+            with self.subTest(b=b):
+                self.assertEqual(self.err(plan(a, b)), "stack[1] `b`, field folder: stack `python` in api is "
+                                                       "already stack[0] `a` with status " + a[3])
+
+    def test_the_same_stack_and_folder_in_another_status_is_a_migration_not_a_duplicate(self):
+        sha = self.repo.commit({PLAN: plan(("js", "api", "python", "retiring"), ("py", "api", "python", "current"))})
+        r, env = drift(self.repo, sha, sha)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_entry_folder_the_check_never_reads_is_named(self):
+        # review round 2, finding 6: its manifests would never count, so it would always read vanished
+        cases = [
+            (plan(("api", "api", "python", "current"), ignore=["api"]),
+             "stack[0] `api`, field folder: `api` is under ignore[0] `api`: the drift check reads no manifest there"),
+            (plan(("app", "web/app", "ts", "planned"), ignore=["web"]),
+             "stack[0] `app`, field folder: `web/app` is under ignore[0] `web`: the drift check reads no manifest there"),
+            (plan(("demo", "examples/app", "ts", "planned")),
+             "stack[0] `demo`, field folder: `examples/app` is under `examples`, a fixture, vendor or build folder: the "
+             "drift check reads no manifest there"),
+        ]
+        for text, want in cases:
+            with self.subTest(want=want):
+                self.assertEqual(self.err(text), want)
+
+    def test_an_ignore_folder_inside_an_entry_folder_is_fine(self):
+        sha = self.repo.commit({PLAN: plan(("api", "api", "python", "current"), ignore=["api/demo"])})
+        self.assertEqual(drift(self.repo, sha, sha)[0].returncode, 0)
+
     def test_an_adapter_file_that_lists_no_manifest_is_named(self):
         self.repo.commit({".ekit/adapters/none.toml": mini().replace('manifests = ["mini.json"]\n', "")})
         self.assertEqual(self.err(plan(("lib", "lib", ".ekit/adapters/none.toml", "current"))),
