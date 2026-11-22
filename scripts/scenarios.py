@@ -153,7 +153,7 @@ LABEL = {"python": "Python", "powershell": "PowerShell"}  # how a missing progra
 
 def not_here(res):
     """True when the scenario was not run: this host lacks what runs it (env), so no proof either way."""
-    return str(res.get("reason", "")).endswith("(env)")
+    return str(res.get("reason")).endswith("(env)")
 
 
 def argv(name, exe, path):
@@ -318,15 +318,16 @@ def cmd_can_fail(repo, ref=None):
             return 2
         shutil.rmtree(root(wt), ignore_errors=True)
         shutil.copytree(root(repo), root(wt))
-        flagged = na = bad = 0
+        flagged = na = 0
+        bad = False
         for sid in ids:
             res = run_one(wt, sid, ids, tmp)
             if not_here(res):  # it never ran: no proof either way
                 print(f"N/A {sid}: {res['reason']}")
                 na += 1
-            elif str(res.get("reason", "")).startswith(MANY):  # fails on any tree: the folder is to be fixed
+            elif str(res.get("reason")).startswith(MANY):  # fails on any tree: the folder is to be fixed
                 print(f"ERROR {sid}: {res['reason']}")
-                bad += 1
+                bad = True
             elif res.get("reason"):
                 print(f"CAN-FAIL ✓ {sid}")
             else:

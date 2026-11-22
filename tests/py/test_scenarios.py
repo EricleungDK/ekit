@@ -684,8 +684,10 @@ class TestRun(unittest.TestCase):
         self.assertEqual((code, out, doc["verdict"]),
                          (1, "FAIL one: more than one run file (run.py, run.sh): keep one\nFAIL: 0/1 scenarios\n", "FAIL"))
         self.assertFalse(os.path.exists(mark))
+        self.assertEqual(doc["scenarios"][0]["exit"], 1)
         with open(doc["scenarios"][0]["transcript"]) as f:
-            self.assertTrue(f.read().startswith("command: none\n"))
+            self.assertEqual(f.read(), f"command: none\nscenario: {os.path.join(self.repo, '.ekit', 'scenarios', 'one')}\n"
+                                       "cwd: \n--- stdout ---\n\n--- stderr ---\n\n--- exit: 1 ---\n")
         self.assertEqual(self.check(), (1, "last run FAIL\n"))
         write(self.repo, ".ekit/scenarios/one/run.ps1", "exit 0\n")
         with mock.patch.object(scenarios.shells, "find", return_value=None):
