@@ -24,14 +24,15 @@ def _err(field, msg):
 
 
 def _table(d, field, allowed, required=()):
+    """field: the table's dotted name, "" for the top level (its keys are named bare)."""
     if not isinstance(d, dict):
         _err(field, "want a table")
     for k in d:
         if k not in allowed:
-            _err(f"{field}.{k}" if field else k, "unknown key")
+            _err(f"{field}.{k}".removeprefix("."), "unknown key")
     for k in required:
         if k not in d:
-            _err(f"{field}.{k}" if field else k, "missing")
+            _err(f"{field}.{k}".removeprefix("."), "missing")
     return d
 
 
