@@ -403,6 +403,23 @@ class StackPlan(unittest.TestCase):
                 self.assertEqual(len(lines), 1, lines)
                 self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: .*work tree")
 
+    def test_a_git_dir_that_is_gone_is_one_line_not_no_repo(self):
+        removed = os.path.join(os.path.dirname(self.repo), "removed")  # a worktree whose git dir was removed
+        os.mkdir(removed)
+        with open(os.path.join(removed, ".git"), "w") as f:
+            f.write("gitdir: " + os.path.join(os.path.dirname(self.repo), "nowhere") + "\n")
+        plain = os.path.join(os.path.dirname(self.repo), "plain")
+        os.mkdir(plain)
+        cases = {"a .git file to a gone dir": (removed, {}),
+                 "GIT_DIR naming no dir": (plain, {"GIT_DIR": os.path.join(os.path.dirname(self.repo), "nowhere")})}
+        for case, (cwd, env) in cases.items():
+            with self.subTest(case=case), mock.patch.dict(os.environ, env):
+                self.repo = cwd
+                lines = [line for line in self.context().splitlines() if line.startswith("[ekit] Stack plan")]
+                self.assertEqual(len(lines), 1, lines)
+                self.assertRegex(lines[0], r"^\[ekit\] Stack plan: the drift check could not run here \(Die: "
+                                           r"fatal: not a git repository: ")
+
     def test_a_broken_git_config_is_one_line(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
         with open(os.path.join(self.repo, ".git", "config"), "a") as f:
