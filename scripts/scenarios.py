@@ -447,17 +447,16 @@ def cmd_can_fail(repo, ref=None):
 def changed(repo):
     """{path: (status, size, mtime)} of each path `git status` names, unquoted (untracked bytecode left out, as the
     tree hash leaves it out): a file already changed before a run that the run changes again, or removes, differs."""
-    top = git(repo, "rev-parse", "--show-toplevel").strip() or repo
-    entries = git(repo, "status", "--porcelain", "-z", "-uall").split("\0")
+    entries = git(repo, "status", "--porcelain", "-z", "-uall").split("\0")  # paths from the top: main's repo
     out, i = {}, 0
     while i < len(entries):
         entry = entries[i]
-        i += 2 if entry[:1] in ("R", "C") else 1  # a rename or copy: its source path follows
+        i += 2 if entry[:1] == "R" else 1  # a rename: its source path follows (status reports no copies)
         path = entry[3:]
         if not path or entry.startswith("??") and path.endswith((".pyc", ".pyo")):
             continue
         try:
-            st = os.lstat(os.path.join(top, path))
+            st = os.lstat(os.path.join(repo, path))
             out[path] = (entry[:2], st.st_size, st.st_mtime_ns)
         except OSError:
             out[path] = (entry[:2], None, None)
