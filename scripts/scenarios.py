@@ -287,8 +287,11 @@ def marker(repo, sid):
     path = os.path.join(root(repo), sid, "SCENARIO.md")
     if not os.path.isfile(path):
         return None, NODOC
-    with open(path, encoding="utf-8", errors="replace") as f:
-        text = f.read()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:  # a file the runner cannot read is named, never a crash after the scenarios ran
+        return None, f"SCENARIO.md cannot be read: {e.strerror or e}"
     found, fence = [], None
     for line in text.lstrip("\ufeff").splitlines():
         m = FENCE.match(line)

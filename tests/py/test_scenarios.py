@@ -1035,6 +1035,26 @@ class TestFeatures(unittest.TestCase):
                 self.doc("login", text)
                 self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
 
+    def unreadable_doc(self):
+        """open() of a SCENARIO.md fails as an I/O error does; every other file opens as usual"""
+        real = open
+
+        def fake(path, *a, **kw):
+            if str(path).endswith("SCENARIO.md"):
+                raise OSError(5, "Input/output error")
+            return real(path, *a, **kw)
+        return mock.patch.object(scenarios, "open", fake, create=True)
+
+    def test_a_scenario_md_that_cannot_be_read_is_that_scenarios_named_fail_not_a_crash(self):
+        self.scenario("login", PASSES, "log in")
+        self.scenario("other", PASSES)
+        err = "SCENARIO.md cannot be read: Input/output error"
+        with self.unreadable_doc():
+            self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL other: {err}\nFAIL: 0/2 scenarios\n"))
+            self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+        with open(os.path.join(scenarios.outdir(self.repo), "results.json")) as f:
+            self.assertEqual(json.load(f)["verdict"], "FAIL")
+
     def test_seeded_names_a_missing_scenario_md(self):
         self.scenario("login", FAILS, "log in")
         os.remove(os.path.join(self.repo, ".ekit", "scenarios", "login", "SCENARIO.md"))
