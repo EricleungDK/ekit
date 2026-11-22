@@ -1,0 +1,16 @@
+[
+  {"file": "src/grade.ts", "start": 2, "end": 2, "mutator": "StringLiteral", "from": "\"pts\"", "replacement": "\"\""},
+  {"file": "src/grade.ts", "start": 3, "end": 3, "mutator": "ArithmeticOperator", "from": "n * 2", "replacement": "n / 2"},
+  {"file": "src/grade.ts", "start": 4, "end": 4, "mutator": "CallExpression", "from": "log(total)", "replacement": "undefined"},
+  {"file": "src/grade.ts", "start": 5, "end": 5, "mutator": "BooleanLiteral", "from": "true", "replacement": "false"},
+  {"file": "src/grade.ts", "start": 6, "end": 6, "mutator": "EqualityOperator", "from": "n > 10", "replacement": "n >= 10"},
+  {"file": "src/grade.ts", "start": 6, "end": 6, "mutator": "ConditionalExpression", "from": "n > 10", "replacement": "false"},
+  {"file": "src/grade.ts", "start": 6, "end": 8, "mutator": "BlockStatement", "from": "{", "replacement": "{}"},
+  {"file": "src/grade.ts", "start": 9, "end": 9, "mutator": "ArrowFunction", "from": "(x) => x > 0", "replacement": "() => undefined"},
+  {"file": "src/grade.ts", "start": 10, "end": 10, "mutator": "LogicalOperator", "from": "ok && pick.length", "replacement": "ok || pick.length"},
+  {"file": "src/grade.ts", "start": 11, "end": 11, "mutator": "UpdateOperator", "from": "total++", "replacement": "total--"},
+  {"file": "src/grade.ts", "start": 12, "end": 12, "mutator": "ArrayDeclaration", "from": "[]", "replacement": "[\"Stryker was here\"]"},
+  {"file": "src/grade.ts", "start": 13, "end": 13, "mutator": "BooleanLiteral", "from": "!ok", "replacement": "ok"},
+  {"file": "src/util.ts", "start": 2, "end": 2, "mutator": "ConditionalExpression", "from": "s.length", "replacement": "true"},
+  {"file": "src/util.ts", "start": 3, "end": 3, "mutator": "StringLiteral", "from": "\"none\"", "replacement": "\"\""}
+]
