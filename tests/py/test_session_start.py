@@ -124,7 +124,8 @@ class StackPlan(unittest.TestCase):
         added = [line for line in lines if line not in without_plan]
         self.assertEqual(len(added), 1, added)
         self.assertRegex(added[0], r"^\[ekit\] .*3\.11")
-        self.assertIn("CI", added[0])
+        self.assertIn(f"this is {sys.version_info[0]}.{sys.version_info[1]}", added[0])  # the python the hook runs on
+        self.assertIn("CI still runs the drift check", added[0])  # not the bad-plan line, which names 3.11 too
         self.assertNotIn("api/pyproject.toml", added[0])  # not judged here, and never read as clean
         self.assertEqual([line for line in lines if line != added[0]], without_plan)
 
@@ -151,7 +152,8 @@ class StackPlan(unittest.TestCase):
         self.assertEqual(len(added), 1, added)
         self.assertRegex(added[0], r"^\[ekit\] Stack plan: the drift check could not run")
         self.assertIn(tree, added[0])  # git's own words name the missing object
-        self.assertIn("CI", added[0])
+        self.assertIn("(Die: ", added[0])  # the error's kind: gitio.Die, the engine's git error
+        self.assertIn("CI still runs it", added[0])
 
     def test_no_git_on_the_path_is_no_crash(self):
         self.commit({"web/package.json": "{}", PLAN: plan(("api", "api", "python", "current"))})
