@@ -30,6 +30,14 @@ class Context(unittest.TestCase):
                                            "EKIT_PY": "py -3"})
         env.start()
         self.addCleanup(env.stop)
+        self.addCleanup(self.join_left_running)  # first out, before the tmp dir and the env go: on a failure too
+
+    def join_left_running(self):
+        """a drift check the hook left running past its deadline ends inside its test, failed or not: its git child
+        must not outlive the test (a test runner that reaps children, as mutmut's does, would take it for its own)"""
+        for t in threading.enumerate():
+            if t is not threading.main_thread() and t.daemon:
+                t.join(30)
 
     def context(self):
         out = io.StringIO()
@@ -67,6 +75,7 @@ class StackPlan(unittest.TestCase):
     """#57: the drift of the repo's committed tree against its stack plan, in the session's context."""
 
     setUp = Context.setUp
+    join_left_running = Context.join_left_running
     context = Context.context
 
     def commit(self, files, when=None):
@@ -467,8 +476,6 @@ class StackPlan(unittest.TestCase):
         self.assertNotIn("api/pyproject.toml", ctx)
         left = [t for t in threading.enumerate() if t is not threading.main_thread() and t.is_alive()]
         self.assertTrue(all(t.daemon for t in left), left)  # a check left running never holds the hook's exit
-        for t in left:  # it ends here, not inside a later test (or mutmut's stats run after the last one)
-            t.join(30)
 
     def quiet_context(self):
         """the context, fd 2 silenced: finish-gate.py, a child of the hook, prints its own traceback when git does not
@@ -512,9 +519,6 @@ class StackPlan(unittest.TestCase):
         self.assertIn("[ekit] Stack plan: the drift check did not finish in 3 s here, so nothing here says what is "
                       "unchecked; CI still runs it on every PR.", ctx.splitlines())
         self.assertLess(took, 5)
-        for t in threading.enumerate():  # the check left running ends inside this test
-            if t is not threading.main_thread() and t.daemon:
-                t.join(30)
 
 
 if __name__ == "__main__":
