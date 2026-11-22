@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import os
 import re
 import signal
 import sys
@@ -320,10 +321,15 @@ def _resolve(argv):
                                   args.project_dir)
         else:
             got = resolve.pick_pr([], [], args.stack, args.project_dir)
-    except gitio.Die as e:
+        # #56: the base branch's plan entry for this stack and dir sets the target OS (a PR cannot pick its own runner).
+        # An explicit stack with no checkout (the workflow checks the caller out for auto only) reads no plan.
+        entry = None
+        if got["stack"] is not None and os.path.isdir(args.repo):
+            entry = stack_plan.entry_for(stack_plan.at(args.repo, args.base), got["stack"], got["project_dir"])
+    except (gitio.Die, stack_plan.PlanError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
-    got["target_os"] = resolve.target_os(got, adapter)
+    got["target_os"] = entry.target_os if entry else resolve.target_os(got, adapter)
     print(json.dumps(got))
     return 1 if got["error"] else 0
 

@@ -453,6 +453,70 @@ class OldPython(unittest.TestCase):
         self.assertNotIn('"D"', r.stdout)
 
 
+class ResolveTargetOs(unittest.TestCase):
+    """#58 with a plan: the base plan's entry for the settled stack and dir gives the target OS; its own target-os wins
+    over its adapter's, and the adapter's applies when it names none."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+
+    def resolve(self, base, head, *args):
+        r = _kit.run_cli(["resolve", "--repo", self.repo.path, "--base", base, "--head", head, *args])
+        return r, (json.loads(r.stdout) if r.stdout else None)
+
+    def test_the_entrys_target_os_is_the_output(self):
+        sha = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current", "macos"))})
+        r, got = self.resolve(sha, sha)
+        self.assertEqual((r.returncode, got), (0, {"stack": "python", "project_dir": ".", "error": None,
+                                                   "target_os": "macos"}))
+        r, got = self.resolve(sha, sha, "--stack", "python")
+        self.assertEqual((r.returncode, got["target_os"]), (0, "macos"))
+
+    def test_the_entrys_target_os_wins_over_its_adapter_files(self):
+        sha = self.repo.commit({"lib/mini.json": "{}", ".ekit/adapters/mini.toml": mini("windows"),
+                                PLAN: plan(("lib", "lib", ".ekit/adapters/mini.toml", "current", "macos"))})
+        r, got = self.resolve(sha, sha, "--stack", "mini", "--project-dir", "lib", "--adapter", MINI_ADAPTER)
+        self.assertEqual((r.returncode, got["target_os"]), (0, "macos"))
+
+    def test_the_entrys_adapter_applies_when_the_entry_names_none(self):
+        sha = self.repo.commit({"lib/mini.json": "{}", ".ekit/adapters/mini.toml": mini("windows"),
+                                PLAN: plan(("lib", "lib", ".ekit/adapters/mini.toml", "current"))})
+        r, got = self.resolve(sha, sha, "--stack", "mini", "--project-dir", "lib", "--adapter", MINI_ADAPTER)
+        self.assertEqual((r.returncode, got["target_os"]), (0, "windows"))
+
+    def test_the_plan_is_read_from_the_base_so_a_pr_cannot_move_its_own_runner(self):
+        base = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current"))})
+        head = self.repo.commit({PLAN: plan(("app", ".", "python", "current", "windows"))})
+        r, got = self.resolve(base, head)
+        self.assertEqual((r.returncode, got["target_os"]), (0, "linux"))
+
+    def test_an_entry_for_another_folder_or_stack_does_not_apply(self):
+        sha = self.repo.commit({"pyproject.toml": "", "web/package.json": "{}",
+                                PLAN: plan(("web", "web", "ts", "current", "macos"), ("app", ".", "rust", "planned",
+                                                                                      "windows"))})
+        r, got = self.resolve(sha, sha, "--stack", "python")
+        self.assertEqual((r.returncode, got["target_os"]), (0, "linux"))
+
+    def test_a_current_entry_wins_over_a_retiring_one_in_the_same_folder(self):
+        sha = self.repo.commit({"package.json": "{}", PLAN: plan(("js", ".", "ts", "retiring", "windows"),
+                                                                 ("app", ".", "ts", "current", "macos"))})
+        r, got = self.resolve(sha, sha)
+        self.assertEqual((r.returncode, got["stack"], got["target_os"]), (0, "ts", "macos"))
+
+    def test_a_bad_base_plan_is_a_usage_error(self):
+        sha = self.repo.commit({"pyproject.toml": "", PLAN: plan(("app", ".", "python", "current", "amiga"))})
+        r, got = self.resolve(sha, sha)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("stack[0] `app`, field target-os: `amiga`: want linux, macos or windows", r.stderr)
+
+    def test_an_explicit_stack_with_no_checkout_reads_no_plan_as_before(self):
+        # the workflow's stack job checks the caller out only for stack auto
+        missing = os.path.join(self.repo.path, "no-checkout")
+        r = _kit.run_cli(["resolve", "--repo", missing, "--base", "b" * 40, "--head", "a" * 40, "--stack", "rust"])
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"stack": "rust", "project_dir": ".", "error": None,
+                                                                    "target_os": "linux"}))
+
+
 class DriftAt(unittest.TestCase):
     """stack_plan.drift_at(repo, ref): the drift of one tree at a ref, no base (session start, #57). Git only."""
 

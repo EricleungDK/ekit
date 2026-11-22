@@ -305,6 +305,13 @@ def check_pr(repo, base_ref, head_ref, now=None):
     return True, note, uncovered, messages
 
 
+def entry_for(plan, stack, folder):
+    """the plan entry for a settled stack (its adapter's name) in a folder: current first, then retiring, then planned;
+    None when no entry is for it."""
+    mine = [e for e in (plan.entries if plan else ()) if e.folder == folder and e.adapter.name == stack]
+    return min(mine, key=lambda e: ("current", "retiring", "planned").index(e.status), default=None)
+
+
 def drift_at(repo, ref, now=None):
     """The drift of one tree, no base (session start, #57): the tracked files at ref against the plan at ref. Git only:
     no test runner, no network. Drift(False, [], []) when there is no plan there. PlanError: a bad plan or no tomllib
