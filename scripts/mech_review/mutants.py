@@ -1223,13 +1223,40 @@ def changed_line_mutants(cands, ranks, sources, changed, project_dir):
     return kept, left_out
 
 
-PYTEST_TIME = re.compile(r"^.*\b\d+ passed\b.* in (\d+(?:\.\d+)?)s\b", re.M)  # "3 passed, 1 warning in 0.12s"
+def junit_seconds(path):
+    """the session seconds in pytest's JUnit XML (`--junit-xml`): the summed `time` of its testsuite elements, or None
+    (no file, not XML, no testsuite, a time that is not a duration). Read from the file, not the terminal summary, which
+    the repo's own options (`-q` in addopts, colour) can drop or change."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    try:
+        times = [_secs(float(t.get("time"))) for t in suites]
+    except (TypeError, ValueError):
+        return None
+    return sum(times) if times and None not in times else None
 
 
-def pytest_seconds(text):
-    """the session time pytest prints on its last summary line (`N passed ... in S s`), or None."""
-    found = PYTEST_TIME.findall(text or "")
-    return float(found[-1]) if found else None
+def _suite_seconds(runner, crate, budget):
+    """(the whole suite's session seconds, None) at head in crate, or (None, why not)."""
+    shown = f"`{' '.join(SUITE)}`"
+    fd, xml = tempfile.mkstemp(prefix="mech-junit-", suffix=".xml")
+    os.close(fd)
+    os.remove(xml)  # pytest writes it; one left over from nothing is never read
+    try:
+        rc, _ = runner(SUITE + [f"--junit-xml={xml}"], crate, budget)
+        if rc == "timeout":
+            return None, f"{shown} did not finish within mutation-budget ({budget / 60:g} min)"
+        if rc != 0:
+            return None, f"{shown} ended with {rc}"
+        got = junit_seconds(xml)
+        return (got, None) if got is not None else (None, f"{shown} wrote no session time in its JUnit XML")
+    finally:
+        if os.path.exists(xml):
+            os.remove(xml)
 
 
 def _files_baseline(rv, shards):
@@ -1265,10 +1292,9 @@ def _py_measure(rv, files, cmd, runner, wt, budget):
     rc, text = runner(base + ["--version"], crate, PROBE_TIMEOUT)
     if rc != 0 or not text.startswith("mutmut, version"):
         return f"mutmut not runnable: `{cmd}`"
-    rc, text = runner(SUITE, crate, budget)
-    test_s = pytest_seconds(text) if rc == 0 else None
-    if test_s is None:
-        return f"`{' '.join(SUITE)}` ended with {rc}" + ("" if rc != 0 else " and no time")
+    test_s, why = _suite_seconds(runner, crate, budget)
+    if why:
+        return why
     rc, text = runner(base + ["run", LIST_ONLY], crate, budget)
     if rc == "timeout" or _run_stopped(rc, text, (NO_MATCH,)):
         return f"mutmut's listing ended with {rc}: {_first_line(text)}"

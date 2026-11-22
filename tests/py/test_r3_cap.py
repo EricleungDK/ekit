@@ -544,8 +544,20 @@ args = sys.argv[1:]
 with open(os.environ["STUB_LOG"], "a") as f:
     f.write(json.dumps(args) + "\n")
 spec = json.load(open(os.environ["STUB_SPEC"]))
-if args[:1] == ["-B"]:  # the whole suite (mutants.SUITE with this stub for python3): pytest's own last line
-    print(os.environ.get("STUB_PYTEST", "3 passed in 0.05s"))
+if args[:1] == ["-B"]:  # the whole suite (mutants.SUITE with this stub for python3)
+    if os.environ.get("STUB_PYTEST_HANG"):
+        import time
+        time.sleep(30)
+    # pytest's JUnit XML, as pytest 9.2.0 writes it: the testsuite's time is the session's
+    xml = [a.split("=", 1)[1] for a in args if a.startswith("--junit-xml=")]
+    if xml and os.environ.get("STUB_JUNIT") != "none":
+        with open(xml[-1], "w") as f:
+            f.write(os.environ.get("STUB_JUNIT") or
+                    '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" '
+                    'errors="0" failures="0" skipped="0" tests="3" time="%s" timestamp="2026-11-22T08:33:07+00:00" '
+                    'hostname="vm"><testcase classname="test_a" name="test_a" time="0.000" /></testsuite>'
+                    '</testsuites>' % os.environ.get("STUB_TEST_S", "0.05"))
+    print(os.environ.get("STUB_PYTEST", "...                                       [100%]"))
     sys.exit(int(os.environ.get("STUB_PYTEST_RC", "0")))
 if args == ["--version"]:
     # mutmut 3.8.1 reads its config before any command: with no [tool.mutmut] (and no src/) even --version fails
@@ -594,7 +606,8 @@ sys.exit(2)
 
 class PyCli(PyRepo):
     """R3 for python at the CLI (in-process, `_kit.run_cli`), mutmut and pytest a stub (MECH_TEST_STUB): pytest prints
-    STUB_PYTEST as its last line; mutmut's list-only run writes the function copies of `mutants` (CopyingMutmut's)."""
+    STUB_PYTEST and writes its JUnit XML with a session time of STUB_TEST_S seconds; mutmut's list-only run writes the
+    function copies of `mutants` (CopyingMutmut's)."""
 
     def setUp(self):
         super().setUp()
@@ -630,7 +643,7 @@ class TestPythonBaselineShardCount(PyCli):
 
     def count(self, test_s, *extra):
         env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", *extra,
-                       STUB_PYTEST=f"3 passed in {test_s:.2f}s")
+                       STUB_TEST_S=f"{test_s:.3f}")
         self.assertTrue(env["run"], env["checks"]["R3"])
         return env["count"]
 
@@ -643,6 +656,15 @@ class TestPythonBaselineShardCount(PyCli):
 
     def test_a_large_pr_gets_at_most_4(self):
         self.assertEqual(self.count(600), 4)
+
+    def test_the_time_is_the_junit_reports_whatever_the_terminal_shows(self):
+        # addopts `-q` (pytest -qq: no summary line), colour, a summary without `passed`, an old wording, a huge line
+        for shown in (".                                    [100%]",
+                      "\x1b[32m.\x1b[0m\n\x1b[32m\x1b[1m3 passed\x1b[0m\x1b[32m in 0.05s\x1b[0m",
+                      "2 xpassed in 0.10s", "5 skipped in 0.1s", "3 passed in 0.12 seconds", "1 passed " * 10000):  # 90 KB: an env var holds at most 128 KB
+            env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_PYTEST=shown,
+                           STUB_TEST_S="90.0")
+            self.assertEqual((env["count"], env["checks"]["R3"]["timing"]["baseline_test_s"]), (2, 90.0), shown[:40])
 
     def test_a_deleted_production_file_is_no_file_to_list(self):
         git(self.repo, "reset", "-q", "--hard", "HEAD~1")
@@ -682,12 +704,12 @@ class TestPythonBaselineShardCount(PyCli):
             f.write("def f(a, b):\n" + OFF_ORIG)
         git(self.repo, "commit", "-q", "-am", "head 2")
         self.spec(OFF_MUTANTS, head="def f(a, b):\n" + OFF_ORIG, orig=OFF_ORIG)
-        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_PYTEST="3 passed in 600.00s")
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_TEST_S="600.0")
         self.assertEqual((env["run"], env["count"], env["mutants"]), (True, 3, 3))
 
     def test_the_measured_time_is_in_the_baseline_json(self):
         env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10",
-                       STUB_PYTEST="3 passed, 1 warning in 90.00s")
+                       STUB_TEST_S="90.0")
         r3 = env["checks"]["R3"]
         self.assertEqual((env["count"], env["mutants"], env["timeout"]), (2, 5, None))
         self.assertEqual(r3["timing"]["baseline_test_s"], 90.0)
@@ -707,7 +729,7 @@ class TestPythonShardsFromTheBaseline(PyCli):
 
     def test_the_counted_shards_run_the_capped_mutants_once_each_and_merge(self):
         base = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", "--max-mutants", "3",
-                        STUB_PYTEST="3 passed in 240.00s")  # 3 x 240 s = 12 min: 3 shards
+                        STUB_TEST_S="240.0")  # 3 x 240 s = 12 min: 3 shards
         self.assertEqual(base["count"], 3)
         side = tempfile.TemporaryDirectory()
         self.addCleanup(side.cleanup)
@@ -751,10 +773,18 @@ class TestPythonBaselineMeasuredNothing(PyCli):
                          f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} ended "
                          "with 1): one shard per changed file")
 
-    def test_a_suite_that_prints_no_time(self):
-        self.assertEqual(self.unmeasured(STUB_PYTEST="no tests ran"),
-                         f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} ended "
-                         "with 0 and no time): one shard per changed file")
+    def test_a_suite_that_writes_no_junit_report(self):
+        # a repo whose addopts holds `-p no:junitxml`: green, but no time to read
+        for junit in ("none", "<testsuites><testsuite name='pytest'/></testsuites>", "<testsuites", "<x time='-1'/>"):
+            self.assertEqual(self.unmeasured(STUB_JUNIT=junit),
+                             f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} "
+                             "wrote no session time in its JUnit XML): one shard per changed file", junit)
+
+    def test_a_suite_the_budget_ends(self):
+        out = self.cli("baseline", "--shards", "4", "--mutation-budget", "0.02", STUB_PYTEST_HANG="1")
+        self.assertEqual(out["checks"]["R3"]["note"],
+                         f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} did not "
+                         "finish within mutation-budget (0.02 min)): one shard per changed file")
 
     def test_no_mutmut(self):
         self.assertIn("mutmut not runnable: `mutmut`", self.unmeasured(STUB_VERSION="bash: mutmut: command not found"))
@@ -799,7 +829,7 @@ class TestPythonBaselineMeasuredNothing(PyCli):
                 f.write(f"def g{k}():\n    return {k}\n")
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-q", "-m", "more files")
-        out = self.cli("baseline", "--shards", "4", STUB_PYTEST="no tests ran")  # the head commit adds the 5
+        out = self.cli("baseline", "--shards", "4", STUB_JUNIT="none")  # the head commit adds the 5
         self.assertEqual(out["count"], 4)
 
 
