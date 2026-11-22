@@ -1336,6 +1336,8 @@ class Mutmut:
         if isinstance(got, str):
             return _unmeasured(rv, shards, got)
         test_s, mutants = got
+        if not mutants:  # as rust: no mutant, no shard
+            return _payload(False, 0, 0, None, _check("pass", "0 mutants on changed lines", 0, 0), [])
         tested = min(mutants, max_mutants)
         est_min = tested * test_s / 60
         count = shard_count(shards, tested, est_min, budget_min)

@@ -716,6 +716,28 @@ class TestPythonBaselineShardCount(PyCli):
         env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_TEST_S="600.0")
         self.assertEqual((env["run"], env["count"], env["mutants"]), (True, 3, 3))
 
+    def test_no_mutant_on_a_changed_line_runs_no_shard(self):
+        # as rust's baseline for no mutant: never more shards than mutants, and 0 is none
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write("def f(a, b):\n" + OFF_ORIG.replace("return z > 0", "return z"))
+        git(self.repo, "commit", "-q", "-am", "base 2")
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write("def f(a, b):\n" + OFF_ORIG)
+        git(self.repo, "commit", "-q", "-am", "head 2")
+        self.spec({n: OFF_MUTANTS[n] for n in (1, 2, 3, 4)}, head="def f(a, b):\n" + OFF_ORIG, orig=OFF_ORIG)
+        env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10", STUB_TEST_S="600.0")
+        r3 = env["checks"]["R3"]
+        self.assertEqual((env["run"], env["count"], env["mutants"], r3["status"], r3["tested"], r3["total"]),
+                         (False, 0, 0, "pass", 0, 0))
+        self.assertEqual(r3["note"], "0 mutants on changed lines")
+        side = tempfile.TemporaryDirectory()
+        self.addCleanup(side.cleanup)
+        path = os.path.join(side.name, "baseline.json")
+        with open(path, "w") as f:
+            json.dump(env, f)
+        merged = self.cli("merge", "--shards", "0", "--baseline", path)
+        self.assertEqual(merged["checks"]["R3"]["status"], "pass")
+
     def test_the_measured_time_is_in_the_baseline_json(self):
         env = self.cli("baseline", "--shards", "4", "--mutation-budget", "10",
                        STUB_TEST_S="90.0")
