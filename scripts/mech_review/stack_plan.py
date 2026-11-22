@@ -51,11 +51,16 @@ def holds(folder, path):
     return folder == "." or path.startswith(folder + "/")
 
 
+def _path_like(ref):
+    """a ref that can only be a file path: it holds a `/` or ends in `.toml` (a built-in name does neither)."""
+    return "/" in ref or ref.endswith(".toml")
+
+
 def _adapter(ref, where, read, planned):
     """the Adapter a plan's `adapter` value names: a built-in, or the adapter file at that repo path (read(path) -> bytes
-    or None when there is no such file). planned: a planned stack may name an adapter file that is not there or does not
-    read yet: None (not proven: it covers nothing and starts no check). A bad value or path is an error whatever the
-    status."""
+    or None when there is no such file). planned: a planned stack may name an adapter file (a path: _path_like) that is
+    not there or does not read yet: None (not proven: it covers nothing and starts no check). A bad value or path, or a
+    planned ref that is neither a built-in nor path-like (`typescript` for `ts`), is an error whatever the status."""
     if not isinstance(ref, str) or not ref:
         raise PlanError(f"{where}: want a built-in stack ({', '.join(sorted(ADAPTERS))}) or an adapter file path")
     if ref in ADAPTERS:
@@ -73,7 +78,7 @@ def _adapter(ref, where, read, planned):
         if not a.manifests:
             raise PlanError(f"{where}: adapter file {path} lists no manifests: the plan cannot find its stack")
     except PlanError:
-        if planned:
+        if planned and _path_like(ref):
             return None
         raise
     return a

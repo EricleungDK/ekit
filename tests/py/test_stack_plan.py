@@ -397,6 +397,20 @@ class Messages(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertIn("stack[0] `mob`, field adapter: `.ekit/adapters/kotlin.toml` is not a built-in stack", r.stderr)
 
+    def test_a_planned_stack_names_a_built_in_or_an_adapter_file_path(self):
+        # review round 3, finding 4: `typescript` (for `ts`) holds no `/` and no `.toml`, so it is no file path: named,
+        # as on a current entry, not left unproven until its manifest lands and the block asks for an entry it has
+        base = self.repo.commit({"api/pyproject.toml": "", PLAN: plan(("api", "api", "python", "current"),
+                                                                     ("web", "web", "typescript", "planned"))})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", base])
+        self.assertIn("stack[1] `web`, field adapter: `typescript` is not a built-in stack (python, rust, ts) and no "
+                      "file is there", bad_plan(self, r))
+        for path in ("kotlin.toml", "tools/kotlin"):  # a path: an adapter file not written yet
+            with self.subTest(path=path):
+                base = self.repo.commit({PLAN: plan(("api", "api", "python", "current"), ("web", "web", path, "planned"))})
+                r, env = drift(self.repo, base, base)
+                self.assertEqual((r.returncode, env["entries"], messages(env)), (0, [], []), r.stderr)
+
     def test_a_planned_stack_with_no_manifest_yet_is_quiet(self):
         base = self.repo.commit({PLAN: plan(("web", "web", "ts", "planned"))})
         r, env = drift(self.repo, base, base)
