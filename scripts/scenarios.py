@@ -268,10 +268,16 @@ def keep(kept, name, text):
 
 
 # a SCENARIO.md field line `- feature: <name>`; [^\S\n]: a blank that is not a line end (a \r of CRLF included)
-FEATURE = re.compile(r"^[-*][^\S\n]*feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$")
-# any line that looks meant as one (another case, bold, no bullet): read as a marker or named, never dropped
-FEATURE_LIKE = re.compile(r"^\s*(?:[-*+]\s*)?(?:\*\*|__)?feature(?:\*\*|__)?\s*:", re.I)
+FEATURE = re.compile(r"^-[^\S\n]+feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$")
+# a top-level `-` field (no indent) whose key is `feature` once emphasis and case are set aside: meant as the marker,
+# so read or named, never dropped. Gherkin's `Feature:`, a nested bullet, `*` and `+` bullets are other text.
+FIELD_KEY = re.compile(r"^-[^\S\n]*([^:\n]*):")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+
+
+def is_feature_field(line):
+    m = FIELD_KEY.match(line)
+    return bool(m) and m.group(1).strip(" \t*_").casefold() == "feature"
 
 
 def marker(repo, sid):
@@ -288,8 +294,8 @@ def marker(repo, sid):
         m = FENCE.match(line)
         if m and (fence is None or m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)):
             fence = None if fence else m.group(1)
-        elif not fence and FEATURE_LIKE.match(line):
-            found.append(line.strip())
+        elif not fence and is_feature_field(line):
+            found.append(line.rstrip())
     if len(found) > 1:
         names = ", ".join(x.split(":", 1)[1].strip() for x in found)
         return None, f"SCENARIO.md has more than one feature line ({names}): keep one"

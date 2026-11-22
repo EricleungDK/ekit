@@ -1017,13 +1017,23 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
 
     def test_a_feature_line_the_runner_cannot_read_is_a_named_error_in_run_and_seeded(self):
-        for line in ("- Feature: log in", "- **feature**: log in", "feature: log in"):
+        for line in ("- Feature: log in", "- **feature**: log in", "- *Feature:* log in", "-feature :log in  "):
             with self.subTest(line=line):
                 self.scenario("login", PASSES)
                 self.doc("login", f"- story: s\n{line}\n")
-                err = f"SCENARIO.md feature line `{line}` is not `- feature: <name>`"
+                err = f"SCENARIO.md feature line `{line.rstrip()}` is not `- feature: <name>`"
                 self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL: 0/1 scenarios\n"))
                 self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+
+    def test_gherkin_nested_and_other_bullet_feature_lines_are_no_marker_and_pass_as_before(self):
+        # an existing repo's scenarios (Gherkin `Feature:`, a nested bullet) read as they did before #60
+        for text in ("Feature: Login\n  Scenario: user logs in\n", "- story: s\n- expected: e\n  * Feature: greyed out\n",
+                     "- story: s\n  - feature: nested\n", "* feature: star bullet\n", "+ feature: plus bullet\n",
+                     "- story: s\n- featured: no\n"):
+            with self.subTest(text=text):
+                self.scenario("login", PASSES)
+                self.doc("login", text)
+                self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))
 
     def test_seeded_names_a_missing_scenario_md(self):
         self.scenario("login", FAILS, "log in")
