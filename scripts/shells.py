@@ -205,6 +205,18 @@ def ps_literal(text):
     return "'" + "".join(c * 2 if c in PS_QUOTES else c for c in text) + "'"
 
 
+PS_WILDCARDS = "[]*?"  # what `&` reads as a wildcard pattern in a command path
+
+
+def ps_call_path(path):
+    """`path` as the literal `& <it>` runs as that very file: `&` looks a path holding [ ] * ? up as a wildcard pattern,
+    so those (and then each backtick, the pattern's escape) are escaped with a backtick, which the '...' literal keeps
+    for the lookup to read. A path with none of them is not a pattern: it goes as it is, a backtick included."""
+    if any(c in PS_WILDCARDS for c in path):
+        path = "".join("`" + c if c in PS_WILDCARDS + "`" else c for c in path)
+    return ps_literal(path)
+
+
 def command(exe, name, line):
     """argv (or, for cmd.exe, the command string) that runs `line` with the shell `name` at `exe`."""
     if name in PS_SHELLS:

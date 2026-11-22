@@ -276,7 +276,7 @@ def scenario_timeout(tmp):
 
 def scenario_run_py(tmp):
     print("scenarios: run.py in plain PowerShell, no bash on PATH")
-    repo = os.path.join(tmp, "py'repo $x")  # a ' and a $: the run.ps1 path goes to PowerShell as one literal
+    repo = os.path.join(tmp, "py'repo $x [1]")  # a ', a $ and [ ]: each run.ps1 is called as that very file
     mark = os.path.join(tmp, "late-child")
     child = f"import time; time.sleep(6); open({mark!r}, 'w')"
     for sid, run_file, text in (
@@ -299,7 +299,7 @@ def scenario_run_py(tmp):
         subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, env=env)
     found = shutil.which("bash", path=env["PATH"])
     check("no Git Bash on PATH", found is None or "system32" in found.lower(), found)
-    run = (f"& {shells.ps_literal(sys.executable)} -I {shells.ps_literal(os.path.join(SCRIPTS, 'scenarios.py'))} "
+    run = (f"& {shells.ps_call_path(sys.executable)} -I {shells.ps_literal(os.path.join(SCRIPTS, 'scenarios.py'))} "
            f"--repo {shells.ps_literal(repo)} run")
     rc, out, err = ps(run + " a", env)
     check("a run.py passes, a run.py fails with its exit code, a run.ps1 runs in PowerShell",

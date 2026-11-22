@@ -764,6 +764,26 @@ class TestRun(unittest.TestCase):
             quoted = quoted.replace(q, q * 2)
         self.assertEqual(line, self.PS_LINE.format(quoted))
 
+    def test_a_run_ps1_path_with_wildcard_characters_is_called_literally(self):
+        """`&` looks a path up as a wildcard pattern: [ ] * ? (and then a backtick) are escaped with a backtick, which
+        the '...' literal keeps; a path with none of them is passed as it is, a backtick included"""
+        cases = [("edge[1]", "edge`[1`]"), ("tick`a", "tick`a")]
+        if os.name != "nt":  # Windows forbids * and ? in a file name
+            cases.append(("a*b?`c", "a`*b`?``c"))
+        fake = self.fake_shell("pwsh")
+        for sid, escaped in cases:
+            with self.subTest(sid=sid):
+                d = os.path.join(self.repo, ".ekit", "scenarios", sid)
+                os.makedirs(d)
+                write(d, "SCENARIO.md", "- story: s\n")
+                write(d, "run.ps1", "exit 0\n")
+                with mock.patch.object(scenarios.shells, "find", lambda n: fake if n == "pwsh" else None):
+                    self.main("exit 0\n", sid)
+                with open(os.path.join(self.state, "argv.json")) as f:
+                    line = json.load(f)[-1]
+                self.assertEqual(line, self.PS_LINE.format(os.path.join(self.repo, ".ekit", "scenarios", escaped,
+                                                                        "run.ps1")))
+
     def test_a_machine_without_powershell_does_not_run_a_run_ps1(self):
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n", run_file="run.ps1")
