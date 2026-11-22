@@ -302,7 +302,7 @@ Top level (required unless marked):
 | Key | Value |
 |---|---|
 | `format` | `1` |
-| `name` | the stack name (`--stack`): letters, digits, `_`, `-` |
+| `name` | the stack name (`--stack`): letters, digits, `_`, `-`; not `auto` (the stack input that means "find it") |
 | `extensions` | file extensions of this stack, e.g. `[".ts", ".js"]`. A file of the stack is test code when it matches a `--test-paths` glob, production code otherwise |
 | `manifests` | optional: files that mark a project dir of this stack, e.g. `["package.json"]` |
 | `target-os` | optional, default `linux`: the OS the stack's tests run on, `linux`, `macos` or `windows` (exactly; any other value is a usage error naming `target-os`). `resolve --adapter FILE` prints it as `target_os`. Changing it is a person's call (#20) |

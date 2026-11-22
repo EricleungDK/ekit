@@ -12,6 +12,7 @@ FORMAT = 1
 BLOCK_STYLES = ("braces", "indent", "keywords")
 KINDS = ("eq", "ne", "other")
 COVERS = ("line", "next-line", "file")
+RESERVED = "auto"  # the stack input that means "find the stack" (resolve.AUTO): never a stack's own name
 TARGET_OS = ("linux", "macos", "windows")  # the stack job outputs one of these; the workflow maps it to a fixed runner
 
 
@@ -304,6 +305,8 @@ def parse(data):
     name = _str(data["name"], "name")
     if not all(ch.isalnum() or ch in "_-" for ch in name):
         _err("name", f"`{name}`: want letters, digits, _ or -")
+    if name == RESERVED:
+        _err("name", f"`{name}` is reserved (stack: auto finds the stack): want another name")
     _strs(data.get("manifests", []), "manifests")
     if "target-os" in data:
         target_os(data["target-os"])

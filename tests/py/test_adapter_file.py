@@ -385,6 +385,14 @@ class Invalid(unittest.TestCase):
         self.assertEqual(self.err(with_("lexer.regex", {"delimiter": "//"})), "lexer.regex.delimiter: want one character")
 
 
+class ReservedName(unittest.TestCase):
+    def test_auto_is_not_a_stack_name(self):
+        # `auto` is the stack job's "find it" input: a file named so would read as a settled stack of that name
+        with self.assertRaises(AdapterFileError) as e:
+            parse(with_("name", "auto"))
+        self.assertEqual(str(e.exception), "name: `auto` is reserved (stack: auto finds the stack): want another name")
+
+
 class TargetOs(unittest.TestCase):
     """`target-os` (#58): the OS a stack's tests run on. linux, macos or windows; missing reads linux."""
 
