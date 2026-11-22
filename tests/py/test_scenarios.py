@@ -1137,6 +1137,12 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual(self.cli("seeded", "writer"),
                          (2, "ERROR writer: modified the repo (todo.py): run in the temp cwd\n"))
 
+    def test_seeded_names_what_it_wrote_into_the_repo_and_not_the_bytecode_beside_it(self):
+        self.scenario("writer", "import os\nfor name in ('a', 'cache.pyc', 'old.pyo'):\n"
+                                "    open(os.path.join(os.environ['EKIT_REPO'], name), 'w').close()\n", "add a task")
+        self.assertEqual(self.cli("seeded", "writer"),
+                         (2, "ERROR writer: modified the repo (a): run in the temp cwd\n"))
+
     def test_seeded_exit_is_error_over_checks_nothing_yet_over_n_a(self):
         self.scenario("mix", FAILS)  # no marker: ERROR
         self.scenario("mix/kid", PASSES, "kid")
