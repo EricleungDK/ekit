@@ -1187,7 +1187,8 @@ class TestTsListing(TsCli):
     def test_a_malformed_row_is_no_listing_and_the_note_says_so(self):
         for row in ('["M", "r", "Infinity", 2]', '["M", "r", 3, 1]', '["M", "r", 1.5, 2]', '["M", "r", true, 2]',
                     '["M", "r", 0, 2]', '["M", "r", 2]', 'null', '["M", 7, 1, 2]',
-                    '["/elsewhere/x.ts", "M", "r", 1, 2]'):  # a file that was not asked for
+                    '["/elsewhere/x.ts", "M", "r", 1, 2]',  # a file that was not asked for
+                    '[["x"], "M", "r", 1, 2]', '[{"x": 1}, "M", "r", 1, 2]'):  # a file that is not a name
             r3 = self.cli("--max-mutants", "5", STUB_BAD_ROW=row)["checks"]["R3"]
             self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), row)  # no cap: every changed line
             self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 8, 8), row)

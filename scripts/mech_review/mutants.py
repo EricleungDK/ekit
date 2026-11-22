@@ -1639,12 +1639,12 @@ LISTING = re.compile(r"^ekit-stryker-listing (.*)$", re.M)  # the listing's own 
 
 def _listing_row(row, full):
     """(crate path, mutator, replacement, first line, last line) of one listed row, or None when it is not that:
-    a file not asked for, a line that is not a whole number from 1 (JSON's Infinity included), a range that ends
-    before it starts."""
+    a file that is not a name asked for, a line that is not a whole number from 1 (JSON's Infinity included), a
+    range that ends before it starts."""
     if not (isinstance(row, list) and len(row) == 5):
         return None
     f, mutator, replacement, first, last = row
-    if (f not in full or not isinstance(mutator, str) or not isinstance(replacement, str)
+    if (not isinstance(f, str) or f not in full or not isinstance(mutator, str) or not isinstance(replacement, str)
             or not all(isinstance(n, int) and not isinstance(n, bool) for n in (first, last)) or not 1 <= first <= last):
         return None
     return full[f], mutator, replacement, first, last
