@@ -1393,6 +1393,13 @@ class TestTsRepoConfigExclusions(TsCli):
             self.assert_not_capped(why, text)
             self.assertEqual(self.listings(), [], text)
 
+    def test_a_json_config_nested_deeper_than_python_reads_gets_no_cap_not_a_crash(self):
+        # review round 6, second pass: V8's JSON.parse reads this config, so the run goes on; json.loads raises
+        # RecursionError on it
+        self.config("stryker.conf.json", '{"a": ' + "[" * 100000 + "]" * 100000 + "}")
+        self.assert_not_capped("the repo's Stryker config stryker.conf.json is not a JSON object: what it excludes "
+                               "cannot be read")
+
     def test_a_config_whose_run_ignores_mutants_no_listing_can_name_gets_no_cap(self):
         # ignorers (plugins that mark mutants Ignored) and ignoreStatic (static mutants Ignored, known only from the
         # run's coverage): the run reports those Ignored, as it does an excluded mutator's

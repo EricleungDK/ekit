@@ -1615,7 +1615,7 @@ def stryker_exclusions(crate, config):
         return None, f"the repo's Stryker config {config} is code: what it excludes cannot be read without running it"
     try:
         doc = json.loads(_read(os.path.join(crate, config)))
-    except ValueError:
+    except (ValueError, RecursionError):  # nesting deeper than Python reads: V8 may read it, so the run goes on
         doc = None
     if not isinstance(doc, dict):
         return None, f"the repo's Stryker config {config} is not a JSON object: what it excludes cannot be read"
