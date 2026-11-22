@@ -25,6 +25,10 @@ LAYOUT = ".ekit/scenarios/<slug>/SCENARIO.md + run.sh, run.py or run.ps1 (one of
 RUN_FILES = ("run.py", "run.sh", "run.ps1")  # a scenario's one run file: what makes a dir a scenario
 NODOC = "missing SCENARIO.md — document it (story, covers, steps, expected)"
 MANY = "more than one run file"
+# the caller's Python settings a scenario does not inherit: each changes what a run.py's own exit means.
+# PYTHONOPTIMIZE strips assert (a failed one would PASS); PYTHONSAFEPATH takes the scenario dir off sys.path (an
+# import of a helper beside run.py would FAIL); PYTHONINSPECT turns sys.exit(N) into an interactive prompt's exit.
+PY_UNSET = ("PYTHONOPTIMIZE", "PYTHONSAFEPATH", "PYTHONINSPECT")
 
 
 def git(repo, *args):
@@ -201,7 +205,7 @@ def run_one(repo, sid, ids, tdir, kept=None):
         env = dict(os.environ, EKIT_REPO=repo, EKIT_SCENARIO_DIR=d, EKIT_PARENT_DIR=pdir, EKIT_ARTIFACT_DIR=art,
                    EK_REPO=repo, EK_SCENARIO_DIR=d, EK_PARENT_DIR=pdir,  # EK_*: pre-rename scenarios
                    PYTHONDONTWRITEBYTECODE="1")  # a scenario writes nothing into a checkout, bytecode included
-        env = {k: v for k, v in env.items() if k != "PYTHONOPTIMIZE"}  # it strips assert: a failed one would PASS
+        env = {k: v for k, v in env.items() if k not in PY_UNSET}
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()

@@ -830,6 +830,21 @@ class TestRun(unittest.TestCase):
                 code, out, _ = self.main("assert False, 'broken'\n", run_file="run.py")
             self.assertEqual((code, out), (1, "FAIL one: exit 1\nFAIL: 0/1 scenarios\n"))
 
+    def test_a_run_py_imports_a_helper_beside_it_even_when_the_caller_sets_pythonsafepath(self):
+        write(self.repo, ".ekit/scenarios/one/helper.py", "WORD = 'helped'\n")
+        with mock.patch.dict(os.environ, {"PYTHONSAFEPATH": "1"}):
+            code, out, doc = self.main("import helper\nprint(helper.WORD)\n", run_file="run.py")
+        self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+        with open(doc["scenarios"][0]["transcript"]) as f:
+            self.assertIn("--- stdout ---\nhelped\n", f.read())
+
+    def test_a_run_py_keeps_its_exit_code_even_when_the_caller_sets_pythoninspect(self):
+        with mock.patch.dict(os.environ, {"PYTHONINSPECT": "1", "EKIT_SCENARIO_TIMEOUT": "60"}):
+            code, out, _ = self.main("import sys\nsys.exit(3)\n", run_file="run.py")
+            self.assertEqual((code, out), (1, "FAIL one: exit 3\nFAIL: 0/1 scenarios\n"))
+            code, out, _ = self.main("import sys\nsys.exit(0)\n", run_file="run.py")
+            self.assertEqual((code, out), (0, "PASS one\nPASS: 1/1 scenarios\n"))
+
     def test_a_python_that_cannot_name_its_own_executable_does_not_run_a_run_py(self):
         with mock.patch.object(scenarios.sys, "executable", ""):
             code, out, doc = self.main("pass\n", run_file="run.py")
