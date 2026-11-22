@@ -38,7 +38,7 @@ import time
 from . import red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
-from .stack import js_scan, ts_runner
+from .stack import ts_runner
 
 DEFAULT_CMD = "cargo mutants"
 PROBE_TIMEOUT = 120  # seconds for `cargo mutants --version`
@@ -1611,77 +1611,92 @@ def line_ranges(lines):
     return [f"{a}-{b}" for a, b in runs]
 
 
-# ts line risk (#63): Stryker lists no mutant before its run, so the cap works on changed lines. Each rule reads the
-# line with comments and literals blanked (js_scan) and gives its risk class and the mutants Stryker 10.0.0 makes for
-# one match (an estimate: `a > b` is EqualityOperator x2 plus ConditionalExpression x2, as a real report shows).
-TS_RULES = (
-    (re.compile(r"\s(?:<=|>=|<|>)\s"), RISK_BRANCH, 4),  # a comparison (spaced, so `Array<T>` is no comparison)
-    (re.compile(r"===|!==|(?<![=!<>])==|!="), RISK_BRANCH, 3),  # EqualityOperator, ConditionalExpression x2
-    (re.compile(r"(?:&&|\|\||\?\?)(?!=)"), RISK_BRANCH, 3),  # LogicalOperator, ConditionalExpression x2
-    (re.compile(r"!(?!=)"), RISK_BRANCH, 1),  # the negation dropped
-    (re.compile(r"\b(?:true|false)\b"), RISK_RETURN, 1),  # BooleanLiteral
-    (re.compile(r"=>\s*(?!\{|$)"), RISK_RETURN, 1),  # ArrowFunction: an expression body replaced by undefined
-    (re.compile(r"\s[-+*/%]\s|\+\+|--"), RISK_ARITH, 1),  # ArithmeticOperator, UpdateOperator
-    (re.compile(r"(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])=(?!=)"), RISK_ARITH, 1),  # AssignmentOperator
-    (re.compile(r"\.\s*(?:charAt|endsWith|startsWith|every|some|filter|reverse|slice|sort|substr|substring|trim|"
-                r"trimEnd|trimStart|toLowerCase|toUpperCase|toLocaleLowerCase|toLocaleUpperCase|min|max|at)\s*\("),
-     RISK_REST, 1),  # MethodExpression
-    (re.compile(r"\?\."), RISK_REST, 1),  # OptionalChaining
-    (re.compile(r"\{[^{}]*[^{}\s][^{}]*\}"), RISK_REST, 1),  # ObjectLiteral, or a one-line BlockStatement
-)
-TS_TEST = re.compile(r"\b(?:if|while)\s*\(|(?<!\?)\?(?![.?:=])")  # a branch's test (if, while, a ternary)
+# the mutants Stryker makes, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
+# the command names, parses each file as the run would (mutator plugins, excludedMutations and ignorers at Stryker's
+# defaults) and prints [file, mutator, replacement, first line, last line] per mutant. argv: the stryker binary, files.
+STRYKER_LIST = r"""
+import { createRequire } from "node:module";
+import { readFileSync, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [bin, ...files] = process.argv.slice(1);
+const req = createRequire(realpathSync(bin));
+const { Instrumenter } = await import(pathToFileURL(req.resolve("@stryker-mutator/instrumenter")).href);
+const no = () => {};
+const log = { isTraceEnabled: () => false, isDebugEnabled: () => false, isInfoEnabled: () => false,
+  isWarnEnabled: () => false, isErrorEnabled: () => false, isFatalEnabled: () => false,
+  trace: no, debug: no, info: no, warn: no, error: no, fatal: no };
+const res = await new Instrumenter(log).instrument(
+  files.map((name) => ({ name, content: readFileSync(name, "utf8"), mutate: true })),
+  { plugins: null, excludedMutations: [], ignorers: [], noHeader: false });
+process.stdout.write("\n" + JSON.stringify(res.mutants.map((m) => [m.fileName, m.mutatorName, m.replacement,
+  m.location.start.line + 1, m.location.end.line + 1])) + "\n");
+"""
 
 
-def ts_costs(text):
-    """{line: (risk class, estimated mutants)} for the lines of a ts/js source that hold any. A test with no
-    comparison or logical operator of its own (`if (x)`, `x ? a : b`) is ConditionalExpression x2. A string or a
-    template literal is StringLiteral (last); a regex literal is the rest."""
-    masked, comments, _ = js_scan(text)
-    inside = bytearray(len(text))
-    for a, b, _ in comments:
-        inside[a:b] = b"\x01" * (b - a)
-    lits = {}  # line -> [risk of each literal that starts there]
-    line = 1
-    for p, ch in enumerate(text):
-        if ch == "\n":
-            line += 1
-        elif (ch in "\"'`/" and masked[p] != ch and not inside[p]
-              and (p == 0 or masked[p - 1] == text[p - 1])):  # the first blanked char of a literal
-            lits.setdefault(line, []).append(RISK_REST if ch == "/" else RISK_LAST)
-    out = {}
-    for n, row in enumerate(masked.split("\n"), 1):
-        got = [(risk, each) for rx, risk, each in TS_RULES for _ in rx.finditer(row)]
-        if TS_TEST.search(row) and not any(r == RISK_BRANCH and each > 1 for r, each in got):
-            got.append((RISK_BRANCH, 2))
-        got += [(risk, 1) for risk in lits.get(n, [])]
-        if got:
-            out[n] = (min(r for r, _ in got), sum(each for _, each in got))
-    return out
+def stryker_listing(runner, cmd, crate, paths):
+    """(the mutants Stryker makes in paths: [(crate path, mutator, replacement, first line, last line)], None), or
+    (None, why not): node or the instrumenter missing, or output that is not that list. node runs in a dir of its own
+    (absolute paths in and out), so nothing it does lands in the crate dir Stryker then runs in."""
+    exe = shlex.split(cmd)[0]
+    exe = os.path.join(crate, exe) if os.sep in exe or "/" in exe else (shutil.which(exe) or exe)
+    full = {os.path.join(crate, p): p for p in paths}
+    tmp = tempfile.mkdtemp(prefix="mech-list-")
+    try:
+        rc, text = runner(["node", "--input-type=module", "-e", STRYKER_LIST, exe, *full], tmp, PROBE_TIMEOUT)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if rc != 0:
+        return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
+    m = re.search(r"^\[", text or "", re.M)
+    try:
+        doc = json.JSONDecoder().raw_decode(text[m.start():])[0] if m else None
+        rows = [(full[f], str(mut), str(rep), int(a), int(b)) for f, mut, rep, a, b in doc]
+    except (ValueError, TypeError, KeyError):
+        return None, f"no mutant list in its output: {_first_line(text) or 'no output'}"
+    return rows, None
 
 
-def ts_pick(sources, changed, max_mutants):
-    """The cap for ts (#63): (picked {file: lines} or None when the changed lines' estimated mutants fit under
-    max_mutants, estimated mutants left out, lines left out). Lines riskiest first, ties by file and line, added until
-    the next would pass max_mutants; a line with no mutant is never picked. sources: {repo file: head text}."""
-    cands = []
-    for f in sorted(sources):
-        costs = ts_costs(sources[f])
-        cands += [(costs[n][0], f, n, costs[n][1]) for n in sorted({n for n, _ in changed.get(f, [])}) if n in costs]
-    total = sum(c[3] for c in cands)
-    if total <= max_mutants:
-        return None, 0, 0
-    picked, used, lines = {}, 0, 0
-    for risk, f, n, each in sorted(cands):
-        if used + each > max_mutants:
+TS_RISK = {"ConditionalExpression": RISK_BRANCH, "EqualityOperator": RISK_BRANCH, "LogicalOperator": RISK_BRANCH,
+           "ArrowFunction": RISK_RETURN, "ArithmeticOperator": RISK_ARITH, "AssignmentOperator": RISK_ARITH,
+           "UpdateOperator": RISK_ARITH, "UnaryOperator": RISK_ARITH, "StringLiteral": RISK_LAST}
+
+
+def ts_risk(mutator, replacement):
+    """#26's risk class of a Stryker mutant, from its mutator: conditions, equality and logical operators are branch
+    conditions; a boolean literal flipped and an arrow function's value are returns (`!x` -> `x`, the negation dropped,
+    is a branch condition); arithmetic, assignment, update and unary operators are arithmetic; strings come last;
+    blocks, arrays, objects, method calls, optional chaining and regexes are the rest."""
+    if mutator == "BooleanLiteral":
+        return RISK_RETURN if replacement in ("true", "false") else RISK_BRANCH
+    return TS_RISK.get(mutator, RISK_REST)
+
+
+def ts_pick(listed, changed, max_mutants):
+    """The cap for ts (#63), by changed lines: (picked {file: lines} or None when every mutant on the changed lines
+    fits under max_mutants, the mutants the picked lines make, the mutants left untested). listed: the mutants
+    Stryker makes (repo paths), each made only when every line it spans is in --mutate. Lines go riskiest first by
+    their riskiest mutant (ties: file, line), each added while the mutants made stay within max_mutants; the first
+    line that would pass it ends the pick. A line no mutant starts on is never picked."""
+    lines = {f: {n for n, _ in rows} for f, rows in changed.items()}
+    cand = [m for m in listed if all(n in lines.get(m[0], ()) for n in range(m[3], m[4] + 1))]
+    if len(cand) <= max_mutants:
+        return None, cand, 0
+    risk, waiting = {}, {}
+    for k, (f, mutator, replacement, first, last) in enumerate(cand):
+        risk[(f, first)] = min(risk.get((f, first), RISK_LAST), ts_risk(mutator, replacement))
+        for n in range(first, last + 1):
+            waiting.setdefault((f, n), []).append(k)
+    missing = [m[4] - m[3] + 1 for m in cand]
+    picked, made = {}, []
+    for _, f, n in sorted((r, f, n) for (f, n), r in risk.items()):
+        done = [k for k in waiting[(f, n)] if missing[k] == 1]
+        if len(made) + len(done) > max_mutants:
             break
+        for k in waiting[(f, n)]:
+            missing[k] -= 1
+        made += [cand[k] for k in done]
         picked.setdefault(f, set()).add(n)
-        used, lines = used + each, lines + 1
-    return picked, total - used, len(cands) - lines
-
-
-def ts_cap_note(extra, lines, max_mutants):
-    return (f"; ~{extra} mutant(s) on {lines} changed line(s) past the cap (max-mutants {max_mutants}): untested "
-            "(estimated from the lines: Stryker lists no mutant before its run)") if extra else ""
+    return picked, made, len(cand) - len(made)
 
 
 class Stryker:
@@ -1697,9 +1712,10 @@ class Stryker:
         return _files_baseline(rv, shards)
 
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
-        """max_mutants (#63): Stryker lists no mutant before its run, so the cap picks changed lines (ts_pick) over
-        every changed file; each shard runs the picked lines of its own files, and shard 0 reports the estimated
-        mutants past the cap as untested. Under the cap every changed line runs, as before."""
+        """max_mutants (#63): Stryker's own instrumenter lists the mutants first (stryker_listing); the cap picks
+        changed lines over every changed file (ts_pick); each shard runs the picked lines of its own files, and shard 0
+        reports the mutants past the cap as untested. Under the cap every changed line runs, as before. With no
+        listing the cap is not applied (the note says why): every changed line runs, the budget the only stop."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         prod = sorted({ch.new for ch in red.prod_changes(rv)
@@ -1723,11 +1739,17 @@ class Stryker:
             if not os.path.isfile(os.path.join(crate, bin_path)):
                 return _check("n/a", f"{runner_name} not installed (env): `{bin_path}` not runnable; install the repo's "
                                      "dependencies (ts toolchain step) or set setup-command"), []
-            pick, extra, left = ts_pick({f: _read(os.path.join(crate, _crate_path(project_dir, f))) for f in prod},
-                                        changed, max_mutants)
-            if shard_index(shard)[0] != 0:
-                extra = left = 0  # shard 0 reports the lines past the cap, so the merge counts them once
-            capped = ts_cap_note(extra, left, max_mutants)
+            listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod])
+            if listed is None:
+                pick, own, extra = None, None, 0
+                capped = f"; max-mutants not applied: Stryker's instrumenter listed no mutant ({why})"
+            else:
+                pick, made, extra = ts_pick([(_repo_path(project_dir, m[0]),) + m[1:] for m in listed], changed,
+                                            max_mutants)
+                own = [m for m in made if m[0] in files]  # the mutants this shard's ranges make
+                if shard_index(shard)[0] != 0:
+                    extra = 0  # shard 0 reports the mutants past the cap, so the merge counts them once
+                capped = cap_note(extra, max_mutants)
             ranges = []
             for f in files:
                 crate_f = _crate_path(project_dir, f)
@@ -1763,7 +1785,7 @@ class Stryker:
             timing = {"wall_s": round(wall, 2)}
             if doc is None:
                 if rc == "timeout":
-                    total = None if total is None else total + extra
+                    total = total if own is None else len(own) + extra
                     note = (f"budget hit before Stryker wrote its report (it writes at the end of a run): "
                             f"{total if total is not None else '?'} mutants, none read" + capped)
                     return {"status": "partial", "note": note, "tested": None, "total": total, "timing": timing}, []
@@ -1815,6 +1837,10 @@ class Stryker:
                                         "read checks.R3.note: the report gives no location for these mutants; check them by hand",
                                         "counting an unlocated mutant as outside the diff, or as a fail without a look")])
             fails = sum(1 for e in ents if e["severity"] == "fail")
+            if pick is not None and len(rows) > len(own):  # more than the listing gave: the pick was not kept
+                return _check("n/a", f"Stryker made {len(rows)} mutant(s) on the picked lines, more than the {len(own)} "
+                                     "its instrumenter listed (env): the cap was not kept; a repo Stryker config with "
+                                     "mutator plugins can do this"), ents
             if not rows and not extra and rc != "timeout":
                 return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
             # a mutant the budget left Pending was never run: untested, never a pass (#63)
