@@ -124,10 +124,19 @@ def scenario_files(d):
 
 
 def runs(files, tool):
-    """True when a scenario script runs `tool`: the word in command position (line start, after ; | & ( ` or a
-    shell keyword), so the word in a string or in another language's code is not a use."""
-    pat = re.compile(r"(^|[;|&(`]|(^|\s)(if|while|until|then|do|else|exec|!))\s*" + re.escape(tool) + r"(\s|$)", re.M)
-    return any(pat.search(read(f)) for f in files)
+    """True when a scenario script runs `tool`, read in the script's own language, so the word in a string or in
+    another language's code is not a use. A shell script (run.sh, helpers): the word in command position (line start,
+    after ; | & ( ` or a shell keyword). PowerShell (.ps1): line start, after ; | & ( { (`tool.exe` too). Python
+    (.py, any case): the tool's name as a whole string (raw or not, any case, `.exe` too) right after ( or [, the first
+    item of an argv list or tuple, or a `which("tool")` lookup. Not read: a command line in one string (`shell=True`),
+    `os.execlp`-style calls, a full path (`["/usr/bin/expect"]`), an argv built in a variable, a quoted PowerShell
+    command (`& "tool"`), `Start-Process`. A call such as `print("tool")` or `re.search("curl", ...)` reads as a use."""
+    t = re.escape(tool)
+    sh = re.compile(r"(^|[;|&(`]|(^|\s)(if|while|until|then|do|else|exec|!))\s*" + t + r"(\s|$)", re.M)
+    ps = re.compile(r"(^|[;|&({])\s*" + t + r"(\.exe)?(\s|$)", re.M | re.I)
+    py = re.compile(r"[\[(]\s*r?['\"]" + t + r"(\.exe)?['\"]", re.I)
+    return any((py if f.lower().endswith(".py") else ps if f.lower().endswith(".ps1") else sh).search(read(f))
+               for f in files)
 
 
 def uses(files, word):
