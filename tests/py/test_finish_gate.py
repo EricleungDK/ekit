@@ -453,6 +453,20 @@ class TestScenariosThisHostCannotRun(GateCase):
         self.assertIsNone(self.stop(BLOCKED + "\nVerification debt:\n- posix: no bash here\n- win: no PowerShell here"))
 
 
+    def test_files_changed_after_a_run_with_a_not_run_scenario_are_not_green_not_host_debt(self):
+        self.scenario("win", "run.ps1")
+        self.scenario("any", "run.py", "pass\n")
+        self.start()
+        self.assertEqual(self.real_runner(self.repo, "run")[0], 1)
+        with open(os.path.join(self.repo, ".ekit", "scenarios", "any", "run.py"), "w") as f:
+            f.write("raise SystemExit(1)\n")  # a rerun would FAIL any: the run on record says nothing about it
+        self.verifier.result = (0, "")
+        out = self.stop(DONE)
+        self.assertTrue(out["reason"].startswith("[ekit] Scenarios not green: stale: tree changed since run. "),
+                        out["reason"])
+        self.assertNotIn("cannot run on this host", out["reason"])
+
+
 class TestVerifyCommands(GateCase):
     """A `done` report stands only when every verify command of the session passed on the files as they are."""
 

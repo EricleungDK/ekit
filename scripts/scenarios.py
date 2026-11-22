@@ -356,16 +356,17 @@ def cmd_check(repo):
         print("no results: run scenarios")
         return 1
     failed = [r for r in res.get("scenarios") or [] if isinstance(r, dict) and r.get("reason")]
-    if res.get("verdict") != "PASS" and failed and not res.get("reason") \
-            and all(not_here(r) for r in failed):
-        # every failure is what this host lacks: the Stop gate takes a blocked report naming it
-        print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
-    elif res.get("verdict") != "PASS":
+    # every failure is what this host lacks: the Stop gate takes a blocked report naming it. Said only of a full run
+    # on the files as they are: else the scenarios that did run prove nothing about them now
+    env_only = res.get("verdict") != "PASS" and failed and not res.get("reason") and all(not_here(r) for r in failed)
+    if res.get("verdict") != "PASS" and not env_only:
         print("last run FAIL")
     elif res.get("filter"):
         print(f"partial run: only '{res['filter']}' was run; run all scenarios")
     elif res.get("tree") != tree_hash(repo):
         print("stale: tree changed since run")
+    elif env_only:
+        print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
     else:
         return 0
     return 1

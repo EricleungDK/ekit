@@ -739,6 +739,27 @@ class TestRun(unittest.TestCase):
                           "NOT-RUN"))
         self.assertEqual(self.check(), (1, "cannot run here: one: PowerShell is not on this machine (env)\n"))
 
+    def ps_beside(self):
+        os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "ps"))
+        write(self.repo, ".ekit/scenarios/ps/SCENARIO.md", "- story: s\n")
+        write(self.repo, ".ekit/scenarios/ps/run.ps1", "exit 0\n")
+
+    def test_a_run_with_a_not_run_scenario_on_files_changed_since_reads_stale_not_cannot_run_here(self):
+        """the files changed after the run: what the run.py would do now is unknown, so it is no host debt"""
+        self.ps_beside()
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, doc = self.main("pass\n", run_file="run.py")
+        self.assertEqual((code, doc["verdict"]), (1, "NOT-RUN"))
+        write(self.repo, ".ekit/scenarios/one/run.py", "raise SystemExit(1)\n")
+        self.assertEqual(self.check(), (1, "stale: tree changed since run\n"))
+
+    def test_a_filtered_run_of_a_not_run_scenario_reads_partial_not_cannot_run_here(self):
+        self.ps_beside()
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            code, out, _ = self.main("raise SystemExit(1)\n", "ps", run_file="run.py")
+        self.assertEqual((code, out), (1, "NOT-RUN ps: PowerShell is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n"))
+        self.assertEqual(self.check(), (1, "partial run: only 'ps' was run; run all scenarios\n"))
+
     def test_a_scenario_this_host_cannot_run_beside_a_real_failure_is_a_failed_run(self):
         os.makedirs(os.path.join(self.repo, ".ekit", "scenarios", "two"))
         write(self.repo, ".ekit/scenarios/two/SCENARIO.md", "- story: s\n")
