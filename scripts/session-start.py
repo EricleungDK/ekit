@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
@@ -20,6 +21,7 @@ RULES = """[ekit] Working rules:
 FIX = "edit it with the ci-doctor skill"
 MAX_ITEMS = 20  # manifests and messages shown; the rest is a count and the command that lists them
 MAX_TEXT = 500  # characters of one repo-controlled value
+DRIFT_SECONDS = 3  # the drift check's share of the hook (it runs ~0.1 s): past it, one line, and the context still goes
 
 
 def shown(text):
@@ -42,6 +44,17 @@ def drift(cwd):
     the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network. Nothing when cwd is in no git
     repo, the repo has no commit, there is no plan, or it is clean; any other failure is one line, never a clean read."""
     os.environ["GIT_NO_LAZY_FETCH"] = "1"  # git 2.44+: a missing object is an error, never a fetch (older: partial_clone)
+    out = []
+    worker = threading.Thread(target=lambda: out.append(_guarded(cwd)), daemon=True)  # left behind on overrun
+    worker.start()
+    worker.join(DRIFT_SECONDS)
+    if not out:
+        return [f"[ekit] Stack plan: the drift check did not finish in {DRIFT_SECONDS} s here, so nothing here says what "
+                f"is unchecked; CI still runs it on every PR."]
+    return out[0]
+
+
+def _guarded(cwd):
     try:
         return _drift(cwd)
     except OSError:

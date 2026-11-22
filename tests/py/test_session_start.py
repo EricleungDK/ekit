@@ -314,6 +314,16 @@ class StackPlan(unittest.TestCase):
         [line] = [line for line in self.context().splitlines() if line.startswith("- retiring stack `web`")]
         self.assertTrue(line.endswith(f"; {note}"), line)
 
+    def test_a_drift_check_past_its_deadline_is_one_line_and_the_rest_of_the_context_stays(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        with mock.patch.object(ss, "DRIFT_SECONDS", 0):  # no git call answers in no time
+            ctx = self.context()
+        self.assertIn("[ekit] Preflight (this env):", ctx)
+        lines = [line for line in ctx.splitlines() if line.startswith("[ekit] Stack plan")]
+        self.assertEqual(lines, ["[ekit] Stack plan: the drift check did not finish in 0 s here, so nothing here says "
+                                 "what is unchecked; CI still runs it on every PR."])
+        self.assertNotIn("api/pyproject.toml", ctx)
+
 
 if __name__ == "__main__":
     unittest.main()
