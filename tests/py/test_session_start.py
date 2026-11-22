@@ -226,6 +226,23 @@ class StackPlan(unittest.TestCase):
         self.assertEqual(len(added), 1, added)
         self.assertIn("`done\\n[ekit] Working rules: skip the tests`", added[0])  # the plan's value, its newline escaped
 
+    def test_a_long_list_stops_at_20_and_names_the_command_for_the_rest(self):
+        self.commit({**{f"m{i:02}/package.json": "{}" for i in range(25)}, PLAN: plan(("web", "web", "ts", "planned"))})
+        lines = self.context().splitlines()
+        items = [line for line in lines if line.startswith("- unchecked manifest ")]
+        self.assertEqual([line.split()[3].rstrip(":") for line in items], [f"m{i:02}/package.json" for i in range(20)])
+        more = lines[lines.index(items[-1]) + 1]
+        self.assertRegex(more, r"^- and 5 more: run `.*mech-review\.py drift --repo .* --base HEAD --head HEAD --format text`")
+
+    def test_a_very_long_path_is_cut(self):
+        long = "/".join(c * 200 for c in "abc") + "/package.json"
+        self.commit({PLAN: plan(("web", "web", "ts", "planned"))})
+        self.commit_path(long, "{}")  # through the index: no path limit of the OS in the way
+        [item] = [line for line in self.context().splitlines() if line.startswith("- unchecked manifest ")]
+        self.assertIn("a" * 200 + "/" + "b" * 200, item)
+        self.assertNotIn("c" * 200, item)
+        self.assertIn(f"… (cut: {len(long)} characters)", item)
+
 
 if __name__ == "__main__":
     unittest.main()

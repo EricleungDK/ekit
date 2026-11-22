@@ -18,12 +18,15 @@ RULES = """[ekit] Working rules:
 - A denied or blocked command stays blocked: ask the user, keeping the exact command. Usage limit hit → stop."""
 
 FIX = "edit it with the ci-doctor skill"
+MAX_ITEMS = 20  # manifests and messages shown; the rest is a count and the command that lists them
+MAX_TEXT = 500  # characters of one repo-controlled value
 
 
 def shown(text):
     """repo- or PR-controlled text (a path, a plan value) as printable text: every character that is not printable
     (newline, CR, other C0 and C1 controls, DEL, line separators) escaped, so it can never start a session line."""
-    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
+    out = "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
+    return out if len(out) <= MAX_TEXT else f"{out[:MAX_TEXT]}… (cut: {len(out)} characters)"
 
 
 def has_tomllib():
@@ -56,11 +59,14 @@ def drift(cwd):
                 f"runs it on every PR."]
     if not d.uncovered and not d.messages:
         return []
-    lines = [f"[ekit] Stack plan drift at HEAD ({stack_plan.PATH}; {FIX}):"]
-    lines += [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
+    items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
               f"entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
-    lines += [f"- {shown(m)}" for m in d.messages]
-    return lines
+    items += [f"- {shown(m)}" for m in d.messages]
+    if len(items) > MAX_ITEMS:
+        cmd = launcher.line(os.path.join(HERE, "mech-review.py"), "drift", "--repo", launcher.shown(top), "--base HEAD",
+                            "--head HEAD --format text")
+        items[MAX_ITEMS:] = [f"- and {len(items) - MAX_ITEMS} more: run `{shown(cmd)}`"]
+    return [f"[ekit] Stack plan drift at HEAD ({stack_plan.PATH}; {FIX}):", *items]
 
 
 def main():
