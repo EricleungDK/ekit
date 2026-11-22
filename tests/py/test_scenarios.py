@@ -1030,6 +1030,24 @@ class TestFeatures(unittest.TestCase):
         os.remove(os.path.join(self.repo, ".ekit", "scenarios", "login", "SCENARIO.md"))
         self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {scenarios.NODOC}\n"))
 
+    def test_check_hashes_the_tree_only_when_its_answer_needs_it(self):
+        # the Stop gate calls check on every stop: a hash of a big tree is its cost
+        self.scenario("tidy", FAILS)
+        self.cli("run")
+        with mock.patch.object(scenarios, "tree_hash", wraps=scenarios.tree_hash) as h:
+            self.assertEqual(self.cli("check"), (1, "last run FAIL\n"))
+            self.assertEqual(h.call_count, 0)
+            self.scenario("tidy", PASSES)
+            self.cli("run", "tidy")
+            h.reset_mock()
+            self.assertEqual(self.cli("check"), (1, "partial run: only 'tidy' was run; run all scenarios\n"))
+            self.assertEqual(h.call_count, 0)
+            self.scenario("tidy", FAILS, "tidy up")
+            self.cli("run")
+            h.reset_mock()
+            self.assertEqual(self.cli("check"), (1, "last run FAIL\n0 of 1 features working\n"))
+            self.assertEqual(h.call_count, 1)  # the features line is said of the files as they are only
+
     def test_check_reads_a_malformed_results_row_as_no_feature(self):
         self.scenario("login", PASSES, "log in")
         self.cli("run")

@@ -495,20 +495,28 @@ def cmd_check(repo):
     # every failure is what this host lacks: the Stop gate takes a blocked report naming it. Said only of a full run
     # on the files as they are: else the scenarios that did run prove nothing about them now
     env_only = res.get("verdict") != "PASS" and failed and not res.get("reason") and all(not_here(r) for r in failed)
-    fresh = not res.get("filter") and res.get("tree") == tree_hash(repo)
+    seen = []
+
+    def fresh():
+        """a full run on the files as they are; the tree is hashed once, and only when an answer needs it (the Stop
+        gate calls check on every stop)"""
+        if not seen:
+            seen.append(not res.get("filter") and res.get("tree") == tree_hash(repo))
+        return seen[0]
+
     rc = 1
     if res.get("verdict") != "PASS" and not env_only:
         print("last run FAIL")
     elif res.get("filter"):
         print(f"partial run: only '{res['filter']}' was run; run all scenarios")
-    elif not fresh:
+    elif not fresh():
         print("stale: tree changed since run")
     elif env_only:
         print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
     else:
         rc = 0
     line = features_line(ran, valid=not res.get("reason"))
-    if line and fresh:  # after the verdict line, which the Stop gate reads first
+    if line and fresh():  # after the verdict line, which the Stop gate reads first
         print(line)
     return rc
 
