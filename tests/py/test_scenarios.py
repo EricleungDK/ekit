@@ -668,13 +668,13 @@ class TestRun(unittest.TestCase):
             self.assertEqual(e.exception.code, 2)
         self.assertEqual(err.getvalue(), f"scenarios.py: no such directory: {missing}\n" * 3)
 
-    def test_a_machine_without_bash_does_not_run_the_scenario_naming_why(self):
+    def test_a_machine_without_bash_fails_the_scenario_naming_why(self):
         """#59: not run here (env), never PASS and never a plain FAIL"""
         with mock.patch.object(scenarios.shells, "find", return_value=None):
             code, out, doc = self.main("exit 0\n")
-        self.assertEqual((code, out, doc["verdict"], doc["scenarios"][0]["reason"]),
-                         (1, "NOT-RUN one: bash is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n", "NOT-RUN",
-                          "bash is not on this machine (env)"))
+        self.assertEqual((code, doc["scenarios"][0]["reason"]), (1, "bash is not on this machine (env)"))
+        self.assertEqual((out, doc["verdict"]),
+                         ("NOT-RUN one: bash is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n", "NOT-RUN"))
 
     def test_a_folder_with_two_or_more_run_files_is_an_error_naming_them_all(self):
         """#59: never a silent pick, and not an env reason (nothing runs, whatever this host has)"""
