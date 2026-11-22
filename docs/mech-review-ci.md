@@ -2,8 +2,8 @@
 
 Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each PR it runs up to seven jobs and merges them into one sticky comment (marker `<!-- mech-review -->`) and one check result:
 
-- `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it finds the one project from the tracked manifests; a set stack is passed through as is. It also prints the stack's target OS (`target_os`: `linux`, `macos` or `windows`; #58): an adapter file's [`target-os`](#keys) (`resolve --adapter FILE`), else `linux`, as every built-in stack is. Every later job reads the result from this job's outputs. The jobs that run the user's tests (`red-first`, `baseline`, `mutants`) are meant to run on the target OS through a fixed map (`linux` → `ubuntu-latest`, `macos` → `macos-latest`, `windows` → `windows-latest`), never the raw value; `guard` and `report` stay on `ubuntu-latest`. That workflow step is not wired yet: every job still runs on `ubuntu-latest`.
-- `guard`: R2 test-diff guard (`scripts/mech-review.py r2`), git diffs only, no toolchain.
+- `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it finds the one project from the tracked manifests; a set stack is passed through as is. It also prints the stack's target OS (`target_os`: `linux`, `macos` or `windows`; #58): the base branch's [stack plan](#stack-plan) entry for it, else an adapter file's [`target-os`](#keys) (`resolve --adapter FILE`), else `linux`, as every built-in stack is. Every later job reads the result from this job's outputs. The jobs that run the user's tests (`red-first`, `baseline`, `mutants`) are meant to run on the target OS through a fixed map (`linux` → `ubuntu-latest`, `macos` → `macos-latest`, `windows` → `windows-latest`), never the raw value; `guard` and `report` stay on `ubuntu-latest`. That workflow step is not wired yet: every job still runs on `ubuntu-latest`.
+- `guard`: R2 test-diff guard (`scripts/mech-review.py r2`), git diffs only, no toolchain. The [drift check](#stack-plan) (`scripts/mech-review.py drift`, check `D`) is meant to run here too, as its own step and artifact (`mech-review-drift-json`); that owner step is not wired yet.
 - `red-first`: R1 red-first and R4 determinism (`scripts/mech-review.py red`). Compiles and runs the PR's new or changed tests, so it needs the stack toolchain (rust: stable; python: a venv with pytest; ts: node 22 and the repo's installed dependencies).
 - `plan`: decides whether R3 runs (a production file changed). Git only.
 - `baseline`: the R3 baseline, once per PR (`scripts/mech-review.py baseline`). Rust: runs cargo-mutants 27.1.0's unmutated baseline (the tests once) and lists the mutants; sets the shard count (`min(4, mutants, ceil(estimated minutes / (budget / 2)))`, see [R3 cap, risk order and shards](#r3-cap-risk-order-and-shards)) and the per-mutant timeout the shards use. Python and ts: the shard count from the changed production files, at most 4 (git only). A baseline that fails or times out is R3's result: the shards do not run. Skipped when `plan` says no production file changed.
@@ -93,11 +93,12 @@ Python toolchain (`stack: python`), set up in `red-first` and `mutants`:
 ## Result
 
 - Jobs: `guard` (artifact `mech-review-json`), `red-first` (artifact `mech-review-red-json`), `plan`, `baseline` (artifact `mech-review-baseline-json`), `mutants` (artifacts `mech-review-mutants-<shard>`), `report` (`needs` all five, runs even if one fails).
-- `report` merges the results: each job owns its checks (R2 from `guard`; R1 and R4 from `red-first`; R3 from `mutants`). The shard results are combined by `mech-review.py merge` first. It edits the sticky comment, or creates it: a summary line, a table of entries (id, severity, file:line, problem, forbidden) and the full JSON.
+- `report` merges the results: each job owns its checks (R2 from `guard`; R1 and R4 from `red-first`; R3 from `mutants`; `D` from the drift result, `--envelope drift=FILE`). The shard results are combined by `mech-review.py merge` first. It edits the sticky comment, or creates it: a summary line, a table of entries (id, severity, file:line, problem, forbidden) and the full JSON.
 - A job with no usable result (crash, no JSON, or a result for an older head) fails its own checks and adds one `CI` entry naming the job. The other job's entries still show.
 - Check fails on any `fail` entry, or any check whose status is `fail` (`confirm` and `waived` entries do not fail). A job's `CI` entries (a missing or mismatched mutants shard, no baseline result) are kept in the merged result and listed in the comment.
 - A `fail` entry of class `needs-human` reads `needs-human` in the comment (severity cell, and the headline when every fail entry is needs-human). The JSON keeps `severity: fail` and the summary keeps `fail`; the check stays red.
 - R1 on a non-agent branch, or a PR with no production file changed, is `skipped` and named as such. A missing toolchain is `n/a` (not run, not pass). Each `n/a` note names the cause and the input to set (`setup-command` for a toolchain, the install step for cargo-mutants, `project-dir` for no manifest: `Cargo.toml` for rust, `pyproject.toml`, `setup.py` or `setup.cfg` for python), and the comment adds one line under the headline: `Did not run: R3 (no Cargo.toml in .: set project-dir)`. A missing manifest where R1 or R4 runs is a `fail` (cannot run), with `set project-dir` in its hint.
+- Check `D` (the [drift check](#stack-plan)) is in the result only when the repo has a stack plan on base or head: then the summary names it (`ran: R1 R2 R4 D`), the comment adds one `Stack plan:` line per message under the headline, and `all pass` needs it to pass. A repo with no plan reads exactly as before, with no `D` anywhere.
 - Summary: `all pass <sha>` only when every check ran and passed. A run with R3 skipped (no production file changed) reads like `pass <sha> (0 fail, 1 confirm; ran: R1 R2 R4; skipped: R3)`. A budget hit reads `partial: R3 (tested/total)`, and an absent tool reads `n/a: R3`; neither is `all pass`.
 - Require the check `mech-review report` in branch protection.
 - Readers trust only the bot's marker comment (`github-actions[bot]`, override `MECH_COMMENT_AUTHOR`): a `<!-- mech-review -->` comment from any other user is ignored.
@@ -205,6 +206,7 @@ Some `fail` entries are a person's call: a protected-path change in a PR that is
 - When: the `report` job reads the PR's comments each time it runs. With the [waiver re-run caller](#waiver-re-run) set up, posting, editing or deleting a `/mech-waive` comment re-runs `report` on its own. Without it, re-run the run's failed job (`report`, the only one that fails on entries), or push: the next run picks the waiver up.
 - Effect: the entry's `severity` becomes `waived` and it gains `waiver: {by, reason, url}`; a check whose fail entries are all waived reads `waived`; the summary counts it (`0 fail, 0 confirm, 1 waived`); the comment says who waived what and why. A waived entry does not fail the check. `all pass` is never printed over a waiver.
 - Scope: a waiver is for one entry id. Ids are stable across pushes (rule + file + test name), so it holds while that same thing stays broken and falls away when the id does. To withdraw one, delete the comment and re-run.
+- Ids: `R1-…` to `R4-…`, and `D-…` for the drift check's entry ([stack plan](#stack-plan)): its id holds the uncovered manifests, so a waiver holds while the same ones stay uncovered and falls away when another appears.
 - Not waivable: `CI` entries (a job with no result). Fix the run instead.
 - Agents do not waive. The skills hand a `needs-human` entry to the user as a Needs-you block; the command above is what the user posts if the answer is yes.
 
@@ -278,6 +280,45 @@ The three tools do not make the same mutants, so R3 is not equally strict across
 | Shard count | cost-based, from the measured baseline | one per changed file (no baseline measured) | one per changed file (no baseline measured) |
 
 In ekit's own code, most python string and argument mutants that survived were real gaps (a dictionary key, a git flag, an environment variable name), so they block like any other. The ones that are not gaps are equivalent mutants: see the R3 row of the [forbidden cheats](testing-standard.md#3-forbidden-cheats) for what to do with one.
+
+## Stack plan
+
+`.ekit/stack-plan.toml` lists the repo's stacks: what is planned, what is current and what is retiring, where each lives and which adapter checks it. The drift check compares it with the tracked manifests on every PR, git only (no test runner, no network):
+
+```
+python3 -I scripts/mech-review.py drift --repo . --base main --head HEAD --format json
+```
+
+```toml
+ignore = ["examples/demo", "templates"]   # folders whose manifests are not projects
+
+[[stack]]
+name = "web"                # letters, digits, _ or -; unique
+folder = "web"              # under the repo root; "." for the root
+adapter = "ts"              # a built-in (python, rust, ts) or an adapter file's repo path, e.g. ".ekit/adapters/kotlin.toml"
+status = "current"          # planned | current | retiring
+target-os = "linux"         # optional: linux | macos | windows; the adapter's when left out
+```
+
+- **Manifests**: the file names the built-ins list (`Cargo.toml`; `pyproject.toml`, `setup.py`, `setup.cfg`; `package.json`) and the ones the plan's adapter files list (`manifests`, required for an adapter file in the plan). A manifest counts anywhere in the tracked tree except under fixture, vendor and build folders (`node_modules`, `vendor`, `target`, `tests`, `test`, `fixtures`, `testdata`, `examples`, `third_party`, `dist`, `build`) and the `ignore` folders.
+- **Covered**: a plan entry's folder holds the manifest, at any depth, and the entry's adapter lists its name.
+- **Result**:
+
+  | Repo state (head tree) | Result |
+  |---|---|
+  | A manifest no entry covers | One `fail` entry for the PR (check `D`, class `adapter-fix`, file `.ekit/stack-plan.toml`) naming every uncovered manifest. A person may waive it ([waivers](#waivers)) |
+  | A `planned` entry's manifest is there (its adapter is proven: a built-in, or an adapter file that reads at the plan's ref) | Message: its checks start; set its status to `current` |
+  | A `retiring` entry's manifest is still there | Message: finish the migration, then remove the entry |
+  | A `current` or `retiring` entry's folder holds none of its adapter's manifests | Message naming the entry to remove |
+  | A `retiring` entry, retiring for more than 30 days [spec default] | Its message adds a reminder to finish or drop the migration. The 30 days count from the plan commit where the entry last became `retiring` (`git log` on the plan) |
+
+  Messages never fail the check. They are in `checks.D.messages` and on `Stack plan:` lines in the comment.
+- **Which plan judges**: the base branch's plan. A PR that edits the plan or one of its adapter files and adds no manifest is judged by its own plan, so the setup PR that adds the plan (with the workflow caller, say) passes. A PR that adds a manifest and its entry together stays blocked until the plan lands first, or a person waives the entry. With a plan on head but none on base, the base judges with nothing covered.
+- **No plan** on base or head: no check `D`, no entry, no message; `stack: auto` and every summary are as before.
+- **Target OS**: `resolve` reads the base branch's plan. The entry for the settled stack and project dir (its adapter's name, its folder; `current` before `retiring` before `planned`) gives the target OS: its own `target-os`, else its adapter's. With no entry, the `--adapter` file's, else `linux`. An explicit stack with no checkout (`--repo` names no directory) reads no plan.
+- **A bad plan** is a usage error (exit 2, nothing on stdout), never clean: `.ekit/stack-plan.toml at 1a2b3c4d5e6f: stack[1] `web`, field status: `done`: want planned, current or retiring`. Unknown keys, a missing field, a duplicate name, a folder outside the repo, an adapter that is neither a built-in nor a file at that ref, a bad adapter file, a bad `target-os`, and `ignore = ["."]` are all named. Reading a plan needs python 3.11 or newer (`tomllib`); without it a plan is that usage error, and a repo with no plan needs nothing.
+- Exit: 0 clean or messages only, 1 the `fail` entry, 2 usage or git error.
+- `stack_plan.drift_at(repo, ref)` gives the same findings for one tree with no base (the session-start hook, #57).
 
 ## Adapter file
 

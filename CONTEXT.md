@@ -26,6 +26,10 @@ _Avoid_: legacy stack, old stack, deprecated stack
 The one file in a repo that lists its stacks (planned, current and retiring), where each lives, which adapter checks it and its target OS.
 _Avoid_: verification plan, stack config, ci-doctor-stack
 
+**Drift check**:
+The git-only comparison of the stack plan with the repo's tracked manifests: a manifest no stack covers blocks the PR (check `D`, class `adapter-fix`); planned, retiring and vanished stacks get a message.
+_Avoid_: plan check, stack lint
+
 **Adapter file**:
 A declarative file in the user's repo that tells ekit's checks everything stack-specific about one stack.
 _Avoid_: config, stack file, plugin
