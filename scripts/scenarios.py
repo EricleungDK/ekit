@@ -1,7 +1,11 @@
-"""Scenario runner: `scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF`.
+"""Scenario runner: `scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF|seeded ID`.
 
 can-fail: exit 0 every scenario fails on REF, 1 one passes there, 4 none passes but one could not run here (n/a),
 2 a scenario folder holds more than one run file (or no worktree at REF).
+seeded: the same read of ID and its children on the files as they are (a seeded scenario fails until its feature
+works); 2 also for a scenario with no `- feature:` line in its SCENARIO.md.
+A `- feature: <name>` line marks a scenario's feature: `run` (unfiltered) and `check` (fresh, full run) end with
+`features: N of M working`, N the marked features whose scenarios all PASS; no line when none is marked.
 
 Runs .ekit/scenarios/<slug>/run.py (the Python running this runner), run.sh (bash) or run.ps1 (PowerShell) in fresh
 temp dirs; evidence goes to <git dir>/ekit/ (or $EKIT_STATE/scenarios/<repo key>/).
@@ -10,6 +14,7 @@ Repo-local so the Stop hook (plugin env) and sandboxed Bash (read-only HOME) agr
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -262,6 +267,30 @@ def keep(kept, name, text):
     return path
 
 
+# a SCENARIO.md field line `- feature: <name>`; [^\S\n]: a blank that is not a line end (a \r of CRLF included)
+FEATURE = re.compile(r"^[-*][^\S\n]*feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$", re.M)
+
+
+def feature(repo, sid):
+    """The feature a scenario's SCENARIO.md marks it with (taste-it seeds them), else None."""
+    try:
+        with open(os.path.join(root(repo), sid, "SCENARIO.md"), encoding="utf-8", errors="replace") as f:
+            m = FEATURE.search(f.read())
+    except OSError:
+        return None
+    return (m.group(1) or None) if m else None
+
+
+def features_line(results):
+    """`features: N of M working`: M marked features, N of them with every scenario marked with it a PASS; None when
+    no scenario is marked."""
+    works = {}
+    for r in results:
+        if r.get("feature"):
+            works[r["feature"]] = works.get(r["feature"], True) and not r.get("reason")
+    return f"features: {sum(works.values())} of {len(works)} working" if works else None
+
+
 def cmd_run(repo, only=None):
     ids = known = find(repo)
     if not ids:
@@ -280,6 +309,10 @@ def cmd_run(repo, only=None):
     os.makedirs(tdir, exist_ok=True)
     results = [run_one(repo, sid, known, tdir, os.path.join(out, FAILED)) for sid in ids]
     for r in results:
+        name = feature(repo, r["id"])
+        if name:
+            r["feature"] = name  # results.json keeps it: check counts the features from there
+    for r in results:
         print(f"{'NOT-RUN' if not_here(r) else 'FAIL'} {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}
     if any(r.get("reason") and not not_here(r) for r in results):
@@ -297,6 +330,9 @@ def cmd_run(repo, only=None):
         json.dump(doc, f, indent=1)
     prune(out, th)
     print(f"{doc['verdict']}: {sum(not r.get('reason') for r in results)}/{len(results)} scenarios")
+    line = features_line(results)
+    if line and not only:  # a filtered run sees only some of a feature's scenarios
+        print(line)
     return doc["verdict"] != "PASS"
 
 
@@ -353,6 +389,42 @@ def cmd_can_fail(repo, ref=None):
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True)
 
 
+def cmd_seeded(repo, only=None):
+    """A seeded scenario proves something only while its feature is missing: each scenario under `only` (it and its
+    children) is run on the files as they are. exit 0 each one fails, 1 one passes (it checks nothing yet), 4 none
+    passes but one could not run here, 2 one has no feature marker or more than one run file. Writes no results.json:
+    `check` still reads the last full run."""
+    if not only:
+        usage()
+    only = only.strip("/")
+    known = find(repo)
+    ids = [i for i in known if i == only or i.startswith(only + "/")]
+    if not ids:
+        print(f"no scenario '{only}' (or children) under .ekit/scenarios/")
+        return 2
+    flagged = na = 0
+    bad = False
+    with tempfile.TemporaryDirectory(prefix="ekit-seeded-") as tmp:
+        for sid in ids:
+            if not feature(repo, sid):
+                print(f"ERROR {sid}: SCENARIO.md has no `- feature:` line")
+                bad = True
+                continue
+            res = run_one(repo, sid, known, tmp)
+            if not_here(res):
+                print(f"N/A {sid}: {res['reason']}")
+                na += 1
+            elif str(res.get("reason")).startswith(MANY):
+                print(f"ERROR {sid}: {res['reason']}")
+                bad = True
+            elif res.get("reason"):
+                print(f"SEEDED ✓ {sid}: fails on the repo as it is")
+            else:
+                print(f"CHECKS NOTHING YET {sid}: passes on the repo as it is")
+                flagged += 1
+    return 2 if bad else 1 if flagged else 4 if na else 0
+
+
 def cmd_hash(repo):
     print(tree_hash(repo))
     return 0
@@ -368,25 +440,31 @@ def cmd_check(repo):
     except (OSError, ValueError):
         print("no results: run scenarios")
         return 1
-    failed = [r for r in res.get("scenarios") or [] if isinstance(r, dict) and r.get("reason")]
+    ran = [r for r in res.get("scenarios") or [] if isinstance(r, dict)]
+    failed = [r for r in ran if r.get("reason")]
     # every failure is what this host lacks: the Stop gate takes a blocked report naming it. Said only of a full run
     # on the files as they are: else the scenarios that did run prove nothing about them now
     env_only = res.get("verdict") != "PASS" and failed and not res.get("reason") and all(not_here(r) for r in failed)
+    fresh = not res.get("filter") and res.get("tree") == tree_hash(repo)
+    rc = 1
     if res.get("verdict") != "PASS" and not env_only:
         print("last run FAIL")
     elif res.get("filter"):
         print(f"partial run: only '{res['filter']}' was run; run all scenarios")
-    elif res.get("tree") != tree_hash(repo):
+    elif not fresh:
         print("stale: tree changed since run")
     elif env_only:
         print("cannot run here: " + "; ".join(f"{r.get('id')}: {r['reason']}" for r in failed))
     else:
-        return 0
-    return 1
+        rc = 0
+    line = features_line(ran)
+    if line and fresh:  # after the verdict line, which the Stop gate reads first
+        print(line)
+    return rc
 
 
 def usage():
-    print("usage: scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF", file=sys.stderr)
+    print("usage: scenarios.py [--repo DIR] run [ID]|tree-hash|check|can-fail REF|seeded ID", file=sys.stderr)
     sys.exit(2)
 
 
@@ -406,10 +484,10 @@ def main(argv=None):
         sys.exit(2)
     top = git(repo, "rev-parse", "--show-toplevel").strip()
     repo = top or os.path.abspath(repo)
-    cmds = {"run": cmd_run, "tree-hash": cmd_hash, "check": cmd_check, "can-fail": cmd_can_fail}
+    cmds = {"run": cmd_run, "tree-hash": cmd_hash, "check": cmd_check, "can-fail": cmd_can_fail, "seeded": cmd_seeded}
     if not a or a[0] not in cmds:
         usage()
-    sys.exit(cmds[a[0]](repo, *a[1:2]) if a[0] in ("run", "can-fail") else cmds[a[0]](repo))
+    sys.exit(cmds[a[0]](repo, *a[1:2]) if a[0] in ("run", "can-fail", "seeded") else cmds[a[0]](repo))
 
 
 if __name__ == "__main__":
