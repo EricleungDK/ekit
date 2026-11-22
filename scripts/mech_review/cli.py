@@ -159,7 +159,7 @@ def build_parser():
                         "(the shards then skip the baseline: it was measured by `baseline`)")
     p.add_argument("--max-mutants", type=max_mutants_arg, default=40, metavar="N",
                    help="R3 (mutants, baseline): the most mutants tested per PR (default 40), riskiest first; past it R3 "
-                        "is partial (rust, python; ts: riskiest changed lines, their mutants estimated)")
+                        "is partial (rust, python; ts: riskiest changed lines, counted by Stryker's instrumenter)")
     p.add_argument("--shard", metavar="K/N", help="R3 only: run shard K of N (0-based, as cargo-mutants numbers them)")
     p.add_argument("--shards", type=int, default=None, metavar="N",
                    help="baseline: the most mutants shards (default 4; fewer when there are fewer mutants); merge: the number "
