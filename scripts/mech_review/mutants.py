@@ -1601,6 +1601,37 @@ def stryker_config(crate):
     return None
 
 
+STRYKER_IGNORING = ("ignorers", "ignoreStatic")  # options that make a run ignore mutants only the run can name
+
+
+def stryker_exclusions(crate, config):
+    """(the mutator.excludedMutations of the repo's Stryker config, None): what the default listing leaves out so it
+    counts the mutants the run makes (#63). The config is read as data, never run: [] with no config or none excluded;
+    (None, why not) for a config that is code (js, mjs, cjs), one that is not the JSON Stryker reads (JSON.parse, an
+    object, the names a list of strings), and one that sets ignorers or ignoreStatic (the run then ignores mutants
+    no listing can name)."""
+    if config is None:
+        return [], None
+    if not config.endswith(".json"):
+        return None, f"the repo's Stryker config {config} is code: what it excludes cannot be read without running it"
+    try:
+        doc = json.loads(_read(os.path.join(crate, config)))
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        return None, f"the repo's Stryker config {config} is not a JSON object: what it excludes cannot be read"
+    mutator = doc.get("mutator", {})
+    excluded = mutator.get("excludedMutations", []) if isinstance(mutator, dict) else None
+    if not isinstance(excluded, list) or not all(isinstance(name, str) for name in excluded):
+        return None, (f"mutator.excludedMutations in the repo's Stryker config {config} is not a list of mutator "
+                      "names: what it excludes cannot be read")
+    for key in STRYKER_IGNORING:
+        if doc.get(key):
+            return None, (f"the repo's Stryker config {config} sets {key}: the run ignores mutants the listing "
+                          "cannot name")
+    return excluded, None
+
+
 def line_ranges(lines):
     """sorted line numbers as `a-b` runs of consecutive lines (the form Stryker's --mutate takes)."""
     runs = []
@@ -1614,8 +1645,9 @@ def line_ranges(lines):
 
 # the mutants Stryker makes, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
 # the command names, parses each file at Stryker's default parser options and prints [file, mutator, replacement,
-# first line, last line] per mutant, twice. `ekit-stryker-listing`: at Stryker's defaults, the mutants a comment does
-# not disable (what a run with no repo config makes). `ekit-stryker-upper`: every mutator counted as excluded, so none
+# first line, last line] per mutant, twice. `ekit-stryker-listing`: at Stryker's defaults but for the repo config's
+# excludedMutations (read from ekit-stryker-options.json in node's own dir), the mutants neither they nor a comment
+# turn off: what the run makes. `ekit-stryker-upper`: every mutator counted as excluded, so none
 # is dropped for another: Stryker 10.0.0 keeps a call statement's CallExpression mutant only while no other mutant
 # there is left, so a repo's excludedMutations (or an ignorer) makes the real run hold it. That list is an upper bound
 # of any run's mutants. argv: the stryker binary, files.
@@ -1635,10 +1667,12 @@ const list = async (excludedMutations) => (await new Instrumenter(log).instrumen
   { plugins: null, excludedMutations, ignorers: [], noHeader: false })).mutants;
 const rows = (ms) => JSON.stringify(ms.map((m) => [m.fileName, m.mutatorName, m.replacement,
   m.location.start.line + 1, m.location.end.line + 1]));
-const plain = (await list([])).filter((m) => m.status !== "Ignored");
+const { excludedMutations } = JSON.parse(readFileSync("ekit-stryker-options.json", "utf8"));
+const plain = (await list(excludedMutations)).filter((m) => m.status !== "Ignored");
 const every = await list({ includes: () => true });
 process.stdout.write("\nekit-stryker-listing " + rows(plain) + "\nekit-stryker-upper " + rows(every) + "\n");
 """
+STRYKER_OPTIONS = "ekit-stryker-options.json"
 LISTINGS = {"plain": re.compile(r"^ekit-stryker-listing (.*)$", re.M),  # the lists' own lines; other output is log
             "upper": re.compile(r"^ekit-stryker-upper (.*)$", re.M)}
 
@@ -1672,16 +1706,18 @@ def _listing_rows(text, rx, full):
     return rows, None
 
 
-def stryker_listing(runner, cmd, crate, paths):
-    """((the mutants a run at Stryker's defaults makes in paths, the upper bound of any run's), None), each
-    [(crate path, mutator, replacement, first line, last line)]; or (None, why not): node or the instrumenter missing,
-    or output that is not those lists. node runs in a dir of its own (absolute paths in and out), so nothing it does
-    lands in the crate dir Stryker then runs in."""
+def stryker_listing(runner, cmd, crate, paths, excluded=()):
+    """((the mutants a run makes in paths with the mutators in `excluded` off, the upper bound of any run's), None),
+    each [(crate path, mutator, replacement, first line, last line)]; or (None, why not): node or the instrumenter
+    missing, or output that is not those lists. node runs in a dir of its own (absolute paths in and out; `excluded`
+    in a file there), so nothing it does lands in the crate dir Stryker then runs in."""
     exe = shlex.split(cmd)[0]
     exe = os.path.join(crate, exe) if os.sep in exe or "/" in exe else (shutil.which(exe) or exe)
     full = {os.path.join(crate, p): p for p in paths}
     tmp = tempfile.mkdtemp(prefix="mech-list-")
     try:
+        with open(os.path.join(tmp, STRYKER_OPTIONS), "w", encoding="utf-8") as f:
+            json.dump({"excludedMutations": list(excluded)}, f)
         rc, text = runner(["node", "--input-type=module", "-e", STRYKER_LIST, exe, *full], tmp, PROBE_TIMEOUT)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1760,8 +1796,10 @@ class Stryker:
     def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
         """max_mutants (#63): Stryker's own instrumenter lists the mutants first (stryker_listing); the cap picks
         changed lines over every changed file (ts_pick); each shard runs the picked lines of its own files, and shard 0
-        reports the mutants past the cap as untested. Under the cap every changed line runs, as before. With no
-        listing the cap is not applied (the note says why): every changed line runs, the budget the only stop."""
+        reports the mutants past the cap as untested. Under the cap every changed line runs, as before. The listing
+        leaves out the mutators the repo's Stryker config excludes (stryker_exclusions: read as data, never run).
+        With no listing, or a config that cannot be read so, the cap is not applied (the note says why): every
+        changed line runs, the budget the only stop."""
         repo, mb, head, adapter, test_globs, project_dir = rv
         cmd = cmd or self.default_cmd
         prod = sorted({ch.new for ch in red.prod_changes(rv)
@@ -1785,13 +1823,17 @@ class Stryker:
             if not os.path.isfile(os.path.join(crate, bin_path)):
                 return _check("n/a", f"{runner_name} not installed (env): `{bin_path}` not runnable; install the repo's "
                                      "dependencies (ts toolchain step) or set setup-command"), []
-            listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod])
             config = stryker_config(crate)
+            excluded, off = stryker_exclusions(crate, config)
+            listed = None
+            if excluded is not None:
+                listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod], excluded)
+                off = None if listed else f"Stryker's instrumenter listed no mutant ({why})"
             # with the repo's own Stryker config (it may exclude mutators) the default listing's counts are bounds
             bound = listed is not None and config is not None
             if listed is None:
                 pick, own, extra = None, None, 0
-                capped = f"; max-mutants not applied: Stryker's instrumenter listed no mutant ({why})"
+                capped = f"; max-mutants not applied: {off}"
             else:
                 plain, upper = ([(_repo_path(project_dir, m[0]),) + m[1:] for m in rows] for rows in listed)
                 pick, made, extra = ts_pick(plain, changed, max_mutants)

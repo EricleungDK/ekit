@@ -890,6 +890,7 @@ with open(os.environ["STUB_LOG"], "a") as f:
 # STUB_SPEC: the mutants Stryker 10.0.0's instrumenter makes in the head files, [file, mutator, replacement, first
 # line, last line] each (what ekit's listing prints)
 spec = json.load(open(os.environ["STUB_SPEC"]))
+OPTIONS = "ekit-stryker-options.json"
 if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through Stryker's own instrumenter
     if os.environ.get("STUB_NO_LISTING"):
         print("Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@stryker-mutator/instrumenter'")
@@ -900,7 +901,13 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
     # real instrumenter makes them: at Stryker's defaults, and with every mutator excluded (the upper bound). A 6th
     # field "upper": a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement,
     # so only the upper bound holds it
-    rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and m[5:] != ["upper"]]
+    # ekit-stryker-options.json, in node's own dir: the excludedMutations ekit read from the repo's Stryker config,
+    # which the first list leaves out as the run does (an excluded mutant, and a call statement's CallExpression
+    # while another mutant that is not excluded sits there)
+    excl = set(json.load(open(OPTIONS))["excludedMutations"]) if os.path.exists(OPTIONS) else set()
+    held = lambda m: any(o[0] == m[0] and o[3] == m[3] and o[5:] != ["upper"] and o[1] not in excl for o in spec)
+    rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and m[1] not in excl
+            and (m[5:] != ["upper"] or not held(m))]
     every = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0])]
     if os.environ.get("STUB_BAD_ROW"):  # a row as the given JSON, its file the first file asked
         bad = json.loads(os.environ["STUB_BAD_ROW"])
@@ -1254,6 +1261,110 @@ class TestTsExcludedMutations(TsCli):
         env = self.cli("--max-mutants", "5", STUB_EXCLUDE="StringLiteral")
         (entry,) = [e for e in env["entries"] if e["severity"] == "confirm"]
         self.assertEqual(entry["problem"], "R3 partial: up to 1/6 mutants untested at budget")
+
+
+class TestTsRepoConfigExclusions(TsCli):
+    """#63 review round 6, finding A: the repo's JSON Stryker config is read as data and its mutator.excludedMutations
+    go to the default listing, so the cap counts what the run makes. Real Stryker 10.0.0 (scratchpad u6/y100, config
+    `excludedMutations: ["ConditionalExpression", "EqualityOperator"]`): the run makes 2 on HEAD, the BlockStatement
+    over lines 1-7 and the string of line 5 (both survive: `fail 2/2`); the 12 of lines 2-4 are Ignored. The default
+    instrumenter listing without the exclusions holds 14."""
+    HEAD = ("export function f(a: number): boolean {\n" + "".join(f"  const t{k} = a > {k};\n" for k in range(3))
+            + '  console.log("hi");\n  return t0;\n}\n')
+    FILES = {"src/calc.ts": ("export {};\n", HEAD, [])}
+    MORE = ([["src/calc.ts", "BlockStatement", "{}", 1, 7]]
+            + [["src/calc.ts", m, r, n, n] for n in (2, 3, 4) for m, r in (
+                ("ConditionalExpression", "true"), ("ConditionalExpression", "false"),
+                ("EqualityOperator", "a >= 0"), ("EqualityOperator", "a <= 0"))]
+            + [["src/calc.ts", "StringLiteral", '""', 5, 5], ["src/calc.ts", "CallExpression", ";", 5, 5, "upper"]])
+    EXCLUDED = ["ConditionalExpression", "EqualityOperator"]
+
+    def config(self, name, text):
+        """the repo's Stryker config, in the base commit (so it is no changed file of the PR)."""
+        git(self.repo, "reset", "-q", "--soft", "HEAD~1")
+        git(self.repo, "stash", "-q")
+        self.write(name, text)
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--amend", "--no-edit")
+        git(self.repo, "stash", "pop", "-q")
+        git(self.repo, "commit", "-q", "-am", "head")
+
+    def run_excluding(self, *args, **env):
+        return self.cli(*args, STUB_EXCLUDE="|".join(self.EXCLUDED), STUB_MISSED="src/calc.ts:1|src/calc.ts:5", **env)
+
+    def test_a_pr_whose_run_fits_under_the_cap_is_not_capped_by_the_mutants_its_config_excludes(self):
+        self.config("stryker.conf.json", json.dumps({"mutator": {"excludedMutations": self.EXCLUDED}}))
+        env = self.run_excluding("--max-mutants", "12")
+        r3 = env["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines(range(1, 8)))  # every changed line
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("fail", 2, 2))
+        self.assertEqual(sorted(e["line"] for e in env["entries"] if e["severity"] == "fail"), [1, 5])
+        self.assertNotIn("past the cap", r3["note"])
+
+    def listings(self):
+        with open(self.log) as f:
+            return [a for a in (json.loads(line) for line in f) if a[:2] == ["--input-type=module", "-e"]]
+
+    def assert_not_capped(self, why, msg=None):
+        """cap 12 under the 14 of the default listing, yet every changed line runs and both MISSED are shown."""
+        env = self.run_excluding("--max-mutants", "12")
+        r3 = env["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines(range(1, 8)), msg)
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("fail", 2, 2), msg)
+        self.assertEqual(sorted(e["line"] for e in env["entries"] if e["severity"] == "fail"), [1, 5], msg)
+        self.assertTrue(r3["note"].endswith("; max-mutants not applied: " + why), r3["note"])
+
+    def test_a_config_that_is_code_is_never_run_and_gets_no_cap(self):
+        # Stryker's discovery order, last first: each name added is the one Stryker reads
+        for name in (".stryker.config.cjs", ".stryker.conf.mjs", "stryker.config.js", "stryker.conf.cjs",
+                     "stryker.conf.mjs", "stryker.conf.js"):
+            self.config(name, f"export default {{mutator: {{excludedMutations: {json.dumps(self.EXCLUDED)}}}}};\n")
+            self.assert_not_capped(f"the repo's Stryker config {name} is code: what it excludes cannot be read "
+                                   "without running it", name)
+            self.assertEqual(self.listings(), [], name)  # no listing is asked for: it could not be the run's
+
+    def test_the_config_read_is_the_one_stryker_finds_first(self):
+        # stryker.config.js comes before .stryker.conf.json: Stryker reads the code config
+        self.config(".stryker.conf.json", json.dumps({"mutator": {"excludedMutations": self.EXCLUDED}}))
+        self.config("stryker.config.js", "export default {};\n")
+        self.assert_not_capped("the repo's Stryker config stryker.config.js is code: what it excludes cannot be read "
+                               "without running it")
+        # stryker.conf.json comes before every other name: Stryker reads it, and its exclusions are the run's
+        self.config("stryker.conf.json", json.dumps({"mutator": {"excludedMutations": self.EXCLUDED}}))
+        r3 = self.run_excluding("--max-mutants", "1")["checks"]["R3"]
+        # the 2 the run makes: the block over lines 1-7 goes first (the rest, before strings) and brings the string
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 0, 2))
+        self.assertIn("no changed line fits under the cap; ", r3["note"])
+        self.assertEqual(len(self.listings()), 1)
+
+    def test_a_json_config_that_cannot_be_read_as_data_gets_no_cap(self):
+        not_object = "the repo's Stryker config stryker.conf.json is not a JSON object: what it excludes cannot be read"
+        not_names = ("mutator.excludedMutations in the repo's Stryker config stryker.conf.json is not a list of mutator "
+                     "names: what it excludes cannot be read")
+        for text, why in (('{"mutator": ', not_object), ('["ConditionalExpression"]', not_object),
+                          ('{"mutator": "typescript"}', not_names),
+                          ('{"mutator": {"excludedMutations": "ConditionalExpression"}}', not_names),
+                          ('{"mutator": {"excludedMutations": ["ConditionalExpression", 7]}}', not_names)):
+            self.config("stryker.conf.json", text)
+            self.assert_not_capped(why, text)
+            self.assertEqual(self.listings(), [], text)
+
+    def test_a_config_whose_run_ignores_mutants_no_listing_can_name_gets_no_cap(self):
+        # ignorers (plugins that mark mutants Ignored) and ignoreStatic (static mutants Ignored, known only from the
+        # run's coverage): the run reports those Ignored, as it does an excluded mutator's
+        for key, value in (("ignorers", ["console.debug"]), ("ignoreStatic", True)):
+            self.config("stryker.conf.json", json.dumps({key: value, "mutator": {"excludedMutations": []}}))
+            self.assert_not_capped(f"the repo's Stryker config stryker.conf.json sets {key}: the run ignores mutants "
+                                   "the listing cannot name", key)
+
+    def test_a_json_config_that_excludes_and_ignores_nothing_is_capped_as_a_repo_without_one(self):
+        for doc in ({}, {"ignorers": [], "ignoreStatic": False}, {"mutator": {}},
+                    {"mutator": {"excludedMutations": []}}):
+            self.config("stryker.conf.json", json.dumps(doc))
+            r3 = self.cli("--max-mutants", "12")["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([2, 3, 4]), doc)  # the 3 branch lines, 4 mutants each
+            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 12, 14), doc)
+            self.assertNotIn("not applied", r3["note"])
 
 
 class TestTsUnderTheCapWithCallStatements(TsCli):
