@@ -744,11 +744,17 @@ class TestPythonBaselineMeasuredNothing(PyCli):
         self.assertNotIn("timing", r3)
         return r3["note"]
 
+    SUITE = "`python3 -B -m pytest -x -q -p no:cacheprovider --ignore=mutants`"  # the whole suite, as the docs name it
+
     def test_a_red_suite(self):
-        self.assertIn("ended with 1", self.unmeasured(STUB_PYTEST="1 failed, 2 passed in 3.00s", STUB_PYTEST_RC="1"))
+        self.assertEqual(self.unmeasured(STUB_PYTEST="1 failed, 2 passed in 3.00s", STUB_PYTEST_RC="1"),
+                         f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} ended "
+                         "with 1): one shard per changed file")
 
     def test_a_suite_that_prints_no_time(self):
-        self.assertIn("ended with 0 and no time", self.unmeasured(STUB_PYTEST="no tests ran"))
+        self.assertEqual(self.unmeasured(STUB_PYTEST="no tests ran"),
+                         f"1 changed production file(s) in 1 shard(s); test time not measured ({self.SUITE} ended "
+                         "with 0 and no time): one shard per changed file")
 
     def test_no_mutmut(self):
         self.assertIn("mutmut not runnable: `mutmut`", self.unmeasured(STUB_VERSION="bash: mutmut: command not found"))
