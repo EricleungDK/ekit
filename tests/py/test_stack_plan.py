@@ -599,6 +599,73 @@ class Malformed(unittest.TestCase):
         self.assertIn("unknown ref: nosuch", r.stderr)
 
 
+class Edges(unittest.TestCase):
+    """Review round 2, finding 13: inputs the other tests leave out."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+
+    def err(self, files):
+        sha = self.repo.commit(files)
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", sha, "--head", sha])
+        self.assertEqual((r.returncode, r.stdout), (2, ""), r.stderr)
+        return r.stderr
+
+    def test_a_control_character_or_a_backslash_in_a_folder_is_named(self):
+        for toml, want in (('"a\\u001fb"', "'a\\x1fb' holds a control character"),
+                           ('"a\\u007fb"', "'a\\x7fb' holds a control character"),
+                           ('"a\\\\b"', "`a\\b`: want a folder under the repo root")):
+            with self.subTest(toml):
+                text = f'[[stack]]\nname = "x"\nfolder = {toml}\nadapter = "python"\nstatus = "current"\n'
+                self.assertIn(f"stack[0] `x`, field folder: {want}", self.err({PLAN: text}))
+
+    def test_a_plan_that_starts_with_a_utf8_bom_reads(self):
+        sha = self.repo.commit({"pyproject.toml": "", PLAN: "\ufeff" + plan(("app", ".", "python", "current"))})
+        r, env = drift(self.repo, sha, sha)
+        self.assertEqual((r.returncode, env["checks"]["D"]["status"]), (0, "pass"), r.stderr)
+
+    def test_a_plan_nested_too_deep_is_named_not_a_traceback(self):
+        out = self.err({PLAN: "x = " + "[" * 3000 + "]" * 3000 + "\n"})
+        self.assertIn("not valid TOML: arrays or tables nested too deep", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_a_folder_at_the_adapter_path_is_no_adapter_file(self):
+        out = self.err({".ekit/adapters/x.toml/inner": "", PLAN: plan(("x", "x", ".ekit/adapters/x.toml", "current"))})
+        self.assertIn("field adapter: `.ekit/adapters/x.toml` is not a built-in stack (python, rust, ts) and no file is "
+                      "there", out)
+
+    def test_a_folder_at_the_plan_path_is_no_plan(self):
+        sha = self.repo.commit({PLAN + "/x": "y", "web/package.json": "{}"})
+        r, env = drift(self.repo, sha, sha)
+        self.assertEqual((r.returncode, "D" in env["checks"], env["entries"]), (0, False, []), r.stderr)
+
+    def test_a_manifest_renamed_into_a_new_folder_with_a_plan_edit_is_judged_by_the_base_plan(self):
+        base = self.repo.commit({"api/pyproject.toml": "[project]\nname = 'x'\nversion = '1'\n",
+                                 PLAN: plan(("api", "api", "python", "current"))})
+        os.makedirs(os.path.join(self.repo.path, "svc"))
+        self.repo.git("mv", "api/pyproject.toml", "svc/pyproject.toml")
+        head = self.repo.commit({PLAN: plan(("svc", "svc", "python", "current"))})
+        self.assertIn("R100\tapi/pyproject.toml\tsvc/pyproject.toml", self.repo.git("diff", "--name-status", "-M", base, head))
+        r, env = drift(self.repo, base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(fails(env)[0]["problem"], f"manifests no stack in {PLAN} covers: svc/pyproject.toml")
+        self.assertIn("base branch's plan", env["checks"]["D"]["note"])
+
+    def test_a_plan_deleted_and_added_again_counts_retiring_from_the_new_plan(self):
+        now = time.time()
+        self.repo.commit({"old/setup.py": "", PLAN: plan(("old", "old", "python", "retiring"))}, when=now - 100 * DAY)
+        self.repo.commit({PLAN: None}, when=now - 90 * DAY)
+        sha = self.repo.commit({PLAN: plan(("old", "old", "python", "retiring"))}, when=now - 40 * DAY)
+        [m] = stack_plan.drift_at(self.repo.path, sha, now=now).messages
+        self.assertIn("retiring for 40 days (30 or more)", m)
+
+    def test_resolve_takes_a_retiring_entry_before_a_planned_one(self):
+        sha = self.repo.commit({"package.json": "{}", PLAN: plan(("next", ".", "ts", "planned", "windows"),
+                                                                 ("js", ".", "ts", "retiring", "macos"))})
+        r = _kit.run_cli(["resolve", "--repo", self.repo.path, "--base", sha, "--head", sha])
+        self.assertEqual((r.returncode, json.loads(r.stdout)["target_os"]), (0, "macos"), r.stderr)
+
+
 class OldPython(unittest.TestCase):
     """tomllib is python 3.11+: a plan on an older python is a stated usage error, never clean; no plan needs none."""
 
