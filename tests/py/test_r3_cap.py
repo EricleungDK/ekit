@@ -918,6 +918,8 @@ files, made = {}, 0
 for k, (path, mutator, replacement, first, last, *upper) in enumerate(spec):
     if not all((path, n) in picked for n in range(first, last + 1)):
         continue
+    if mutator in os.environ.get("STUB_UNMADE", "").split("|"):
+        continue  # listed, but the run does not make it (the listing is an upper bound)
     if upper and any(m[0] == path and m[3] == first and m[5:] != ["upper"] and m[1] not in excluded for m in spec):
         continue  # the CallExpression filter: another mutant that is not excluded sits in the statement
     status = "Ignored" if mutator in excluded else "Survived" if f"{path}:{first}" in missed else "Killed"
@@ -1213,17 +1215,41 @@ class TestTsExcludedMutations(TsCli):
             self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 4, 8), env)
 
 
+class TestTsMultiLineMutants(TsCli):
+    """#63 review round 4, finding 2: a mutant spanning lines is picked by its own risk, with every line it spans. The
+    listing is a real @stryker-mutator/instrumenter 10.0.0 one of HEAD (scratchpad u5me/ml): the ArrowFunction of g
+    over lines 1-3, the ArrowFunction and ArithmeticOperator of h on line 4, the string on line 5."""
+    HEAD = 'export const g = (x: number) => h(\n  x,\n);\nconst h = (y: number) => y + 1;\nconst s = "a";\n'
+    FILES = {"src/calc.ts": ("\n" * 5, HEAD, [])}
+    MORE = [["src/calc.ts", "ArrowFunction", "() => undefined", 1, 3],
+            ["src/calc.ts", "ArrowFunction", "() => undefined", 4, 4],
+            ["src/calc.ts", "ArithmeticOperator", "y - 1", 4, 4], ["src/calc.ts", "StringLiteral", '""', 5, 5]]
+
+    def test_a_return_over_three_lines_goes_before_arithmetic_and_strings(self):
+        # cap 3: g's ArrowFunction (lines 1-3), then line 4 (h's ArrowFunction and the arithmetic); the string next
+        # would pass the cap
+        r3 = self.cli("--max-mutants", "3")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([1, 2, 3, 4]))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 3, 4))
+
+    def test_within_the_cap_every_changed_line_runs(self):
+        r3 = self.cli("--max-mutants", "4")["checks"]["R3"]
+        self.assertEqual(self.mutate(), ts_lines([1, 2, 3, 4, 5]))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 4, 4))
+
+
 class TestTsNeverPass(TsCli):
-    """picked lines whose mutants span an unpicked line make none: what is left is untested, never a pass."""
+    """the listing is an upper bound: picked lines whose listed mutants the run does not make leave the rest
+    untested, never a pass."""
     FILES = {"src/calc.ts": (TS_BASE, TS_HEAD, [])}
-    MORE = [["src/calc.ts", "ConditionalExpression", "true", 2, 3],  # spans lines 2 and 3; none starts on line 3
-            ["src/calc.ts", "EqualityOperator", "a >= b", 4, 4], ["src/calc.ts", "EqualityOperator", "a <= b", 4, 4]]
+    MORE = [["src/calc.ts", "CallExpression", ";", 2, 2],  # listed; this run does not make it (STUB_UNMADE)
+            ["src/calc.ts", "StringLiteral", '""', 4, 4], ["src/calc.ts", "StringLiteral", '""', 5, 5]]
 
     def test_picked_lines_that_make_no_mutant_read_partial(self):
-        # cap 1: line 2 (a branch, its mutant waits for line 3) makes 0; line 4 would make 2 and pass the cap
-        r3 = self.cli("--max-mutants", "1")["checks"]["R3"]
+        # cap 1: line 2 (the CallExpression, the rest) fits; the string of line 4 would pass the cap
+        r3 = self.cli("--max-mutants", "1", STUB_UNMADE="CallExpression")["checks"]["R3"]
         self.assertEqual(self.mutate(), ts_lines([2]))
-        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 0, 3))
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 0, 2))
 
     def test_a_budget_hit_after_a_report_with_no_mutant_is_not_a_pass(self):
         with open(self.spec_path, "w") as f:  # no mutant at all on the changed lines

@@ -1677,28 +1677,36 @@ def ts_risk(mutator, replacement):
 def ts_pick(listed, changed, max_mutants):
     """The cap for ts (#63), by changed lines: (picked {file: lines} or None when every mutant on the changed lines
     fits under max_mutants, the mutants the picked lines make, the mutants left untested). listed: the mutants
-    Stryker makes (repo paths), each made only when every line it spans is in --mutate. Lines go riskiest first by
-    their riskiest mutant (ties: file, line), each added while the mutants made stay within max_mutants; the first
-    line that would pass it ends the pick. A line no mutant starts on is never picked."""
+    Stryker can make (repo paths), each made only when every line it spans is in --mutate. Mutants go riskiest first
+    (ties: file, first line, last line), each bringing every line it spans; a pick counts every listed mutant its
+    lines complete and is kept while that stays within max_mutants. The first mutant that would pass it ends the pick."""
     lines = {f: {n for n, _ in rows} for f, rows in changed.items()}
     cand = [m for m in listed if all(n in lines.get(m[0], ()) for n in range(m[3], m[4] + 1))]
     if len(cand) <= max_mutants:
         return None, cand, 0
-    risk, waiting = {}, {}
-    for k, (f, mutator, replacement, first, last) in enumerate(cand):
-        risk[(f, first)] = min(risk.get((f, first), RISK_LAST), ts_risk(mutator, replacement))
-        for n in range(first, last + 1):
-            waiting.setdefault((f, n), []).append(k)
-    missing = [m[4] - m[3] + 1 for m in cand]
+    waiting = {}  # (file, line) -> the mutants that span it
+    for k, m in enumerate(cand):
+        for n in range(m[3], m[4] + 1):
+            waiting.setdefault((m[0], n), []).append(k)
+    missing = [m[4] - m[3] + 1 for m in cand]  # lines each mutant still needs
     picked, made = {}, []
-    for _, f, n in sorted((r, f, n) for (f, n), r in risk.items()):
-        done = [k for k in waiting[(f, n)] if missing[k] == 1]
+    for k in sorted(range(len(cand)), key=lambda k: (ts_risk(cand[k][1], cand[k][2]), cand[k][0], cand[k][3],
+                                                     cand[k][4], k)):
+        f = cand[k][0]
+        new = [n for n in range(cand[k][3], cand[k][4] + 1) if n not in picked.get(f, ())]
+        if not new:
+            continue  # made already, by the lines of a riskier mutant
+        need = {}
+        for n in new:
+            for j in waiting[(f, n)]:
+                need[j] = need.get(j, 0) + 1
+        done = [j for j, c in need.items() if c == missing[j]]
         if len(made) + len(done) > max_mutants:
             break
-        for k in waiting[(f, n)]:
-            missing[k] -= 1
-        made += [cand[k] for k in done]
-        picked.setdefault(f, set()).add(n)
+        for j, c in need.items():
+            missing[j] -= c
+        made += [cand[j] for j in sorted(done)]
+        picked.setdefault(f, set()).update(new)
     return picked, made, len(cand) - len(made)
 
 
