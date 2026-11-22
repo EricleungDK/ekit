@@ -1250,13 +1250,13 @@ def _unmeasured(rv, shards, why):
     return p
 
 
-def _py_measure(rv, cmd, runner, wt, budget):
-    """(the suite's test seconds, mutants on changed lines) in the worktree wt at head, or why not (a str)."""
+def _py_measure(rv, files, cmd, runner, wt, budget):
+    """(the suite's test seconds, mutants on changed lines) in the worktree wt at head, or why not (a str). files: the
+    changed production files under project-dir (repo-root paths)."""
     repo, mb, head, adapter, test_globs, project_dir = rv
     crate, bad = crate_check(rv, wt)
     if bad:
         return bad[0]["note"]
-    files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
     base = shlex.split(cmd)
     paths = [_crate_path(project_dir, f) for f in files]
     # first the config: mutmut 3.8.1 reads it before any command, --version included
@@ -1296,14 +1296,15 @@ class Mutmut:
         for rust. A baseline that measures nothing (no mutmut, a suite that is red or prints no time, a listing that
         does not end) keeps the file rule, and the note says why."""
         repo, mb, head, adapter, test_globs, project_dir = rv
-        if not any(ch.new and _under(ch.new, project_dir) for ch in red.prod_changes(rv)):
+        files = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
+        if not files:
             return _files_baseline(rv, shards)  # no production file under project-dir: no mutant
         cmd = cmd or self.default_cmd
         runner = runner or default_runner()
         budget = None if budget_min is None else budget_min * 60
         t0 = time.monotonic()
         with red.worktree(repo, head) as wt:
-            got = _py_measure(rv, cmd, runner, wt, budget)
+            got = _py_measure(rv, files, cmd, runner, wt, budget)
         if isinstance(got, str):
             return _unmeasured(rv, shards, got)
         test_s, mutants = got

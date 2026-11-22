@@ -569,6 +569,12 @@ if args[:1] == ["run"] and args[1:] == [spec["list_only"]] and os.environ.get("S
     print(os.environ["STUB_LISTING"])  # e.g. mutmut's "Stopping early, ..."
     sys.exit(1)
 if args[:1] == ["run"] and args[1:] == [spec["list_only"]]:
+    # mutmut runs the tests in its copy under mutants/: a top-level entry they need must be in also_copy
+    import re
+    listed = re.search(r"^also_copy = \[(.*)\]$", open("pyproject.toml").read(), re.M)
+    if any(f'"{n}"' not in (listed.group(1) if listed else "") for n in spec.get("needs", [])):
+        print("failed to collect stats. runner returned 1")
+        sys.exit(1)
     os.makedirs("mutants", exist_ok=True)
     with open(os.path.join("mutants", "calc.py"), "w") as f:
         f.write(spec["copies"])
@@ -601,12 +607,12 @@ class PyCli(PyRepo):
         self.spec_path = os.path.join(side.name, "spec.json")
         self.spec(PY_MUTANTS)
 
-    def spec(self, mutants, head=PY_HEAD, orig=PY_ORIG):
+    def spec(self, mutants, head=PY_HEAD, orig=PY_ORIG, needs=()):
         copies = head + "\n\ndef x_f__mutmut_orig(a, b):\n" + orig + "".join(
             f"\n\ndef x_f__mutmut_{n}(a, b):\n" + body for n, body in sorted(mutants.items()))
         with open(self.spec_path, "w") as f:
             json.dump({"names": [PY_NAME(n) for n in sorted(mutants)], "copies": copies,
-                       "list_only": _kit_mutants().LIST_ONLY}, f)
+                       "list_only": _kit_mutants().LIST_ONLY, "needs": list(needs)}, f)
 
     def cli(self, *args, **env):
         from unittest import mock
@@ -637,6 +643,27 @@ class TestPythonBaselineShardCount(PyCli):
 
     def test_a_large_pr_gets_at_most_4(self):
         self.assertEqual(self.count(600), 4)
+
+    def test_a_deleted_production_file_is_no_file_to_list(self):
+        git(self.repo, "reset", "-q", "--hard", "HEAD~1")
+        with open(os.path.join(self.repo, "old.py"), "w") as f:
+            f.write("def old():\n    return 1\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--amend", "--no-edit")
+        with open(os.path.join(self.repo, "calc.py"), "w") as f:
+            f.write(PY_HEAD)
+        git(self.repo, "rm", "-q", "old.py")
+        git(self.repo, "commit", "-q", "-am", "head")
+        self.assertEqual(self.count(90), 2)
+
+    def test_the_listing_copies_what_the_tests_need(self):
+        os.makedirs(os.path.join(self.repo, "data"))
+        with open(os.path.join(self.repo, "data", "x.txt"), "w") as f:
+            f.write("x\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "--amend", "--no-edit")
+        self.spec(PY_MUTANTS, needs=["data"])  # mutmut's copy holds data/ only through also_copy
+        self.assertEqual(self.count(90), 2)
 
     def test_never_more_shards_than_mutants(self):
         self.spec({n: PY_MUTANTS[n] for n in (1, 2)})
