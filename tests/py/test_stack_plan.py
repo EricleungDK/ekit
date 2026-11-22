@@ -302,6 +302,26 @@ class Messages(unittest.TestCase):
         self.assertEqual((r.returncode, env["entries"], messages(env)), (0, [], []))
 
 
+    def test_the_text_format_gives_the_summary_the_entry_and_each_message(self):
+        base = self.repo.commit({"web/package.json": "{}", "cli/Cargo.toml": "[package]\n",
+                                 PLAN: plan(("web", "web", "ts", "planned"), ("api", "api", "python", "current"))})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", base, "--format", "text"])
+        self.assertEqual(r.returncode, 1, r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"fail {base} (1 fail, 0 confirm; ran: D; skipped: R1 R2 R3 R4)")
+        self.assertRegex(lines[1], rf"^fail D-[0-9a-f]{{8}} {PLAN}:0 manifests no stack in {PLAN} covers: cli/Cargo.toml$")
+        self.assertEqual(lines[4:], [
+            "message: planned stack `web` (web): its manifest web/package.json is here and its adapter `ts` is proven, so "
+            "its checks start: set its status to current",
+            f"message: stack `api` (api): no pyproject.toml, setup.py or setup.cfg in api any more: remove the entry `api` "
+            f"from {PLAN}"])
+
+    def test_the_text_format_without_a_plan_has_no_message_line(self):
+        base = self.repo.commit({"pyproject.toml": ""})
+        r = _kit.run_cli(["drift", "--repo", self.repo.path, "--base", base, "--head", base, "--format", "text"])
+        self.assertEqual((r.returncode, r.stdout), (0, f"pass {base} (0 fail, 0 confirm; ran: none; skipped: R1 R2 R3 R4)\n"))
+
+
 class RetiringReminder(unittest.TestCase):
     """[spec default] a stack `retiring` for more than 30 days, from the plan's git history, gets a reminder."""
 
