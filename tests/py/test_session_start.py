@@ -282,6 +282,12 @@ class StackPlan(unittest.TestCase):
         more = lines[lines.index(items[-1]) + 1]
         self.assertRegex(more, r"^- and 5 more: run `.*mech-review\.py drift --repo .* --base HEAD --head HEAD --format text`")
 
+    def test_20_lines_are_all_shown(self):
+        self.commit({**{f"m{i:02}/package.json": "{}" for i in range(20)}, PLAN: plan(("web", "web", "ts", "planned"))})
+        lines = self.context().splitlines()
+        self.assertEqual(len([line for line in lines if line.startswith("- unchecked manifest ")]), 20)
+        self.assertFalse([line for line in lines if " more: run " in line])
+
     def test_a_very_long_path_is_cut(self):
         long = "/".join(c * 200 for c in "abc") + "/package.json"
         self.commit({PLAN: plan(("web", "web", "ts", "planned"))})

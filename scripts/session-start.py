@@ -21,6 +21,7 @@ RULES = """[ekit] Working rules:
 FIX = "edit it with the ci-doctor skill"
 MAX_ITEMS = 20  # manifests and messages shown; the rest is a count and the command that lists them
 MAX_TEXT = 500  # characters of one repo-controlled value
+SHALLOW = "; in this shallow clone the days retiring count only the history here"
 DRIFT_SECONDS = 3  # the drift check's share of the hook (it takes ~0.1 s): past it, one line, the context still goes
 
 
@@ -107,7 +108,7 @@ def _drift(cwd):
                     f"is {v[0]}.{v[1]}: nothing here says what is unchecked. CI still runs the drift check on every PR."]
         return [f"[ekit] Stack plan does not read, so nothing here says what is unchecked: {shown(e)}. Fix it "
                 f"({FIX}); CI's drift check stops on it too."]
-    if not d.has_plan and gitio.git(top, "ls-tree", "-z", "HEAD", "--", stack_plan.PATH):
+    if not d.has_plan and gitio.git(top, "ls-tree", "HEAD", stack_plan.PATH):  # listed, yet drift_at read none
         return [f"[ekit] Stack plan: {stack_plan.PATH} is in HEAD's tree but cannot be read as a file (a missing "
                 f"object in a partial or broken clone, or not a file), so nothing here says what is unchecked; CI still "
                 f"runs it on every PR."]
@@ -115,9 +116,9 @@ def _drift(cwd):
         return []
     items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add "
              f"an entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
-    shallow = gitio.git(top, "rev-parse", "--is-shallow-repository").strip() == "true"  # the history is cut
-    items += [f"- {shown(m)}" + ("; in this shallow clone the days retiring count only the history here"
-                                 if shallow and m.startswith("retiring ") else "") for m in d.messages]
+    items += [f"- {shown(m)}" for m in d.messages]
+    if gitio.git(top, "rev-parse", "--is-shallow-repository").strip() == "true":  # the history is cut
+        items = [i + SHALLOW if i.startswith("- retiring ") else i for i in items]
     if len(items) > MAX_ITEMS:
         cmd = launcher.line(os.path.join(HERE, "mech-review.py"), "drift", "--repo", launcher.shown(top), "--base HEAD",
                             "--head HEAD --format text")
