@@ -21,7 +21,7 @@ RULES = """[ekit] Working rules:
 FIX = "edit it with the ci-doctor skill"
 MAX_ITEMS = 20  # manifests and messages shown; the rest is a count and the command that lists them
 MAX_TEXT = 500  # characters of one repo-controlled value
-DRIFT_SECONDS = 3  # the drift check's share of the hook (it runs ~0.1 s): past it, one line, and the context still goes
+DRIFT_SECONDS = 3  # the drift check's share of the hook (it takes ~0.1 s): past it, one line, the context still goes
 
 
 def shown(text):
@@ -57,7 +57,7 @@ def drift(cwd):
 def _guarded(cwd):
     try:
         return _drift(cwd)
-    except OSError:
+    except FileNotFoundError:
         return ["[ekit] Stack plan: git is not on PATH, so the drift check cannot run here; CI still runs it on every PR."]
     except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook or read as clean
         return [f"[ekit] Stack plan: the drift check could not run here ({type(e).__name__}: {shown(e)}); CI still "
@@ -108,12 +108,13 @@ def _drift(cwd):
         return [f"[ekit] Stack plan does not read, so nothing here says what is unchecked: {shown(e)}. Fix it "
                 f"({FIX}); CI's drift check stops on it too."]
     if not d.has_plan and gitio.git(top, "ls-tree", "-z", "HEAD", "--", stack_plan.PATH):
-        return [f"[ekit] Stack plan: {stack_plan.PATH} is in HEAD's tree but cannot be read as a file (a missing object "
-                f"in a partial or broken clone, or not a file), so nothing here says what is unchecked; CI still runs it on every PR."]
+        return [f"[ekit] Stack plan: {stack_plan.PATH} is in HEAD's tree but cannot be read as a file (a missing "
+                f"object in a partial or broken clone, or not a file), so nothing here says what is unchecked; CI still "
+                f"runs it on every PR."]
     if not d.uncovered and not d.messages:
         return []
-    items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
-              f"entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
+    items = [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add "
+             f"an entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
     shallow = gitio.git(top, "rev-parse", "--is-shallow-repository").strip() == "true"  # the history is cut
     items += [f"- {shown(m)}" + ("; in this shallow clone the days retiring count only the history here"
                                  if shallow and m.startswith("retiring ") else "") for m in d.messages]
