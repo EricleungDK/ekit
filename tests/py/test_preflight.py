@@ -219,6 +219,13 @@ class ScenarioDrivers(Case):
         for t in ("tmux", "expect", "curl"):
             self.assertIn(f"{t}: missing → scenarios needing {t} can't run here → human verdict / verification debt", out)
 
+    def test_a_tuple_argv_and_a_python_helper_in_capitals_are_read_too(self):
+        self.write(".ekit/scenarios/a/run.py", 'import subprocess\nsubprocess.run(("tmux", "new", "-d"))\n')
+        self.write(".ekit/scenarios/a/DRIVE.PY", "import subprocess\nsubprocess.run(['curl', '-s', 'x'])\n")
+        out = self.run_pf()
+        for t in ("tmux", "curl"):
+            self.assertIn(f"{t}: missing → scenarios needing {t} can't run here → human verdict / verification debt", out)
+
     def test_a_run_py_naming_a_tool_in_a_string_or_a_comment_is_not_a_use(self):
         self.write(".ekit/scenarios/a/run.py", 'print("curl here, tmux neither")\n# expect output\n'
                    'subprocess.run(["python3", "-c", "tmux"])\nexpect = 1\n')
