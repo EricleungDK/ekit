@@ -353,14 +353,17 @@ class StackPlan(unittest.TestCase):
     def test_in_a_shallow_clone_a_retiring_stack_says_its_day_count_may_be_short(self):
         note = "in this shallow clone the days retiring count only the history here"
         self.commit({"web/package.json": "{}", PLAN: plan(("web", "web", "ts", "retiring"))}, when=time.time() - 40 * 86400)
-        self.commit({"web/a.js": ""})
+        self.commit({"web/a.js": "", "api/pyproject.toml": "[project]\n"})
         [full] = [line for line in self.context().splitlines() if line.startswith("- retiring stack `web`")]
         self.assertNotIn(note, full)
         shallow = os.path.join(os.path.dirname(self.repo), "shallow")
         subprocess.run(["git", "clone", "-q", "--depth", "1", "file://" + self.repo, shallow], check=True)
         self.repo = shallow
-        [line] = [line for line in self.context().splitlines() if line.startswith("- retiring stack `web`")]
+        lines = self.context().splitlines()
+        [line] = [line for line in lines if line.startswith("- retiring stack `web`")]
         self.assertTrue(line.endswith(f"; {note}"), line)
+        [other] = [line for line in lines if line.startswith("- unchecked manifest api/pyproject.toml")]
+        self.assertNotIn(note, other)  # the note is for a retiring stack's day count only
 
     def test_a_drift_check_past_its_deadline_is_one_line_and_the_rest_of_the_context_stays(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
