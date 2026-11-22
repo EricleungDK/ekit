@@ -20,6 +20,12 @@ RULES = """[ekit] Working rules:
 FIX = "edit it with the ci-doctor skill"
 
 
+def shown(text):
+    """repo- or PR-controlled text (a path, a plan value) as printable text: every character that is not printable
+    (newline, CR, other C0 and C1 controls, DEL, line separators) escaped, so it can never start a session line."""
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(text))
+
+
 def one_line(e):
     return " ".join(str(e).split())
 
@@ -55,9 +61,9 @@ def drift(cwd):
     if not d.uncovered and not d.messages:
         return []
     lines = [f"[ekit] Stack plan drift at HEAD ({stack_plan.PATH}; {FIX}):"]
-    lines += [f"- unchecked manifest {p}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
+    lines += [f"- unchecked manifest {shown(p)}: no [[stack]] entry covers it, so mech-review checks nothing there; add an "
               f"entry (its folder, an adapter that lists the manifest) or its folder to `ignore`" for p in d.uncovered]
-    lines += [f"- {m}" for m in d.messages]
+    lines += [f"- {shown(m)}" for m in d.messages]
     return lines
 
 
