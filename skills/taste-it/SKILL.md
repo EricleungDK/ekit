@@ -72,6 +72,8 @@ Done when all hold:
 - every scenario whose **covers** include this change's criteria is `CAN-FAIL ✓` at the baseline; one that `CANNOT FAIL` proves nothing → rewrite its assertion, rerun `can-fail`. A `CANNOT FAIL` scenario covering only pre-existing behaviour is expected (regression guard).
 - `RUN run` exit 0, then `RUN check` exit 0
 
+A seeding task (§7) has its own bar: its scenarios fail by design until their features work. Done when every approved proposal is written, each one's last `RUN seeded <id>` is `SEEDED ✓`, and a full `RUN run`, then `RUN check`, print `0 of M features working`.
+
 ## 5. Verdicts
 
 Each finding gets one verdict.
@@ -102,13 +104,13 @@ Report each bug with its scenario id and the runner lines: the `FAIL` from befor
 A new app, or features described before their code exists: seed user-level scenarios first, so "done" cannot be claimed while a feature the user asked for does not work.
 
 1. Read the user's description and every saved user story: issues, specs, PRDs, notes in the repo. Read the existing `SCENARIO.md` files too ("Reuse before write").
-2. Propose one scenario per described feature: its id and the `story`, `covers`, `steps`, `expected` lines it would be written with. Show the user each one's wording; each is approved, rejected or reworded. Answers given with the request count: apply them, do not ask again.
+2. Propose one scenario per described feature: its id, its `- feature:` name, and the `story`, `covers`, `steps`, `expected` lines it would be written with. Show the user each one's wording; each is approved, rejected or reworded. Answers given with the request count: apply them, do not ask again.
 3. Write only the approved ones. A rejected one is dropped: no folder, no file. A reworded one is written as reworded, never as first proposed. No answer yet → nothing written for it.
 4. Each seeded scenario is a `run.py` (a shell only when the user asks) that installs and drives the feature as a user would and asserts the expected result, with `- feature: <name>` in its `SCENARIO.md`.
 5. Right after writing each one: `RUN seeded <id>`.
-   - `SEEDED ✓ <id>`: it fails on the repo as it is. Seeded.
+   - `SEEDED ✓ <id>`: it fails on the repo as it is. Read why it failed: the reason on its `SEEDED ✓` line, and its transcript. One that fails for another reason than the missing feature (a syntax error, a wrong path, a broken fixture) is broken: repair it, run `RUN seeded <id>` again. Seeded once it fails on the missing feature.
    - `CHECKS NOTHING YET <id>`: it passes before its feature exists: report it as "checks nothing yet". It is not seeded until `RUN seeded <id>` fails it: tighten its assertion, run again.
-   - `N/A <id>`: this host cannot run it: verification debt. `ERROR <id>`: fix the folder.
-6. Report each proposal: written as proposed, written as reworded, or rejected (not written), with each written one's `RUN seeded` line.
+   - `N/A <id>`: this host cannot run it: verification debt. `ERROR <id>`: fix what it names (the feature line, the run files, a write into the repo), run again.
+6. Then a full `RUN run`, then `RUN check`. A seeding task (scenarios written, no feature built) reports with the finish skill's Done branch, by the §4 seeding bar: each proposal (written as proposed, written as reworded, or rejected: not written), each written one's `RUN seeded` line, and the `N of M features working` line `RUN check` printed.
 
 Seeded scenarios stay red until their feature works; `RUN run` and `RUN check` count them in `N of M features working`.

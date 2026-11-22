@@ -70,6 +70,21 @@ class TestSeeding(unittest.TestCase):
         self.assertIn("A rejected one is dropped", s)
         self.assertIn("A reworded one is written as reworded, never as first proposed", s)
 
+    def test_the_proposal_shows_the_feature_name_with_the_wording(self):
+        self.assertIn("its `- feature:` name", seed())
+
+    def test_why_each_seeded_scenario_failed_is_read_and_a_broken_one_repaired(self):
+        s = seed()
+        self.assertIn("Read why it failed: the reason on its `SEEDED ✓` line, and its transcript", s)
+        self.assertIn("fails for another reason than the missing feature", s)
+        self.assertIn("is broken: repair it, run `RUN seeded <id>` again", s)
+
+    def test_a_seeding_task_reports_with_the_done_branch_and_its_own_bar(self):
+        s = seed()
+        self.assertIn("A seeding task (scenarios written, no feature built) reports with the finish skill's Done branch", s)
+        bar = flat(section(read("taste-it", "SKILL.md"), "4. Quality bar"))
+        self.assertIn("A seeding task (§7) has its own bar", bar)
+
     def test_answers_given_with_the_request_are_the_answers(self):
         self.assertIn("Answers given with the request count", seed())
 
@@ -103,8 +118,17 @@ class TestFinishFeaturesLine(unittest.TestCase):
             self.assertIn("never count by hand", text)
             self.assertIn("leave the line out", text)
 
-    def test_a_feature_not_working_is_not_done(self):
-        self.assertIn("N below M = not done", flat(read("finish", "scenarios.md")))
+    def test_a_feature_not_working_is_not_done_for_a_task_that_claims_it_built(self):
+        self.assertIn("N below M = not done for a task that claims the features built", flat(read("finish", "scenarios.md")))
+
+    def test_a_seeding_task_is_done_with_every_scenario_seeded_and_none_working(self):
+        s = flat(read("finish", "scenarios.md"))
+        self.assertIn("A seeding task (taste-it §7: scenarios written, no feature built) is done when", s)
+        self.assertIn("each written scenario's last `RUN seeded <id>` is `SEEDED ✓`", s)
+        self.assertIn("`0 of M features working`", s)
+
+    def test_the_features_line_goes_in_either_branch(self):
+        self.assertIn("in either branch", flat(read("finish", "scenarios.md")))
 
 
 if __name__ == "__main__":
