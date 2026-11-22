@@ -98,7 +98,7 @@ Python toolchain (`stack: python`), set up in `red-first` and `mutants`:
 - Check fails on any `fail` entry, or any check whose status is `fail` (`confirm` and `waived` entries do not fail). A job's `CI` entries (a missing or mismatched mutants shard, no baseline result) are kept in the merged result and listed in the comment.
 - A `fail` entry of class `needs-human` reads `needs-human` in the comment (severity cell, and the headline when every fail entry is needs-human). The JSON keeps `severity: fail` and the summary keeps `fail`; the check stays red.
 - R1 on a non-agent branch, or a PR with no production file changed, is `skipped` and named as such. A missing toolchain is `n/a` (not run, not pass). Each `n/a` note names the cause and the input to set (`setup-command` for a toolchain, the install step for cargo-mutants, `project-dir` for no manifest: `Cargo.toml` for rust, `pyproject.toml`, `setup.py` or `setup.cfg` for python), and the comment adds one line under the headline: `Did not run: R3 (no Cargo.toml in .: set project-dir)`. A missing manifest where R1 or R4 runs is a `fail` (cannot run), with `set project-dir` in its hint.
-- Check `D` (the [drift check](#stack-plan)) is in the result only when the repo has a stack plan on base or head: then the summary names it (`ran: R1 R2 R4 D`), the comment adds one `Stack plan:` line per message under the headline, and `all pass` needs it to pass. A repo with no plan reads exactly as before, with no `D` anywhere.
+- Check `D` (the [drift check](#stack-plan)) is in the result only when the repo has a stack plan on base or head: then the summary names it (`ran: R1 R2 R4 D`), the comment adds one `Stack plan:` line per message under the headline, and `all pass` needs it to pass. A repo with no plan reads exactly as before, with no `D` anywhere; so does a run with no drift result (the drift step leaves one on every run whose refs resolve, and stops the guard job before R2 when it cannot: [guard wiring](#stack-plan)).
 - Summary: `all pass <sha>` only when every check ran and passed. A run with R3 skipped (no production file changed) reads like `pass <sha> (0 fail, 1 confirm; ran: R1 R2 R4; skipped: R3)`. A budget hit reads `partial: R3 (tested/total)`, and an absent tool reads `n/a: R3`; neither is `all pass`.
 - Require the check `mech-review report` in branch protection.
 - Readers trust only the bot's marker comment (`github-actions[bot]`, override `MECH_COMMENT_AUTHOR`): a `<!-- mech-review -->` comment from any other user is ignored.
@@ -319,9 +319,44 @@ target-os = "linux"         # optional: linux | macos | windows; the adapter's w
 - **Not guarded yet**: a PR that edits only the plan is judged by its own plan, so it can add a folder to `ignore` (or drop an entry and ignore its folder) and pass. ADR 0001 makes loosening the ignore list a person's call; #20 (R0) enforces that, nothing does yet.
 - **No plan** on base or head: no check `D`, no entry, no message; `stack: auto` and every summary are as before.
 - **Target OS**: `resolve` reads the base branch's plan. The entry for the settled stack and project dir (its adapter's name, its folder; `current` before `retiring` before `planned`) gives the target OS: its own `target-os`, else its adapter's. With no entry, the `--adapter` file's, else `linux`. A base plan that does not read never stops `resolve` (that PR's drift check fails `D` already, and a failed stack job would skip every job after it): it follows the rule for which plan judges, so the PR that fixes it (it edits the plan or an adapter file, adds no manifest, and its own plan reads) gets its own plan's entry, and any other PR no entry (the adapter's target OS); stderr names the plan's error and which applied, so a bad plan never moves a runner silently. Two entries for one stack, folder and status are a usage error (the stack is the adapter's name, so two adapter files that declare one name, or one path spelled two ways, are one stack; an adapter file not proven yet counts as its path; a `retiring` and a `current` entry for one stack and folder are a migration, and allowed). An explicit stack where `--repo` is no git repo reads no plan, as before; in a git repo a missing `--base` ref is a git error (exit 2). The workflow's stack job checks the caller out only for `stack: auto` today, so a plan's target OS reaches an explicit-stack caller only once the owner's step drops that condition (required for this rule).
-- **A bad plan** is a usage error (exit 2), never clean. The error goes to stderr, and stdout still holds a result whose `D` fails with one `CI` entry (class `adapter-fix`, not waivable) naming it, so a reader of the result never takes it for a repo with no plan. A git error (no result) prints nothing on stdout; `mech-summary.py` then fails `D` when the guard job did not succeed. Example: `.ekit/stack-plan.toml at 1a2b3c4d5e6f: stack[1] `web`, field status: `done`: want planned, current or retiring`. Unknown keys, a missing field, a duplicate name, a duplicate stack, folder and status, a folder outside the repo or under an ignored or fixture folder, an adapter that is neither a built-in nor a file at that ref (except a planned entry's, above), a bad adapter file, a bad `target-os`, and `ignore = ["."]` are all named. Reading a plan needs python 3.11 or newer (`tomllib`); without it a plan is that usage error, and a repo with no plan needs nothing.
+- **A bad plan** is a usage error (exit 2), never clean. The error goes to stderr, and stdout still holds a result whose `D` fails with one `CI` entry (class `adapter-fix`, not waivable) naming it, so a reader of the result never takes it for a repo with no plan. A git error (no result) prints nothing on stdout. Example: `.ekit/stack-plan.toml at 1a2b3c4d5e6f: stack[1] `web`, field status: `done`: want planned, current or retiring`. Unknown keys, a missing field, a duplicate name, a duplicate stack, folder and status, a folder outside the repo or under an ignored or fixture folder, an adapter that is neither a built-in nor a file at that ref (except a planned entry's, above), a bad adapter file, a bad `target-os`, and `ignore = ["."]` are all named. Reading a plan needs python 3.11 or newer (`tomllib`); without it a plan is that usage error, and a repo with no plan needs nothing.
 - Exit: 0 clean or messages only, 1 the `fail` entry, 2 a bad plan (with its failing result), usage or git error.
 - `stack_plan.drift_at(repo, ref)` gives the same findings for one tree with no base (the session-start hook, #57).
+- **Guard wiring** (an owner edit, `.github/` is protected; not wired yet): the drift check is its own step in the `guard` job, right after the two checkouts and before `R2 guard`, with its own artifact. It leaves a result on every run whose refs resolve, with no plan too (a result with no `D`), and keeps the failing result of a bad plan. When it leaves none (a git error, a crash) it stops the job, so `R2 guard` does not run and R2 has no result either: the report fails on R2's `CI` entry. So a missing drift result never hides a plan, and readers take one for no `D`, as before: the `report` job passes `--envelope drift=FILE` only when the file is there, and `mech-summary.py` reads it the same way, whatever the guard job's conclusion (a guard job that failed on R2 is no sign of a plan). A drift result that is there and does not read fails `D`. The step, in `guard` after the two checkouts:
+
+```yaml
+      - name: drift check (stack plan, D)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          rc=0
+          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" drift --repo "$GITHUB_WORKSPACE/caller" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" > mech-review-drift.json 2> mech-review-drift.err || rc=$?
+          cat mech-review-drift.err >&2
+          # exit 0 clean, messages only or no plan (no D in it), 1 the fail entry, 2 with a result (a bad plan: D fails
+          # with a CI entry): kept. Nothing on stdout (a git error, a crash): no result, and the job stops here, before
+          # R2, so the report fails on R2's missing result
+          [ -s mech-review-drift.json ] || rm -f mech-review-drift.json
+          if [ ! -f mech-review-drift.json ]; then
+            echo "::error::mech-review drift exit $rc: no result"
+            exit "$(( rc > 0 ? rc : 2 ))"
+          fi
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::the stack plan does not read: D fails (the error is above)"
+          fi
+      - name: upload drift result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mech-review-drift-json
+          path: mech-review-drift.json
+          if-no-files-found: ignore
+          overwrite: true
+```
+
+In `report`, a `fetch drift result` step (`actions/download-artifact@v4`, `continue-on-error: true`, name `mech-review-drift-json`, path `drift-result`) before the comment step, and in the comment step, before `mech-comment.py`: `if [ -f drift-result/mech-review-drift.json ]; then extra+=(--envelope drift=drift-result/mech-review-drift.json); fi`.
 
 ## Adapter file
 

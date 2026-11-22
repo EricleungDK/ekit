@@ -452,16 +452,40 @@ class Jobs(Run):
                                     "  stack plan: planned stack `web` (web): its checks start"])
         self.assertIn("    D-55555555 :0 manifests no stack in .ekit/stack-plan.toml covers: cli/Cargo.toml", out)
 
-    def test_no_drift_artifact_from_a_guard_job_that_failed_fails_d(self):
-        # review round 2, finding 11: the drift step leaves a result unless it crashed, and then the guard job fails
+    def test_no_drift_artifact_is_no_d_whatever_the_guard_job_did(self):
+        # review round 3, finding 3: a guard job that failed for an R2 reason (or was skipped or cancelled) is no sign of
+        # a plan; with no plan on base or head D is in no summary. The drift step leaves a result on every run that has
+        # one, before R2, and stops the job when it cannot: then R2 has no result either (docs/mech-review-ci.md)
+        for concl in ("failure", "skipped", "cancelled"):
+            for r2_crashed in (False, True):
+                with self.subTest(guard=concl, r2_crashed=r2_crashed):
+                    self.green_jobs()
+                    if r2_crashed:
+                        shutil.rmtree(os.path.join(self.art, "mech-review-json"))
+                    self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed",
+                                      "conclusion": concl})
+                    r = self.main("555")
+                    out = r.stdout.splitlines()
+                    self.assertEqual(out[0], f"run 555: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4)" if r2_crashed
+                                     else f"run 555: all pass {HEAD}", r.stderr)
+                    self.assertEqual((r.returncode, [x for x in out if x.startswith("D ") or "drift" in x]),
+                                     (1 if r2_crashed else 0, []))
+                    self.jobs.pop()
+
+    def test_a_drift_result_with_no_d_reads_as_before(self):
+        # a repo with no plan: the drift step uploads its result all the same, and it holds no D
         self.green_jobs()
-        self.jobs.append({"name": "mech-review / mech-review guard (R2)", "status": "completed", "conclusion": "failure"})
-        r = self.main("555")
-        self.assertEqual(r.returncode, 1, r.stderr)
+        self.put("mech-review-drift-json", "mech-review-drift.json", env("drift", {}))
+        r = self.main("--dir", self.art)
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0]), (0, f"{self.art}: all pass {HEAD}"))
+
+    def test_a_drift_artifact_that_does_not_read_fails_d(self):
+        self.green_jobs()
+        self.put("mech-review-drift-json", "mech-review-drift.json", "{not json")
+        r = self.main("--dir", self.art)
         out = r.stdout.splitlines()
-        self.assertIn("D fail: no result from drift job: no drift artifact and the guard job did not succeed (see its log)",
-                      out)
-        self.assertEqual(out[0], f"run 555: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)")
+        self.assertEqual((r.returncode, out[0]), (1, f"{self.art}: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)"))
+        self.assertIn("D fail: no result from drift job: no usable result file", out)
 
     def test_no_drift_artifact_from_a_guard_job_that_passed_reads_as_before(self):
         self.green_jobs()
