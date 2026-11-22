@@ -728,19 +728,38 @@ class TestRun(unittest.TestCase):
             os.chmod(path, 0o755)
         return path
 
-    def test_a_run_ps1_runs_as_a_file_in_pwsh_else_windows_powershell_its_exit_code_kept(self):
+    # PowerShell's -File exits 0 on normal termination whatever the last native command gave (about_Pwsh): the
+    # script is called from -Command and its last exit code passed on, as bash passes on its last status
+    PS_LINE = ("$global:LASTEXITCODE = 0; & '{}'\nif (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
+               "else {{ exit 1 }} }}\nexit $LASTEXITCODE")
+
+    def test_a_run_ps1_runs_in_pwsh_else_windows_powershell_its_last_exit_code_kept(self):
         script = os.path.join(self.repo, ".ekit", "scenarios", "one", "run.ps1")
         for name in ("pwsh", "powershell"):
             with self.subTest(shell=name):
                 fake = self.fake_shell(name)
                 with mock.patch.object(scenarios.shells, "find", lambda n, fake=fake, name=name: fake if n == name else None):
-                    code, out, doc = self.main("exit 7\n", run_file="run.ps1")
+                    code, out, doc = self.main("git -C no-such-dir status\n", run_file="run.ps1")
                 self.assertEqual((code, out), (1, "FAIL one: exit 7\nFAIL: 0/1 scenarios\n"))
                 with open(os.path.join(self.state, "argv.json")) as f:
                     self.assertEqual(json.load(f), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                                    "-File", script])
+                                                    "-Command", self.PS_LINE.format(script)])
                 with open(doc["scenarios"][0]["transcript"]) as f:
                     self.assertTrue(f.read().startswith(f"command: {name} run.ps1\n"))
+
+    def test_a_run_ps1_path_with_quotes_is_one_powershell_literal(self):
+        """a ' (or a typographic one, which PowerShell reads as a quote too) is doubled inside the '...' literal"""
+        d = os.path.join(self.repo, ".ekit", "scenarios", "it's \u2019q\u2018 $x")
+        os.makedirs(d)
+        write(d, "SCENARIO.md", "- story: s\n")
+        write(d, "run.ps1", "exit 0\n")
+        fake = self.fake_shell("pwsh")
+        with mock.patch.object(scenarios.shells, "find", lambda n: fake if n == "pwsh" else None):
+            self.main("exit 0\n")
+        with open(os.path.join(self.state, "argv.json")) as f:
+            line = json.load(f)[-1]
+        quoted = os.path.join(d, "run.ps1").replace("'", "''").replace("\u2019", "\u2019\u2019").replace("\u2018", "\u2018\u2018")
+        self.assertEqual(line, self.PS_LINE.format(quoted))
 
     def test_a_machine_without_powershell_does_not_run_a_run_ps1(self):
         with mock.patch.object(scenarios.shells, "find", return_value=None):

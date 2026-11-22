@@ -11,7 +11,8 @@ Each check prints `ok` or `FAIL`; exit 1 when any fails. Not Windows: nothing to
 - shells: bash is Git Bash, never WSL's; the shell found under bash and under PowerShell; Git Bash's tools on PATH;
 - a scenario timeout with only Git's cmd dir on PATH stops the whole tree in time and is a FAIL;
 - run.py scenarios in plain PowerShell with no bash on PATH: a pass, a fail with its exit code, a run.ps1 beside
-  them, and a timeout that stops the tree (a background child included) and is a FAIL.
+  them (one whose last native command fails: a FAIL with that code), and a timeout that stops the tree (a background
+  child included) and is a FAIL.
 """
 import json
 import os
@@ -275,7 +276,7 @@ def scenario_timeout(tmp):
 
 def scenario_run_py(tmp):
     print("scenarios: run.py in plain PowerShell, no bash on PATH")
-    repo = os.path.join(tmp, "pyrepo")
+    repo = os.path.join(tmp, "py'repo $x")  # a ' and a $: the run.ps1 path goes to PowerShell as one literal
     mark = os.path.join(tmp, "late-child")
     child = f"import time; time.sleep(6); open({mark!r}, 'w')"
     for sid, run_file, text in (
@@ -283,6 +284,7 @@ def scenario_run_py(tmp):
                                  "open(os.path.join(os.environ['EKIT_ARTIFACT_DIR'], 'shot.png'), 'w').write('png')\n"),
             ("a/fail", "run.py", "import sys\nsys.exit(3)\n"),
             ("a/ps", "run.ps1", "Write-Output 'from PowerShell'\nexit 0\n"),
+            ("a/psfail", "run.ps1", "Write-Output 'the last native command fails, no exit'\ngit -C no-such-dir status\n"),
             ("slow", "run.py", f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
                                "time.sleep(30)\n")):
         d = os.path.join(repo, ".ekit", "scenarios", *sid.split("/"))
@@ -297,11 +299,14 @@ def scenario_run_py(tmp):
         subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True, env=env)
     found = shutil.which("bash", path=env["PATH"])
     check("no Git Bash on PATH", found is None or "system32" in found.lower(), found)
-    run = f"& '{sys.executable}' -I '{os.path.join(SCRIPTS, 'scenarios.py')}' --repo '{repo}' run"
+    run = (f"& {shells.ps_literal(sys.executable)} -I {shells.ps_literal(os.path.join(SCRIPTS, 'scenarios.py'))} "
+           f"--repo {shells.ps_literal(repo)} run")
     rc, out, err = ps(run + " a", env)
     check("a run.py passes, a run.py fails with its exit code, a run.ps1 runs in PowerShell",
           rc == 1 and "PASS a/pass" in out and "FAIL a/fail: exit 3" in out and "PASS a/ps" in out
-          and "FAIL: 2/3 scenarios" in out and "Traceback" not in err, (rc, out, err))
+          and "FAIL: 2/4 scenarios" in out and "Traceback" not in err, (rc, out, err))
+    check("a run.ps1 whose last native command fails is a FAIL with that exit code (not -File's 0)",
+          "FAIL a/psfail: exit 128" in out, (rc, out, err))
     t0 = time.time()
     rc, out, err = ps(run + " slow", dict(env, EKIT_SCENARIO_TIMEOUT="2"))
     took = time.time() - t0

@@ -197,6 +197,14 @@ def env_for(exe, name, env=None):
     return env
 
 
+PS_QUOTES = "'\u2018\u2019\u201a\u201b"  # PowerShell reads each as a single quote
+
+
+def ps_literal(text):
+    """`text` as one PowerShell single-quoted literal: each quote doubled, nothing else expanded ($, `, ")."""
+    return "'" + "".join(c * 2 if c in PS_QUOTES else c for c in text) + "'"
+
+
 def command(exe, name, line):
     """argv (or, for cmd.exe, the command string) that runs `line` with the shell `name` at `exe`."""
     if name in PS_SHELLS:

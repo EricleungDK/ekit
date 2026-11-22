@@ -157,8 +157,12 @@ def not_here(res):
 
 
 def argv(name, exe, path):
+    """How `exe` runs the run file at `path`. run.ps1: called from -Command, not run with -File (which exits 0 on
+    normal termination whatever the last native command gave), and its last exit code passed on, as bash passes on
+    its last status; an error that stops it is exit 1."""
     if name in shells.PS_SHELLS:
-        return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
+        line = f"$global:LASTEXITCODE = 0; & {shells.ps_literal(path)}{shells.PS_EXIT}\nexit $LASTEXITCODE"
+        return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", line]
     return [exe, path]
 
 
