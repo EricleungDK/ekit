@@ -1024,6 +1024,13 @@ class TestFeatures(unittest.TestCase):
                          ("FAIL: 0/1 scenarios", f"ERROR login: {err}"))
         self.assertEqual(self.cli("run")[1].splitlines()[0], f"FAIL login: {err}")
 
+    def test_a_fence_left_open_with_no_feature_line_in_it_is_no_error(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n```\ncode, never closed\n")
+        self.assertEqual(self.cli("run"), (0, "PASS login\nPASS: 1/1 scenarios\n"))  # read as before
+        line, seeded = self.feature_of("```\n- feature: fake\n```\n- feature: real\n```\nopen, nothing in it\n")
+        self.assertEqual((line, seeded[:15]), ("0 of 1 features working", "SEEDED ✓ login:"))
+
     def test_a_feature_line_inside_an_html_comment_is_text(self):
         for text in ("<!--\n- feature: older\n-->\n- feature: real\n", "<!-- - feature: x -->\n- feature: real\n",
                      "- feature: real <!-- was: older -->\n", "<!-- a --> <!--\n- feature: older\n--> \n- feature: real\n",
