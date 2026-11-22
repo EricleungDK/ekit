@@ -686,6 +686,21 @@ class ResolveTargetOs(unittest.TestCase):
                                                                     "target_os": "linux"}))
 
 
+    def test_an_explicit_stack_in_a_directory_that_is_not_a_git_repo_reads_no_plan_as_before(self):
+        # review round 2, finding 9: `--repo .` (the default) in a directory with no git repo
+        plain = tempfile.TemporaryDirectory()
+        self.addCleanup(plain.cleanup)
+        r = _kit.run_cli(["resolve", "--repo", plain.name, "--base", "main", "--head", "HEAD", "--stack", "python"])
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"stack": "python", "project_dir": ".", "error": None,
+                                                                    "target_os": "linux"}))
+
+    def test_a_missing_base_ref_in_a_real_repo_is_a_git_error(self):
+        self.repo.commit({"pyproject.toml": ""})
+        r = _kit.run_cli(["resolve", "--repo", self.repo.path, "--base", "nosuch", "--head", "HEAD", "--stack", "python"])
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("unknown ref: nosuch", r.stderr)
+
+
 class DriftAt(unittest.TestCase):
     """stack_plan.drift_at(repo, ref): the drift of one tree at a ref, no base (session start, #57). Git only."""
 
