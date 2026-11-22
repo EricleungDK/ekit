@@ -195,6 +195,7 @@ def run_one(repo, sid, ids, tdir, kept=None):
         env = dict(os.environ, EKIT_REPO=repo, EKIT_SCENARIO_DIR=d, EKIT_PARENT_DIR=pdir, EKIT_ARTIFACT_DIR=art,
                    EK_REPO=repo, EK_SCENARIO_DIR=d, EK_PARENT_DIR=pdir,  # EK_*: pre-rename scenarios
                    PYTHONDONTWRITEBYTECODE="1")  # a scenario writes nothing into a checkout, bytecode included
+        env = {k: v for k, v in env.items() if k != "PYTHONOPTIMIZE"}  # it strips assert: a failed one would PASS
         cwd = tempfile.mkdtemp(prefix="ekit-scenario-")
         t0 = time.time()
         limit = timeout()

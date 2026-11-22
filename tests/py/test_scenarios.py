@@ -771,6 +771,12 @@ class TestRun(unittest.TestCase):
                           "FAIL"))
         self.assertEqual(self.check(), (1, "last run FAIL\n"))
 
+    def test_a_failed_assert_in_a_run_py_fails_even_when_the_caller_strips_asserts(self):
+        for level in ("1", "2"):
+            with self.subTest(PYTHONOPTIMIZE=level), mock.patch.dict(os.environ, {"PYTHONOPTIMIZE": level}):
+                code, out, _ = self.main("assert False, 'broken'\n", run_file="run.py")
+            self.assertEqual((code, out), (1, "FAIL one: exit 1\nFAIL: 0/1 scenarios\n"))
+
     def test_a_python_that_cannot_name_its_own_executable_does_not_run_a_run_py(self):
         with mock.patch.object(scenarios.sys, "executable", ""):
             code, out, doc = self.main("pass\n", run_file="run.py")

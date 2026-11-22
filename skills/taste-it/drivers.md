@@ -23,7 +23,7 @@ subprocess.run([sys.executable, "-m", "venv", "v"], check=True)        # Python 
 bin_ = os.path.join("v", "Scripts" if os.name == "nt" else "bin")      # v/bin/ on POSIX, v\Scripts\ on Windows
 subprocess.run([os.path.join(bin_, "pip"), "install", repo], check=True)
 r = subprocess.run([os.path.join(bin_, "<cmd>"), "--help"], capture_output=True, text=True)
-assert r.returncode == 0, r.stderr                                     # a failed assert exits 1: FAIL
+assert r.returncode == 0, r.stderr                                     # a failed assert exits 1: FAIL (the runner unsets PYTHONOPTIMIZE)
 ```
 
 Start other tools through `shutil.which("npm")`, `shutil.which("cargo")` (on Windows `npm` is `npm.cmd`, which a bare name does not find); a server goes in `subprocess.Popen(...)`, stopped in a `finally` (the runner also stops what is left when the scenario ends). `tmux` and `expect` exist on POSIX only: a TUI scenario that needs them stays a `run.sh`.
