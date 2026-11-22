@@ -3,6 +3,7 @@ checkout) read the plan at HEAD with tomllib and run the kit's drift check on HE
 graders read. A wrong end state (a TS entry only in a comment, the js entry gone, an invalid plan, an edit not
 committed, a migration reset away or left on another branch) and the start state must not pass."""
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -78,11 +79,8 @@ class EndState(unittest.TestCase):
         self.assertEqual(lines[-1], "migrated: no")
 
     def test_a_kit_path_with_a_quote_works(self):
-        kit = os.path.join(os.path.dirname(self.repo), "it's kit")
-        try:
-            os.symlink(_kit.ROOT, kit, target_is_directory=True)
-        except OSError:  # Windows without the symlink privilege
-            self.skipTest("no symlink here")
+        kit = os.path.join(os.path.dirname(self.repo), "it's kit")  # a copy of the kit's scripts: any OS holds it
+        shutil.copytree(_kit.SCRIPTS, os.path.join(kit, "scripts"), ignore=shutil.ignore_patterns("__pycache__"))
         with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
             f.write(kit)
         self.commit(JS_RETIRING + TS)
