@@ -414,11 +414,27 @@ def cmd_can_fail(repo, ref=None):
         subprocess.run(["git", "-C", repo, "worktree", "prune"], capture_output=True)
 
 
+def changed(repo):
+    """the paths `git status` names (untracked bytecode left out, as the tree hash leaves it out)"""
+    out = git(repo, "status", "--porcelain", "-uall")
+    return {line[3:] for line in out.splitlines() if line[3:] and not line.endswith((".pyc", ".pyo"))}
+
+
+def last_stderr(transcript):
+    """the last non-blank line the scenario wrote to stderr, cut to 200 characters ("" when none)"""
+    with open(transcript, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    err = text.split("\n--- stderr ---\n", 1)[-1].rsplit("\n--- exit:", 1)[0]
+    lines = [x.strip() for x in err.splitlines() if x.strip()]
+    return lines[-1][:200] if lines else ""
+
+
 def cmd_seeded(repo, only=None):
     """A seeded scenario proves something only while its feature is missing: each scenario under `only` (it and its
     children) is run on the files as they are. exit 0 each one fails, 1 one passes (it checks nothing yet), 4 none
-    passes but one could not run here, 2 one has no feature marker or more than one run file. Writes no results.json:
-    `check` still reads the last full run."""
+    passes but one could not run here, 2 one has no feature marker (or a bad one), more than one run file, or modified
+    the repo. A FAIL names its reason and the last stderr line, and its transcript is kept as `run` keeps one. Writes
+    no results.json: `check` still reads the last full run."""
     if not only:
         usage()
     only = only.strip("/")
@@ -436,15 +452,23 @@ def cmd_seeded(repo, only=None):
                 print(f"ERROR {sid}: {err or 'SCENARIO.md has no `- feature:` line'}")
                 bad = True
                 continue
-            res = run_one(repo, sid, known, tmp)
-            if not_here(res):
+            before, status = repo_state(repo), changed(repo)
+            res = run_one(repo, sid, known, tmp, os.path.join(outdir(repo), FAILED))
+            if repo_state(repo) != before:  # its FAIL may be its own write, not the missing feature
+                names = sorted(changed(repo) - status) or ["HEAD"]
+                print(f"ERROR {sid}: modified the repo ({', '.join(names)}): run in the temp cwd")
+                bad = True
+            elif not_here(res):
                 print(f"N/A {sid}: {res['reason']}")
                 na += 1
             elif str(res.get("reason")).startswith(MANY):
                 print(f"ERROR {sid}: {res['reason']}")
                 bad = True
             elif res.get("reason"):
-                print(f"SEEDED ✓ {sid}: fails on the repo as it is")
+                why = last_stderr(res["transcript"])
+                print(f"SEEDED ✓ {sid}: fails on the repo as it is: {res['reason']}" + (f": {why}" if why else ""))
+                if res.get("failed_transcript"):
+                    print(f"  transcript: {res['failed_transcript']}")
             else:
                 print(f"CHECKS NOTHING YET {sid}: passes on the repo as it is")
                 flagged += 1

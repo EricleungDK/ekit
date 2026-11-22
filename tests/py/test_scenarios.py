@@ -1090,9 +1090,48 @@ class TestFeatures(unittest.TestCase):
         self.assertEqual(self.cli("check"),  # the Stop gate reads the ids from the first line
                          (1, "cannot run here: login: bash is not on this machine (env)\n0 of 1 features working\n"))
 
+    def kept(self, sid):
+        return os.path.join(scenarios.outdir(self.repo), "failed", sid.replace("/", "%2F") + ".log")
+
     def test_a_seeded_scenario_that_fails_on_the_repo_as_it_is_is_seeded(self):
         self.scenario("login", FAILS, "log in")
-        self.assertEqual(self.cli("seeded", "login"), (0, "SEEDED ✓ login: fails on the repo as it is\n"))
+        self.assertEqual(self.cli("seeded", "login"),
+                         (0, f"SEEDED ✓ login: fails on the repo as it is: exit 1\n  transcript: {self.kept('login')}\n"))
+
+    def test_seeded_says_why_each_one_failed_and_keeps_its_transcript(self):
+        self.scenario("login", "import sys\nprint('setting up', file=sys.stderr)\n"
+                               "print('todo.py: no such file', file=sys.stderr)\nsys.exit(3)\n", "log in")
+        self.assertEqual(self.cli("seeded", "login"),
+                         (0, "SEEDED ✓ login: fails on the repo as it is: exit 3: todo.py: no such file\n"
+                             f"  transcript: {self.kept('login')}\n"))
+        with open(self.kept("login")) as f:
+            self.assertIn("setting up\ntodo.py: no such file\n", f.read())
+
+    def test_a_seeded_run_py_that_is_not_python_says_so(self):
+        self.scenario("broken", "def (\n", "log in")
+        code, out = self.cli("seeded", "broken")
+        self.assertEqual(code, 0)
+        self.assertRegex(out.splitlines()[0], r"^SEEDED ✓ broken: fails on the repo as it is: exit 1: SyntaxError: ")
+
+    def test_a_seeded_scenario_that_writes_into_the_repo_is_an_error_naming_the_file(self):
+        self.scenario("writer", 'import os\nopen(os.path.join(os.environ["EKIT_REPO"], "todo.py"), "w").close()\n'
+                                "raise SystemExit(1)\n", "add a task")
+        self.assertEqual(self.cli("seeded", "writer"),
+                         (2, "ERROR writer: modified the repo (todo.py): run in the temp cwd\n"))
+
+    def test_seeded_exit_is_error_over_checks_nothing_yet_over_n_a(self):
+        self.scenario("mix", FAILS)  # no marker: ERROR
+        self.scenario("mix/kid", PASSES, "kid")
+        self.assertEqual(self.cli("seeded", "mix"), (2, "ERROR mix: SCENARIO.md has no `- feature:` line\n"
+                                                        "CHECKS NOTHING YET mix/kid: passes on the repo as it is\n"))
+        self.scenario("other", "exit 0\n", "other")
+        os.rename(os.path.join(self.repo, ".ekit/scenarios/other/run.py"),
+                  os.path.join(self.repo, ".ekit/scenarios/other/run.sh"))
+        self.scenario("other/kid", PASSES, "kid")
+        with mock.patch.object(scenarios.shells, "find", return_value=None):
+            self.assertEqual(self.cli("seeded", "other")[0], 1)
+            self.scenario("other/kid", FAILS, "kid")
+            self.assertEqual(self.cli("seeded", "other")[0], 4)
 
     def test_a_seeded_scenario_that_already_passes_checks_nothing_yet(self):
         self.scenario("login", PASSES, "log in")
@@ -1104,7 +1143,7 @@ class TestFeatures(unittest.TestCase):
         self.scenario("cart/empty", PASSES, "cart")
         self.scenario("cartography", PASSES, "maps")
         self.assertEqual(self.cli("seeded", "cart"),
-                         (1, "SEEDED ✓ cart: fails on the repo as it is\n"
+                         (1, f"SEEDED ✓ cart: fails on the repo as it is: exit 1\n  transcript: {self.kept('cart')}\n"
                              "CHECKS NOTHING YET cart/empty: passes on the repo as it is\n"))
         self.assertFalse(os.path.exists(os.path.join(scenarios.outdir(self.repo), "results.json")))  # check unmoved
 
