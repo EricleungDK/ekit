@@ -436,6 +436,28 @@ class Jobs(Run):
         r = self.main("--dir", self.art)
         self.assertIn("confirm entries: 1 (see the PR comment)", r.stdout.splitlines())
 
+    def test_a_drift_result_adds_d_its_messages_and_its_entry(self):
+        self.green_jobs()
+        d = env("drift", {})
+        d["checks"]["D"] = {"status": "fail", "note": "judged by the base branch's plan",
+                            "messages": ["planned stack `web` (web): its checks start"]}
+        d["entries"] = [dict(ent("D", ".ekit/stack-plan.toml", 0, "manifests no stack in .ekit/stack-plan.toml covers: "
+                                 "cli/Cargo.toml", id_="D-55555555"), **{"class": "adapter-fix"})]
+        self.put("mech-review-drift-json", "mech-review-drift.json", d)
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        out = r.stdout.splitlines()
+        self.assertEqual(out[0], f"{self.art}: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R3 R4 D)")
+        self.assertEqual(out[5:7], ["D fail: judged by the base branch's plan",
+                                    "  stack plan: planned stack `web` (web): its checks start"])
+        self.assertIn("    D-55555555 :0 manifests no stack in .ekit/stack-plan.toml covers: cli/Cargo.toml", out)
+
+    def test_no_drift_artifact_reads_as_before(self):
+        self.green_jobs()
+        r = self.main("--dir", self.art)
+        self.assertEqual(r.stdout.splitlines()[0], f"{self.art}: all pass {HEAD}")
+        self.assertFalse(any(x.startswith("D ") for x in r.stdout.splitlines()))
+
     def test_a_shard_with_no_wall_time_has_no_wall_note(self):
         self.red_run()
         s = shard(1, "bare")

@@ -8,9 +8,9 @@ Stdlib only.
 """
 import re
 
-from .report import CHECKS, summarize
+from .report import ALL, CHECKS, summarize
 
-WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+(R[1-4]-[0-9a-f]{8})\b[ \t:,-]*(.*)$", re.M)
+WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+((?:R[1-4]|D)-[0-9a-f]{8})\b[ \t:,-]*(.*)$", re.M)
 # who may waive: the repo's own people. A bot, a first-time contributor or an outsider cannot.
 HUMAN = ("OWNER", "MEMBER", "COLLABORATOR")
 REASON_MAX = 300
@@ -94,14 +94,14 @@ def rejected(comments):
 def apply(env, waivers):
     """The envelope with each waived fail entry marked. A check whose fail entries are all waived reads `waived`
     (it ran and the rule broke; a person let it through). The summary is rebuilt. No waiver that fits: env unchanged."""
-    hit = [e for e in env["entries"] if e["severity"] == "fail" and e.get("check") in CHECKS and e["id"] in waivers]
+    hit = [e for e in env["entries"] if e["severity"] == "fail" and e.get("check") in ALL and e["id"] in waivers]
     if not hit:
         return env
     ids = {e["id"] for e in hit}
     entries = [dict(e, severity="waived", waiver=waivers[e["id"]]) if e["id"] in ids and e["severity"] == "fail" else e
                for e in env["entries"]]
     checks = {name: dict(c) for name, c in (env.get("checks") or {}).items()}
-    for name in CHECKS:
+    for name in ALL:
         c = checks.get(name)
         mine = [e for e in entries if e.get("check") == name]
         n = sum(1 for e in mine if e["severity"] == "waived")

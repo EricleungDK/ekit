@@ -81,6 +81,34 @@ def envelope(entries):
             "summary": summarize(SHA, checks, entries)}
 
 
+class TestDriftLines(unittest.TestCase):
+    """The drift check's messages (#56) show under the headline, as code spans; its fail entry gets a waive line."""
+
+    def env(self, messages, entries=()):
+        env = envelope(list(entries))
+        env["checks"] = dict(env["checks"], D={"status": "pass", "note": "judged", "messages": messages})
+        return env
+
+    def test_each_message_is_a_line_under_the_headline(self):
+        body = comment.render(self.env(["planned stack `web` (web): its checks start", "retiring stack `js` (.): x"]))
+        self.assertIn("\nStack plan: ``planned stack `web` (web): its checks start``\n"
+                      "Stack plan: ``retiring stack `js` (.): x``\n", body)
+        self.assertLess(body.index("Stack plan:"), body.index("head `"))
+
+    def test_no_plan_no_line(self):
+        self.assertNotIn("Stack plan:", comment.render(envelope([])))
+        self.assertNotIn("Stack plan:", comment.render(self.env([])))
+
+    def test_a_message_cannot_ping_or_link(self):
+        body = comment.render(self.env(["stack `x` (@team/[a](http://e.test)): gone"]))
+        self.assertIn("Stack plan: ``stack `x` (@team/[a](http://e.test)): gone``", body)
+
+    def test_the_drift_fail_entry_gets_its_ready_made_waive_line(self):
+        e = dict(entry("D-0a1b2c3d", check="D"), file=".ekit/stack-plan.toml", line=0)
+        body = comment.render(self.env([], [e]))
+        self.assertIn(f"/mech-waive D-0a1b2c3d {waiver.PLACEHOLDER}", body)
+
+
 class TestWaiverLines(unittest.TestCase):
     def lines(self, w):
         e = dict(entry(severity="waived"))
