@@ -994,6 +994,42 @@ class TestFeatures(unittest.TestCase):
         os.remove(os.path.join(self.repo, "todo.py"))
         self.assertEqual(self.cli("check"), (1, "last run FAIL\n0 of 1 features working\n"))
 
+    def doc(self, sid, text):
+        with open(os.path.join(self.repo, ".ekit", "scenarios", sid, "SCENARIO.md"), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_a_feature_line_inside_a_fenced_block_marks_nothing(self):
+        self.scenario("tidy", FAILS)
+        self.doc("tidy", "- story: s\n- steps:\n  ```\n  - feature: fake\n  ```\n~~~\n- feature: fake too\n~~~\n")
+        self.assertEqual(self.cli("run"), (1, "FAIL tidy: exit 1\nFAIL: 0/1 scenarios\n"))
+        self.assertEqual(self.cli("seeded", "tidy"), (2, "ERROR tidy: SCENARIO.md has no `- feature:` line\n"))
+
+    def test_a_bom_before_a_first_line_marker_is_not_part_of_it(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "﻿- feature: log in\n- story: s\n")
+        self.assertEqual(self.cli("run")[1].splitlines()[-1], "1 of 1 features working")
+
+    def test_two_feature_lines_are_a_named_error_in_run_and_seeded_never_a_pick(self):
+        self.scenario("login", PASSES)
+        self.doc("login", "- story: s\n- feature: log in\n- feature: log out\n")
+        err = "SCENARIO.md has more than one feature line (log in, log out): keep one"
+        self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL: 0/1 scenarios\n"))
+        self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+
+    def test_a_feature_line_the_runner_cannot_read_is_a_named_error_in_run_and_seeded(self):
+        for line in ("- Feature: log in", "- **feature**: log in", "feature: log in"):
+            with self.subTest(line=line):
+                self.scenario("login", PASSES)
+                self.doc("login", f"- story: s\n{line}\n")
+                err = f"SCENARIO.md feature line `{line}` is not `- feature: <name>`"
+                self.assertEqual(self.cli("run"), (1, f"FAIL login: {err}\nFAIL: 0/1 scenarios\n"))
+                self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {err}\n"))
+
+    def test_seeded_names_a_missing_scenario_md(self):
+        self.scenario("login", FAILS, "log in")
+        os.remove(os.path.join(self.repo, ".ekit", "scenarios", "login", "SCENARIO.md"))
+        self.assertEqual(self.cli("seeded", "login"), (2, f"ERROR login: {scenarios.NODOC}\n"))
+
     def test_check_reads_a_malformed_results_row_as_no_feature(self):
         self.scenario("login", PASSES, "log in")
         self.cli("run")

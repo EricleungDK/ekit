@@ -268,17 +268,37 @@ def keep(kept, name, text):
 
 
 # a SCENARIO.md field line `- feature: <name>`; [^\S\n]: a blank that is not a line end (a \r of CRLF included)
-FEATURE = re.compile(r"^[-*][^\S\n]*feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$", re.M)
+FEATURE = re.compile(r"^[-*][^\S\n]*feature[^\S\n]*:[^\S\n]*(.*?)[^\S\n]*$")
+# any line that looks meant as one (another case, bold, no bullet): read as a marker or named, never dropped
+FEATURE_LIKE = re.compile(r"^\s*(?:[-*+]\s*)?(?:\*\*|__)?feature(?:\*\*|__)?\s*:", re.I)
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 
-def feature(repo, sid):
-    """The feature a scenario's SCENARIO.md marks it with (taste-it seeds them), else None."""
-    try:
-        with open(os.path.join(root(repo), sid, "SCENARIO.md"), encoding="utf-8", errors="replace") as f:
-            m = FEATURE.search(f.read())
-    except OSError:
-        return None
-    return (m.group(1) or None) if m else None
+def marker(repo, sid):
+    """(feature, error) of a scenario's SCENARIO.md: the `- feature: <name>` line taste-it seeds it with (an empty one
+    marks nothing). Lines inside a fenced block are text, not fields. error: no SCENARIO.md, more than one feature line,
+    or a feature line not in that form, each named, never a silent pick or drop."""
+    path = os.path.join(root(repo), sid, "SCENARIO.md")
+    if not os.path.isfile(path):
+        return None, NODOC
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    found, fence = [], None
+    for line in text.lstrip("\ufeff").splitlines():
+        m = FENCE.match(line)
+        if m and (fence is None or m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)):
+            fence = None if fence else m.group(1)
+        elif not fence and FEATURE_LIKE.match(line):
+            found.append(line.strip())
+    if len(found) > 1:
+        names = ", ".join(x.split(":", 1)[1].strip() for x in found)
+        return None, f"SCENARIO.md has more than one feature line ({names}): keep one"
+    if not found:
+        return None, None
+    m = FEATURE.match(found[0])
+    if not m:
+        return None, f"SCENARIO.md feature line `{found[0]}` is not `- feature: <name>`"
+    return m.group(1) or None, None
 
 
 def features_line(results, valid=True):
@@ -312,9 +332,11 @@ def cmd_run(repo, only=None):
     os.makedirs(tdir, exist_ok=True)
     results = [run_one(repo, sid, known, tdir, os.path.join(out, FAILED)) for sid in ids]
     for r in results:
-        name = feature(repo, r["id"])
+        name, err = marker(repo, r["id"])
         if name:
             r["feature"] = name  # results.json keeps it: check counts the features from there
+        elif err and err != NODOC:  # no SCENARIO.md is run_one's FAIL already
+            r["reason"] = err  # the folder is to be fixed, whatever the run gave
     for r in results:
         print(f"{'NOT-RUN' if not_here(r) else 'FAIL'} {r['id']}: {r['reason']}" if r.get("reason") else f"PASS {r['id']}")
     doc = {"verdict": "PASS", "tree": th, "repo": os.path.realpath(repo), "filter": only or None, "scenarios": results}
@@ -409,8 +431,9 @@ def cmd_seeded(repo, only=None):
     bad = False
     with tempfile.TemporaryDirectory(prefix="ekit-seeded-") as tmp:
         for sid in ids:
-            if not feature(repo, sid):
-                print(f"ERROR {sid}: SCENARIO.md has no `- feature:` line")
+            name, err = marker(repo, sid)
+            if not name:
+                print(f"ERROR {sid}: {err or 'SCENARIO.md has no `- feature:` line'}")
                 bad = True
                 continue
             res = run_one(repo, sid, known, tmp)
