@@ -70,6 +70,17 @@ class EndState(unittest.TestCase):
         self.git("merge", "-q", "--ff-only", "side")
         self.assertEqual(self.verdict()[-1], "migrated: yes")
 
+    def test_a_linked_worktree_works_and_the_verdict_stays_the_main_checkouts(self):
+        linked = os.path.join(os.path.dirname(self.repo), "linked")
+        self.git("worktree", "add", "-q", "-b", "w2", linked)  # check=True: its post-checkout must not fail it
+        with open(os.path.join(linked, ".ekit", "stack-plan.toml"), "w", newline="\n") as f:
+            f.write(JS_RETIRING + TS)
+        subprocess.run(["git", "-C", linked, "commit", "-qam", "ts"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", linked, "checkout", "-q", "-b", "w3"], check=True, capture_output=True)
+        self.assertEqual(self.verdict()[-1], "migrated: no")  # main's HEAD has not moved
+        self.git("merge", "-q", "--ff-only", "w2")
+        self.assertEqual(self.verdict()[-1], "migrated: yes")
+
     def test_a_missing_kit_is_named_a_harness_problem(self):
         with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
             f.write("/no/kit/here")

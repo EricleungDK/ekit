@@ -44,10 +44,14 @@ mkdir -p .git/ekit-eval
 printf '%s' "$(cd "$(dirname "$0")/../.." && pwd -P)" > .git/ekit-eval/kit
 cat > .git/ekit-eval/verdict.py <<'PY'
 import json, os, subprocess, sys
+here = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
+                      text=True).stdout.strip()  # the main checkout's .git, from it or from any linked worktree
+repo = os.path.dirname(here)  # the main checkout: its HEAD is the end state, whichever worktree moved a ref
+# a hook runs with the worktree's GIT_DIR (and index) set: dropped, so git reads the main checkout
+env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                                                        "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
 def git(*a):
-    return subprocess.run(["git", *a], capture_output=True, text=True)
-here = git("rev-parse", "--absolute-git-dir").stdout.strip()
-repo = git("rev-parse", "--show-toplevel").stdout.strip()
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env)
 with open(os.path.join(here, "ekit-eval", "kit"), encoding="utf-8") as f:
     kit = f.read()
 lines = []
@@ -69,7 +73,7 @@ if not os.path.isfile(engine):
     lines.append(f"drift: not run: harness: the kit's scripts/mech-review.py is not at {kit!r} (not the model's doing)")
 else:
     r = subprocess.run([sys.executable, "-I", engine, "drift", "--repo", repo, "--base", "HEAD", "--head", "HEAD",
-                        "--format", "json"], capture_output=True, text=True)
+                        "--format", "json"], capture_output=True, text=True, env=env)
     try:
         env = json.loads(r.stdout)
         d = env["checks"].get("D") or {}
@@ -83,7 +87,8 @@ with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
 # reference-transaction: every ref update (commit, reset, merge, rebase); post-checkout: a switch of HEAD alone
-printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\nexec python3 -I "$(git rev-parse --absolute-git-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\n' > .git/hooks/reference-transaction
-printf '#!/bin/sh\nexec python3 -I "$(git rev-parse --absolute-git-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\n' > .git/hooks/post-checkout
+# (never failing the model's git command: exit 0 whatever the verdict script did)
+printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/reference-transaction
+printf '#!/bin/sh\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/post-checkout
 chmod +x .git/hooks/reference-transaction .git/hooks/post-checkout
 git add -A; git commit -qm "greet: js package, stack plan"
