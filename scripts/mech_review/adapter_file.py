@@ -328,16 +328,22 @@ def parse(data):
 def load(path):
     """the DataAdapter the adapter file at path describes. AdapterFileError: unreadable, not TOML, invalid, or no tomllib."""
     try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
+    return loads(raw, path)
+
+
+def loads(raw, path):
+    """the DataAdapter of an adapter file's bytes (path names it in errors: a file on disk, or a repo path at a ref)."""
+    try:
         import tomllib
     except ImportError:
         raise AdapterFileError(f"adapter file {path}: reading an adapter file needs python 3.11 or newer (tomllib)") from None
     try:
-        with open(path, "rb") as f:
-            raw = f.read()
         # a UTF-8 BOM (some Windows editors write one) is not part of the TOML text
         data = tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
-    except OSError as e:
-        raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
     except tomllib.TOMLDecodeError as e:
         raise AdapterFileError(f"adapter file {path}: not valid TOML: {e}") from None
     except UnicodeDecodeError as e:  # tomllib decodes the bytes as UTF-8 and lets this through

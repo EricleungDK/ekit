@@ -6,7 +6,7 @@ import re
 import signal
 import sys
 
-from . import adapter_file, doctor, engine, gitio, merge, red, resolve
+from . import adapter_file, doctor, engine, gitio, merge, red, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -328,7 +328,35 @@ def _resolve(argv):
     return 1 if got["error"] else 0
 
 
+def _drift(argv):
+    """The drift check (#56): the stack plan against the tracked manifests, git only. Exit 0 clean or messages only,
+    1 a fail entry, 2 usage (a bad plan names the entry and the field) or git error."""
+    p = argparse.ArgumentParser(prog="mech-review.py drift",
+                                description="compare .ekit/stack-plan.toml with the tracked manifests (git only); the "
+                                            "base branch's plan judges, a PR that only edits the plan or its adapter "
+                                            "files and adds no manifest is judged by its own")
+    p.add_argument("--repo", default=".", help="git repo (default .)")
+    p.add_argument("--base", required=True, help="base ref")
+    p.add_argument("--head", required=True, help="head ref")
+    p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
+    args = p.parse_args(argv)
+    try:
+        env = engine.drift(args.repo, args.base, args.head)
+    except (gitio.Die, stack_plan.PlanError) as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        print(json.dumps(env, indent=2))
+    else:
+        print(render_text(env))
+        for m in (env["checks"].get("D") or {}).get("messages", []):
+            print(f"message: {m}")
+    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+
+
 def main(argv):
+    if argv[:1] == ["drift"]:
+        return _drift(argv[1:])
     if argv[:1] == ["doctor"]:
         return _doctor(argv[1:])
     if argv[:1] == ["resolve"]:

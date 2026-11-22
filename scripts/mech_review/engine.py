@@ -1,5 +1,6 @@
 """Mechanical review engine: runs the checks a subcommand asks for and builds the contract envelope."""
-from . import mutants, red
+from . import mutants, red, stack_plan
+from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
 from .report import CHECKS, envelope, finalize
@@ -67,3 +68,17 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         k, _, n = (shard or "0/1").partition("/")
         env["shard"] = {"k": int(k), "n": int(n), "max_mutants": max_mutants}
     return env
+
+
+def drift(repo, base_ref, head_ref, now=None):
+    """The drift check (#56) as an envelope: check D and at most one `fail` entry (class adapter-fix) naming every
+    manifest no plan entry covers; D's messages (planned, retiring and vanished stacks) ride in checks.D.messages.
+    No plan on base or head: no D at all, nothing else changes. stack_plan.PlanError: a bad plan (usage error)."""
+    base = gitio.resolve(repo, base_ref)
+    head = gitio.resolve(repo, head_ref)
+    checks = {c: {"status": "skipped", "note": "not run by drift"} for c in CHECKS}
+    has_plan, note, uncovered, messages = stack_plan.check_pr(repo, base, head, now)
+    entries = finalize([stack_plan.drift_entry(uncovered)]) if uncovered else []
+    if has_plan:
+        checks["D"] = {"status": "fail" if uncovered else "pass", "note": note, "messages": messages}
+    return envelope(base, head, entries, checks)
