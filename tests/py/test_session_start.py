@@ -458,6 +458,12 @@ class StackPlan(unittest.TestCase):
         self.assertIn("[ekit] Stack plan: the drift check is skipped here: this is a partial clone",
                       self.context())
 
+    def test_a_promisor_remote_whose_name_holds_a_space_is_a_partial_clone(self):
+        self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
+        subprocess.run(["git", "-C", self.repo, "config", "remote.a b.promisor", "true"], check=True)
+        self.assertIn("[ekit] Stack plan: the drift check is skipped here: this is a partial clone",
+                      self.context())
+
     def test_extensions_partialclone_alone_is_a_partial_clone(self):
         self.commit({"api/pyproject.toml": "[project]\n", PLAN: plan(("web", "web", "ts", "current"))})
         subprocess.run(["git", "-C", self.repo, "config", "extensions.partialClone", "origin"], check=True)

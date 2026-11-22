@@ -72,7 +72,7 @@ def partial_clone(top):
         keys = gitio.git(top, "config", "--name-only", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.promisor)$")
     except gitio.Die:  # exit 1: no such key
         return False
-    for key in keys.split():
+    for key in keys.splitlines():  # one key a line: a remote name may hold a space
         if key == "extensions.partialclone" or gitio.git(top, "config", "--bool", "--get", key).strip() == "true":
             return True  # a promisor set to 0, no, off or false is none: git reads the value as a boolean
     return False
