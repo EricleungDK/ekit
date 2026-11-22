@@ -354,7 +354,8 @@ def partial_entry(check):
     elif tested is None:
         problem = f"R3 partial: {total} mutants, tested count unknown at budget"
     else:
-        problem = f"R3 partial: {total - tested}/{total} mutants untested at budget"
+        up = "up to " if check.get("bound") else ""
+        problem = f"R3 partial: {up}{total - tested}/{total} mutants untested at budget"
     e = entry("R3", "", 0, PARTIAL_KEY, "agent-fixable", "confirm", problem,
               "read checks.R3.timing (wall, phase seconds, slowest mutants): shrink the diff first, then narrow the tests "
               "the mutation tool runs, then raise mutation-budget",
@@ -1786,6 +1787,8 @@ class Stryker:
                                      "dependencies (ts toolchain step) or set setup-command"), []
             listed, why = stryker_listing(runner, cmd, crate, [_crate_path(project_dir, f) for f in prod])
             config = stryker_config(crate)
+            # with the repo's own Stryker config (it may exclude mutators) the default listing's counts are bounds
+            bound = listed is not None and config is not None
             if listed is None:
                 pick, own, extra = None, None, 0
                 capped = f"; max-mutants not applied: Stryker's instrumenter listed no mutant ({why})"
@@ -1796,6 +1799,8 @@ class Stryker:
                 if shard_index(shard)[0] != 0:
                     extra = 0  # shard 0 reports the mutants past the cap, so the merge counts them once
                 capped = cap_note(extra, max_mutants)
+                if bound and extra:
+                    capped = capped.replace("; ", "; up to ", 1) + " (the repo's Stryker config may exclude some)"
                 # the most any run can make on this shard's picked lines (the n/a guard below)
                 most = None if pick is None else sum(1 for m in upper if m[0] in files and all(
                     n in pick.get(m[0], ()) for n in range(m[3], m[4] + 1)))
@@ -1906,6 +1911,8 @@ class Stryker:
             note += capped
             status = "fail" if fails else "partial" if tested < total or rc == "timeout" else "pass"
             check = _check(status, note, tested, total)
+            if bound and extra:
+                check["bound"] = True  # total holds mutants the repo's config may exclude: an upper bound
             check["timing"] = timing
             return check, ents
 
