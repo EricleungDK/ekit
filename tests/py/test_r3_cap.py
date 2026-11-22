@@ -895,12 +895,16 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
         print("Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@stryker-mutator/instrumenter'")
         sys.exit(1)
     print("(node:1) ExperimentalWarning: a log line before the listing")
+    print('[BABEL] Note: the code generator has deoptimised the styling of a file as it exceeds the max of 500KB.')
     # ekit passes absolute paths and gets them back; the spec names the files from the crate dir. A 6th field "upper":
     # a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement; the real
     # instrumenter lists it only when every mutant counts as excluded (`excludedMutations: { includes: () => true }`)
     every = "includes: () => true" in args[2]
-    print(json.dumps([[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0])
-                      and (every or m[5:] != ["upper"])]))
+    rows = [[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0]) and (every or m[5:] != ["upper"])]
+    if os.environ.get("STUB_BAD_ROW"):  # a row as the given JSON, its file the first file asked
+        bad = json.loads(os.environ["STUB_BAD_ROW"])
+        rows.append([args[4]] + bad if isinstance(bad, list) else bad)
+    print("ekit-stryker-listing " + json.dumps(rows).replace('"Infinity"', "Infinity"))
     sys.exit(0)
 if args == ["--version"]:
     print("10.0.0")
@@ -1175,6 +1179,19 @@ class TestTsListing(TsCli):
         self.assertTrue(r3["note"].endswith("; max-mutants not applied: Stryker's instrumenter listed no mutant (node "
                                             "exit 1: Error [ERR_MODULE_NOT_FOUND]: Cannot find package "
                                             "'@stryker-mutator/instrumenter')"), r3["note"])
+
+    def test_a_line_before_the_listing_that_starts_with_a_bracket_does_not_hide_it(self):
+        r3 = self.cli("--max-mutants", "5")["checks"]["R3"]  # the stub prints a `[BABEL] ...` line first
+        self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 5, 8))
+
+    def test_a_malformed_row_is_no_listing_and_the_note_says_so(self):
+        for row in ('["M", "r", "Infinity", 2]', '["M", "r", 3, 1]', '["M", "r", 1.5, 2]', '["M", "r", true, 2]',
+                    '["M", "r", 0, 2]', '["M", "r", 2]', 'null', '["M", 7, 1, 2]'):
+            r3 = self.cli("--max-mutants", "5", STUB_BAD_ROW=row)["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([2, 3, 4, 5, 6, 7]), row)  # no cap: every changed line
+            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 8, 8), row)
+            self.assertIn("; max-mutants not applied: Stryker's instrumenter listed no mutant (a row that is not "
+                          "[file, mutator, replacement, first line, last line]: ", r3["note"])
 
     def test_a_run_that_makes_more_than_the_listing_held_is_not_a_result(self):
         env = self.cli("--max-mutants", "5", STUB_MORE="1")

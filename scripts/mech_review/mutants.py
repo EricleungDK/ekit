@@ -1631,9 +1631,23 @@ const log = { isTraceEnabled: () => false, isDebugEnabled: () => false, isInfoEn
 const res = await new Instrumenter(log).instrument(
   files.map((name) => ({ name, content: readFileSync(name, "utf8"), mutate: true })),
   { plugins: null, excludedMutations: { includes: () => true }, ignorers: [], noHeader: false });
-process.stdout.write("\n" + JSON.stringify(res.mutants.map((m) => [m.fileName, m.mutatorName, m.replacement,
-  m.location.start.line + 1, m.location.end.line + 1])) + "\n");
+process.stdout.write("\nekit-stryker-listing " + JSON.stringify(res.mutants.map((m) => [m.fileName, m.mutatorName,
+  m.replacement, m.location.start.line + 1, m.location.end.line + 1])) + "\n");
 """
+LISTING = re.compile(r"^ekit-stryker-listing (.*)$", re.M)  # the listing's own line; any other output is log
+
+
+def _listing_row(row, full):
+    """(crate path, mutator, replacement, first line, last line) of one listed row, or None when it is not that:
+    a file not asked for, a line that is not a whole number from 1 (JSON's Infinity included), a range that ends
+    before it starts."""
+    if not (isinstance(row, list) and len(row) == 5):
+        return None
+    f, mutator, replacement, first, last = row
+    if (f not in full or not isinstance(mutator, str) or not isinstance(replacement, str)
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in (first, last)) or not 1 <= first <= last):
+        return None
+    return full[f], mutator, replacement, first, last
 
 
 def stryker_listing(runner, cmd, crate, paths):
@@ -1650,12 +1664,17 @@ def stryker_listing(runner, cmd, crate, paths):
         shutil.rmtree(tmp, ignore_errors=True)
     if rc != 0:
         return None, f"node exit {rc}: {_first_line(text) or 'no output'}"
-    m = re.search(r"^\[", text or "", re.M)
+    found = LISTING.findall(text or "")
     try:
-        doc = json.JSONDecoder().raw_decode(text[m.start():])[0] if m else None
-        rows = [(full[f], str(mut), str(rep), int(a), int(b)) for f, mut, rep, a, b in doc]
-    except (ValueError, TypeError, KeyError):
+        doc = json.loads(found[-1]) if found else None
+    except ValueError:
+        doc = None
+    if not isinstance(doc, list):
         return None, f"no mutant list in its output: {_first_line(text) or 'no output'}"
+    rows = [_listing_row(row, full) for row in doc]
+    if None in rows:
+        bad = doc[rows.index(None)]
+        return None, f"a row that is not [file, mutator, replacement, first line, last line]: {json.dumps(bad)[:120]}"
     return rows, None
 
 
