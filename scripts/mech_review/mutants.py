@@ -1611,9 +1611,12 @@ def line_ranges(lines):
     return [f"{a}-{b}" for a, b in runs]
 
 
-# the mutants Stryker makes, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
-# the command names, parses each file as the run would (mutator plugins, excludedMutations and ignorers at Stryker's
-# defaults) and prints [file, mutator, replacement, first line, last line] per mutant. argv: the stryker binary, files.
+# the mutants Stryker can make, listed before its run (#63): Stryker's own instrumenter, loaded from the Stryker install
+# the command names, parses each file at Stryker's default parser options and prints [file, mutator, replacement,
+# first line, last line] per mutant. Every mutator counts as excluded, so no mutant is dropped for another: Stryker
+# 10.0.0 keeps a call statement's CallExpression mutant only while no other mutant there is left, so a repo's
+# excludedMutations (or an ignorer) makes the real run hold it. The list is an upper bound of any run's mutants.
+# argv: the stryker binary, files.
 STRYKER_LIST = r"""
 import { createRequire } from "node:module";
 import { readFileSync, realpathSync } from "node:fs";
@@ -1627,7 +1630,7 @@ const log = { isTraceEnabled: () => false, isDebugEnabled: () => false, isInfoEn
   trace: no, debug: no, info: no, warn: no, error: no, fatal: no };
 const res = await new Instrumenter(log).instrument(
   files.map((name) => ({ name, content: readFileSync(name, "utf8"), mutate: true })),
-  { plugins: null, excludedMutations: [], ignorers: [], noHeader: false });
+  { plugins: null, excludedMutations: { includes: () => true }, ignorers: [], noHeader: false });
 process.stdout.write("\n" + JSON.stringify(res.mutants.map((m) => [m.fileName, m.mutatorName, m.replacement,
   m.location.start.line + 1, m.location.end.line + 1])) + "\n");
 """
@@ -1839,8 +1842,9 @@ class Stryker:
             fails = sum(1 for e in ents if e["severity"] == "fail")
             if pick is not None and len(rows) > len(own):  # more than the listing gave: the pick was not kept
                 return _check("n/a", f"Stryker made {len(rows)} mutant(s) on the picked lines, more than the {len(own)} "
-                                     "its instrumenter listed (env): the cap was not kept; a repo Stryker config with "
-                                     "mutator plugins can do this"), ents
+                                     "its instrumenter can make there (env): the cap was not kept; the listing parses at "
+                                     "Stryker's defaults, so a repo config that changes how files parse "
+                                     "(mutator.plugins, a babel config) can do this"), ents
             if not rows and not extra and rc != "timeout":
                 return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
             # a mutant the budget left Pending was never run: untested, never a pass (#63)

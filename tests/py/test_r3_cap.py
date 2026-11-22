@@ -895,8 +895,12 @@ if args[:2] == ["--input-type=module", "-e"]:  # node: ekit's listing through St
         print("Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@stryker-mutator/instrumenter'")
         sys.exit(1)
     print("(node:1) ExperimentalWarning: a log line before the listing")
-    # ekit passes absolute paths and gets them back; the spec names the files from the crate dir
-    print(json.dumps([[f] + m[1:] for f in args[4:] for m in spec if f.endswith("/" + m[0])]))
+    # ekit passes absolute paths and gets them back; the spec names the files from the crate dir. A 6th field "upper":
+    # a mutant Stryker 10.0.0's CallExpression filter drops while another mutant sits in its statement; the real
+    # instrumenter lists it only when every mutant counts as excluded (`excludedMutations: { includes: () => true }`)
+    every = "includes: () => true" in args[2]
+    print(json.dumps([[f] + m[1:5] for f in args[4:] for m in spec if f.endswith("/" + m[0])
+                      and (every or m[5:] != ["upper"])]))
     sys.exit(0)
 if args == ["--version"]:
     print("10.0.0")
@@ -909,11 +913,14 @@ for item in args[args.index("--mutate") + 1].split(","):
     a, b = (int(x) for x in span.split("-"))
     picked |= {(path, n) for n in range(a, b + 1)}
 missed = set(filter(None, os.environ.get("STUB_MISSED", "").split("|")))
+excluded = set(filter(None, os.environ.get("STUB_EXCLUDE", "").split("|")))  # the repo's mutator.excludedMutations
 files, made = {}, 0
-for k, (path, mutator, replacement, first, last) in enumerate(spec):
+for k, (path, mutator, replacement, first, last, *upper) in enumerate(spec):
     if not all((path, n) in picked for n in range(first, last + 1)):
         continue
-    status = "Survived" if f"{path}:{first}" in missed else "Killed"
+    if upper and any(m[0] == path and m[3] == first and m[5:] != ["upper"] and m[1] not in excluded for m in spec):
+        continue  # the CallExpression filter: another mutant that is not excluded sits in the statement
+    status = "Ignored" if mutator in excluded else "Survived" if f"{path}:{first}" in missed else "Killed"
     if os.environ.get("STUB_PENDING") and made >= int(os.environ["STUB_PENDING"]):
         status = "Pending"  # the budget stopped the run before this one
     made += 1
@@ -1172,13 +1179,38 @@ class TestTsListing(TsCli):
         r3 = env["checks"]["R3"]
         self.assertEqual(r3["status"], "n/a")
         self.assertEqual(r3["note"], "Stryker made 6 mutant(s) on the picked lines, more than the 5 its instrumenter "
-                                     "listed (env): the cap was not kept; a repo Stryker config with mutator plugins can "
-                                     "do this")
+                                     "can make there (env): the cap was not kept; the listing parses at Stryker's "
+                                     "defaults, so a repo config that changes how files parse (mutator.plugins, a babel "
+                                     "config) can do this")
 
     def test_a_budget_hit_before_the_report_counts_the_listed_mutants_without_the_log(self):
         r3 = self.cli("--max-mutants", "5", "--mutation-budget", "0.02", STUB_HANG="before-report",
                       STUB_NO_LOG="1")["checks"]["R3"]
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", None, 8))
+
+
+class TestTsExcludedMutations(TsCli):
+    """#63 review round 4: a repo config with mutator.excludedMutations. Stryker 10.0.0 then reports the excluded
+    mutants as Ignored and makes a CallExpression mutant on each call statement they leave alone; its default listing
+    holds neither. The real run (scratchpad u5me/excl, `excludedMutations: ["StringLiteral"]`, `--mutate src/a.ts:2-4`)
+    made StringLiteral x2 (Ignored), CallExpression x2 and the 4 of line 3; a listing with every mutant excluded holds
+    the same 8."""
+    BASE = "export function f(a: number): void {\n\n\n\n  return;\n}\n"
+    LINES = [('  console.log("hi");', [("StringLiteral", '""')]), ("  const t = a > 0;", [
+        ("ConditionalExpression", "true"), ("ConditionalExpression", "false"), ("EqualityOperator", "a >= 0"),
+        ("EqualityOperator", "a <= 0")]), ('  console.log("bye");', [("StringLiteral", '""')])]
+    HEAD = "export function f(a: number): void {\n" + "".join(t + "\n" for t, _ in LINES) + "  return;\n}\n"
+    FILES = {"src/calc.ts": (BASE, HEAD, LINES)}
+    MORE = [["src/calc.ts", "BlockStatement", "{}", 1, 6], ["src/calc.ts", "CallExpression", ";", 2, 2, "upper"],
+            ["src/calc.ts", "CallExpression", ";", 4, 4, "upper"]]
+
+    def test_the_cap_is_kept_with_and_without_the_repos_excluded_mutations(self):
+        # every mutant Stryker could make is listed (8 on lines 2-4): line 3 (4 branch mutants) fits under 5; the
+        # CallExpression of line 2 next brings that line's string too, 6
+        for env in ({"STUB_EXCLUDE": "StringLiteral"}, {}):
+            r3 = self.cli("--max-mutants", "5", **env)["checks"]["R3"]
+            self.assertEqual(self.mutate(), ts_lines([3]), env)
+            self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 4, 8), env)
 
 
 class TestTsNeverPass(TsCli):
