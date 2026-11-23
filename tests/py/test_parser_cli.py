@@ -466,6 +466,30 @@ class ParserR2(unittest.TestCase):
                       json.loads(r.stdout)["entries"][0]["problem"])
         self.assertFalse(os.path.exists(record), "R0 ran a program from the checkout")
 
+    # ---- #17: the repo's adapter file found by name at the base goes the same parser path ----
+    def test_r2_and_r0_by_stack_name_run_the_base_branchs_parser_and_never_the_prs(self):
+        base_rec, pr_rec = os.path.join(self.tmp, "base.jsonl"), os.path.join(self.tmp, "pr.jsonl")
+        table = os.path.join(self.tmp, "mini-fns.toml")
+        with open(MINI) as f, open(table, "w") as out:
+            out.write(f.read() + FUNCTIONS)
+        base_toml = parser_toml("--record " + shlex.quote(base_rec) + " --table " + shlex.quote(table))
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({self.ADAPTER: base_toml}, "repo adapter")
+        head = self.repo.commit({self.ADAPTER: parser_toml("--record " + shlex.quote(pr_rec)),
+                                 "tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")}, "pr")
+        r = _kit.run_cli(["r2", "--repo", self.repo.path, "--base", base, "--head", head, "--stack", "mini",
+                          "--test-paths", "tests/**"])
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        self.assertTrue(os.path.exists(base_rec), "r2 did not run the base branch's parser")
+        os.remove(base_rec)
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", base, "--head", head, "--stack", "mini",
+                          "--fixtures", MINI_FIXTURES])
+        check = json.loads(r.stdout)["checks"]["R0"]
+        self.assertEqual(check["status"], "pass", r.stdout)
+        self.assertTrue(os.path.exists(base_rec), "r0 did not run the base branch's parser")
+        self.assertFalse(os.path.exists(pr_rec), "the PR's parser command ran")
+
     def test_r0_never_runs_a_parser_with_no_base_copy(self):
         record = os.path.join(self.tmp, "record.jsonl")
         problem = self.held(*self.r0(self.adapter("--record " + shlex.quote(record))))  # outside the repo

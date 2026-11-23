@@ -344,10 +344,15 @@ def parser_hold(repo, mb, adapter, adapter_path):
     pattern adapter (no parser) is None."""
     if getattr(adapter, "parser", None) is None:
         return None
-    full, top = os.path.realpath(adapter_path or ""), os.path.realpath(repo)
-    if not adapter_path or not full.startswith(top + os.sep):
-        return f"{adapter_path or 'the adapter file'} is not in the repo: no base copy to compare its [parser] with"
-    rel = os.path.relpath(full, top).replace(os.sep, "/")
+    if not adapter_path:
+        return "the adapter file is not in the repo: no base copy to compare its [parser] with"
+    if os.path.isabs(adapter_path):  # a file in the checkout: its repo path names the base copy
+        full, top = os.path.realpath(adapter_path), os.path.realpath(repo)
+        if not full.startswith(top + os.sep):
+            return f"{adapter_path} is not in the repo: no base copy to compare its [parser] with"
+        rel = os.path.relpath(full, top).replace(os.sep, "/")
+    else:  # a repo path, as r0 --stack <repo stack> (#17) and the editing rules give it: the file read is the one proven
+        full, rel = adapter_path, adapter_path.replace(os.sep, "/")
     try:
         with open(full, "rb") as f:
             head = _toml(f.read())
