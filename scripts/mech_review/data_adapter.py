@@ -289,7 +289,14 @@ class ParserAdapter(DataAdapter):
         if parser["skipped_text"]:
             self.tests = {"skipped_text": parser["skipped_text"]}
         self.path = "input" + self.extensions[0]
+        self.roots = ()  # checkout dirs no command word may point into (in_checkout)
         self._facts_cache = collections.OrderedDict()
+
+    def in_checkout(self, *roots):
+        """the adapter for a review of the checkouts at roots: a command word inside one is refused (parser_cmd.run)."""
+        bound = copy.copy(self)
+        bound.roots = tuple(roots)
+        return bound
 
     def at(self, path):
         bound = copy.copy(self)  # shares the facts cache
@@ -297,13 +304,13 @@ class ParserAdapter(DataAdapter):
         return bound
 
     def facts(self, text):
-        key = (self.path, text)
+        key = (self.path, text, self.roots)  # the roots too: a word inside them is refused, never served from cache
         cache = self._facts_cache
         if key in cache:
             cache.move_to_end(key)
             return cache[key]
         try:
-            got = parser_cmd.run(self.parser["command"], self.path, text, self.parser["timeout"])
+            got = parser_cmd.run(self.parser["command"], self.path, text, self.parser["timeout"], self.roots)
         except parser_cmd.ParserError as e:
             raise parser_cmd.ParserError(f"parser `{self.parser['command'][0]}` on {self.path}: {e}") from None
         cache[key] = got

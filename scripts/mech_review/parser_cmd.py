@@ -39,9 +39,15 @@ class ParserError(Exception):
     """the parser command failed on one file: it cannot run, exited non-zero, timed out, or printed invalid facts."""
 
 
-def run(argv, path, text, timeout):
+def run(argv, path, text, timeout, roots=()):
     """the facts (validated, see the module docstring) the command argv prints for the file at path whose text is text.
-    ParserError names what went wrong."""
+    roots: the checkout dirs (the reviewed repo, the engine's worktrees): a word of argv that is a path inside one (or a
+    `--flag=<path>` word whose value is) is refused before anything runs, since it would run the PR's code or read its
+    config. ParserError names what went wrong."""
+    for w in argv:
+        for p in {w, w.partition("=")[2]}:
+            if os.path.isabs(p) and _inside(p, roots):
+                raise ParserError(f"`{w}` is inside the checkout: the parser runs no code or config from the PR")
     with tempfile.TemporaryDirectory(prefix="ekit-parser-") as tmp:
         work = os.path.join(tmp, "cwd")
         os.mkdir(work)
@@ -72,6 +78,11 @@ def run(argv, path, text, timeout):
             fout.seek(0)
             out = fout.read()
     return check(out, text)
+
+
+def _inside(p, roots):
+    full = os.path.realpath(p)
+    return any(full == r or full.startswith(r.rstrip(os.sep) + os.sep) for r in (os.path.realpath(x) for x in roots))
 
 
 def _kill(proc):

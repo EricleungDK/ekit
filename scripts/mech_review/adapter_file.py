@@ -3,6 +3,7 @@
 Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileError that names the field
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
+import os
 import shlex
 import string
 
@@ -345,6 +346,10 @@ def _parser(data):
     if "/" in argv[0] and not argv[0].startswith("/"):
         _err(f + ".command", f"`{argv[0]}`: want a program on PATH or an absolute path: a relative path would run a "
                              f"file from the checkout")
+    if os.path.basename(argv[0]) == "env":  # env's own words could set PATH or split a string into a new command
+        prog = next((i for i, w in enumerate(argv[1:], 1) if not (w.startswith("-") or "=" in w)), len(argv))
+        if prog > 1:
+            _err(f + ".command", f"`env` with `{argv[1]}`: want the program itself (no assignment or option for env)")
     version = _str(d["version"], f + ".version")
     if (version.lower() in UNPINNED or not any(ch.isdigit() for ch in version)
             or not all(ch.isalnum() or ch in "._+-" for ch in version)):

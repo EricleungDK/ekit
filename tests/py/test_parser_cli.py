@@ -346,6 +346,24 @@ class ParserR2(unittest.TestCase):
             runs = sorted((json.loads(ln)["argv"][-1], json.loads(ln)["stdin"] == BASE) for ln in f)
         self.assertEqual(runs, [("tests/calc.mini", True), ("tests/sums.mini", False)])
 
+    def test_a_command_word_inside_the_checkout_is_refused_before_it_runs(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        inside = os.path.join(self.repo.path, "tools", "facts.py")
+        os.makedirs(os.path.dirname(inside))
+        with open(STUB) as f, open(inside, "w") as out:
+            out.write(f.read().replace("os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(",
+                                       repr(_kit.ROOT) + "  # (").replace("os.path.abspath(__file__)))))", ""))
+        for cmd in (f"{sys.executable} -I {inside} --record {record}",
+                    f"{sys.executable} -I {STUB} --record {record} --table={os.path.join(self.repo.path, 'x.toml')}"):
+            with self.subTest(cmd=cmd):
+                path = os.path.join(self.tmp, "inside.toml")
+                with open(path, "w") as f:
+                    f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines()
+                                                       if ln.startswith("command = ")), f"command = {json.dumps(cmd)}"))
+                _, problem = self.failed(path)
+                self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
+                self.assertFalse(os.path.exists(record), "the command ran")
+
 class ParserTable(unittest.TestCase):
     """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
 
@@ -375,6 +393,10 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "facts \'unbalanced"'), "parser.command: `facts 'unbalanced`: No closing quotation"),
             (base.replace(cmd, 'command = "tools/facts --json"'), "parser.command: `tools/facts`: want a program on PATH"),
             (base.replace(cmd, 'command = "./facts"'), "parser.command: `./facts`: want a program on PATH"),
+            (base.replace(cmd, 'command = "env PATH=/w/bin facts"'),
+             "parser.command: `env` with `PATH=/w/bin`: want the program itself (no assignment or option for env)"),
+            (base.replace(cmd, 'command = "/usr/bin/env -S facts"'),
+             "parser.command: `env` with `-S`: want the program itself (no assignment or option for env)"),
             (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
@@ -406,6 +428,8 @@ class ParserTable(unittest.TestCase):
         for text, want in cases:
             with self.subTest(want=want):
                 self.assertIn(want, self.error(text))
+        self.assertEqual(self.load(base.replace(cmd, 'command = "/usr/bin/env facts --x=1"')).parser["command"],
+                         ["/usr/bin/env", "facts", "--x=1"])
         for ok in ("pip install x==1.0.0", "npm install -g x@1.0.0", "cargo install x@1.0.0", "gem install x -v 1.0.0",
                    "cargo install x --version 1.0.0", "go install example.com/x@1.0.0", "gem install x --version=1.0.0"):
             with self.subTest(ok=ok):

@@ -27,6 +27,8 @@ def r2(rv, protected_globs):
     An adapter file's parser command that fails (ParserError, #27) makes every file's entries one blocking CI entry,
     never a fallback; the path rules stay."""
     repo, mb, head, adapter, test_globs, _ = rv
+    if hasattr(adapter, "in_checkout"):  # a parser-backed adapter (#27): no command word may point into the repo
+        adapter = adapter.in_checkout(repo)
     entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
     for ch in changes(repo, mb, head):
