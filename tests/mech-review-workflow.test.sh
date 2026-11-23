@@ -377,6 +377,10 @@ check("guard: the R0 result rides in the guard's artifact beside R2's, uploaded 
 check("report: always names the R0 result, so a missing one fails R0 with a CI entry (#20)",
       "--envelope r0=r2-result/mech-review-r0.json" in text(report), text(report))
 check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
+for step_name in ("R2 guard", "R0 static half (adapter proof)"):  # #17: the plan entry for the stack's own folder
+    gs = text(step(block(jobs, "guard") or [], step_name))
+    check(f"guard: {step_name} gets the stack job's project-dir through env",
+          "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in gs and '--project-dir "$PROJECT_DIR"' in gs, gs)
 
 
 def stack_outputs(result):

@@ -81,7 +81,7 @@ resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D
   stack. Exit 0, 1 when no single project or no planned stack to run (error names them), 2 usage or git.
   r2 and r0 --stack NAME with no --adapter use the repo's adapter file for NAME at --base, when there is one.
 
-r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .] [--test-paths G]`): R0's static half
+r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .] [--test-paths G] [--project-dir D]`): R0's static half
   for the built-in stack or the adapter file (the PR's version: the file as checked out), with its fixtures (the
   built-in's, `<adapter>.r0/` beside an adapter file, or --fixtures). Exit 0 pass or unproven, 1 a fail entry, 2 usage.
 
@@ -525,6 +525,8 @@ def _r0(argv):
     p.add_argument("--fixtures", metavar="DIR", help="the fixture dir (default: the built-in's, or `<adapter>.r0/` beside "
                                                      "the adapter file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
+    p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
+                   help="the stack's dir (default .): the plan entry whose adapter file r0 proves (#17)")
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
     args = p.parse_args(argv)
     adapter = None
@@ -535,7 +537,8 @@ def _r0(argv):
             return 2
     else:
         try:  # #17: the repo's adapter file for this stack at the base, as r2 takes it
-            found, path = stack_plan.repo_adapter_at(args.repo, gitio.resolve(args.repo, args.base), args.stack)
+            found, path = stack_plan.repo_adapter_at(args.repo, gitio.resolve(args.repo, args.base), args.stack,
+                                                     args.project_dir)
         except (gitio.Die, adapter_file.AdapterFileError) as e:
             print(f"mech-review: {e}", file=sys.stderr)
             return 2

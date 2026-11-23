@@ -186,11 +186,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STACK: ${{ needs.stack.outputs.stack }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
           PROTECTED_PATHS: ${{ inputs.protected-paths }}
         run: |
           set -uo pipefail
-          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
+          # the project dir picks the plan entry whose adapter file judges (#17)
+          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR")
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
@@ -211,10 +213,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STACK: ${{ needs.stack.outputs.stack }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -uo pipefail
-          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
+          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR")
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"

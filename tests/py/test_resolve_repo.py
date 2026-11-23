@@ -514,5 +514,47 @@ class R0OnARepoAdapter(unittest.TestCase):
         self.assertIn("argument --stack: invalid choice: 'gradle'", r.stderr)
 
 
+class PlanEntryInAFolder(unittest.TestCase):
+    """Review round 3: r2 and r0 find the plan entry's adapter file for the stack and the project dir the stack job
+    settled (--project-dir), not only for an entry in `.`."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+
+    def commit_plan(self, folder, name, path):
+        files = {f"{folder}/mini.json": "{}", "tests/calc.mini": CALC, path: mini().replace('name = "mini"', f'name = "{name}"'),
+                 PLAN: plan((folder, folder, path, "current"))}
+        if name == "ts":
+            files[path] = adapter("ts", ["mini.json"])
+        return self.repo.commit(files)
+
+    def check(self, base, head, check, stack, folder):
+        return _kit.run_cli([check, "--repo", self.repo.path, "--base", base, "--head", head, "--stack", stack,
+                             "--project-dir", folder, "--test-paths", "tests/**"])
+
+    def test_a_stack_only_the_plan_defines_in_a_folder(self):
+        base = self.commit_plan("api", "mini", ".ekit/stacks/mini.toml")
+        head = self.repo.commit({"tests/calc.mini": NO_SUB})
+        r, got = resolve(self.repo, base, head)
+        self.assertEqual((got["stack"], got["project_dir"]), ("mini", "api"), r.stderr)
+        r = self.check(base, head, "r2", "mini", "api")
+        self.assertEqual((r.returncode, problems(r)), (1, [REMOVED]), r.stderr)
+        r = self.check(base, head, "r0", "mini", "api")
+        env = json.loads(r.stdout) if r.stdout else None
+        self.assertEqual((r.returncode, env and env["checks"]["R0"]["adapter"]), (0, "mini"), r.stderr)
+        self.assertTrue(env["checks"]["R0"]["cases"][-1]["got"].startswith("adapter file .ekit/stacks/mini.toml ("))
+
+    def test_a_planned_file_named_like_a_built_in_in_a_folder_is_used(self):
+        # S1: the adapter the plan names, not the built-in ts
+        base = self.commit_plan("web", "ts", ".ekit/stacks/ts.toml")
+        head = self.repo.commit({"tests/calc.mini": NO_SUB})
+        r = self.check(base, head, "r2", "ts", "web")
+        self.assertEqual((r.returncode, problems(r)), (1, [REMOVED]), r.stderr)
+        r = self.check(base, head, "r0", "ts", "web")
+        env = json.loads(r.stdout) if r.stdout else None
+        self.assertTrue(env and env["checks"]["R0"]["cases"][-1]["got"].startswith("adapter file .ekit/stacks/ts.toml ("),
+                        r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
