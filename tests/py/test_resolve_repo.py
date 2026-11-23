@@ -4,6 +4,8 @@ detection over the built-ins and the repo's adapter files (`.ekit/adapters/<name
 in place of it). Both are read at the PR's base, so a PR cannot change which adapter judges it. Every call goes through
 cli.main in this process (_kit.run_cli)."""
 import json
+import os
+import tempfile
 import unittest
 
 import _kit
@@ -380,19 +382,99 @@ class RunSideNotBuilt(unittest.TestCase):
         r, env = self.cli("plan")
         self.assertEqual((r.returncode, env), (0, {"run": True}), r.stderr)
 
-    def test_a_repo_file_named_like_a_built_in_is_not_run_as_the_built_in(self):
-        base = self.repo.commit({".ekit/adapters/ts.toml": adapter("ts", ["package.json"])})
-        self.base, self.head = base, self.repo.commit({"src/calc.mini": "fn add(a, b) { a * b }\n"})
-        r, env = self.cli("red", "ts")
-        self.assertEqual((r.returncode, env["checks"]["R1"]["status"]), (0, "n/a"), r.stderr)
-        self.assertEqual(env["checks"]["R1"]["note"], NOT_BUILT.format("R1").replace("`mini`", "`ts`"))
-
     def test_the_plans_adapter_file_is_not_run_either(self):
         base = self.repo.commit({"lib/mini.json": "{}", "build/m.toml": mini(), ".ekit/adapters/mini.toml": None,
                                  PLAN: plan(("lib", "lib", "build/m.toml", "current"))})
         self.base, self.head = base, self.repo.commit({"src/calc.mini": "fn add(a, b) { b }\n"})
         r, env = self.cli("red", "mini", "--project-dir", "lib")
         self.assertEqual((r.returncode, env["checks"]["R1"]["status"]), (0, "n/a"), r.stderr)
+
+
+class OverrideKeepsTheBuiltInRunSide(unittest.TestCase):
+    """Review round 2, B (orchestrator's decision): until adapter files have a run side (#18, #19), a repo adapter named
+    like a built-in (.ekit/adapters/ts.toml) judges R2 and resolution only; red, mutants, baseline and plan run the
+    built-in, with the same verdict as with no override, so adding the file turns no check off."""
+
+    def pr(self, override):
+        repo = Repo(self)
+        files = {"package.json": "{}", "src/x.ts": "export const a = 1\n",
+                 "tests/a.test.ts": 'it("x", () => { expect(1).toBe(1) })\n'}
+        if override:
+            files[".ekit/adapters/ts.toml"] = adapter("ts", ["package.json"])
+        base = repo.commit(files)
+        return repo, base, repo.commit({"src/x.ts": "export const a = 2\n"})
+
+    def run_check(self, check, override):
+        repo, base, head = self.pr(override)
+        r = _kit.run_cli([check, "--repo", repo.path, "--base", base, "--head", head, "--stack", "ts",
+                          "--test-paths", "tests/**"])
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        env = json.loads(r.stdout)
+        return {k: env[k] for k in ("checks", "run", "count") if k in env}
+
+    def test_red_runs_the_built_in(self):
+        got = self.run_check("red", True)
+        self.assertEqual(got["checks"]["R4"], {"status": "pass", "note": "0 new or changed tests"})
+        self.assertEqual(got, self.run_check("red", False))
+
+    def test_baseline_and_plan_run_the_built_in(self):
+        got = self.run_check("baseline", True)
+        self.assertEqual((got["run"], got["count"], got["checks"]["R3"]["note"]),
+                         (True, 1, "1 changed production file(s) in 1 shard(s)"))
+        self.assertEqual(got, self.run_check("baseline", False))
+        repo, base, head = self.pr(True)
+        r = _kit.run_cli(["plan", "--repo", repo.path, "--base", base, "--head", head, "--stack", "ts",
+                          "--test-paths", "tests/**"])
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"run": True}), r.stderr)
+
+    def test_all_runs_r2_through_the_file_and_r1_r4_on_the_built_in(self):
+        # the file is the mini language under the name ts: R2 reads .mini files (the built-in ts reads none), R1 and R4
+        # are the built-in's, as with no override
+        def run(override):
+            repo = Repo(self)
+            files = {"package.json": "{}", "tests/calc.mini": CALC, "tests/a.test.ts": 'it("x", () => { expect(1).toBe(1) })\n'}
+            if override:
+                files[".ekit/adapters/ts.toml"] = adapter("ts", ["package.json"])
+            base = repo.commit(files)
+            head = repo.commit({"tests/calc.mini": NO_SUB, "tests/a.test.ts": 'it("x", () => { expect(2).toBe(2) })\n'})
+            r = _kit.run_cli(["all", "--repo", repo.path, "--base", base, "--head", head, "--stack", "ts",
+                              "--test-paths", "tests/**"])
+            return r, json.loads(r.stdout)
+        r, env = run(True)
+        self.assertEqual((r.returncode, env["checks"]["R2"]["status"], [e["problem"] for e in env["entries"] if e["check"] == "R2"]),
+                         (1, "fail", [REMOVED]), r.stderr)
+        _, plain = run(False)
+        self.assertEqual(plain["checks"]["R2"]["status"], "pass")
+        self.assertEqual({c: env["checks"][c] for c in ("R1", "R3", "R4")}, {c: plain["checks"][c] for c in ("R1", "R3", "R4")})
+
+
+class MergeOnARepoStack(unittest.TestCase):
+    """Review round 2, A: the report job's merge (no checkout there) takes a repo-only stack name, and carries the
+    baseline's R3 n/a through."""
+
+    def test_the_baselines_n_a_is_the_merged_r3(self):
+        repo = Repo(self)
+        base = repo.commit({"tests/calc.mini": CALC, "src/calc.mini": "fn add(a, b) { a + b }\n",
+                            ".ekit/adapters/mini.toml": mini()})
+        head = repo.commit({"src/calc.mini": "fn add(a, b) { a - b }\n"})
+        r = _kit.run_cli(["baseline", "--repo", repo.path, "--base", base, "--head", head, "--stack", "mini",
+                          "--test-paths", "tests/**"])
+        path = os.path.join(repo.path, "..", os.path.basename(repo.path) + "-baseline.json")
+        with open(path, "w") as f:
+            f.write(r.stdout)
+        self.addCleanup(os.remove, path)
+        nowhere = tempfile.TemporaryDirectory()  # the report job has no checkout: full SHAs, no repo
+        self.addCleanup(nowhere.cleanup)
+        r = _kit.run_cli(["merge", "--repo", nowhere.name, "--base", base, "--head", head, "--stack", "mini",
+                          "--shards", "0", "--baseline", path])
+        env = json.loads(r.stdout) if r.stdout else None
+        self.assertEqual((r.returncode, env and env["checks"]["R3"], env and env["entries"]),
+                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, []), r.stderr)
+
+    def test_a_name_that_is_no_stack_name_is_still_a_usage_error(self):
+        r = _kit.run_cli(["merge", "--base", "a" * 40, "--head", "b" * 40, "--stack", "a.b", "--shards", "0"])
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("argument --stack: invalid choice: 'a.b'", r.stderr)
 
 
 if __name__ == "__main__":
