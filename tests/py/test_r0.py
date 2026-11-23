@@ -542,6 +542,10 @@ class LimitsTable(unittest.TestCase):
         self.assertEqual(a.limits, {"max-mutants": 20, "mutation-budget": 5, "assert-density": 10, "census": 100})
         self.assertEqual(self.load("").limits, {})
 
+    def test_a_limit_at_its_lower_bound_loads(self):
+        self.assertEqual(self.load("max-mutants = 1\nmutation-budget = 1\ncensus = 0\nassert-density = 0\n").limits,
+                         {"max-mutants": 1, "mutation-budget": 1, "census": 0, "assert-density": 0})
+
     def test_a_bad_value_or_key_is_a_load_error_naming_it(self):
         from scripts.mech_review import adapter_file
         for table, want in [('max-mutants = "60"\n', "limits.max-mutants: want a whole number >= 1"),
@@ -552,6 +556,32 @@ class LimitsTable(unittest.TestCase):
                 with self.assertRaises(adapter_file.AdapterFileError) as e:
                     self.load(table)
                 self.assertIn(want, str(e.exception))
+
+
+class R0Output(unittest.TestCase):
+    """the r0 subcommand's usage error and its two output formats, as a caller reads them."""
+
+    def test_an_unknown_stack_is_a_usage_error_naming_the_choices(self):
+        repo, base = tmp_repo(self)
+        r = r0(repo, base, base, "--stack", "go")
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("argument --stack: invalid choice: 'go' (choose from 'python', 'rust', 'ts')", r.stderr)
+
+    def test_json_is_indented_by_two_like_the_other_subcommands(self):
+        repo, base = tmp_repo(self)
+        r = r0(repo, base, base, "--stack", "python")
+        self.assertTrue(r.stdout.startswith('{\n  "ekit": '), r.stdout[:40])
+        self.assertIn('\n    "R0": {\n      "status": "pass",', r.stdout)
+
+    def test_text_prints_the_summary_and_each_entry(self):
+        repo, base = tmp_repo(self)
+        r = r0(repo, base, base, "--stack", "python", "--fixtures", broken_python_fixtures(self), "--format", "text")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], f"fail {base} (1 fail, 0 confirm; ran: R0; skipped: R1 R2 R3 R4)")
+        self.assertTrue(lines[1].startswith("fail R0-"), lines[1])
+        self.assertIn(":0 R0 static half failed for the `python` adapter: cheat `skip` gave no", lines[1])
+        self.assertTrue(lines[2].startswith("  hint: repair the adapter"), lines[2])
 
 
 if __name__ == "__main__":
