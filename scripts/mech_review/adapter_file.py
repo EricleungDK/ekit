@@ -4,9 +4,11 @@ Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileErro
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
 import os
+import re
 import shlex
 import string
 
+from . import parser_cmd
 from .data_adapter import DataAdapter, ParserAdapter
 from .scan import Lexer, ShapeError
 
@@ -315,28 +317,11 @@ def target_os(v, field="target-os"):
 # [parser] (#27): one command in place of the patterns. These tables describe source as patterns: not with [parser]
 PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
 PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
-UNPINNED = ("latest", "*", "x")
-RANGE_OPS = ("<", ">", "~", "^", "*", "!=")  # in any word of parser.install: a range, never a pin
-VERSION_FLAGS = ("-v", "--version")
-PIN_FORMS = "a word ending in `==<version>` or `@<version>`, `--version=<version>`, or `-v`/`--version` then the version"
-
-
-def _pins(words, version):
-    """the install words pin version exactly, in one of PIN_FORMS."""
-    for i, w in enumerate(words):
-        if w == "--version=" + version or any(w.endswith(sep + version) and len(w) > len(sep + version)
-                                               for sep in ("==", "@")):  # a name before the pin
-            return True
-        if w == version and i and words[i - 1] in VERSION_FLAGS:
-            return True
-    return False
-
-
 def _parser(data):
-    """the [parser] table, validated: {command: argv, install, version, timeout, skipped_text}."""
+    """the [parser] table, validated: {command: argv, installer, package, version, timeout, skipped_text}."""
     f = "parser"
-    d = _table(data["parser"], f, ("command", "install", "version", "timeout", "skipped_text"),
-               ("command", "install", "version"))
+    d = _table(data["parser"], f, ("command", "installer", "package", "version", "timeout", "skipped_text"),
+               ("command", "installer", "package", "version"))
     for t in PATTERN_TABLES:
         if t in data:
             _err(t, "not with [parser]: the parser command gives the facts, a file declares no patterns beside it")
@@ -350,17 +335,17 @@ def _parser(data):
         prog = next((i for i, w in enumerate(argv[1:], 1) if not (w.startswith("-") or "=" in w)), len(argv))
         if prog > 1:
             _err(f + ".command", f"`env` with `{argv[1]}`: want the program itself (no assignment or option for env)")
+    installer = _str(d["installer"], f + ".installer")
+    if installer not in parser_cmd.INSTALLERS:
+        _err(f + ".installer", f"`{installer}`: want " + ", ".join(list(parser_cmd.INSTALLERS)[:-1]) + " or go")
+    name_re, version_re, _ = parser_cmd.INSTALLERS[installer]
+    package = _str(d["package"], f + ".package")
+    if not re.fullmatch(name_re, package):
+        _err(f + ".package", f"`{package}`: want a {installer} package name (no URL, space, option or version)")
     version = _str(d["version"], f + ".version")
-    if (version.lower() in UNPINNED or not any(ch.isdigit() for ch in version)
-            or not all(ch.isalnum() or ch in "._+-" for ch in version)):
-        _err(f + ".version", f"`{version}`: want one pinned version, such as \"1.4.2\" (no range, no `latest`)")
-    install = _argv(d["install"], f + ".install")
-    for w in install:
-        op = next((o for o in RANGE_OPS if o in w), None)
-        if op:
-            _err(f + ".install", f"`{w}` holds `{op}`: a range, not a pin (want {PIN_FORMS})")
-    if not _pins(install, version):
-        _err(f + ".install", f"does not pin version `{version}`: want {PIN_FORMS}")
+    if not re.fullmatch(version_re, version):
+        _err(f + ".version", f"`{version}`: want one pinned version for {installer}, such as \"1.4.2\" (no range, "
+                             f"no `latest`)")
     lo, hi, timeout = PARSER_TIMEOUT
     if "timeout" in d:
         timeout = d["timeout"]
@@ -368,7 +353,7 @@ def _parser(data):
             _err(f + ".timeout", f"want a whole number of seconds from {lo} to {hi}")
     if "skipped_text" in d:
         _template(d["skipped_text"], f + ".skipped_text", "name")
-    return {"command": argv, "install": install, "version": version, "timeout": timeout,
+    return {"command": argv, "installer": installer, "package": package, "version": version, "timeout": timeout,
             "skipped_text": d.get("skipped_text")}
 
 

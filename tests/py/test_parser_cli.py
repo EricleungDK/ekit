@@ -13,7 +13,7 @@ import time
 import unittest
 
 import _kit
-from scripts.mech_review import adapter_file
+from scripts.mech_review import adapter_file, parser_cmd
 from test_adapter_cli import BASE, MINI, Repo, r2
 from test_r0 import FUNCTIONS
 
@@ -26,7 +26,7 @@ def parser_toml(opts="", extra=""):
     """the parser-backed twin of mini.toml: same name, manifest and extensions, the stub as its command."""
     cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB] + shlex.split(opts))
     return (f'format = 1\nname = "mini"\nmanifests = ["mini.json"]\nextensions = [".mini"]\n\n[parser]\n'
-            f'command = {json.dumps(cmd)}\ninstall = "pip install mini-facts==1.0.0"\nversion = "1.0.0"\n'
+            f'command = {json.dumps(cmd)}\ninstaller = "pip"\npackage = "mini-facts"\nversion = "1.0.0"\n'
             f'skipped_text = "test `{{name}}` marked xtest"\n{extra}')
 
 
@@ -315,6 +315,21 @@ class ParserR2(unittest.TestCase):
         self.assertIn(f"[parser] of {self.ADAPTER} differs from the base branch's", problem)
         self.assertFalse(os.path.exists(record), "R0 ran the PR's parser command")
 
+    def test_r0_holds_a_parser_whose_installer_package_or_version_alone_changed(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        base_file = self.adapter("--record " + shlex.quote(record))
+        with open(base_file) as f:
+            text = f.read()
+        for old, new in (('installer = "pip"', 'installer = "gem"'), ('package = "mini-facts"', 'package = "other"'),
+                         ('version = "1.0.0"', 'version = "1.0.1"')):
+            with self.subTest(new=new):
+                head_file = os.path.join(self.tmp, "head.toml")
+                with open(head_file, "w") as f:
+                    f.write(text.replace(old, new))
+                path, base, head = self.in_repo(base_file, head_file)
+                self.assertIn("differs from the base branch's", self.held(*self.r0(path, base, head)))
+                self.assertFalse(os.path.exists(record), "R0 ran a parser whose install changed")
+
     def test_r0_never_runs_a_parser_with_no_base_copy(self):
         record = os.path.join(self.tmp, "record.jsonl")
         problem = self.held(*self.r0(self.adapter("--record " + shlex.quote(record))))  # outside the repo
@@ -476,7 +491,10 @@ class ParserTable(unittest.TestCase):
 
     def test_each_bad_parser_value_is_an_error_naming_the_field(self):
         base = parser_toml()
-        inst = lambda cmd: base.replace('install = "pip install mini-facts==1.0.0"', f"install = {json.dumps(cmd)}")
+        inst = lambda installer, package, version: (
+            base.replace('installer = "pip"', f"installer = {json.dumps(installer)}")
+            .replace('package = "mini-facts"', f"package = {json.dumps(package)}")
+            .replace('version = "1.0.0"', f"version = {json.dumps(version)}"))
         cmd = next(ln for ln in base.splitlines() if ln.startswith("command = "))
         cases = [
             (base.replace(cmd, 'command = "   "'), "parser.command: want a command, not only whitespace"),
@@ -492,19 +510,35 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
-            (base.replace('version = "1.0.0"', 'version = "1.0.1"'), "parser.install: does not pin version `1.0.1`"),
-            # review round 1: the pin is an exact word of a pinned form, and no range operator anywhere
-            (inst('pip install x==11.0.0'), "parser.install: does not pin version `1.0.0`"),
-            (inst('pip install x>=1.0.0'), "parser.install: `x>=1.0.0` holds `>`: a range, not a pin"),
-            (inst('pip install x~=1.0.0'), "parser.install: `x~=1.0.0` holds `~`: a range, not a pin"),
-            (inst('npm i -g x@^1.0.0'), "parser.install: `x@^1.0.0` holds `^`: a range, not a pin"),
-            (inst('pip install x==1.0.0 y<2'), "parser.install: `y<2` holds `<`: a range, not a pin"),
-            (inst('pip install "x==1.0.*"'), "parser.install: `x==1.0.*` holds `*`: a range, not a pin"),
-            (inst('echo 1.0.0'), "parser.install: does not pin version `1.0.0`"),
-            (inst('pip install x==1.0.0.post1'), "parser.install: does not pin version `1.0.0`"),
-            (inst('gem install x -v1.0.0'), "parser.install: does not pin version `1.0.0`"),
+            # review round 2: the install step is built by the core from installer, package and version
+            (base + 'install = "pip install mini-facts==1.0.0"\n', "parser.install: unknown key"),
+            (base.replace('installer = "pip"\n', ""), "parser.installer: missing"),
+            (base.replace('package = "mini-facts"\n', ""), "parser.package: missing"),
             (base.replace('version = "1.0.0"\n', ""), "parser.version: missing"),
-            (base.replace('install = "pip install mini-facts==1.0.0"\n', ""), "parser.install: missing"),
+            (inst("brew", "x", "1.0.0"), "parser.installer: `brew`: want pip, npm, cargo, gem or go"),
+            (inst("pip", "git+https://h/x", "1.0.0"), "parser.package: `git+https://h/x`: want a pip package name"),
+            (inst("pip", "x y", "1.0.0"), "parser.package: `x y`: want a pip package name"),
+            (inst("pip", "x==1.0", "1.0.0"), "parser.package: `x==1.0`: want a pip package name"),
+            (inst("pip", "x;python_version<'3'", "1.0.0"), "parser.package: `x;python_version<'3'`: want a pip"),
+            (inst("pip", "--index-url=https://evil/simple", "1.0.0"), "parser.package: `--index-url=https://evil/simple`"),
+            (inst("pip", "", "1.0.0"), "parser.package: want a non-empty string"),
+            (inst("npm", "x@latest", "1.0.0"), "parser.package: `x@latest`: want a npm package name"),
+            (inst("npm", "@scope", "1.0.0"), "parser.package: `@scope`: want a npm package name"),
+            (inst("npm", "Upper", "1.0.0"), "parser.package: `Upper`: want a npm package name"),
+            (inst("cargo", "1x", "1.0.0"), "parser.package: `1x`: want a cargo package name"),
+            (inst("gem", "x/y", "1.0.0"), "parser.package: `x/y`: want a gem package name"),
+            (inst("go", "x", "v1.0.0"), "parser.package: `x`: want a go package name"),
+            (inst("go", "example.com/../x", "v1.0.0"), "parser.package: `example.com/../x`: want a go package name"),
+            (inst("go", "example.com/x@v1", "v1.0.0"), "parser.package: `example.com/x@v1`: want a go package name"),
+            (inst("pip", "x", "1.0.*"), "parser.version: `1.0.*`: want one pinned version for pip"),
+            (inst("pip", "x", "~=1.0"), "parser.version: `~=1.0`: want one pinned version for pip"),
+            (inst("pip", "x", "1.0;x"), "parser.version: `1.0;x`: want one pinned version for pip"),
+            (inst("npm", "x", "1.0"), "parser.version: `1.0`: want one pinned version for npm"),
+            (inst("npm", "x", "^1.0.0"), "parser.version: `^1.0.0`: want one pinned version for npm"),
+            (inst("cargo", "x", "1.0.0 2.0.0"), "parser.version: `1.0.0 2.0.0`: want one pinned version for cargo"),
+            (inst("gem", "x", ">= 1.0"), "parser.version: `>= 1.0`: want one pinned version for gem"),
+            (inst("go", "example.com/x", "latest"), "parser.version: `latest`: want one pinned version for go"),
+            (inst("go", "example.com/x", "v1.0"), "parser.version: `v1.0`: want one pinned version for go"),
             (base + "timeout = 0\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
             (base + "timeout = 601\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
             (base + "timeout = true\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
@@ -522,10 +556,18 @@ class ParserTable(unittest.TestCase):
                 self.assertIn(want, self.error(text))
         self.assertEqual(self.load(base.replace(cmd, 'command = "/usr/bin/env facts --x=1"')).parser["command"],
                          ["/usr/bin/env", "facts", "--x=1"])
-        for ok in ("pip install x==1.0.0", "npm install -g x@1.0.0", "cargo install x@1.0.0", "gem install x -v 1.0.0",
-                   "cargo install x --version 1.0.0", "go install example.com/x@1.0.0", "gem install x --version=1.0.0"):
-            with self.subTest(ok=ok):
-                self.assertEqual(self.load(inst(ok)).parser["version"], "1.0.0")
+        for (installer, package, version), argv in (
+                (("pip", "mini-facts", "1.0.0"), ["python3", "-m", "pip", "install", "--no-deps", "mini-facts==1.0.0"]),
+                (("pip", "x", "2.1rc1.post3"), ["python3", "-m", "pip", "install", "--no-deps", "x==2.1rc1.post3"]),
+                (("npm", "@ekit/facts", "1.0.0-beta.1"),
+                 ["npm", "install", "--no-save", "--prefix", "/opt/p", "@ekit/facts@1.0.0-beta.1"]),
+                (("cargo", "rs-facts", "0.3.1"), ["cargo", "install", "rs-facts", "--version", "0.3.1", "--locked"]),
+                (("gem", "rb_test-facts", "1.4.2.pre"), ["gem", "install", "rb_test-facts", "-v", "1.4.2.pre"]),
+                (("go", "example.com/x/cmd/facts", "1.0.0"), ["go", "install", "example.com/x/cmd/facts@v1.0.0"]),
+                (("go", "example.com/x/cmd/facts", "v1.0.0"), ["go", "install", "example.com/x/cmd/facts@v1.0.0"])):
+            with self.subTest(installer=installer, package=package):
+                parser = self.load(inst(installer, package, version)).parser
+                self.assertEqual(parser_cmd.install_argv(parser, "/opt/p"), argv)
         self.assertEqual(self.load(base + '\n[mutation]\nconfig_files = ["m.toml"]\nconfig_name = "m"\n')
                          .mutation_config("x/m.toml", None), "m")
 

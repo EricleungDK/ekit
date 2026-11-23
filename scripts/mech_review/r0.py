@@ -339,7 +339,7 @@ def _at(adapter, path):
 
 
 def parser_hold(repo, mb, adapter, adapter_path):
-    """None when R0 may run the adapter's parser command (#27): its [parser] command, install and version equal those
+    """None when R0 may run the adapter's parser command (#27): its [parser] command, installer, package and version equal those
     of the same file on the base branch (mb). Else why not: R0 never runs a parser command a PR wrote or changed. A
     pattern adapter (no parser) is None."""
     if getattr(adapter, "parser", None) is None:
@@ -358,11 +358,11 @@ def parser_hold(repo, mb, adapter, adapter_path):
     if not isinstance(bp, dict):
         return f"{rel} has no [parser] on the base branch"
     if any(bp.get(k) != (hp or {}).get(k) for k in PARSER_KEYS):
-        return f"[parser] of {rel} differs from the base branch's (command, install or version)"
+        return f"[parser] of {rel} differs from the base branch's (command, installer, package or version)"
     return None
 
 
-PARSER_KEYS = ("command", "install", "version")
+PARSER_KEYS = ("command", "installer", "package", "version")
 
 
 def _held(adapter, adapter_raw, where, why):

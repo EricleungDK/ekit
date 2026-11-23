@@ -22,6 +22,7 @@ secret) and a timeout. A command that cannot run, exits non-zero, times out, or 
 ParserError: R2 turns it into one blocking CI entry. Nothing falls back to patterns."""
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -33,6 +34,31 @@ MAX_TEXT = 65536  # characters per string
 MARKERS = ("ignore", "only", "should_panic")
 KINDS = ("eq", "ne", "other")
 TOP = ("format", "parse_error", "tests", "asserts", "suppressions", "mutation_skips")
+
+
+SEMVER = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
+# installer: (package name, exact version, the install argv from package, version and an install dir). A closed set:
+# the core builds the install step (#27), so an adapter file names a package and a version, never a command. A version
+# is one release, never a range; each name pattern leaves out URLs, spaces, options and version syntax.
+INSTALLERS = {
+    "pip": (r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
+            r"\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?",
+            lambda p, v, d: ["python3", "-m", "pip", "install", "--no-deps", f"{p}=={v}"]),
+    "npm": (r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*", SEMVER,
+            lambda p, v, d: ["npm", "install", "--no-save", "--prefix", d, f"{p}@{v}"]),
+    "cargo": (r"[A-Za-z][A-Za-z0-9_-]{0,63}", SEMVER,
+              lambda p, v, d: ["cargo", "install", p, "--version", v, "--locked"]),
+    "gem": (r"[A-Za-z0-9][A-Za-z0-9._-]*", r"\d+(?:\.[0-9A-Za-z]+)*",
+            lambda p, v, d: ["gem", "install", p, "-v", v]),
+    "go": (r"[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+(?:/(?!\.\.?(?:/|$))[A-Za-z0-9._~-]+)+", "v?" + SEMVER,
+           lambda p, v, d: ["go", "install", f"{p}@v{v.removeprefix('v')}"]),
+}
+
+
+def install_argv(parser, prefix):
+    """the argv that installs the parser at its pinned version (#17's workflow step runs it): parser is the [parser]
+    table as adapter_file validated it; prefix: the install dir (npm installs there; the others use their own)."""
+    return INSTALLERS[parser["installer"]][2](parser["package"], parser["version"], prefix)
 
 
 class ParserError(Exception):
