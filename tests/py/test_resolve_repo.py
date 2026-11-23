@@ -36,6 +36,13 @@ class FromThePlan(unittest.TestCase):
                  "target_os": "macos"},
             ]}), r.stderr)
 
+    def test_a_plan_that_reads_says_nothing_on_stderr(self):
+        sha = self.repo.commit({"api/pyproject.toml": "", PLAN: plan(("api", "api", "python", "current"))})
+        for args in ((), ("--stack", "python", "--project-dir", "api")):
+            with self.subTest(args):
+                r, got = resolve(self.repo, sha, sha, *args)
+                self.assertEqual((r.returncode, got["stack"], r.stderr), (0, "python", ""))
+
     def test_a_planned_stack_whose_manifest_is_missing_is_not_run(self):
         # detection is not used: the root Cargo.toml no entry covers is the drift check's, not a second project here
         sha = self.repo.commit({"api/pyproject.toml": "", "Cargo.toml": "",
@@ -249,6 +256,16 @@ class RepoAdapterByName(unittest.TestCase):
         r = r2(self.repo, base, base, "mini")
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("adapter file .ekit/adapters/mini.toml: format: `2`: want 1", r.stderr)
+
+    def test_the_run_side_checks_do_not_take_a_repo_adapter_yet(self):
+        # an adapter file's run side (R1, R3, R4) is not built: red, mutants and baseline know the built-ins only
+        base = self.repo.commit({"tests/calc.mini": CALC, ".ekit/adapters/mini.toml": mini()})
+        for check in ("red", "mutants", "baseline"):
+            with self.subTest(check):
+                r = _kit.run_cli([check, "--repo", self.repo.path, "--base", base, "--head", base, "--stack", "mini",
+                                  "--test-paths", "tests/**"])
+                self.assertEqual((r.returncode, r.stdout), (2, ""))
+                self.assertIn("argument --stack: invalid choice: 'mini'", r.stderr)
 
     def test_an_unknown_name_is_still_a_usage_error(self):
         base = self.repo.commit({"tests/calc.mini": CALC})
