@@ -19,6 +19,7 @@ from .report import entry
 
 TEST_RUNS = 5  # R4: each new or changed test, this many times at head
 TEST_TIMEOUT = 900  # seconds per run; a timeout is a verdict, not a crash
+NOT_FOUND = ": not found"  # the runner's output when the executable is missing (rc None)
 
 
 def stubbed(argv, stub):
@@ -38,7 +39,7 @@ def default_runner():
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=TEST_TIMEOUT)
         except FileNotFoundError:
-            return None, f"{argv[0]}: not found"
+            return None, argv[0] + NOT_FOUND
         except subprocess.TimeoutExpired:
             return "timeout", ""
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
@@ -106,10 +107,14 @@ def unparseable(rv):
 
 
 def run_named(runner, adapter, cmd, cwd, path, name):
-    """(verdict, first line of output): the line says why a run had no test result."""
+    """(verdict, a line of output): the line says why a run had no test result. The first line, or the line the
+    adapter's verdict came from when it names one (adapter.why: an adapter file's env or no_test pattern)."""
     rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    verdict = adapter.outcome(rc, out)
+    why = getattr(adapter, "why", None)
+    line = why(verdict, out) if why and rc is not None else None
     lines = [l.strip() for l in out.splitlines() if l.strip()]
-    return adapter.outcome(rc, out), (lines[0][:200] if lines else "")
+    return verdict, (line or (lines[0] if lines else ""))[:200]
 
 
 def run_in(rv, runner, cmd, wt, path, name):
@@ -137,12 +142,18 @@ def no_manifest_hint(adapter, wt, project_dir):
     return ""
 
 
-def absent(cmd, what, first=""):
-    """n/a note for a toolchain or test runner that is not installed: names the tool and the input that installs it."""
+def absent(cmd, what, first="", adapter=None):
+    """n/a note for a toolchain or test runner that is not installed: names the tool and the input that installs it.
+    An adapter file that names an install command ([commands].install) names it as the fix; a run its [run.outcome]
+    env pattern read as env (the runner started, its toolchain is missing) is quoted by its first line."""
     if "No module named" in first:  # python: the runner is there, its test deps are not
         name = "pytest" if "pytest" in first else "test runner"
         return f"{name} not installed (env): `{first}`: install the test deps, or set setup-command ({what})"
-    return f"toolchain absent: `{shlex.split(cmd)[0]}` not found (env): install it, or set setup-command ({what})"
+    install = getattr(adapter, "commands", {}).get("install", "").strip()
+    fix = f"run the adapter's install command (`{install}`)" if install else "install it"
+    if getattr(adapter, "from_file", False) and first and not first.endswith(NOT_FOUND):
+        return f"toolchain absent (env): `{first}`: {fix}, or set setup-command ({what})"
+    return f"toolchain absent: `{shlex.split(cmd)[0]}` not found (env): {fix}, or set setup-command ({what})"
 
 
 def overlay_tests(rv, wt):
@@ -227,7 +238,7 @@ def r1(rv, head_branch, agent_prefix, cmd, runner):
         for path, name, line in judged:
             verdict, first = run_in(rv, runner, cmd, wt, path, name)
             if verdict == "env":
-                return check("n/a", absent(cmd, "tests on the base's production code", first)), []
+                return check("n/a", absent(cmd, "tests on the base's production code", first, adapter)), []
             if verdict == "fail":
                 red_count += 1
             elif verdict == "build":
@@ -277,7 +288,7 @@ def r4(rv, cmd, runner):
             for _ in range(TEST_RUNS):
                 verdict, first = run_in(rv, runner, cmd, wt, path, name)
                 if verdict == "env":
-                    return check("n/a", absent(cmd, "new or changed tests", first)), []
+                    return check("n/a", absent(cmd, "new or changed tests", first, adapter)), []
                 if verdict == "build":
                     entries.append(entry("R4", path, line, f"build:{name}", "agent-fixable", "fail",
                                          f"does not build at head: `{name}` cannot run",

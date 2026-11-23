@@ -1,6 +1,7 @@
-# ekit adapter file: TypeScript / JavaScript, the R2 side (#16). It describes what the built-in `ts` adapter
-# (scripts/mech_review/stack.py, TsAdapter) reads, and R2 through it gives the same entries.
-# Use: mech-review.py r2 --stack ts --adapter scripts/mech_review/adapters/ts.toml
+# ekit adapter file: TypeScript / JavaScript, the R2 side (#16) and the R1/R4 run side (#18). It describes what the
+# built-in `ts` adapter (scripts/mech_review/stack.py, TsAdapter) reads and runs, and R2, R1 and R4 through it give the
+# same entries.
+# Use: mech-review.py r2 --stack ts --adapter scripts/mech_review/adapters/ts.toml (or red, all)
 # Format: docs/mech-review-ci.md#adapter-file
 format = 1
 name = "ts"
@@ -96,3 +97,42 @@ config_files = [
   ".stryker.config.js", ".stryker.config.mjs", ".stryker.config.cjs", ".stryker.config.ts", ".stryker.config.mts",
   ".stryker.config.cts", ".stryker.config.json",
 ]
+
+# the stack's commands: ci-doctor writes base CI jobs from them; R1 and R4 start from test ("" = the stack has none)
+[commands]
+install = "npm ci"
+build = ""  # vitest and jest transform the sources themselves: no build step before the tests
+lint = ""
+test = "node_modules/.bin/vitest run"
+
+# one named test: the file, then -t with the anchored name (both runners match -t as a regex on the full name)
+[run]
+test = ["{path}", "-t", "^{name}$"]
+links = ["node_modules"]  # a worktree has no node_modules (ignored by git): the caller checkout's is linked in
+
+# a name part as a regex: these characters literal; it.each's `%s`-style and `$var` placeholders match any value
+[run.name]
+escape = '\^$.|?*+()[]{}/'
+placeholders = '%[sdifjoOp#%]|\$\w+'
+any = ".*"
+
+# jest: a command naming jest, or package.json listing jest and not vitest; it joins describe and test with a space
+[[run.runner]]
+name = "jest"
+match = "jest"
+command = "node_modules/.bin/jest"
+when = { file = "package.json", tables = ["dependencies", "devDependencies"], has = ["jest"], lacks = ["vitest"] }
+separator = " "
+
+# vitest: any other command; `run` is put in after the vitest word when missing (else at the end)
+[[run.runner]]
+name = "vitest"
+subcommand = { word = "run", after = "vitest" }
+separator = " > "
+
+# the counts come from the last `Tests` summary line of a vitest or jest run; a file that did not load is build
+[run.outcome]
+summary = '^\s*Tests\b:?(.*)$'
+passed = '(\d+) passed\b'
+failed = '(\d+) failed\b'
+build = 'Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package|Test suite failed to run|SyntaxError|\bTS\d{4}\b|Failed Suites'

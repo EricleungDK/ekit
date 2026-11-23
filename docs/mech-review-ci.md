@@ -374,8 +374,8 @@ In `report`, the `fetch drift result` step (`actions/download-artifact@v4`, `con
 - **An explicit `stack`** may name a stack the repo defines: the base plan's entry for that stack and `project-dir` when it names an adapter file, else `.ekit/adapters/<name>.toml`, else the built-in of that name. A plan entry that names a built-in keeps the built-in. Its `target-os` applies (a plan entry's own first). An unknown name lists the names known (`stack gradle: want auto, maven, python, rust or ts`).
 - **Output**: one stack prints `{stack, project_dir, error, target_os}` as before. Several stacks from a plan print `stack: null`, `target_os: null`, `error: null` and a `stacks` list, one `{name, stack, project_dir, adapter, target_os}` per stack (`adapter`: the plan's value, a built-in or a repo path), exit 0. The stack job turns either into its `legs` output, and the workflow runs one set of checks per leg ([several stacks](#several-stacks)).
 - **Other checks**: `r2 --stack <name>` with no `--adapter` takes the repo's adapter file for that name the same way (at `--base`; an adapter file that does not read is a usage error, exit 2). `--adapter FILE` still wins. [`r0 --stack <name>`](#r0-adapter-proof) with no `--adapter` proves that file as it is at `--base`, with its fixtures there (`<name>.r0/` beside it); its messages and R0's editing rules name the file by its repo path, so a PR that loosens a limit or changes its `target-os` is the `needs-human` entry. Both take `--project-dir` for the plan entry (its stack and folder); the guard job passes them the stack job's `project-dir`, so an entry in a folder other than `.` judges and is proved with the adapter file the plan names. `all` on a stack only the repo defines leaves R0 to `r0`. The run side of an adapter file (R1, R3, R4: #18, #19) is not built yet, so:
-  - **An override** (a repo file named like a built-in: `python`, `rust` or `ts`) judges R2 and resolution only. R1, R3, R4 for an override still run the built-in until #18/#19: `red`, `mutants`, `baseline` and `plan` give the built-in's verdict, as with no override, so adding the file turns no check off. `all` (one adapter for R1, R2 and R4) is a usage error there: run `r2` and `red` apart.
-  - **A stack only the repo defines** (by name, or the plan's entry naming an adapter file: `maven`) has no built-in to run: `red` reports R1 and R4 `n/a`, `mutants` and `baseline` R3 `n/a` (baseline runs no shard), each with the note ``stack `maven` is the repo's adapter file: R1 through an adapter file is not built yet (#18, #19)``; `all` runs R2 through the file and reports R1 and R4 `n/a`; `plan` says run, so the baseline step reports R3's `n/a`, and `merge` (the report job, no checkout: it takes any stack name, R3 comes from the results) carries that `n/a` through. Never a usage error. An explicit name that is no stack name (`a.b`) is unknown (`stack a.b: want auto, python, rust or ts`).
+  - **An override** (a repo file named like a built-in: `python`, `rust` or `ts`) judges R2 and resolution, and, when it has a [`[run]`](#run-side-r1-and-r4) table, R1 and R4 too (#18): `red` and `all` run them through the file. Without `[run]`, R1 and R4 run the built-in, and R3 does in any case until #19: `mutants`, `baseline` and `plan` (and `red` for a file without `[run]`) give the built-in's verdict, as with no override, so adding the file turns no check off. `all` (one adapter for R1, R2 and R4) on an override without `[run]` is a usage error: run `r2` and `red` apart.
+  - **A stack only the repo defines** (by name, or the plan's entry naming an adapter file: `maven`) has no built-in to run. With `[run]` (#18), `red` runs R1 and R4 through the file, and `all` runs R2, R1 and R4 through it (R0 is `r0`'s: `not run by all on the repo's adapter file`). Without `[run]`, `red` reports R1 and R4 `n/a` (``stack `maven` is the repo's adapter file, which has no [run] table: R1 runs through [run] (#18)``), and `all` runs R2 through the file and reports R1 and R4 `n/a`. `mutants` and `baseline` report R3 `n/a` (baseline runs no shard) with ``stack `maven` is the repo's adapter file: R3 through an adapter file is not built yet (#19)``; `plan` says run, so the baseline step reports R3's `n/a`, and `merge` (the report job, no checkout: it takes any stack name, R3 comes from the results) carries that `n/a` through. Never a usage error. An explicit name that is no stack name (`a.b`) is unknown (`stack a.b: want auto, python, rust or ts`).
 
 ### Several stacks
 
@@ -391,7 +391,7 @@ When the base branch's plan gives several stacks to run (#17), the workflow runs
 
 ## Adapter file
 
-An adapter file is a TOML file that describes one stack to R2 as data: which files are this stack's, how tests are written and named, what an assert looks like, how a lint is silenced and with what reason, and what hides code from R3. ekit's own scanner reads the source with it (comments and strings masked, brackets matched, arguments split), so the file holds tables and words, never a regex over the file.
+An adapter file is a TOML file that describes one stack to R2 as data: which files are this stack's, how tests are written and named, what an assert looks like, how a lint is silenced and with what reason, and what hides code from R3. Its run side tells R1 and R4 how to run one test by name and read the result, and names the stack's install, build, lint and test commands. ekit's own scanner reads the source with it (comments and strings masked, brackets matched, arguments split), so the file holds tables and words, never a regex over the file.
 
 ```
 python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts \
@@ -399,11 +399,11 @@ python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts
 ```
 
 - `--adapter FILE` takes the stack from the file in place of the built-in of that name. `--stack` must equal the file's `name`; a name that is not built in is allowed only with `--adapter`. Without `--adapter`, `rust`, `python` and `ts` run as before.
-- R2 only for now (`r2`): the run side of the file (test command, outcomes, mutation tool: R1, R3, R4) is not built yet, and `--adapter` with another check subcommand than `r2` and [`r0`](#r0-adapter-proof) (which proves the file) is a usage error. `resolve --adapter FILE` reads the file's `target-os` only (#58). The workflow does not pass `--adapter`; `r2` and `r0 --stack <name>` find the repo's own adapter file at the base ([stack resolution](#stack-resolution)).
+- `r2`, `red` and `all` (#18): `red` and `all` run R1 and R4 through the file's [`[run]`](#run-side-r1-and-r4) and [`[commands]`](#run-side-r1-and-r4) tables; a file without `[run]` is R2 only, and `red` or `all` with it is a usage error that names the table. R3 through a file (its mutation tool) is not built yet: `mutants` and `baseline` with `--adapter` are a usage error. [`r0`](#r0-adapter-proof) takes `--adapter` too (it proves the file). `resolve --adapter FILE` reads the file's `target-os` only (#58). The workflow does not pass `--adapter`; `r2`, `red` and `r0 --stack <name>` find the repo's own adapter file at the base ([stack resolution](#stack-resolution)).
 - Reading the file needs python 3.11 or newer (`tomllib`); on an older python `--adapter` is a usage error that says so, and the built-in stacks keep working.
 - A file that is unreadable, not TOML, or invalid is a usage error (exit 2, nothing on stdout) that names the field: `adapter file x.toml: tests.cases: want at least one entry`. An unknown key is an error too, so a misspelt key never passes silently.
 - A source file whose masked text does not balance (a bracket never closed, an unterminated block comment or multiline string) is an R2 `fail` of class `needs-human`: the cause may be the file's lexer table, not the PR. The built-in stacks keep `agent-fixable`.
-- Reference: [`scripts/mech_review/adapters/ts.toml`](../scripts/mech_review/adapters/ts.toml) describes TypeScript/JavaScript and gives the same R2 entries as the built-in `ts` adapter (`tests/mech-adapter.test.sh` runs the TS suites through it).
+- Reference: [`scripts/mech_review/adapters/ts.toml`](../scripts/mech_review/adapters/ts.toml) describes TypeScript/JavaScript and gives the same R2 entries and R1/R4 results as the built-in `ts` adapter (`tests/mech-adapter.test.sh` runs the TS suites through it, `mech-ts-red` included).
 
 ### Keys
 
@@ -507,9 +507,86 @@ Any other key, or a value that is not a whole number in range, is an error namin
 | `config_files` | file names (any dir) of the mutation tool's config |
 | `config_name` | the tool config's name in the entry, required with `config_files` |
 
+### Run side (R1 and R4)
+
+`[commands]` (required with `[run]`): the stack's commands, each a shell command string. Every key is required; `""` says the stack has none (a missing key is a load error that names it: `commands.build: missing: want the command that builds the project, or "" when the stack has none`).
+
+| Key | Value |
+|---|---|
+| `install` | installs the project's dependencies (`npm ci`). A missing runner's `n/a (env)` note names it as the fix |
+| `build` | builds the project (`""`: no build step before the tests) |
+| `lint` | lints the project |
+| `test` | runs the whole test suite. R1 and R4 start every one-test run from it (`--test-cmd` replaces it); with `[run]` it may not be `""` |
+
+R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them. Each command is split as the engine splits it (shell words), so unbalanced quotes are a load error that names the field. A declared-none `install` or `build` is named in the result of `red` and `all` with `--adapter` (`r2` through a file prints exactly what the built-in prints): the JSON envelope's `notes` list (`adapter file declares no build command (commands.build = "")`; `[]` when the file names both) and a `note:` line under the summary in text format.
+
+`[run]` (optional; without it the file is R2 only): how one named test runs and how its result reads.
+
+| Key | Value |
+|---|---|
+| `test` | words put after the test command's words to run one test: `["{path}", "-t", "^{name}$"]`. `{path}` is the test's file (project-dir relative), `{name}` the runner's name for the test; at least one word has `{name}`. Plain placeholders only, as in the R2 templates |
+| `links` | optional: directories (project-dir relative) linked from the caller's checkout into each R1/R4 worktree, when the caller has them as directories and the commit does not (an install git ignores: `["node_modules"]`). The caller's copy is never changed |
+| `[run.name]` | optional: how a name part becomes the runner's text. `escape`: characters that get a backslash before them (a regex filter: `'\^$.|?*+()[]{}/'`); `placeholders`: a regex for parts of a name that stand for any value (`it.each`'s `%s`), no capturing group; `any`: what a placeholder becomes (`.*`). Without it the name is passed as it is |
+| `[[run.runner]]` | optional, one table per runner of the stack (vitest, jest). `name`; `match`: text in one of the command's words that makes the command this runner's (one without `match` takes any command, so it comes last); `command` and `when`, together (one without the other is a load error: it would never be used): the command for a checkout where `when` holds (not blank); `subcommand`: `{ word, after }`, a word put in after the first command word holding `after` (else at the end) when the command lacks it (vitest's `run`); `separator`: how the runner joins group and test names (default `tests.separator`) |
+| `[run.outcome]` | how a run's output reads (below) |
+
+The test's qualified name is split at `tests.separator`, each part quoted by `[run.name]`, and the parts joined by the runner's `separator`. The runner for the argv is the first `[[run.runner]]` whose `match` is in a word of the command; the command for a checkout is the first runner whose `when` holds in the project dir, else `commands.test`. `when` is `{ file }` (the file is there; a name with an empty or `.` part, such as `./`, is a load error) or `{ file, tables, has, lacks }`: the file is JSON, and its `tables` (`["dependencies", "devDependencies"]`) hold every `has` name and no `lacks` name. A file that is missing or not JSON never holds.
+
+`[run.outcome]`: python regexes over the runner's output (multiline: `^` and `$` match at line ends), compiled at load, so a bad one is a load error that names it. So is a pattern with a zero-width match (`x?`, `a*`, `^`, `\b`): it would match a run with no output to speak of, and read a test that never ran as `build` (red on the base) or every run as `env`. The same holds for `[run.name] placeholders`. The load check probes a few short texts, so a lookaround can still load (`(?<=[a-w])`); at run time only a match that holds text counts, for every outcome pattern and for placeholders, so such a pattern matches nothing and never reads a run as `build`, `env`, `none` or a count.
+
+| Key | Value |
+|---|---|
+| `passed` / `failed` | the passed and failed counts: one capturing group, the number (`'(\d+) passed\b'`). Every match is added up |
+| `summary` | optional: the counts are read from the last line it matches (its capturing group, when it has one: `'^\s*Tests\b:?(.*)$'`); without it, from the whole output |
+| `skipped` | optional: a skipped count, read like `passed` |
+| `build` | optional: the code did not build or load (`Cannot find module`) |
+| `no_test` | optional: the runner found no test of that name; R1's and R4's entries quote the line it matched |
+| `env` | optional: the runner started but its toolchain is missing; the run is `n/a (env)` and its note quotes the line the pattern matched |
+
+The verdict of one run, in this order: no executable is `env` (the note names the executable and the install command); a timeout is `timeout`; `env` matches is `env`; a failed count is `fail`; a passed count is `pass` at exit 0, `fail` at any other exit; `build` matches is `build` (on the base's code: compile-red, which counts as red); `no_test` matches is `none`; no count read at all (no summary line, or no count pattern matched) is `error`; a skipped count is `none`; counts that are all 0 are `none` at exit 0, `error` otherwise. So `pass` needs a counted passed test: a test that did not run reads `none`, never `pass`. R1 and R4 read these verdicts exactly as they read the built-ins'.
+
+The TS run side, from `ts.toml`:
+
+```toml
+[commands]
+install = "npm ci"
+build = ""
+lint = ""
+test = "node_modules/.bin/vitest run"
+
+[run]
+test = ["{path}", "-t", "^{name}$"]
+links = ["node_modules"]
+
+[run.name]
+escape = '\^$.|?*+()[]{}/'
+placeholders = '%[sdifjoOp#%]|\$\w+'
+any = ".*"
+
+[[run.runner]]
+name = "jest"
+match = "jest"
+command = "node_modules/.bin/jest"
+when = { file = "package.json", tables = ["dependencies", "devDependencies"], has = ["jest"], lacks = ["vitest"] }
+separator = " "
+
+[[run.runner]]
+name = "vitest"
+subcommand = { word = "run", after = "vitest" }
+separator = " > "
+
+[run.outcome]
+summary = '^\s*Tests\b:?(.*)$'
+passed = '(\d+) passed\b'
+failed = '(\d+) failed\b'
+build = 'Transform failed|Failed to load url|...|Failed Suites'
+```
+
+Trust: R1 and R4 run the file's commands in `red-first` only, the job that already runs PR code with a `contents: read` token and no secrets; `guard` runs none of them. The workflow passes no adapter file yet; when it does, adapter values reach `run:` steps only through `env`, as `setup-command` does (`tests/mech-review-workflow.test.sh` holds both rules).
+
 ### Parser
 
-For a language the lexer table cannot describe (Ruby, Elixir, indentation- or DSL-heavy test styles), an adapter file declares one parser command in place of the patterns (#27). Such a file has `format`, `name`, `extensions`, optionally `manifests`, `target-os`, `[limits]` and `[mutation]` (`config_files`, `config_name`), and `[parser]`. The pattern tables `[lexer]`, `[tests]`, `[functions]`, `[asserts]`, `[[suppressions]]` and `mutation.skip_comments` are an error beside it (`lexer: not with [parser]`): the facts come from the command alone, never from both, and a failed parser never falls back to patterns.
+For a language the lexer table cannot describe (Ruby, Elixir, indentation- or DSL-heavy test styles), an adapter file declares one parser command in place of the patterns (#27). Such a file has `format`, `name`, `extensions`, optionally `manifests`, `target-os`, `[limits]`, `[mutation]` (`config_files`, `config_name`) and the run side, `[commands]` and [`[run]`](#run-side-r1-and-r4) (#18: it reads the runner's output, not source, so it is the same beside a parser), and `[parser]`. The pattern tables `[lexer]`, `[tests]`, `[functions]`, `[asserts]`, `[[suppressions]]` and `mutation.skip_comments` are an error beside it (`lexer: not with [parser]`): the facts come from the command alone, never from both, and a failed parser never falls back to patterns.
 
 `[parser]`:
 

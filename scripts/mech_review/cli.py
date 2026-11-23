@@ -158,8 +158,8 @@ def build_parser():
     p.add_argument("--stack", required=True, metavar="{" + ",".join(sorted(ADAPTERS)) + "}",
                    help="language adapter; with --adapter, the name the adapter file gives")
     p.add_argument("--adapter", metavar="FILE",
-                   help="r2 only: an adapter file (TOML) that describes the stack named by --stack, in place of a built-in "
-                        "(format: docs/mech-review-ci.md#adapter-file)")
+                   help="r2, red, all: an adapter file (TOML) that describes the stack named by --stack, in place of a "
+                        "built-in; red and all need its [run] table (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
     p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
@@ -196,7 +196,7 @@ def build_parser():
 
 
 def render_text(env):
-    lines = [env["summary"]]
+    lines = [env["summary"]] + [f"note: {n}" for n in env.get("notes", [])]
     for e in env["entries"]:
         lines.append(f"{e['severity']} {e['id']} {e['file']}:{e['line']} {e['problem']}")
         lines.append(f"  hint: {e['hint']}")
@@ -355,9 +355,11 @@ RUN_SIDE = {"red": ("R1", "R4"), "all": ("R1", "R4"), "mutants": ("R3",), "basel
 
 
 def _not_built(args, adapter=None):
-    """A run-side check on a stack the repo's adapter file describes (#17): the run side of an adapter file (#18, #19)
-    is not built, so its checks are n/a with the reason, never a usage error or the built-in of that name run in its
-    place. plan says run, so the baseline step reports R3's n/a; baseline runs no shard; all still runs R2 (adapter)."""
+    """A run-side check on a stack the repo's adapter file describes (#17). R1 and R4 run through the file when it has
+    [run] (#18: all runs R2 and them through it); without [run] they are n/a, as R3 is (an adapter file's R3 is #19),
+    with the reason, never a usage error or the built-in of that name run in its place. plan says run, so the baseline
+    step reports R3's n/a; baseline runs no shard."""
+    runs = adapter is not None and adapter.run is not None and args.check in ("red", "all")
     if args.check == "plan":
         print(json.dumps({"run": True}))
         return 0
@@ -372,13 +374,23 @@ def _not_built(args, adapter=None):
             checks["R0"] = {"status": "skipped", "note": "not run by all on the repo's adapter file: r0 proves it"}
         else:
             checks, entries = {c: {"status": "skipped", "note": f"not run by {args.check}"} for c in report.CHECKS}, []
+        if runs:
+            red_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, which="red",
+                                 agent_prefix=args.agent_prefix, head_branch=args.head_branch, test_cmd=args.test_cmd,
+                                 project_dir=args.project_dir, adapter=adapter)
+            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check]})
+            entries = sorted(entries + red_env["entries"], key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
-    for c in RUN_SIDE[args.check]:
-        checks[c] = {"status": "n/a", "note": f"stack `{args.stack}` is the repo's adapter file: {c} through an adapter "
-                                              f"file is not built yet (#18, #19)"}
+    for c in () if runs else RUN_SIDE[args.check]:
+        checks[c] = {"status": "n/a", "note": (
+            f"stack `{args.stack}` is the repo's adapter file: R3 through an adapter file is not built yet (#19)"
+            if c == "R3" else f"stack `{args.stack}` is the repo's adapter file, which has no [run] table: {c} runs "
+                              f"through [run] (#18)")}
     env = report.envelope(base, head, entries, checks)
+    if runs:
+        env["notes"] = adapter.notes()
     if args.check == "mutants":
         k, _, n = (args.shard or "0/1").partition("/")
         env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
@@ -584,13 +596,16 @@ def main(argv):
         parser.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
                      + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
     if args.adapter is not None:
-        if args.check != "r2":
-            parser.error("--adapter applies to r2 only (the run side of an adapter file: R1, R3, R4 is not built yet)")
+        if args.check not in ("r2", "red", "all"):
+            parser.error("--adapter applies to r2, red and all (R3 through an adapter file is not built yet)")
         try:
             adapter = adapter_file.load(args.adapter)
         except adapter_file.AdapterFileError as e:
             print(f"mech-review: {e}", file=sys.stderr)
             return 2
+        if args.check != "r2" and adapter.run is None:
+            parser.error(f"--adapter applies to r2 only for {args.adapter}: it has no [run] table, and {args.check} runs "
+                         "R1 and R4 through [run] and [commands] (format: docs/mech-review-ci.md#adapter-file)")
         if adapter.name != args.stack:
             print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
                   file=sys.stderr)
@@ -599,9 +614,10 @@ def main(argv):
         parser.error("--fixtures applies to all and r0 only (R0's fixture dir)")
     if args.check == "merge":
         return _merge(parser, args)
-    if adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS:
-        # until adapter files have a run side (#18, #19), a repo file named like a built-in judges R2 only: R1, R3 and
-        # R4 run the built-in, so adding the file turns no check off. `all` runs one adapter for all its checks
+    if (adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS
+            and not (adapter.run is not None and args.check in ("red", "all"))):
+        # a repo file named like a built-in with no [run] (#18), or for R3 (#19): R2 only. R1, R3 and R4 run the
+        # built-in, so adding the file turns no check off. `all` runs one adapter for all its checks
         if args.check == "all":
             parser.error(f"all on stack `{args.stack}`, which the repo's adapter file overrides: R2 is the file's, R1 "
                          f"and R4 the built-in's; run r2 and red apart")
@@ -630,6 +646,8 @@ def main(argv):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    if adapter is not None and args.check != "r2":  # #18: a command the file declares as none is named (red, all);
+        env["notes"] = adapter.notes()  # r2 through a file prints what the built-in prints
     if args.format == "json":
         print(json.dumps(env, indent=2))
     else:

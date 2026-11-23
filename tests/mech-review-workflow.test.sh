@@ -675,30 +675,137 @@ with tempfile.TemporaryDirectory() as d:  # the report's per-stack merge, on the
               and [e["problem"] for e in web_r3["entries"]] == [f"baseline job produced no result: {why}"], str(web_r3))
 
 
-def expr_in_run_bodies(lines):
-    """Lines of a run: block scalar (its heredocs included) that hold ${{ }}: a value there would be pasted into the
-    script before it runs. Values reach a script through env only."""
-    out = []
-    for n, l in enumerate(lines):
-        m = re.match(r"(\s*)(- )?run: [|>]", l)
-        if not m:
+# ---- #18 trust: an adapter file's commands ([commands], [run]) run only through the subcommands that run tests (red,
+# all, mutants, baseline), and those run only in red-first, baseline and mutants (their contents: read token is checked
+# above). Workflow values (inputs, an adapter's, any job's or step's output) reach a shell only through env ----
+RUNS_PR_CODE = ("red-first", "baseline", "mutants")
+for job_name in sorted(child_keys(jobs)):
+    subs = re.findall(r'mech-review\.py"?\s+(\w+)', text(block(jobs, job_name) or []))
+    if job_name not in RUNS_PR_CODE:
+        check(f"{job_name}: runs no subcommand that runs an adapter's commands (red, all, mutants, baseline)",
+              not {"red", "all", "mutants", "baseline"} & set(subs), str(subs))
+
+# An allowlist over EVERY line that holds `${{`, fail closed: such a line passes only as a plain `key: value` line (an
+# optional `- `, a bare unquoted key, a value that is no flow mapping or sequence), outside any block scalar (a run: |
+# body, or any other `|` / `>` value), with a key its parent allows. The keys are the non-shell ones the workflows use
+# today (derived from the files; a new one is added here on purpose). Any other form, a quoted key, a flow mapping, a
+# `run:` that is not a job output, is a fail: so no YAML spelling gets a value into a shell without env.
+WF_KEY = re.compile(r"^( *)(- +)?([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$")
+WF_BLOCK = re.compile(r"^[|>][-+0-9]*\s*(#.*)?$")
+WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+WF_ALLOWED = {
+    "env": WF_ENV,                                                          # an env var: the only way into a shell
+    "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
+    "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout",  # job outputs
+                "legs",     # #17: the stack job's one leg per stack, and the plan job's legs whose R3 runs: matrix input
+                "runs",     # #17: the plan job's answer per stack (key -> true, false or null), read by the report
+                "include"},  # #17: the baseline's (one stack) and the shards job's (several) mutants matrix
+    "matrix": {"shard", "include"},  # include: only a whole `${{ fromJSON(...) }}` (WF_INCLUDE; #17's multi-stack legs)
+    "concurrency": {"group"},
+    None: {"if", "runs-on", "name", "timeout-minutes"},  # job and step keys; timeout-minutes: #17's follow-up job limits
+}
+WF_INCLUDE = re.compile(r"^\$\{\{ fromJSON\([^{}]*\) \}\}$")  # a matrix include that is one fromJSON(...), nothing else
+# YAML anchors (&a), aliases (*a) and merge keys (<<:) are refused anywhere outside comments, quoted strings and block
+# scalars: an anchored env value (`X: &a ${{ inputs.x }}`) aliased into `run: *a` would reach a shell with no `${{`
+WF_ANCHOR = re.compile(r"(^|[\s\[{,:])[&*][A-Za-z0-9_]")
+WF_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def interpolations(lines):
+    """[(line no, why, line)] for each `${{` line the allowlist above refuses."""
+    out, stack, block_at = [], [], None
+    for n, line in enumerate(lines, 1):
+        ind, s = indent(line), line.strip()
+        if block_at is not None:
+            if not s or ind > block_at:
+                if "${{" in line:
+                    out.append((n, "inside a block scalar", s))
+                continue
+            block_at = None
+        if not s or s.startswith("#"):
             continue
-        base = len(m.group(1)) + len(m.group(2) or "")
-        for later in lines[n + 1:]:
-            if later.strip() and indent(later) <= base:
-                break
-            if "${{" in later:
-                out.append(later)
+        bare = WF_QUOTED.sub("''", line).split(" #", 1)[0]
+        if WF_ANCHOR.search(bare) or re.match(r"\s*(- +)?<<\s*:", bare):
+            out.append((n, "a YAML anchor, alias or merge key", s))
+            continue
+        m = WF_KEY.match(line)
+        if not m:
+            if "${{" in line:
+                out.append((n, "not a plain key: value line", s))
+            continue
+        col, key, val = len(m.group(1)) + len(m.group(2) or ""), m.group(3), m.group(4) or ""
+        while stack and stack[-1][0] >= col:
+            stack.pop()
+        parent = stack[-1][1] if stack else None
+        stack.append((col, key))
+        if WF_BLOCK.match(val):
+            block_at = col
+        if "${{" not in line:
+            continue
+        rule = WF_ALLOWED.get(parent, WF_ALLOWED[None])
+        ok = rule.match(key) is not None if hasattr(rule, "match") else key in rule
+        if parent == "matrix" and key == "include" and not WF_INCLUDE.match(val.strip()):
+            ok = False
+        if val.lstrip().startswith(("{", "[")):
+            ok = False
+        if not ok:
+            out.append((n, f"`{key}` under `{parent}`", s))
     return out
 
 
-check("no ${{ }} in any run: body, its heredocs included (review 1)", expr_in_run_bodies(W) == [],
-      str(expr_in_run_bodies(W)))
+# every workflow file: mech-review.yml runs PR code (red-first, baseline, mutants); mech-waive.yml runs none (its only
+# checkout is the ekit engine) but holds the same rule; the self callers, tests.yml and release.yml hold no `${{` line
+for wf in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
+    if wf.endswith((".yml", ".yaml")):
+        got = interpolations(read(f".github/workflows/{wf}"))
+        check(f"{wf}: every ${{{{ }}}} line is an allowed non-shell key (values reach a shell only through env)",
+              got == [], str(got))
+# live: each escaping form is caught, one at a time, spliced into red-first's steps
+red_line = next(l for l in W if 'mech-review.py" red' in l)
+at = W.index("  red-first:")
+at = next(k for k in range(at, len(W)) if W[k] == "    steps:") + 1
+BAD = {
+    "an input appended in the red command's run block": ("replace", red_line + ' --test-command "${{ inputs.test-command }}"'),
+    "an undeclared input inside the red command": ("replace", red_line.replace("red", "red --stack ${{ inputs.stack-def }}", 1)),
+    "a one-line run:": ("insert", ["      - name: x", "        run: echo ${{ inputs.adapter }}"]),
+    "a run: after two spaces": ("insert", ["      -  run: echo ${{ inputs.setup-command }}"]),
+    "a flow-mapping step": ("insert", ['      - {name: y, run: "echo ${{ inputs.setup-command }}"}']),
+    "a quoted run key": ("insert", ['      - "run": echo ${{ inputs.setup-command }}']),
+    "a flow-mapping env": ("insert", ["      - name: z", "        env: {X: ${{ inputs.setup-command }}}", "        run: echo"]),
+    "a script input": ("insert", ["      - uses: actions/github-script@v7", "        with:",
+                                  "          script: console.log('${{ inputs.setup-command }}')"]),
+    "a folded run block": ("insert", ["      - name: f", "        run: >", "          echo ${{ inputs.adapter }}"]),
+    "a merge key": ("insert", ["      - name: m", "        <<: {run: echo}"]),
+    "an alias in a list": ("insert", ["      - *step"]),
+    "a matrix include that is not one fromJSON": ("insert", ["      - name: i", "        strategy:", "          matrix:",
+                                                             "            include: ${{ inputs.legs }}"]),
+}
+for name, (how, bad) in BAD.items():
+    mutated = [bad if l == red_line else l for l in W] if how == "replace" else W[:at] + bad + W[at:]
+    check(f"workflow values check is live: {name} is caught", len(interpolations(mutated)) == 1,
+          str(interpolations(mutated)))
+# an anchored env value aliased into run: (the run: line holds no ${{): the anchor and the alias are each named, by line
+anchored = interpolations(W[:at] + ["      - name: a", "        env:", "          SETUP_COMMAND: &cmd ${{ inputs.setup-command }}",
+                                    "        run: *cmd"] + W[at:])
+check("workflow values check is live: an anchored env value aliased into run: is caught, both lines named",
+      [r[1:] for r in anchored] == [("a YAML anchor, alias or merge key", "SETUP_COMMAND: &cmd ${{ inputs.setup-command }}"),
+                                    ("a YAML anchor, alias or merge key", "run: *cmd")]
+      and anchored[1][0] == anchored[0][0] + 1, str(anchored))
+alias_only = interpolations(W[:at] + ["      - name: a", "        run: *cmd"] + W[at:])
+check("workflow values check names an alias with no ${{ on its line", [r[1:] for r in alias_only] == [
+    ("a YAML anchor, alias or merge key", "run: *cmd")], str(alias_only))
+# #17 review 1: a ${{ }} inside a run: body's heredoc (the shards job's python) is caught as inside a block scalar
 _sh_at = next(n for n, l in enumerate(W) if l.strip() == "import json" and n > W.index("  shards:"))
-_probe = W[:_sh_at] + [W[_sh_at].replace("import json", 'print("${{ needs.plan.outputs.legs }}")')] + W[_sh_at:]
-check("the run-body scan sees a ${{ }} inside the shards job's python heredoc (the scan is live)",
-      expr_in_run_bodies(_probe) == ['          print("${{ needs.plan.outputs.legs }}")'], str(expr_in_run_bodies(_probe)))
-
+_probe = interpolations(W[:_sh_at] + [W[_sh_at].replace("import json", 'print("${{ needs.plan.outputs.legs }}")')]
+                        + W[_sh_at:])
+check("workflow values check is live: a ${{ }} in the shards job's python heredoc is caught",
+      [r[1:] for r in _probe] == [("inside a block scalar", 'print("${{ needs.plan.outputs.legs }}")')], str(_probe))
+# allowed on purpose: the #17 follow-up's matrix include and timeout-minutes (and && in an if:, a glob in quotes)
+fine = ["      - name: ok", "        if: ${{ a && !b }}", "        timeout-minutes: 30", "        strategy:", "          matrix:",
+        "            include: ${{ fromJSON(needs.shards.outputs.include || needs.baseline.outputs.include) }}",
+        "        with:", "          path: 'tests/**'"]
+check("workflow values check allows a fromJSON matrix include, timeout-minutes, && and a quoted glob",
+      interpolations(W[:at] + fine + W[at:]) == [], str(interpolations(W[:at] + fine + W[at:])))
 
 # ---- an adapter's parser command (#27) never reaches a run: script; it runs as argv inside the engine ----
 # The workflow reads no repo adapter file yet (#17 wires them in, with the guard's install step for the parser): until
