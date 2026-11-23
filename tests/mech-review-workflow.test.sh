@@ -469,10 +469,15 @@ WF_ALLOWED = {
     "env": WF_ENV,                                                          # an env var: the only way into a shell
     "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
     "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout"},  # job outputs
-    "matrix": {"shard"},
+    "matrix": {"shard", "include"},  # include: only a whole `${{ fromJSON(...) }}` (WF_INCLUDE; #17's multi-stack legs)
     "concurrency": {"group"},
-    None: {"if", "runs-on", "name"},                                        # job and step keys, under any other parent
+    None: {"if", "runs-on", "name", "timeout-minutes"},  # job and step keys; timeout-minutes: #17's follow-up job limits
 }
+WF_INCLUDE = re.compile(r"^\$\{\{ fromJSON\([^{}]*\) \}\}$")  # a matrix include that is one fromJSON(...), nothing else
+# YAML anchors (&a), aliases (*a) and merge keys (<<:) are refused anywhere outside comments, quoted strings and block
+# scalars: an anchored env value (`X: &a ${{ inputs.x }}`) aliased into `run: *a` would reach a shell with no `${{`
+WF_ANCHOR = re.compile(r"(^|[\s\[{,:])[&*][A-Za-z0-9_]")
+WF_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
 
 
 def interpolations(lines):
@@ -487,6 +492,10 @@ def interpolations(lines):
                 continue
             block_at = None
         if not s or s.startswith("#"):
+            continue
+        bare = WF_QUOTED.sub("''", line).split(" #", 1)[0]
+        if WF_ANCHOR.search(bare) or re.match(r"\s*(- +)?<<\s*:", bare):
+            out.append((n, "a YAML anchor, alias or merge key", s))
             continue
         m = WF_KEY.match(line)
         if not m:
@@ -504,6 +513,8 @@ def interpolations(lines):
             continue
         rule = WF_ALLOWED.get(parent, WF_ALLOWED[None])
         ok = rule.match(key) is not None if hasattr(rule, "match") else key in rule
+        if parent == "matrix" and key == "include" and not WF_INCLUDE.match(val.strip()):
+            ok = False
         if val.lstrip().startswith(("{", "[")):
             ok = False
         if not ok:
@@ -533,11 +544,31 @@ BAD = {
     "a script input": ("insert", ["      - uses: actions/github-script@v7", "        with:",
                                   "          script: console.log('${{ inputs.setup-command }}')"]),
     "a folded run block": ("insert", ["      - name: f", "        run: >", "          echo ${{ inputs.adapter }}"]),
+    "a merge key": ("insert", ["      - name: m", "        <<: {run: echo}"]),
+    "an alias in a list": ("insert", ["      - *step"]),
+    "a matrix include that is not one fromJSON": ("insert", ["      - name: i", "        strategy:", "          matrix:",
+                                                             "            include: ${{ inputs.legs }}"]),
 }
 for name, (how, bad) in BAD.items():
     mutated = [bad if l == red_line else l for l in W] if how == "replace" else W[:at] + bad + W[at:]
     check(f"workflow values check is live: {name} is caught", len(interpolations(mutated)) == 1,
           str(interpolations(mutated)))
+# an anchored env value aliased into run: (the run: line holds no ${{): the anchor and the alias are each named, by line
+anchored = interpolations(W[:at] + ["      - name: a", "        env:", "          SETUP_COMMAND: &cmd ${{ inputs.setup-command }}",
+                                    "        run: *cmd"] + W[at:])
+check("workflow values check is live: an anchored env value aliased into run: is caught, both lines named",
+      [r[1:] for r in anchored] == [("a YAML anchor, alias or merge key", "SETUP_COMMAND: &cmd ${{ inputs.setup-command }}"),
+                                    ("a YAML anchor, alias or merge key", "run: *cmd")]
+      and anchored[1][0] == anchored[0][0] + 1, str(anchored))
+alias_only = interpolations(W[:at] + ["      - name: a", "        run: *cmd"] + W[at:])
+check("workflow values check names an alias with no ${{ on its line", [r[1:] for r in alias_only] == [
+    ("a YAML anchor, alias or merge key", "run: *cmd")], str(alias_only))
+# allowed on purpose: the #17 follow-up's matrix include and timeout-minutes (and && in an if:, a glob in quotes)
+fine = ["      - name: ok", "        if: ${{ a && !b }}", "        timeout-minutes: 30", "        strategy:", "          matrix:",
+        "            include: ${{ fromJSON(needs.shards.outputs.include || needs.baseline.outputs.include) }}",
+        "        with:", "          path: 'tests/**'"]
+check("workflow values check allows a fromJSON matrix include, timeout-minutes, && and a quoted glob",
+      interpolations(W[:at] + fine + W[at:]) == [], str(interpolations(W[:at] + fine + W[at:])))
 
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"
