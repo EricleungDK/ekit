@@ -658,7 +658,7 @@ eq "$out" "pass $H (0 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)" "text clean 
 OK_STUB="$T/ok-stub.sh"; printf '#!/bin/bash\necho "test result: ok. 1 passed; 0 failed"\n' > "$OK_STUB"; chmod +x "$OK_STUB"
 out=$(MECH_TEST_STUB="$OK_STUB" python3 -I "$MR" all --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**'); rc=$?
 eq "$rc" 0 "all subcommand clean exit 0"
-eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R2 R4; skipped: R1 R3)" "all subcommand summary names skipped checks"
+eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R0 R2 R4; skipped: R1 R3)" "all subcommand summary names skipped checks"
 
 put "$R" tests/a.rs <<'EOF2'
 #[test]

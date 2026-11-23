@@ -269,7 +269,7 @@ class TestDriftWaiver(unittest.TestCase):
 
     def test_the_drift_id_is_read_from_a_comment(self):
         self.assertEqual(set(waiver.collect([note("/mech-waive D-0a1b2c3d ok")])), {"D-0a1b2c3d"})
-        self.assertEqual(waiver.collect([note("/mech-waive D-0a1b2c3 ok"), note("/mech-waive R0-0a1b2c3d ok")]), {})
+        self.assertEqual(waiver.collect([note("/mech-waive D-0a1b2c3 ok"), note("/mech-waive R5-0a1b2c3d ok")]), {})
 
 
 if __name__ == "__main__":
