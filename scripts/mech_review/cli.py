@@ -50,7 +50,7 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       entry; the negative controls (rename with the same asserts, reordered asserts, asserts moved into a helper, the
       empty diff of every fixture) none; an adapter file with a bad ident_chars, no assert shape or an unbalanced
       bracket pair must fail to load cleanly. A failed case: one `fail` entry of class adapter-fix, and R1 R2 R4 are
-      n/a (blocked). A case with no fixture: R0 unproven (never all pass).
+      n/a (blocked; their entries kept and still counted). A case with no fixture: R0 unproven (never all pass).
   `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4, after R0's static half (R3 is not in `all`: run `baseline`,
   then `mutants`). `.ekit/scenarios/**` is a test path for every stack, beside --test-paths.
   `mutants` runs R3; `baseline` prints the R3 baseline step: {run, count, mutants, timeout, checks, entries}. A check a subcommand does not run
