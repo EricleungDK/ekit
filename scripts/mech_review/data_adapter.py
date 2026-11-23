@@ -332,17 +332,21 @@ class DataAdapter(Adapter):
 
         if "placeholders" not in self._rx:
             return escaped(seg)
-        return nm["any"].join(escaped(p) for p in self._rx["placeholders"].split(seg))  # load: any comes with placeholders
+        pieces, at = [], 0  # split at the placeholders' matches that hold text; an empty match replaces nothing
+        for m in _matches(self._rx["placeholders"], seg):
+            pieces.append(seg[at:m.start()])
+            at = m.end()
+        return nm["any"].join(escaped(p) for p in pieces + [seg[at:]])  # load: any comes with placeholders
 
     def _count(self, key, text):
         rx = self._rx.get(key)
-        return sum(int(n) for n in rx.findall(text) if n.isdigit()) if rx else 0
+        return sum(int(m.group(1)) for m in _matches(rx, text) if (m.group(1) or "").isdigit()) if rx else 0
 
     def why(self, verdict, out):
         """the output line a run's verdict came from, when a pattern decided it (env, no_test: what the note or entry
         quotes in place of the first line, a banner), else None."""
         rx = self._rx.get({"env": "env", "none": "no_test"}.get(verdict))
-        m = rx.search(out or "") if rx else None
+        m = _first(rx, out or "")
         if not m:
             return None
         end = out.find("\n", m.start())
@@ -359,27 +363,37 @@ class DataAdapter(Adapter):
             return "timeout"
         out = out or ""
         rx = self._rx
-        if "env" in rx and rx["env"].search(out):
+        if _first(rx.get("env"), out):
             return "env"
         if "summary" in rx:
-            lines = list(rx["summary"].finditer(out))
+            lines = list(_matches(rx["summary"], out))
             text = (lines[-1].group(rx["summary"].groups) if lines else None)
         else:
-            text = out if any(k in rx and rx[k].search(out) for k in ("passed", "failed", "skipped")) else None
+            text = out if any(_first(rx.get(k), out) for k in ("passed", "failed", "skipped")) else None
         if text is not None:
             if self._count("failed", text):
                 return "fail"
             if self._count("passed", text):
                 return "pass" if rc == 0 else "fail"
-        if "build" in rx and rx["build"].search(out):
+        if _first(rx.get("build"), out):
             return "build"
-        if "no_test" in rx and rx["no_test"].search(out):
+        if _first(rx.get("no_test"), out):
             return "none"
         if text is None:
             return "error"
         if self._count("skipped", text):
             return "none"
         return "none" if rc == 0 else "error"
+
+
+def _matches(rx, text):
+    """rx's matches in text that hold text: a zero-width match (a lookaround, `x?`) never counts, so a pattern the load
+    probes let through still cannot read a run with no such output as build, env, none or a count."""
+    return (m for m in rx.finditer(text) if m.end() > m.start()) if rx else iter(())
+
+
+def _first(rx, text):
+    return next(_matches(rx, text), None)
 
 
 def _holds(when, crate):

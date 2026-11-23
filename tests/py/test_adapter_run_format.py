@@ -168,6 +168,10 @@ class RunSideFormat(unittest.TestCase):
         self.bad(with_("run.name", {"placeholders": "x*", "any": ".*"}),
                  "run.name.placeholders: `x*` matches empty text: want a pattern that needs some output to match")
 
+    def test_a_pattern_whose_empty_match_needs_a_newline_is_named_at_load(self):
+        self.bad(with_("run.outcome.build", "(?<=\n)"),
+                 "run.outcome.build: `(?<=\n)` matches empty text: want a pattern that needs some output to match")
+
     def test_a_runners_subcommand_separator_and_when_names_are_checked(self):
         runner = {"name": "v", "match": "v"}
         self.bad(with_("run.runner", [dict(runner, subcommand={"after": "v"})]), "run.runner[0].subcommand.word: missing")
@@ -248,6 +252,11 @@ class RunSideBehaviour(unittest.TestCase):
                 f.write(text)
         return d
 
+    def test_an_optional_count_group_that_matched_nothing_counts_nothing(self):
+        a = self.adapter(outcome={"passed": r"(\d+)? passed", "failed": r"(\d+) failed"})
+        self.assertEqual(a.outcome(0, "all passed"), "none")
+        self.assertEqual(a.outcome(0, "3 passed"), "pass")
+
     def test_a_count_group_that_is_not_a_number_counts_nothing(self):
         a = self.adapter(outcome={"summary": r"^Result:(.*)$", "passed": r"(\w+) passed", "failed": r"(\w+) failed"})
         self.assertEqual(a.outcome(0, "Result: all passed"), "none")
@@ -295,6 +304,33 @@ class RunSideBehaviour(unittest.TestCase):
                          test=["{path}", "-t", "{name}"])
         self.assertEqual(a.test_argv("npx vt --silent", "t.mini", "t"), ["npx", "vt", "run", "--silent", "t.mini", "-t", "t"])
         self.assertEqual(a.test_argv("npm test", "t.mini", "t"), ["npm", "test", "run", "t.mini", "-t", "t"])
+
+    def test_a_name_part_is_escaped_with_no_placeholders_configured(self):
+        a = self.adapter(name={"escape": "\\^$.|?*+()[]{}/"}, test=["^{name}$"])
+        self.assertEqual(a.test_argv("minitest", "t.mini", "a.b (1)"), ["minitest", "^a\\.b \\(1\\)$"])
+
+    def test_a_placeholder_pattern_that_matches_only_empty_text_replaces_nothing(self):
+        a = self.adapter(name={"placeholders": "(?<=[a-w])", "any": ".*"}, test=["^{name}$"])  # loads: no probe has a-w
+        self.assertEqual(a.test_argv("minitest", "t.mini", "adds"), ["minitest", "^adds$"])
+
+    def test_outcome_patterns_count_only_on_a_match_that_holds_text(self):
+        a = self.adapter(outcome={"summary": "(?<=[a-w])", "passed": r"(\d+) passed", "failed": r"(\d+) failed",
+                                  "skipped": r"(?<=[a-w])()", "build": "(?<=[a-w])", "no_test": "(?=[A-Za-wyz])",
+                                  "env": "(?<=[a-w])"})
+        self.assertEqual(a.outcome(0, "No test files found"), "error")
+        self.assertEqual(a.outcome(0, "1 passed"), "error")  # the summary never matches text: no summary line
+        b = self.adapter(outcome={"passed": r"(\d+) passed", "failed": r"(\d+) failed", "build": "(?<=[a-w])",
+                                  "no_test": "(?=[A-Za-wyz])", "env": "(?<=[a-w])", "skipped": r"(?<=[a-w])(\d*)"})
+        self.assertEqual(b.outcome(0, "0 passed, nothing ran"), "none")
+        self.assertEqual(b.outcome(1, "0 passed, nothing ran"), "error")
+        self.assertEqual(b.outcome(0, "2 passed"), "pass")
+
+    def test_why_keeps_the_last_character_of_a_last_line_without_a_newline(self):
+        a = self.adapter(outcome=FULL_OUTCOME)
+        self.assertEqual(a.why("none", "banner\nno such test x"), "no such test x")
+        self.assertEqual(a.why("env", "runtime missing: erlang"), "runtime missing: erlang")
+        self.assertEqual(a.why("none", "banner\nno such test x\nmore"), "no such test x")
+        self.assertIsNone(a.why("fail", "no such test x"))
 
     def test_name_parts_are_escaped_and_placeholders_replaced(self):
         a = self.adapter(name={"escape": "().", "placeholders": r"%s", "any": "*"})

@@ -340,6 +340,16 @@ class MiniRunThroughTheFile(Fixture):
         self.assertEqual(entries, [("R1", "`Calc / fresh` cannot be proven red on the base's production code "
                                           "(none: no test named fresh)")])
 
+    def test_a_lookaround_build_pattern_never_turns_a_test_that_did_not_run_into_red(self):
+        with open(self.adapter) as f:
+            text = f.read()
+        with open(self.adapter, "w") as f:  # loads (no load probe has a-w before it), and matches no text at run time
+            f.write(text.replace("build = '^compile error'", "build = '(?<=[a-w])'"))
+        rc, checks, entries = self.mini("fresh skipped pass\n")
+        self.assertEqual((rc, checks["R1"]["status"]), (1, "fail"))
+        self.assertEqual(entries, [("R1", "`Calc / fresh` cannot be proven red on the base's production code "
+                                          "(none: 0 passed, 1 skipped)")])
+
 
 class RunUsage(Fixture):
     def test_red_and_all_with_a_file_that_has_no_run_table_are_usage_errors_naming_it(self):
