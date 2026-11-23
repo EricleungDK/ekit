@@ -168,6 +168,16 @@ class RunSideFormat(unittest.TestCase):
         self.bad(with_("run.name", {"placeholders": "x*", "any": ".*"}),
                  "run.name.placeholders: `x*` matches empty text: want a pattern that needs some output to match")
 
+    def test_a_runners_subcommand_separator_and_when_names_are_checked(self):
+        runner = {"name": "v", "match": "v"}
+        self.bad(with_("run.runner", [dict(runner, subcommand={"after": "v"})]), "run.runner[0].subcommand.word: missing")
+        self.bad(with_("run.runner", [dict(runner, subcommand={"word": "run", "after": ""})]),
+                 "run.runner[0].subcommand.after: want a non-empty string")
+        self.bad(with_("run.runner", [dict(runner, separator=3)]), "run.runner[0].separator: want a non-empty string")
+        for k in ("has", "lacks"):
+            self.bad(with_("run.runner", [dict(runner, command="v", when={"file": "p.json", "tables": ["d"], k: "x"})]),
+                     f"run.runner[0].when.{k}: want a list of non-empty strings")
+
     def test_a_path_with_a_backslash_is_not_under_the_project_dir(self):
         self.bad(with_("run.links", ["a\\b"]),
                  "run.links[0]: `a\\b`: want a path under the project dir (no .., not absolute)")
