@@ -1,6 +1,5 @@
 """R0 static half (#20): `mech-review.py r0` proves the stack adapter against the cheat suite and the negative controls,
 git and adapter only. Through cli.main in this process (R3's mutmut sees only in-process calls)."""
-import importlib.util
 import json
 import os
 import subprocess
@@ -78,10 +77,6 @@ MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r
 FUNCTIONS = '\n[functions]\nshapes = ["fn NAME (...) ...{...}"]\n'
 
 
-def has_tomllib():
-    return importlib.util.find_spec("tomllib") is not None  # adapter files need python 3.11+
-
-
 def adapter_copy(case, text):
     """an adapter file with this text in a temp dir (no fixture dir beside it): its path."""
     tmp = tempfile.TemporaryDirectory()
@@ -97,7 +92,6 @@ def mini_text():
         return f.read()
 
 
-@unittest.skipUnless(has_tomllib(), "adapter files need python 3.11+ (tomllib)")
 class AdapterFiles(unittest.TestCase):
     """C2, C3: R0 proves an adapter file the same way; a weak one fails and names the cheat or control it got wrong."""
 
@@ -257,7 +251,6 @@ status = "current"
 LIMITS = "max-mutants = 40\nmutation-budget = 10\n\n[proof]\ncensus = 100\nassert-density = 10\n"
 
 
-@unittest.skipUnless(has_tomllib(), "the plan and adapter files need python 3.11+ (tomllib)")
 class EditingRules(unittest.TestCase):
     """C6: editing the plan or an adapter file needs no person, except loosening a limit (max-mutants, mutation budget,
     census or assert-density threshold, the plan's ignore list) or changing a target OS: exactly one needs-human entry
