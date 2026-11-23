@@ -239,5 +239,84 @@ class AllRunsR0First(unittest.TestCase):
         self.assertEqual(env["summary"], f"fail {self.head} (1 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
 
 
+PLAN = """ignore = ["examples"]
+
+[[stack]]
+name = "app"
+folder = "."
+adapter = "python"
+status = "current"
+target-os = "linux"
+
+[[stack]]
+name = "mini"
+folder = "m"
+adapter = ".ekit/adapters/mini.toml"
+status = "current"
+"""
+LIMITS = "max-mutants = 40\nmutation-budget = 10\n\n[proof]\ncensus = 100\nassert-density = 10\n"
+
+
+@unittest.skipUnless(has_tomllib(), "the plan and adapter files need python 3.11+ (tomllib)")
+class EditingRules(unittest.TestCase):
+    """C6: editing the plan or an adapter file needs no person, except loosening a limit (max-mutants, mutation budget,
+    census or assert-density threshold, the plan's ignore list) or changing a target OS: exactly one needs-human entry
+    naming each. Tightening gives none."""
+
+    def setUp(self):
+        self.repo, _ = tmp_repo(self)
+        self.base = self.repo.commit({".ekit/stack-plan.toml": PLAN, ".ekit/adapters/mini.toml": LIMITS})
+
+    def entries(self, plan=PLAN, limits=LIMITS):
+        head = self.repo.commit({".ekit/stack-plan.toml": plan, ".ekit/adapters/mini.toml": limits})
+        r = r0(self.repo, self.base, head, "--stack", "python")
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        env = json.loads(r.stdout)
+        return r.returncode, [e for e in env["entries"]], env
+
+    def test_a_removed_limit_reads_its_default(self):
+        rc, ents, _ = self.entries(limits=LIMITS.replace("max-mutants = 40\n", ""))  # the default is 40: not looser
+        self.assertEqual(ents, [])
+        rc, ents, _ = self.entries(limits=LIMITS.replace("census = 100\n", "census = 100\nmax-mutants = 80\n").replace(
+            "max-mutants = 40\n", ""))
+        self.assertEqual(ents, [])
+
+    def test_tightening_every_limit_needs_no_person(self):
+        tight = LIMITS.replace("40", "60").replace("mutation-budget = 10", "mutation-budget = 20").replace(
+            "census = 100", "census = 100").replace("assert-density = 10", "assert-density = 5")
+        rc, ents, env = self.entries(plan=PLAN.replace('ignore = ["examples"]', "ignore = []"), limits=tight)
+        self.assertEqual((rc, ents, env["checks"]["R0"]["status"]), (0, [], "pass"))
+
+    def test_loosening_a_limit_and_changing_a_target_os_give_exactly_one_needs_human_entry(self):
+        loose = LIMITS.replace("max-mutants = 40", "max-mutants = 20").replace("assert-density = 10",
+                                                                              "assert-density = 30")
+        plan = PLAN.replace('ignore = ["examples"]', 'ignore = ["examples", "src"]').replace(
+            'target-os = "linux"', 'target-os = "windows"')
+        rc, ents, env = self.entries(plan=plan, limits=loose)
+        self.assertEqual(rc, 1)
+        self.assertEqual([(e["check"], e["class"], e["severity"], e["file"]) for e in ents],
+                         [("R0", "needs-human", "fail", ".ekit/stack-plan.toml")])
+        self.assertEqual(ents[0]["problem"], "a person decides: `ignore` gains `src` in .ekit/stack-plan.toml; stack `app` "
+                                             "target-os linux -> windows in .ekit/stack-plan.toml; `max-mutants` 40 -> 20 "
+                                             "in .ekit/adapters/mini.toml; `proof.assert-density` 10 -> 30 in "
+                                             ".ekit/adapters/mini.toml")
+
+    def test_each_loosening_alone_is_named(self):
+        cases = [
+            (LIMITS.replace("mutation-budget = 10", "mutation-budget = 5"),
+             "`mutation-budget` 10 -> 5 in .ekit/adapters/mini.toml"),
+            (LIMITS.replace("census = 100", "census = 90"), "`proof.census` 100 -> 90 in .ekit/adapters/mini.toml"),
+            (LIMITS.replace("max-mutants = 40\n", "max-mutants = 41\n").replace("[proof]\n", "[proof]\nmax_mutants = 3\n"),
+             "`proof.max_mutants` 40 (default) -> 3 in .ekit/adapters/mini.toml"),
+            ('target-os = "macos"\n' + LIMITS, "adapter file .ekit/adapters/mini.toml target-os linux -> macos"),
+        ]
+        for limits, want in cases:
+            with self.subTest(want=want):
+                rc, ents, _ = self.entries(limits=limits)
+                self.assertEqual(len(ents), 1)
+                self.assertEqual(ents[0]["class"], "needs-human")
+                self.assertIn(want, ents[0]["problem"])
+
+
 if __name__ == "__main__":
     unittest.main()

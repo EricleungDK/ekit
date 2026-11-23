@@ -1,4 +1,6 @@
 """Mechanical review engine: runs the checks a subcommand asks for and builds the contract envelope."""
+import os
+
 from . import mutants, r0 as r0_mod, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
@@ -34,9 +36,19 @@ def r0(repo, base_ref, head_ref, stack, test_globs, adapter=None, adapter_path=N
     """The `r0` subcommand: R0's static half as an envelope (the other checks skipped, `not run by r0`)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
     check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir)
+    raw += _edit_rules(repo, mb, head, check, [adapter_path] if adapter_path else [])
     checks = {c: {"status": "skipped", "note": "not run by r0"} for c in CHECKS}
     checks["R0"] = check
     return envelope(base, head, finalize(raw), checks)
+
+
+def _edit_rules(repo, mb, head, check, adapter_paths):
+    """R0's editing rules on mb..head: the needs-human entry, if any; it fails the R0 check (it blocks nothing)."""
+    out = r0_mod.editing(repo, mb, head, [p for p in adapter_paths if not os.path.isabs(p)])
+    if out:
+        check["status"] = "fail"
+        check["note"] += "; a person decides: a limit loosened or a target OS changed"
+    return out
 
 
 def plan(repo, base_ref, head_ref, stack, test_globs):
@@ -78,7 +90,7 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     raw = []
     if "R0" in want:
         checks["R0"], more = prove(stack, test_globs, adapter, None, fixtures_dir)
-        raw += more
+        raw += more + _edit_rules(repo, mb, head, checks["R0"], [])
         blocked = r0_mod.blocked(checks["R0"], want)
         checks.update(blocked)
         want = tuple(c for c in want if c not in blocked)

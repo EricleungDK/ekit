@@ -26,6 +26,7 @@ changing a target OS needs a person: one `needs-human` entry naming each. Tighte
 The runtime half (#21: census, assert density, runner controls, the fingerprint) builds on this module: a new half adds
 its cases with its own kind and its own BLOCKS entry; `static` stays git and adapter only.
 """
+import importlib.util
 import json
 import os
 import re
@@ -340,6 +341,123 @@ def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
                                     "PR under review never edits its own checker",
                              "tuning the adapter or its fixtures until this PR passes"))
     return check, entries
+
+
+PLAN = ".ekit/stack-plan.toml"  # stack_plan.PATH (r0 sits below stack_plan in the layering)
+# a limit: (which way is looser, its default when a file names none). Spelled with - or _, with or without -threshold,
+# at any table level of an adapter file (#13's proposed defaults: max-mutants 40, census 100%, assert density 10%)
+LIMITS = {"max-mutants": ("lower", 40), "mutation-budget": ("lower", 10), "census": ("lower", 100),
+          "assert-density": ("higher", 10)}
+
+
+def _limit(key):
+    k = key.lower().replace("_", "-")
+    k = k[:-len("-threshold")] if k.endswith("-threshold") else k
+    return k if k in LIMITS else None
+
+
+def limits(data, prefix=""):
+    """{dotted key: (limit name, value)} of every number a TOML table holds under a LIMITS name, at any depth."""
+    out = {}
+    items = data.items() if isinstance(data, dict) else enumerate(data) if isinstance(data, list) else ()
+    for k, v in items:
+        path = f"{prefix}.{k}" if prefix and isinstance(k, str) else f"{prefix}[{k}]" if prefix else str(k)
+        if isinstance(v, (dict, list)):
+            out.update(limits(v, path))
+        elif isinstance(k, str) and _limit(k) and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[path] = (_limit(k), v)
+    return out
+
+
+def _fmt(v):
+    return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+
+
+def _looser(base, head):
+    """[text] for each limit head loosens against base (a missing limit reads its default)."""
+    out = []
+    for path in sorted(set(base) | set(head)):
+        name = (base.get(path) or head.get(path))[0]
+        way, default = LIMITS[name]
+        b = base[path][1] if path in base else default
+        h = head[path][1] if path in head else default
+        if (h < b) if way == "lower" else (h > b):
+            out.append(f"`{path}` {_fmt(b)}{'' if path in base else ' (default)'} -> {_fmt(h)}"
+                       f"{'' if path in head else ' (default)'}")
+    return out
+
+
+def _blob(repo, sha, path):
+    """the file's bytes at sha, or None when it is not a file there."""
+    try:
+        if gitio.git(repo, "cat-file", "-t", f"{sha}:{path}").strip() != "blob":
+            return None
+    except gitio.Die:
+        return None
+    return gitio.blob(repo, sha, path).encode("utf-8", "surrogateescape")
+
+
+def _toml(raw):
+    """the table a TOML file's bytes hold, or None (no file, not TOML: the drift check and R0's proof name those)."""
+    if raw is None:
+        return None
+    try:
+        import tomllib
+        return tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
+    except (ValueError, RecursionError):  # TOMLDecodeError and UnicodeDecodeError are ValueErrors
+        return None
+
+
+def _stacks(plan):
+    return [s for s in (plan or {}).get("stack") or [] if isinstance(s, dict)]
+
+
+def editing(repo, mb, head, adapter_paths=()):
+    """The editing rules: [one needs-human entry] when mb..head loosens a limit or changes a target OS in the stack plan
+    or an adapter file (the plan's at either side, and adapter_paths), else []. A file missing on one side is new or
+    gone: the drift check judges that. Without tomllib (python < 3.11) a changed plan or adapter file is the entry:
+    it cannot be read, so it is never passed silently."""
+    raw = {side: {PLAN: _blob(repo, sha, PLAN)} for side, sha in (("base", mb), ("head", head))}
+    if importlib.util.find_spec("tomllib") is None:  # the plan and adapter files are TOML
+        changed = [p for p in [PLAN, *adapter_paths] if _blob(repo, mb, p) != _blob(repo, head, p)]
+        items = [f"{p} changed and cannot be read here (needs python 3.11+ for TOML)" for p in changed]
+        return _editing_entry(changed[:1], items)
+    plans = {side: _toml(raw[side][PLAN]) for side in raw}
+    paths = list(dict.fromkeys([s.get("adapter") for side in plans for s in _stacks(plans[side])
+                                if isinstance(s.get("adapter"), str) and ("/" in s["adapter"]
+                                                                          or s["adapter"].endswith(".toml"))]
+                               + list(adapter_paths)))
+    items, files = [], []
+    if plans["base"] is not None and plans["head"] is not None:
+        b_ign = [str(x).strip("/") for x in plans["base"].get("ignore") or [] if isinstance(x, str)]
+        gained = [str(x).strip("/") for x in plans["head"].get("ignore") or []
+                  if isinstance(x, str) and str(x).strip("/") not in b_ign]
+        items += [f"`ignore` gains `{g}` in {PLAN}" for g in gained]
+        b_os = {s.get("name"): s.get("target-os") for s in _stacks(plans["base"])}
+        for s in _stacks(plans["head"]):
+            if s.get("name") in b_os and s.get("target-os") != b_os[s.get("name")]:
+                items.append(f"stack `{s.get('name')}` target-os {b_os[s.get('name')] or 'unset'} -> "
+                             f"{s.get('target-os') or 'unset'} in {PLAN}")
+        files += [PLAN] if items else []
+    for p in paths:
+        b, h = _toml(_blob(repo, mb, p)), _toml(_blob(repo, head, p))
+        if b is None or h is None:
+            continue
+        mine = [f"{t} in {p}" for t in _looser(limits(b), limits(h))]
+        if b.get("target-os", "linux") != h.get("target-os", "linux"):
+            mine.append(f"adapter file {p} target-os {b.get('target-os', 'linux')} -> {h.get('target-os', 'linux')}")
+        items += mine
+        files += [p] if mine else []
+    return _editing_entry(files[:1], items)
+
+
+def _editing_entry(files, items):
+    if not items:
+        return []
+    return [entry("R0", files[0] if files else PLAN, 0, "loosened:" + "\0".join(items), "needs-human", "fail",
+                  "a person decides: " + "; ".join(items),
+                  "a looser limit or a new target OS is a person's call: move it to a PR of its own for them to approve "
+                  "(a tighter limit needs no one)", "loosening a check's limit or moving its runner to pass the gate")]
 
 
 def blocked(check, names):
