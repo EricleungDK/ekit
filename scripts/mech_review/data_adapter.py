@@ -340,7 +340,8 @@ class DataAdapter(Adapter):
 
     def _count(self, key, text):
         rx = self._rx.get(key)
-        return sum(int(m.group(1)) for m in _matches(rx, text) if (m.group(1) or "").isdigit()) if rx else 0
+        groups = (m.group(1) for m in _matches(rx, text))  # no pattern: no match; an optional group may be None
+        return sum(int(g) for g in groups if g is not None and g.isdigit())
 
     def why(self, verdict, out):
         """the output line a run's verdict came from, when a pattern decided it (env, no_test: what the note or entry
