@@ -395,8 +395,7 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
 
 # ---- #18 trust: an adapter file's commands ([commands], [run]) run only through the subcommands that run tests (red,
 # all, mutants, baseline), and those run only in red-first, baseline and mutants (their contents: read token is checked
-# above). Workflow values (inputs, an adapter's, any job's or step's output) reach a step's run: body only through
-# env: no `${{ }}` in any run: body. The workflow passes no adapter file yet: these hold the rule for when it does ----
+# above). Workflow values (inputs, an adapter's, any job's or step's output) reach a shell only through env ----
 RUNS_PR_CODE = ("red-first", "baseline", "mutants")
 for job_name in sorted(child_keys(jobs)):
     subs = re.findall(r'mech-review\.py"?\s+(\w+)', text(block(jobs, job_name) or []))
@@ -404,39 +403,87 @@ for job_name in sorted(child_keys(jobs)):
         check(f"{job_name}: runs no subcommand that runs an adapter's commands (red, all, mutants, baseline)",
               not {"red", "all", "mutants", "baseline"} & set(subs), str(subs))
 
+# An allowlist over EVERY line that holds `${{`, fail closed: such a line passes only as a plain `key: value` line (an
+# optional `- `, a bare unquoted key, a value that is no flow mapping or sequence), outside any block scalar (a run: |
+# body, or any other `|` / `>` value), with a key its parent allows. The keys are the non-shell ones the workflows use
+# today (derived from the files; a new one is added here on purpose). Any other form, a quoted key, a flow mapping, a
+# `run:` that is not a job output, is a fail: so no YAML spelling gets a value into a shell without env.
+WF_KEY = re.compile(r"^( *)(- +)?([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$")
+WF_BLOCK = re.compile(r"^[|>][-+0-9]*\s*(#.*)?$")
+WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+WF_ALLOWED = {
+    "env": WF_ENV,                                                          # an env var: the only way into a shell
+    "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
+    "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout"},  # job outputs
+    "matrix": {"shard"},
+    "concurrency": {"group"},
+    None: {"if", "runs-on", "name"},                                        # job and step keys, under any other parent
+}
 
-def run_interpolations(lines):
-    """the `${{ }}` lines inside a step's run: (the key's own line and its block). A job's `outputs: run:` is no step."""
-    out = []
-    for n, line in enumerate(lines):
-        m = re.match(r"(\s*)(- )?run:(.*)$", line)
+
+def interpolations(lines):
+    """[(line no, why, line)] for each `${{` line the allowlist above refuses."""
+    out, stack, block_at = [], [], None
+    for n, line in enumerate(lines, 1):
+        ind, s = indent(line), line.strip()
+        if block_at is not None:
+            if not s or ind > block_at:
+                if "${{" in line:
+                    out.append((n, "inside a block scalar", s))
+                continue
+            block_at = None
+        if not s or s.startswith("#"):
+            continue
+        m = WF_KEY.match(line)
         if not m:
+            if "${{" in line:
+                out.append((n, "not a plain key: value line", s))
             continue
-        key_at = len(m.group(1)) + (2 if m.group(2) else 0)
-        parent = next((l for l in reversed(lines[:n]) if meaningful(l) and indent(l) < key_at), "")
-        if not m.group(2) and parent.strip() == "outputs:":
+        col, key, val = len(m.group(1)) + len(m.group(2) or ""), m.group(3), m.group(4) or ""
+        while stack and stack[-1][0] >= col:
+            stack.pop()
+        parent = stack[-1][1] if stack else None
+        stack.append((col, key))
+        if WF_BLOCK.match(val):
+            block_at = col
+        if "${{" not in line:
             continue
-        body = [m.group(3)]
-        for later in lines[n + 1:]:
-            if meaningful(later) and indent(later) <= key_at:
-                break
-            body.append(later)
-        out += [b.strip() for b in body if "${{" in b]
+        rule = WF_ALLOWED.get(parent, WF_ALLOWED[None])
+        ok = rule.match(key) is not None if hasattr(rule, "match") else key in rule
+        if val.lstrip().startswith(("{", "[")):
+            ok = False
+        if not ok:
+            out.append((n, f"`{key}` under `{parent}`", s))
     return out
 
 
-check("workflow values: reach a run: body only through env (no ${{ }} in any step's run:)",
-      run_interpolations(W) == [], str(run_interpolations(W)))
-# live: the check catches an input or an adapter value interpolated into a run: body, on a line or in a block
+# every workflow file: mech-review.yml runs PR code (red-first, baseline, mutants); mech-waive.yml runs none (its only
+# checkout is the ekit engine) but holds the same rule; the self callers, tests.yml and release.yml hold no `${{` line
+for wf in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
+    if wf.endswith((".yml", ".yaml")):
+        got = interpolations(read(f".github/workflows/{wf}"))
+        check(f"{wf}: every ${{{{ }}}} line is an allowed non-shell key (values reach a shell only through env)",
+              got == [], str(got))
+# live: each escaping form is caught, one at a time, spliced into red-first's steps
 red_line = next(l for l in W if 'mech-review.py" red' in l)
-for name, bad in (("an input on the red line", red_line + ' --test-command "${{ inputs.test-command }}"'),
-                  ("an undeclared input inside the red command", red_line.replace("red", "red --stack ${{ inputs.stack-def }}", 1))):
-    mutated = [bad if l == red_line else l for l in W]
-    check(f"workflow values check is live: {name} is caught", len(run_interpolations(mutated)) == 1,
-          str(run_interpolations(mutated)))
-one_line = ["      - name: x", "        run: echo ${{ inputs.adapter }}"]
-check("workflow values check is live: a one-line run: is caught", run_interpolations(one_line) == ["echo ${{ inputs.adapter }}"],
-      str(run_interpolations(one_line)))
+at = W.index("  red-first:")
+at = next(k for k in range(at, len(W)) if W[k] == "    steps:") + 1
+BAD = {
+    "an input appended in the red command's run block": ("replace", red_line + ' --test-command "${{ inputs.test-command }}"'),
+    "an undeclared input inside the red command": ("replace", red_line.replace("red", "red --stack ${{ inputs.stack-def }}", 1)),
+    "a one-line run:": ("insert", ["      - name: x", "        run: echo ${{ inputs.adapter }}"]),
+    "a run: after two spaces": ("insert", ["      -  run: echo ${{ inputs.setup-command }}"]),
+    "a flow-mapping step": ("insert", ['      - {name: y, run: "echo ${{ inputs.setup-command }}"}']),
+    "a quoted run key": ("insert", ['      - "run": echo ${{ inputs.setup-command }}']),
+    "a flow-mapping env": ("insert", ["      - name: z", "        env: {X: ${{ inputs.setup-command }}}", "        run: echo"]),
+    "a script input": ("insert", ["      - uses: actions/github-script@v7", "        with:",
+                                  "          script: console.log('${{ inputs.setup-command }}')"]),
+    "a folded run block": ("insert", ["      - name: f", "        run: >", "          echo ${{ inputs.adapter }}"]),
+}
+for name, (how, bad) in BAD.items():
+    mutated = [bad if l == red_line else l for l in W] if how == "replace" else W[:at] + bad + W[at:]
+    check(f"workflow values check is live: {name} is caught", len(interpolations(mutated)) == 1,
+          str(interpolations(mutated)))
 
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"
