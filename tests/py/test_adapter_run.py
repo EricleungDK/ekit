@@ -360,6 +360,34 @@ class RunUsage(Fixture):
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("commands.test: `vitest 'run`: unbalanced quotes (No closing quotation)", r.stderr)
 
+    def test_a_declared_none_build_command_is_named_in_the_result(self):
+        base, head = self.ts_repo("fresh fail pass\n")
+        env = json.loads(self.red(base, head).stdout)
+        self.assertEqual(env["notes"], ['adapter file declares no build command (commands.build = "")'])
+        text = self.red(base, head, "--format", "text").stdout
+        self.assertIn('\nnote: adapter file declares no build command (commands.build = "")', text)
+
+    def test_declared_none_install_and_build_commands_are_both_named(self):
+        with open(TS_FILE) as f:
+            text = f.read()
+        bare = os.path.join(self.tmp, "ts.toml")
+        with open(bare, "w") as f:
+            f.write(text.replace('install = "npm ci"', 'install = ""'))
+        head = self.commit({"tests/calc.test.ts": TEST})
+        env = json.loads(self.red(head, head, adapter=bare, check="r2").stdout)
+        self.assertEqual(env["notes"], ['adapter file declares no install command (commands.install = "")',
+                                        'adapter file declares no build command (commands.build = "")'])
+
+    def test_an_adapter_that_names_every_command_has_no_notes(self):
+        head = self.commit({"tests/calc.mini": MINI_TEST})
+        with open(MINI) as f:
+            text = f.read()
+        full = os.path.join(self.tmp, "mini.toml")
+        with open(full, "w") as f:
+            f.write(text + MINI_RUN)
+        self.assertEqual(json.loads(self.red(head, head, adapter=full, stack="mini").stdout)["notes"], [])
+        self.assertNotIn("notes", json.loads(self.red(head, head, adapter=None, check="r2").stdout))
+
     def test_r3_through_a_file_is_a_usage_error(self):
         head = self.commit({"tests/calc.test.ts": TEST})
         for check in ("mutants", "baseline"):

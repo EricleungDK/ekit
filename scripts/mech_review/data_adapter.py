@@ -277,6 +277,11 @@ class DataAdapter(Adapter):
         return None
 
     # ---- the run side: [run] and [commands] (R1, R4) ----
+    def notes(self):
+        """what the result says about the file's [commands]: each of install and build it declares as none ("")."""
+        return [f'adapter file declares no {k} command (commands.{k} = "")' for k in ("install", "build")
+                if k in self.commands and not self.commands[k].strip()]
+
     def test_cmd_in(self, crate):
         """the command of the first runner whose `when` holds in the crate dir, else [commands].test."""
         for r in self.run.get("runner", []):

@@ -479,21 +479,21 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 | `lint` | lints the project |
 | `test` | runs the whole test suite. R1 and R4 start every one-test run from it (`--test-cmd` replaces it); with `[run]` it may not be `""` |
 
-R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them.
+R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them. Each command is split as the engine splits it (shell words), so unbalanced quotes are a load error that names the field. A declared-none `install` or `build` is named in the result of every run with `--adapter`: the JSON envelope's `notes` list (`adapter file declares no build command (commands.build = "")`; `[]` when the file names both) and a `note:` line under the summary in text format.
 
 `[run]` (optional; without it the file is R2 only): how one named test runs and how its result reads.
 
 | Key | Value |
 |---|---|
 | `test` | words put after the test command's words to run one test: `["{path}", "-t", "^{name}$"]`. `{path}` is the test's file (project-dir relative), `{name}` the runner's name for the test; at least one word has `{name}`. Plain placeholders only, as in the R2 templates |
-| `links` | optional: paths (project-dir relative) linked from the caller's checkout into each R1/R4 worktree, when the caller has them and the commit does not (an install git ignores: `["node_modules"]`). The caller's copy is never changed |
+| `links` | optional: directories (project-dir relative) linked from the caller's checkout into each R1/R4 worktree, when the caller has them as directories and the commit does not (an install git ignores: `["node_modules"]`). The caller's copy is never changed |
 | `[run.name]` | optional: how a name part becomes the runner's text. `escape`: characters that get a backslash before them (a regex filter: `'\^$.|?*+()[]{}/'`); `placeholders`: a regex for parts of a name that stand for any value (`it.each`'s `%s`), no capturing group; `any`: what a placeholder becomes (`.*`). Without it the name is passed as it is |
-| `[[run.runner]]` | optional, one table per runner of the stack (vitest, jest). `name`; `match`: text in one of the command's words that makes the command this runner's (one without `match` takes any command, so it comes last); `command` and `when`: the command for a checkout where `when` holds; `subcommand`: `{ word, after }`, a word put in after the first command word holding `after` (else at the end) when the command lacks it (vitest's `run`); `separator`: how the runner joins group and test names (default `tests.separator`) |
+| `[[run.runner]]` | optional, one table per runner of the stack (vitest, jest). `name`; `match`: text in one of the command's words that makes the command this runner's (one without `match` takes any command, so it comes last); `command` and `when`, together (one without the other is a load error: it would never be used): the command for a checkout where `when` holds (not blank); `subcommand`: `{ word, after }`, a word put in after the first command word holding `after` (else at the end) when the command lacks it (vitest's `run`); `separator`: how the runner joins group and test names (default `tests.separator`) |
 | `[run.outcome]` | how a run's output reads (below) |
 
-The test's qualified name is split at `tests.separator`, each part quoted by `[run.name]`, and the parts joined by the runner's `separator`. The runner for the argv is the first `[[run.runner]]` whose `match` is in a word of the command; the command for a checkout is the first runner whose `when` holds in the project dir, else `commands.test`. `when` is `{ file }` (the file is there) or `{ file, tables, has, lacks }`: the file is JSON, and its `tables` (`["dependencies", "devDependencies"]`) hold every `has` name and no `lacks` name. A file that is missing or not JSON never holds.
+The test's qualified name is split at `tests.separator`, each part quoted by `[run.name]`, and the parts joined by the runner's `separator`. The runner for the argv is the first `[[run.runner]]` whose `match` is in a word of the command; the command for a checkout is the first runner whose `when` holds in the project dir, else `commands.test`. `when` is `{ file }` (the file is there; a name with an empty or `.` part, such as `./`, is a load error) or `{ file, tables, has, lacks }`: the file is JSON, and its `tables` (`["dependencies", "devDependencies"]`) hold every `has` name and no `lacks` name. A file that is missing or not JSON never holds.
 
-`[run.outcome]`: python regexes over the runner's output (multiline: `^` and `$` match at line ends), compiled at load, so a bad one is a load error that names it.
+`[run.outcome]`: python regexes over the runner's output (multiline: `^` and `$` match at line ends), compiled at load, so a bad one is a load error that names it. So is a pattern with a zero-width match (`x?`, `a*`, `^`, `\b`): it would match a run with no output to speak of, and read a test that never ran as `build` (red on the base) or every run as `env`. The same holds for `[run.name] placeholders`.
 
 | Key | Value |
 |---|---|
@@ -501,8 +501,8 @@ The test's qualified name is split at `tests.separator`, each part quoted by `[r
 | `summary` | optional: the counts are read from the last line it matches (its capturing group, when it has one: `'^\s*Tests\b:?(.*)$'`); without it, from the whole output |
 | `skipped` | optional: a skipped count, read like `passed` |
 | `build` | optional: the code did not build or load (`Cannot find module`) |
-| `no_test` | optional: the runner found no test of that name |
-| `env` | optional: the runner started but its toolchain is missing; the run is `n/a (env)` and its note quotes the first output line |
+| `no_test` | optional: the runner found no test of that name; R1's and R4's entries quote the line it matched |
+| `env` | optional: the runner started but its toolchain is missing; the run is `n/a (env)` and its note quotes the line the pattern matched |
 
 The verdict of one run, in this order: no executable is `env` (the note names the executable and the install command); a timeout is `timeout`; `env` matches is `env`; a failed count is `fail`; a passed count is `pass` at exit 0, `fail` at any other exit; `build` matches is `build` (on the base's code: compile-red, which counts as red); `no_test` matches is `none`; no count read at all (no summary line, or no count pattern matched) is `error`; a skipped count is `none`; counts that are all 0 are `none` at exit 0, `error` otherwise. So `pass` needs a counted passed test: a test that did not run reads `none`, never `pass`. R1 and R4 read these verdicts exactly as they read the built-ins'.
 

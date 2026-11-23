@@ -179,7 +179,7 @@ def build_parser():
 
 
 def render_text(env):
-    lines = [env["summary"]]
+    lines = [env["summary"]] + [f"note: {n}" for n in env.get("notes", [])]
     for e in env["entries"]:
         lines.append(f"{e['severity']} {e['id']} {e['file']}:{e['line']} {e['problem']}")
         lines.append(f"  hint: {e['hint']}")
@@ -439,6 +439,8 @@ def main(argv):
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    if adapter is not None:  # #18: a command the file declares as none is named, so a missing step is never silent
+        env["notes"] = adapter.notes()
     if args.format == "json":
         print(json.dumps(env, indent=2))
     else:
