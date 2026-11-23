@@ -32,15 +32,15 @@ on:
           copilot/
           cursor/
       mutation-budget:
-        description: "R3 budget in minutes per mutants shard, and for the baseline step (cargo-mutants on the diff); a budget hit is partial, not a failure; a baseline that does not finish in it is n/a"
+        description: "R3 budget in minutes per mutants shard, and for the baseline step (rust: cargo-mutants' baseline; python: the suite run and mutmut's listing, each within it, so up to about twice it); a budget hit is partial, not a failure; a baseline that does not finish in it is n/a (rust) or keeps one shard per changed file (python)"
         type: string
         default: "10"
       max-mutants:
-        description: "R3 cap: the most mutants tested per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last); the rest are untested and R3 reads partial (tested/total). rust and python; ts does not apply it (Stryker lists no mutant before its run)"
+        description: "R3 cap: the most mutants tested per PR, riskiest first (branch conditions, then returns and boolean literals, then arithmetic, then the rest, string and argument mutants last); the rest are untested and R3 reads partial (tested/total). rust and python by mutant; ts by changed lines, riskiest first, counted by Stryker's own instrumenter before the run"
         type: string
         default: "40"
       extra-apt-packages:
-        description: "apt packages (space-separated) installed in red-first, mutants and (rust) baseline, before the tests run"
+        description: "apt packages (space-separated) installed in red-first, mutants and (rust, python) baseline, before the tests run; Linux runners only"
         type: string
         default: ""
       project-dir:
@@ -48,7 +48,7 @@ on:
         type: string
         default: "."
       setup-command:
-        description: "shell command (run with bash) before the tests in red-first, mutants and (rust) baseline, after extra-apt-packages; a failure stops that job. Set it in the caller's workflow file only (trusted)"
+        description: "shell command (run with bash) before the tests in red-first, mutants and (rust, python) baseline, after extra-apt-packages; a failure stops that job. Set it in the caller's workflow file only (trusted)"
         type: string
         default: ""
       mutant-timeout:
@@ -383,7 +383,7 @@ jobs:
     needs: [stack, plan]
     if: ${{ needs.plan.outputs.run == 'true' }}
     runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
-    # rust: runs PR code (cargo-mutants lists the mutants and runs the unmutated tests once): read-only token, as the
+    # rust and python: runs PR code (the unmutated tests once, and the mutation tool's listing): read-only token, as the
     # other PR-code jobs. Sets the shard count and the per-mutant timeout the mutants shards use (#46).
     permissions:
       contents: read
@@ -407,13 +407,29 @@ jobs:
           ref: ${{ job.workflow_sha }}
           path: ekit
           persist-credentials: false
+      - name: Python toolchain
+        if: needs.stack.outputs.stack == 'python'
+        env:
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+        run: |
+          set -eu
+          case "$PROJECT_DIR" in /*|..|../*|*/..|*/../*) echo "::error::project-dir $PROJECT_DIR: want a dir under the repo root"; exit 2 ;; esac
+          # the venv the mutants job uses: the baseline runs the suite once and mutmut's listing (#64)
+          python3 -m venv "$RUNNER_TEMP/py-venv"
+          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet "pytest==9.2.0" "mutmut==3.8.1"
+          cd "$GITHUB_WORKSPACE/caller/$PROJECT_DIR"
+          for f in requirements*.txt; do
+            [ -e "$f" ] || continue
+            "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet -r "$f"
+          done
+          echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: Rust toolchain
         if: needs.stack.outputs.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: extra apt packages
-        if: runner.os == 'Linux' && needs.stack.outputs.stack == 'rust' && inputs.extra-apt-packages != ''
+        if: runner.os == 'Linux' && (needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python') && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -422,7 +438,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq "${pkgs[@]}"
       - name: setup command
-        if: needs.stack.outputs.stack == 'rust' && inputs.setup-command != ''
+        if: (needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python') && inputs.setup-command != ''
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         shell: bash
@@ -435,7 +451,7 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: R3 baseline (once; shard count, derived timeout)
-        # rust: cargo-mutants' unmutated baseline. python and ts: the shard count from the changed files (git only).
+        # rust: cargo-mutants' unmutated baseline. python: the whole suite once and mutmut's listing (#64). ts: the shard count from the changed files (git only).
         id: baseline
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -454,7 +470,7 @@ jobs:
             export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
           fi
           # the most shards: 4. rust: min(4, mutants under max-mutants, ceil(estimated minutes / (budget / 2))), the
-          # estimate from the measured baseline; python and ts: one per changed production file, at most 4 (#26)
+          # estimate from the measured baseline (rust, python); ts: one per changed production file, at most 4 (#26, #64)
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
                 --mutation-budget "$MUTATION_BUDGET" --max-mutants "$MAX_MUTANTS" --project-dir "$PROJECT_DIR" --shards 4)
           while IFS= read -r g; do
