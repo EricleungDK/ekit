@@ -330,7 +330,8 @@ class BadAdapterNames(unittest.TestCase):
                              f"inputs in the mech-review caller"}), r.stderr)
 
 
-NOT_BUILT = "stack `mini` is the repo's adapter file: {} through an adapter file is not built yet (#18, #19)"
+NOT_BUILT = "stack `mini` is the repo's adapter file: {} through an adapter file is not built yet (#19)"
+NO_RUN = "stack `mini` is the repo's adapter file, which has no [run] table: {} runs through [run] (#18)"
 
 
 class RunSideNotBuilt(unittest.TestCase):
@@ -352,8 +353,8 @@ class RunSideNotBuilt(unittest.TestCase):
         r, env = self.cli("red")
         self.assertEqual((r.returncode, env["entries"]), (0, []), r.stderr)
         self.assertEqual({c: env["checks"][c] for c in ("R1", "R4")},
-                         {"R1": {"status": "n/a", "note": NOT_BUILT.format("R1")},
-                          "R4": {"status": "n/a", "note": NOT_BUILT.format("R4")}})
+                         {"R1": {"status": "n/a", "note": NO_RUN.format("R1")},
+                          "R4": {"status": "n/a", "note": NO_RUN.format("R4")}})
         self.assertEqual(env["summary"], f"pass {self.head} (0 fail, 0 confirm; ran: none; skipped: R2 R3; n/a: R1 R4)")
         self.assertTrue(r.stdout.startswith('{\n  "ekit": '), r.stdout[:20])  # the same JSON form as every check
 
