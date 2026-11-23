@@ -264,6 +264,22 @@ class RustAdapter(Adapter):
             return None
         return "test" if any_glob(path, test_globs) else "prod"
 
+    def parse_error(self, text):
+        """(line, message) for the first bracket that does not balance in the masked text (comments and literals
+        blanked), else None: the scan cannot read such a file (#20)."""
+        m = mask(text)
+        stack = []
+        for i, ch in enumerate(m):
+            if ch in OPEN:
+                stack.append(i)
+            elif ch in CLOSE:
+                if not stack or OPEN.index(m[stack[-1]]) != CLOSE.index(ch):
+                    return (text.count("\n", 0, i) + 1, f"unexpected `{ch}`")
+                stack.pop()
+        if stack:
+            return (text.count("\n", 0, stack[-1]) + 1, f"`{m[stack[-1]]}` is never closed")
+        return None
+
     @staticmethod
     def _body(m, pos):
         """(open, close) of the fn body whose signature starts at pos, or None (declaration only)."""

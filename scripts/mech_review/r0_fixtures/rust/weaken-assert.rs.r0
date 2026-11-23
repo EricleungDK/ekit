@@ -1,0 +1,16 @@
+// R0 seed (rust): each test is a run of non-blank lines; `adds` has two asserts, each on its own line.
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[test]
+fn adds() {
+    let x = add(1, 2);
+    assert_eq!(x, 3);
+    assert_ne!(x, 4);
+}
+
+#[test]
+fn adds_zero() {
+    assert!(add(0, 2) > 0);
+}

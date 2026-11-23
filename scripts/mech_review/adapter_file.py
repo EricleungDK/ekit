@@ -439,6 +439,20 @@ def _run(d):
     return compiled
 
 
+# [limits] (#20): the check limits a stack sets; R0's editing rules need a person for a looser one. Range per key.
+LIMIT_KEYS = {"max-mutants": (1, None), "mutation-budget": (1, None), "assert-density": (0, 100), "census": (0, 100)}
+
+
+def limits(d):
+    """{key: whole number} of a [limits] table, each validated (AdapterFileError names the field)."""
+    _table(d, "limits", tuple(LIMIT_KEYS))
+    for k, v in d.items():
+        lo, hi = LIMIT_KEYS[k]
+        if type(v) is not int or v < lo or (hi is not None and v > hi):
+            _err(f"limits.{k}", f"want a whole number >= {lo}" if hi is None else f"want a whole number from {lo} to {hi}")
+    return dict(d)
+
+
 def target_os(v, field="target-os"):
     """one of TARGET_OS, exactly (no case folding: the value is passed on to the workflow as it is)."""
     _str(v, field)
@@ -450,8 +464,8 @@ def target_os(v, field="target-os"):
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
-                      "suppressions", "mutation", "commands", "run"), ("format", "name", "extensions", "lexer", "tests",
-                                                                       "asserts"))
+                      "suppressions", "mutation", "limits", "commands", "run"), ("format", "name", "extensions", "lexer",
+                                                                                 "tests", "asserts"))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
@@ -479,7 +493,9 @@ def parse(data):
     if "commands" in data:
         _commands(data["commands"], "run" in data)
     patterns = _run(data["run"]) if "run" in data else None
-    return DataAdapter(data, lexer, shapes, patterns)
+    adapter = DataAdapter(data, lexer, shapes, patterns)
+    adapter.limits = limits(data.get("limits", {}))
+    return adapter
 
 
 def load(path):

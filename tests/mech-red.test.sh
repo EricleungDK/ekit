@@ -355,7 +355,7 @@ eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "cargo cannot run the 
 agent_repo allrun
 out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" all --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**' --head-branch agent/x); rc=$?
 eq "$rc" 0 "all: exit 0"
-eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R1 R2 R4; skipped: R3)" "all: runs R1 R2 R4"
+eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R0 R1 R2 R4; skipped: R3)" "all: runs R0 R1 R2 R4"
 out=$(python3 -I "$MR" r2 --repo "$R" --base "$B" --head "$H" --stack rust --test-paths 'tests/**')
 has "$(jq -r .checks.R1.note <<<"$out")" "not run by r2" "r2: R1 note says not run by r2"
 has "$(jq -r .checks.R4.note <<<"$out")" "not run by r2" "r2: R4 note says not run by r2"

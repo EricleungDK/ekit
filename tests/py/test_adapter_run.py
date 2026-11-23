@@ -360,6 +360,14 @@ class RunUsage(Fixture):
             self.assertIn(f"error: --adapter applies to r2 only for {MINI}: it has no [run] table, and {check} runs R1 "
                           "and R4 through [run] and [commands] (format: docs/mech-review-ci.md#adapter-file)\n", r.stderr)
 
+    def test_r0_proves_the_shipped_ts_file_with_its_run_side(self):
+        head = self.commit({"tests/calc.test.ts": TEST})
+        fixtures = os.path.join(_kit.ROOT, "scripts", "mech_review", "r0_fixtures", "ts")  # none beside the file (#20)
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", head, "--head", head, "--stack", "ts", "--adapter", TS_FILE,
+                          "--fixtures", fixtures, "--test-paths", "tests/**"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["checks"]["R0"]["status"], "pass")
+
     def test_a_file_whose_test_command_has_unbalanced_quotes_is_a_usage_error_not_a_crash(self):
         with open(TS_FILE) as f:
             text = f.read()
@@ -412,12 +420,12 @@ class RunUsage(Fixture):
             self.assertIn("error: --adapter applies to r2, red and all (R3 through an adapter file is not built yet)\n",
                           r.stderr)
 
-    def test_all_runs_r1_r2_and_r4_through_the_file(self):
+    def test_all_runs_r0_r1_r2_and_r4_through_the_file(self):
         base, head = self.ts_repo("fresh fail pass\n")
         r = self.red(base, head, check="all")
         env = json.loads(r.stdout)
         self.assertEqual((r.returncode, {k: v["status"] for k, v in env["checks"].items()}),
-                         (0, {"R1": "pass", "R2": "pass", "R3": "skipped", "R4": "pass"}))
+                         (0, {"R0": "pass", "R1": "pass", "R2": "pass", "R3": "skipped", "R4": "pass"}))
 
 
 if __name__ == "__main__":

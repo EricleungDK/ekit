@@ -10,7 +10,7 @@ import re
 
 from .report import ALL, CHECKS, summarize
 
-WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+((?:R[1-4]|D)-[0-9a-f]{8})\b[ \t:,-]*(.*)$", re.M)
+WAIVE = re.compile(r"^[ \t]*/mech-waive[ \t]+((?:R[0-4]|D)-[0-9a-f]{8})\b[ \t:,-]*(.*)$", re.M)
 # who may waive: the repo's own people. A bot, a first-time contributor or an outsider cannot.
 HUMAN = ("OWNER", "MEMBER", "COLLABORATOR")
 REASON_MAX = 300
