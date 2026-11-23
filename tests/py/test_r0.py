@@ -156,5 +156,30 @@ class AdapterFiles(unittest.TestCase):
         self.assertIn("unproven: R0", env["summary"])
 
 
+SCENARIO_HELPER = {  # a helper outside any test fn, two asserts: only a test path counts them all
+    "rust": ("h.rs", "fn check(x: i32) {\n    assert_eq!(x, 3);\n    assert_ne!(x, 4);\n}\n"),
+    "python": ("h.py", "def check(x):\n    assert x == 3\n    assert x != 4\n"),
+    "ts": ("h.ts", "function check(x: number) {\n  expect(x).toBe(3);\n  expect(x).not.toBe(4);\n}\n"),
+}
+
+
+class ScenariosAreTestPaths(unittest.TestCase):
+    """C4: the core adds `.ekit/scenarios/**` to the test paths of every stack, whatever --test-paths says."""
+
+    def test_every_stack(self):
+        for stack, (name, text) in SCENARIO_HELPER.items():
+            with self.subTest(stack=stack):
+                repo, _ = tmp_repo(self)
+                path = f".ekit/scenarios/x/{name}"
+                base = repo.commit({path: text})
+                lines = text.splitlines(keepends=True)
+                head = repo.commit({path: "".join(ln for ln in lines if "4" not in ln)})
+                r = _kit.run_cli(["r2", "--repo", repo.path, "--base", base, "--head", head, "--stack", stack,
+                                  "--test-paths", "tests/**"])
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual([(e["file"], e["problem"]) for e in json.loads(r.stdout)["entries"]],
+                                 [(path, f"assertions outside test fns in `{path}` dropped from 2 to 1")])
+
+
 if __name__ == "__main__":
     unittest.main()

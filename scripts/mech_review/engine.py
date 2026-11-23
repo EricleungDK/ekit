@@ -43,7 +43,7 @@ def plan(repo, base_ref, head_ref, stack, test_globs):
     """Does the mutants job run (git only, no toolchain): only when a production file changed. How many shards is the
     baseline step's answer (#46)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    return {"run": bool(red.prod_changes(Review(repo, mb, head, ADAPTERS[stack](), test_globs)))}
+    return {"run": bool(red.prod_changes(Review(repo, mb, head, ADAPTERS[stack](), test_paths(test_globs))))}
 
 
 def baseline(repo, base_ref, head_ref, stack, test_globs, mutants_cmd=None, mutation_budget=None, shards=4, project_dir=".",
@@ -52,8 +52,8 @@ def baseline(repo, base_ref, head_ref, stack, test_globs, mutants_cmd=None, muta
     run decision: run, count (shards), mutants, timeout (the derived per-mutant seconds). Git only for the file-sharded
     stacks; rust runs cargo-mutants' unmutated baseline once."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    p = mutants.baseline(Review(repo, mb, head, ADAPTERS[stack](), test_globs, project_dir), mutants_cmd, mutation_budget,
-                         shards, max_mutants=max_mutants)
+    p = mutants.baseline(Review(repo, mb, head, ADAPTERS[stack](), test_paths(test_globs), project_dir), mutants_cmd,
+                         mutation_budget, shards, max_mutants=max_mutants)
     checks = {c: {"status": "skipped", "note": "not run by baseline"} for c in CHECKS}
     checks["R3"] = p["check"]
     env = envelope(base, head, p["entries"], checks)
@@ -71,7 +71,7 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         max_mutants=mutants.DEFAULT_MAX_MUTANTS):
     """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack]."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_globs, project_dir)
+    rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_paths(test_globs), project_dir)
     want = WHICH[which]
     checks = {c: {"status": "skipped", "note": f"not run by {which}"} for c in CHECKS}
     raw = []
