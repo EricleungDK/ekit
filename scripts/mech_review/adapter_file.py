@@ -322,7 +322,11 @@ SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "pwsh", "po
 # installs. With SHELLS; any case, `.exe` or not
 INTERPRETERS = re.compile(r"(?:python|pypy|perl|php|lua|luajit|ruby|jruby|node|tclsh|wish)[0-9.]*|nodejs|deno|bun|irb|"
                           r"rscript|r|java|jshell|kotlin|scala|groovy|osascript|env|busybox|[gmn]?awk|sed|xargs|nohup|"
-                          r"timeout|nice|time|sudo|doas|su|exec|" + "|".join(SHELLS))
+                          r"timeout|nice|time|sudo|doas|su|exec|"
+                          # REPLs, script runners and package managers: each evaluates what it is given
+                          r"ipython|ptpython|bpython|ts-node|tsx|py|npx|pnpx|bunx|yarn|pnpm|npm|uvx|pipx|pdm|poetry|"
+                          r"hatch|rye|cargo|go|gem|bundle|rake|mix|elixir|iex|erl|escript|julia|swift|dotnet|mono|ghci|"
+                          r"runghc|clojure|clj|sbcl|guile|racket|node-repl|" + "|".join(SHELLS))
 PROGRAM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a bare name: no path, so it resolves in the package's prefix
 OPTION = re.compile(r"--[a-z][a-z0-9-]*(?:=(?![/~-])[A-Za-z0-9._:/@+-]+)?")  # `--name` or `--name=value`
 
