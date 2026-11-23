@@ -51,7 +51,9 @@ mkdir adir;                                           bad "a directory" adir "ad
 bad "a missing path" nope.toml "adapter file nope.toml: cannot read"
 bad "stack not the file's name" good.toml "describes stack \`ktspec\`, not \`ts\`" r2 ts
 bad "stack case differs" good.toml "describes stack \`ktspec\`, not \`KtSpec\`" r2 KtSpec
-for sc in red mutants plan all; do bad "$sc with --adapter" "$TS" "--adapter applies to r2 only" "$sc" ts; done
+for sc in mutants plan; do bad "$sc with --adapter" "$TS" "--adapter applies to r2, red and all" "$sc" ts; done
+# #18: red and all run R1 and R4 through a file's [run]; a file without [run] is still r2 only for them
+for sc in red all; do bad "$sc with an r2-only file" good.toml "--adapter applies to r2 only for good.toml: it has no [run] table" "$sc"; done
 # a name that is not built in needs --adapter
 o=$(python3 "$MR" r2 --repo "$R" --base "$BASE" --head "$HEAD" --stack ktspec --test-paths 'tests/**' 2>err); eq "unknown stack exit" $? 2
 eq "unknown stack stdout" "$o" ""; has "unknown stack message" "$(cat err)" "--stack"
