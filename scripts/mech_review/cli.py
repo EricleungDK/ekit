@@ -293,8 +293,9 @@ def _doctor(argv):
 
 
 def _tracked(repo, ref):
-    """The tracked paths at ref, raw (-z: a name is never quoted or split)."""
-    return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", gitio.resolve(repo, ref)).split("\0") if p]
+    """The tracked paths at ref from the repo root (also when repo is a subdir), raw (-z: a name is never quoted or split)."""
+    return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", gitio.resolve(repo, ref)).split("\0")
+            if p]
 
 
 def _is_repo(path):
@@ -308,17 +309,13 @@ def _is_repo(path):
 
 def _resolve(argv):
     """`stack: auto` (the workflow's stack job): print {stack, project_dir, error}. Exit 0, 1 on error, 2 usage or git."""
-    p = argparse.ArgumentParser(prog="mech-review.py resolve",
-                                description="settle the stack and project dir: an explicit --stack is used as given; auto "
-                                            "finds the one project at base and at head (doctor's detection), never guesses")
-    p.add_argument("--repo", default=".", help="git repo (default .)")
-    p.add_argument("--base", required=True, help="base ref")
-    p.add_argument("--head", required=True, help="head ref")
-    p.add_argument("--stack", default=resolve.AUTO, help="auto (default) or a language adapter: " + ", ".join(sorted(ADAPTERS)))
-    p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
-                   help="project dir (default .: auto may find it; a set dir is kept)")
-    p.add_argument("--adapter", metavar="FILE",
-                   help="an adapter file (TOML) that describes the stack named by --stack: its target-os is the output's")
+    p = argparse.ArgumentParser()  # no help text of its own (#29): the main --help describes resolve
+    p.add_argument("--repo", default=".")
+    p.add_argument("--base", required=True)
+    p.add_argument("--head", required=True)
+    p.add_argument("--stack", default=resolve.AUTO)
+    p.add_argument("--project-dir", type=project_dir_arg, default=".")
+    p.add_argument("--adapter")
     args = p.parse_args(argv)
     adapter = None
     if args.adapter is not None:
