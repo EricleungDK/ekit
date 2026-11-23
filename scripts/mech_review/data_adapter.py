@@ -1,13 +1,18 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
 scanner (scan.py). R2 side: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
 Run side (#18, [run] and [commands]): the test command for a checkout, one named test's argv, the verdict of a run.
-R3 through a file (the [mutation] tool and its report) is #19."""
+R3 through a file (the [mutation] tool and its report) is #19.
+ParserAdapter (#27): the same interface from the facts a parser command prints (parser_cmd.py), for a file with
+[parser] in place of the pattern tables; its run side is DataAdapter's."""
+import collections
+import copy
 import functools
 import json
 import os
 import re
 import shlex
 
+from . import parser_cmd
 from .globs import any_glob
 from .scan import Call, line_of, norm
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
@@ -28,9 +33,9 @@ class DataAdapter(Adapter):
         self.target_os = cfg.get("target-os", "linux")
         self.extensions = tuple(cfg["extensions"])
         self.lexer = lexer
-        self.tests = cfg["tests"]
-        self.chains = cfg["asserts"].get("chain", [])
-        self.call_shapes = cfg["asserts"].get("call", [])
+        self.tests = cfg.get("tests", {})
+        self.chains = cfg.get("asserts", {}).get("chain", [])
+        self.call_shapes = cfg.get("asserts", {}).get("call", [])
         self.fn_shapes = fn_shapes
         self.sups = cfg.get("suppressions", [])
         self.mutation = cfg.get("mutation", {})
@@ -415,3 +420,82 @@ def _holds(when, crate):
         if isinstance(doc, dict) and isinstance(doc.get(t), dict):
             keys.update(doc[t])
     return all(k in keys for k in when.get("has", [])) and not any(k in keys for k in when.get("lacks", []))
+
+class ParserAdapter(DataAdapter):
+    """An adapter file with [parser]: each source file's facts come from its parser command (parser_cmd.run), never
+    from patterns. at(path) is the adapter for one file: the command gets that path (r2_file binds it); unbound, the
+    path is `input` plus the first extension. A command that fails raises parser_cmd.ParserError from any method that
+    reads a file: R2 makes it one CI entry."""
+
+    CACHE = 16  # facts kept per adapter: R2 asks several methods about the base and head text of each file
+
+    def __init__(self, cfg, parser, run_patterns=None):
+        """cfg: the adapter file's tables; parser: its [parser] table as adapter_file._parser validated it;
+        run_patterns: the compiled [run] regexes (#18: the run side does not depend on how the facts are read)."""
+        super().__init__(cfg, None, [], run_patterns)
+        self.parser = parser
+        if parser["skipped_text"]:
+            self.tests = {"skipped_text": parser["skipped_text"]}
+        self.path = "input" + self.extensions[0]
+        self.roots = ()  # checkout dirs no command word may point into (in_checkout)
+        self._facts_cache = collections.OrderedDict()
+
+    def in_checkout(self, *roots):
+        """the adapter for a review of the checkouts at roots, beside those it has already (R0's throwaway repo inside
+        the reviewed one's run keeps both): a command word inside one is refused (parser_cmd.run)."""
+        bound = copy.copy(self)
+        bound.roots = self.roots + tuple(r for r in roots if r not in self.roots)
+        return bound
+
+    def at(self, path):
+        bound = copy.copy(self)  # shares the facts cache
+        bound.path = path
+        return bound
+
+    def facts(self, text):
+        key = (self.path, text, self.roots)  # the roots too: a word inside them is refused, never served from cache
+        cache = self._facts_cache
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        try:
+            at = parser_cmd.home()
+            got = parser_cmd.run(parser_cmd.installed(self.parser, at), self.path, text, self.parser["timeout"],
+                                 self.roots, parser_cmd.run_env(self.parser, at))
+        except parser_cmd.ParserError as e:
+            raise parser_cmd.ParserError(f"parser `{self.parser['command'][0]}` on {self.path}: {e}") from None
+        cache[key] = got
+        while len(cache) > self.CACHE:
+            cache.popitem(last=False)
+        return got
+
+    def parse_error(self, text):
+        return self.facts(text)["parse_error"]
+
+    def test_fns(self, text):
+        return [TestFn(name, line, list(markers), body) for name, line, _, markers, body, _ in self.facts(text)["tests"]]
+
+    def test_bodies(self, text):
+        lines = text.splitlines()
+        return {name: (line, norm("".join(lines[line - 1:end])))
+                for name, line, end, _, _, _ in self.facts(text)["tests"]}
+
+    def calls(self, text):
+        out = {}
+        for name, _, _, _, _, calls in self.facts(text)["tests"]:
+            out.setdefault(name, set()).update(calls)
+        return out
+
+    def assertions(self, text):
+        return [Assertion(line, test, test is not None, kind, norm(left), norm(right), " ".join(atext.split()), owner)
+                for line, test, owner, kind, left, right, atext in self.facts(text)["asserts"]]
+
+    def suppressions(self, text):
+        return [Suppression(line, end, kind, lints, lints, reason)
+                for line, end, kind, lints, reason in self.facts(text)["suppressions"]]
+
+    def suppression_text(self, sup):
+        return DEFAULT_PROBLEM.format(lints=sup.lint_text), DEFAULT_HINT.format(lints=sup.lint_text)
+
+    def mutation_skips(self, text):
+        return [(line, end, " ".join(marker.split())) for line, end, marker in self.facts(text)["mutation_skips"]]

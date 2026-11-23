@@ -186,6 +186,17 @@ class RunSideFormat(unittest.TestCase):
         self.bad(with_("run.links", ["a\\b"]),
                  "run.links[0]: `a\\b`: want a path under the project dir (no .., not absolute)")
 
+    def test_a_parser_backed_file_takes_the_run_side_too(self):
+        # #27's [parser] reads the facts in place of the pattern tables; the run side reads runner output, not source
+        data = {"format": 1, "name": "mini", "extensions": [".mini"], "commands": COMMANDS, "run": RUN,
+                "parser": {"command": "mini-facts", "installer": "pip", "package": "mini-facts", "version": "1.0.0"}}
+        a = parse(copy.deepcopy(data))
+        self.assertEqual(a.test_argv(a.test_cmd_in("/no/such/dir"), "tests/a.mini", "S > t"), ["minitest", "--only", "S > t"])
+        self.assertEqual((a.outcome(0, "2 passed"), a.outcome(1, "1 failed")), ("pass", "fail"))
+        self.assertEqual(a.notes(), ['adapter file declares no build command (commands.build = "")'])
+        del data["commands"]
+        self.bad(data, "commands: missing: [run] needs [commands] (install, build, lint, test): R1 and R4 start from its test")
+
     def test_the_shipped_ts_file_has_the_run_side(self):
         with open(os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml"), "rb") as f:
             a = loads(f.read(), "ts.toml")

@@ -3,11 +3,13 @@
 Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileError that names the field
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
+import os
 import re
 import shlex
 import string
 
-from .data_adapter import DataAdapter
+from . import parser_cmd
+from .data_adapter import DataAdapter, ParserAdapter
 from .scan import Lexer, ShapeError
 
 FORMAT = 1
@@ -461,11 +463,87 @@ def target_os(v, field="target-os"):
     return v
 
 
+# [parser] (#27): one command in place of the patterns. These tables describe source as patterns: not with [parser]
+PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
+PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
+SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "pwsh", "powershell", "cmd")
+# programs that run code they are given (a script, stdin, an option): never the parser, which is a program the package
+# installs. With SHELLS; any case, `.exe` or not
+INTERPRETERS = re.compile(r"(?:python|pypy|perl|php|lua|luajit|ruby|jruby|node|tclsh|wish)[0-9.]*|nodejs|deno|bun|irb|"
+                          r"rscript|r|java|jshell|kotlin|scala|groovy|osascript|env|busybox|[gmn]?awk|sed|xargs|nohup|"
+                          r"timeout|nice|time|sudo|doas|su|exec|"
+                          # REPLs, script runners and package managers: each evaluates what it is given
+                          r"ipython|ptpython|bpython|ts-node|tsx|py|npx|pnpx|bunx|yarn|pnpm|npm|uvx|pipx|pdm|poetry|"
+                          r"hatch|rye|cargo|go|gem|bundle|rake|mix|elixir|iex|erl|escript|julia|swift|dotnet|mono|ghci|"
+                          r"runghc|clojure|clj|sbcl|guile|racket|node-repl|" + "|".join(SHELLS))
+PROGRAM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a bare name: no path, so it resolves in the package's prefix
+# `--name` or `--name=value`: a value of plain characters, not starting with / ~ or -, with no `..` segment (between
+# `=`, `/` or `:` and the next of those or the end)
+OPTION = re.compile(r"--[a-z][a-z0-9-]*(?:=(?![/~-])(?!(?:[^/:]*[/:])*\.\.(?:[/:]|$))[A-Za-z0-9._:/@+-]+)?")
+
+
+def _parser(data):
+    """the [parser] table, validated: {command: argv, installer, package, version, timeout, skipped_text}."""
+    f = "parser"
+    d = _table(data["parser"], f, ("command", "installer", "package", "version", "timeout", "skipped_text"),
+               ("command", "installer", "package", "version"))
+    for t in PATTERN_TABLES:
+        if t in data:
+            _err(t, "not with [parser]: the parser command gives the facts, a file declares no patterns beside it")
+    if "skip_comments" in data.get("mutation", {}):
+        _err("mutation.skip_comments", "not with [parser]: the parser command gives the mutation skips")
+    argv = _argv(d["command"], f + ".command")
+    if not PROGRAM.fullmatch(argv[0]):
+        _err(f + ".command", f"`{argv[0]}`: want a bare program name the package installs (no path), such as "
+                             f"`rb-test-facts`")
+    if INTERPRETERS.fullmatch(re.sub(r"\.exe$", "", argv[0].lower())):
+        _err(f + ".command", f"`{argv[0]}` is an interpreter or shell: want the parser program the package installs "
+                             f"(it would run code it is given)")
+    for w in argv[1:]:
+        if not OPTION.fullmatch(w):
+            _err(f + ".command", f"`{w}`: want a long option, `--name` or `--name=value` (name: a-z, 0-9, -; value: "
+                                 f"letters, digits and . _ : / @ + -, not starting with / ~ or -, no `..`)")
+    installer = _str(d["installer"], f + ".installer")
+    if installer not in parser_cmd.INSTALLERS:
+        _err(f + ".installer", f"`{installer}`: want " + ", ".join(list(parser_cmd.INSTALLERS)[:-1]) + " or go")
+    name_re, version_re = parser_cmd.INSTALLERS[installer][:2]
+    package = _str(d["package"], f + ".package")
+    if not re.fullmatch(name_re, package):
+        _err(f + ".package", f"`{package}`: want a {installer} package name (no URL, space, option or version)")
+    version = _str(d["version"], f + ".version")
+    if not re.fullmatch(version_re, version):
+        _err(f + ".version", f"`{version}`: want one pinned version for {installer}, such as \"1.4.2\" (no range, "
+                             f"no `latest`)")
+    lo, hi, timeout = PARSER_TIMEOUT
+    if "timeout" in d:
+        timeout = d["timeout"]
+        if type(timeout) is not int or not lo <= timeout <= hi:
+            _err(f + ".timeout", f"want a whole number of seconds from {lo} to {hi}")
+    if "skipped_text" in d:
+        _template(d["skipped_text"], f + ".skipped_text", "name")
+    return {"command": argv, "installer": installer, "package": package, "version": version, "timeout": timeout,
+            "skipped_text": d.get("skipped_text")}
+
+
+def _argv(v, field):
+    """a command string split as a shell would split words (no shell runs it): non-empty, balanced quotes. The words are
+    then held to the allowlist (PROGRAM, OPTION), which has no NUL."""
+    _str(v, field)
+    try:
+        argv = shlex.split(v)
+    except ValueError as e:
+        _err(field, f"`{v}`: {e}")
+    if not argv:
+        _err(field, "want a command, not only whitespace")
+    return argv
+
+
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
-                      "suppressions", "mutation", "limits", "commands", "run"), ("format", "name", "extensions", "lexer",
-                                                                                 "tests", "asserts"))
+                      "suppressions", "mutation", "limits", "parser", "commands", "run"),
+           ("format", "name", "extensions") + (() if isinstance(data, dict) and "parser" in data
+                                               else ("lexer", "tests", "asserts")))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
@@ -482,18 +560,22 @@ def parse(data):
             _err(f"extensions[{i}]", f"`{e}`: want a file extension such as \".ts\"")
         if e in exts[:i]:
             _err(f"extensions[{i}]", f"`{e}` is listed twice")
-    lexer = _lexer(data["lexer"])
-    _tests(data["tests"], lexer)
-    shapes = _functions(data["functions"], lexer) if "functions" in data else []
-    _asserts(data["asserts"], lexer)
-    _suppressions(data.get("suppressions", []))
-    _mutation(data.get("mutation", {}))
+    if "parser" in data:
+        parser = _parser(data)
+        _mutation(data.get("mutation", {}))
+    else:
+        lexer = _lexer(data["lexer"])
+        _tests(data["tests"], lexer)
+        shapes = _functions(data["functions"], lexer) if "functions" in data else []
+        _asserts(data["asserts"], lexer)
+        _suppressions(data.get("suppressions", []))
+        _mutation(data.get("mutation", {}))
     if "run" in data and "commands" not in data:
         _err("commands", "missing: [run] needs [commands] (install, build, lint, test): R1 and R4 start from its test")
-    if "commands" in data:
+    if "commands" in data:  # the run side (#18) is the same beside [parser] (#27): it reads runner output, not source
         _commands(data["commands"], "run" in data)
     patterns = _run(data["run"]) if "run" in data else None
-    adapter = DataAdapter(data, lexer, shapes, patterns)
+    adapter = ParserAdapter(data, parser, patterns) if "parser" in data else DataAdapter(data, lexer, shapes, patterns)
     adapter.limits = limits(data.get("limits", {}))
     return adapter
 

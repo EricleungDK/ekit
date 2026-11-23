@@ -1,0 +1,824 @@
+"""R2 through a parser-backed adapter file (#27): `[parser]` names one command that prints a file's facts as JSON.
+
+The stub (tests/fixtures/parser/mini_facts.py) reads `mini` files the way tests/fixtures/adapters/mini.toml does, so
+the parser-backed file and the pattern file must give the same R2 entries. A parser that cannot run, or prints what the
+fact schema refuses, gives one blocking `CI` entry and never a pattern fallback. Through cli.main in this process."""
+import hashlib
+import json
+import os
+import shlex
+import sys
+import tempfile
+import time
+import unittest
+
+import _kit
+from scripts.mech_review import adapter_file, parser_cmd
+from test_adapter_cli import BASE, MINI, Repo, r2
+from test_r0 import FUNCTIONS
+
+STUB = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "mini_facts.py")
+CANNED = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "canned_facts.py")
+MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
+
+
+MACOS_ADDS = ("__CF_USER_TEXT_ENCODING",)  # set by macOS in a process's environment at launch, not passed by the core
+HOME_VAR = "EKIT_PARSER_HOME"  # where the core looks for installed parsers: the tests point it at a temp dir
+WRAPPER = """#!{python} -I
+# an installed-style parser for the tests: `--stub=<id>` picks the stub script and its options from beside it
+import json, os, runpy, sys
+args = sys.argv[1:]
+sid = next(a.split("=", 1)[1] for a in args if a.startswith("--stub="))
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stubs", sid + ".json")) as f:
+    target, opts = json.load(f)
+sys.argv = [target] + opts + [a for a in args if not a.startswith("--stub=")]
+runpy.run_path(target, run_name="__main__")
+"""
+
+
+def install_stub(opts="", target=STUB, package="mini-facts", home=None, installer="pip"):
+    """put an installed-style program `<package>` where the core looks for `<installer>`'s `<package>` 1.0.0 (under
+    $EKIT_PARSER_HOME), running target with opts: the `--stub=<id>` word to give it."""
+    home = home or os.environ[HOME_VAR]
+    program = parser_cmd.program_path({"installer": installer, "package": package, "version": "1.0.0",
+                                       "command": [package]}, home)
+    words = shlex.split(opts)
+    sid = hashlib.sha1(json.dumps([target, words]).encode()).hexdigest()[:12]
+    os.makedirs(os.path.join(os.path.dirname(program), "stubs"), exist_ok=True)
+    with open(os.path.join(os.path.dirname(program), "stubs", sid + ".json"), "w") as f:
+        json.dump([target, words], f)
+    with open(program, "w") as f:
+        f.write(WRAPPER.format(python=sys.executable))
+    os.chmod(program, 0o755)
+    return f"--stub={sid}"
+
+
+def parser_toml(opts="", extra="", target=STUB, package="mini-facts"):
+    """the parser-backed twin of mini.toml: same name, manifest and extensions, the stub installed as its command (when
+    $EKIT_PARSER_HOME is set: a load-only test needs no program)."""
+    stub = install_stub(opts, target, package) if os.environ.get(HOME_VAR) else "--stub=none"
+    return (f'format = 1\nname = "mini"\nmanifests = ["mini.json"]\nextensions = [".mini"]\n\n[parser]\n'
+            f'command = "{package} {stub}"\ninstaller = "pip"\npackage = "{package}"\nversion = "1.0.0"\n'
+            f'skipped_text = "test `{{name}}` marked xtest"\n{extra}')
+
+
+def parser_home(case, at=None):
+    """a temp $EKIT_PARSER_HOME for one test (at: that dir instead), restored after it."""
+    if at is None:
+        tmp = tempfile.TemporaryDirectory()
+        case.addCleanup(tmp.cleanup)
+        at = tmp.name
+    old = os.environ.get(HOME_VAR)
+    os.environ[HOME_VAR] = at
+    case.addCleanup(lambda: os.environ.__setitem__(HOME_VAR, old) if old is not None else os.environ.pop(HOME_VAR, None))
+    return at
+
+
+class ParserR2(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.repo = Repo(os.path.join(tmp.name, "repo"))
+        self.base = self.repo.commit({"tests/calc.mini": BASE, "src/calc.mini": "fn add(a, b) { a + b }\n"}, "base")
+        self.home = parser_home(self)
+
+    def adapter(self, opts="", extra="", name="parser.toml"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as f:
+            f.write(parser_toml(opts, extra))
+        return path
+
+    def head(self, files):
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        return self.repo.commit(files, "head")
+
+    def entries(self, head, adapter):
+        r = r2(self.repo, self.base, head, adapter=adapter)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return json.loads(r.stdout)["entries"]
+
+    def test_valid_facts_give_the_same_r2_entries_as_the_pattern_adapter(self):
+        heads = {
+            "removed": {"tests/calc.mini": BASE.replace('  test("subtracts", {\n    assertTrue(sub(3, 1) == 2)\n  })\n', "")},
+            "skipped": {"tests/calc.mini": BASE.replace('test("adds"', 'xtest("adds"')},
+            "expected": {"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")},
+            "dropped": {"tests/calc.mini": BASE.replace("    assertTrue(sub(3, 1) == 2)\n", "")},
+            "replaced": {"tests/calc.mini": BASE.replace("assertTrue(sub(3, 1) == 2)", "assertTrue(sub(3, 1) > 0)")},
+            "suppression": {"src/calc.mini": "# lint-off unused\nfn add(a, b) { a + b }\n"},
+            "unparsed": {"tests/calc.mini": BASE.replace("add(1, 2))", "add(1, 2)")},
+            "renamed": {"tests/calc.mini": BASE.replace('test("adds"', 'test("sums"')},
+        }
+        parser = self.adapter()
+        got = {}
+        for case, files in heads.items():
+            head = self.head(files)
+            want = self.entries(head, MINI)
+            have = self.entries(head, parser)
+            self.assertEqual(have, want, case)
+            got[case] = [(e["check"], e["severity"], e["line"], e["problem"]) for e in have]
+        self.assertEqual(got, {
+            "removed": [("R2", "fail", 5, "test fn `Calc / subtracts` removed")],
+            "skipped": [("R2", "fail", 2, "test `Calc / adds` marked xtest")],
+            "expected": [("R2", "confirm", 3, "expected value changed in `Calc / adds`: was 3, now 4")],
+            "dropped": [("R2", "fail", 5, "assertions in test `Calc / subtracts` dropped from 1 to 0")],
+            "replaced": [("R2", "confirm", 6, "assertion replaced in `Calc / subtracts`: `assertTrue(sub(3, 1) == 2)` -> "
+                                              "`assertTrue(sub(3, 1) > 0)`")],
+            "suppression": [("R2", "fail", 1, "`lint-off unused` added without a reason")],
+            "unparsed": [("R2", "fail", 4, "file does not parse: unexpected `}` (line 4)")],
+            "renamed": [],
+        })
+
+
+    # ---- P2: a parser that cannot run, or prints what the schema refuses: one CI entry, no fallback ----
+    def removed_head(self):
+        """a head that removes a test, so a pattern fallback would give an R2 entry, and edits a protected path."""
+        return self.head({"tests/calc.mini": BASE.replace('  test("subtracts", {\n    assertTrue(sub(3, 1) == 2)\n  })\n', ""),
+                          ".github/ci.yml": "x: 1\n"})
+
+    def failed(self, adapter, head=None):
+        """(exit code, [(check, class, severity, file)], the CI entry's problem) of R2 at a head the parser fails on."""
+        r = r2(self.repo, self.base, head or self.removed_head(), "--protected-paths", ".github/**", adapter=adapter)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        env = json.loads(r.stdout)
+        ents = env["entries"]
+        self.assertEqual(env["checks"]["R2"]["status"], "fail")
+        ci = [e for e in ents if e["check"] == "CI"]
+        self.assertEqual(len(ci), 1, ents)
+        return sorted((e["check"], e["class"], e["severity"], e["file"]) for e in ents), ci[0]["problem"]
+
+    def emit(self, text):
+        path = os.path.join(self.tmp, "canned.json")
+        with open(path, "wb") as f:
+            f.write(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return self.adapter("--emit " + shlex.quote(path))
+
+    def test_invalid_json_is_one_ci_entry_and_no_fallback(self):
+        ents, problem = self.failed(self.emit("{not json"))
+        self.assertEqual(ents, [("CI", "adapter-fix", "fail", "tests/calc.mini"),
+                                ("R2", "needs-human", "fail", ".github/ci.yml")])
+        self.assertTrue(problem.startswith(f"the adapter's parser failed: parser `mini-facts` on tests/calc.mini: "
+                                           "printed invalid JSON: "), problem)
+
+    def test_a_non_zero_exit_is_one_ci_entry_naming_the_status(self):
+        ents, problem = self.failed(self.adapter("--exit 3"))
+        self.assertEqual(ents[0], ("CI", "adapter-fix", "fail", "tests/calc.mini"))
+        self.assertTrue(problem.endswith("on tests/calc.mini: exited with status 3"), problem)
+
+    def test_a_program_the_declared_package_did_not_install_is_one_ci_entry(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path = self.adapter("--record " + shlex.quote(record))
+        with open(path) as f:
+            text = f.read()
+        for old, new in (('package = "mini-facts"', 'package = "other-facts"'), ('version = "1.0.0"', 'version = "1.0.1"'),
+                         ('installer = "pip"', 'installer = "npm"'), ('command = "mini-facts', 'command = "mini-fact')):
+            with self.subTest(new=new):
+                with open(path, "w") as f:
+                    f.write(text.replace(old, new))
+                ents, problem = self.failed(path)
+                self.assertIn("not installed by the declared package", problem)
+                self.assertFalse(os.path.exists(record), "a program from elsewhere ran")
+        on_path = os.path.join(self.tmp, "bin")  # a program of that name on PATH is never the parser
+        os.makedirs(on_path)
+        os.symlink(parser_cmd.program_path(adapter_file.load(path).parser, self.home), os.path.join(on_path, "mini-fact"))
+        os.environ["PATH"] = on_path + os.pathsep + os.environ["PATH"]
+        self.addCleanup(os.environ.__setitem__, "PATH", os.environ["PATH"].split(os.pathsep, 1)[1])
+        with open(path, "w") as f:
+            f.write(text.replace('command = "mini-facts', 'command = "mini-fact'))
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        self.assertFalse(os.path.exists(record), "a program on PATH ran")
+        program = parser_cmd.program_path(adapter_file.loads(text.encode(), "p.toml").parser, self.home)
+        os.rename(program, program + ".file")
+        os.mkdir(program)  # a directory there (executable bit and all) is no program either
+        with open(path, "w") as f:
+            f.write(text)
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        os.rmdir(program)
+        os.rename(program + ".file", program)
+        with open(path, "w") as f:  # a file there that is not executable is no installed program either
+            f.write(text)
+        os.chmod(parser_cmd.program_path(adapter_file.load(path).parser, self.home), 0o644)
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        self.assertFalse(os.path.exists(record), "a file that is not a program ran")
+
+    def test_an_installed_gem_runs_with_its_gem_dirs_in_the_environment(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        stub = install_stub("--record " + shlex.quote(record), installer="gem")
+        path = os.path.join(self.tmp, "gem.toml")
+        text = parser_toml().replace('installer = "pip"', 'installer = "gem"')
+        line = next(ln for ln in text.splitlines() if ln.startswith("command = "))
+        with open(path, "w") as f:
+            f.write(text.replace(line, f'command = "mini-facts {stub}"'))
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        r = r2(self.repo, self.base, head, adapter=path)
+        self.assertEqual([e["check"] for e in json.loads(r.stdout)["entries"]], ["R2"], r.stderr)
+        where = parser_cmd.prefix(adapter_file.load(path).parser, self.home)
+        with open(record) as f:
+            envs = [json.loads(ln)["env"] for ln in f]
+        self.assertEqual({(e["GEM_HOME"], e["GEM_PATH"]) for e in envs}, {(where, where)})
+
+    def test_output_past_the_size_limit_is_refused_unread(self):
+        _, problem = self.failed(self.emit(b" " * (16 * 1024 * 1024 + 1)))
+        self.assertTrue(problem.endswith("on tests/calc.mini: printed more than 16777216 bytes"), problem)
+
+    def test_a_parser_that_hangs_hits_the_timeout_and_is_one_ci_entry(self):
+        ents, problem = self.failed(self.adapter("--hang", extra="timeout = 1\n"))
+        self.assertTrue(problem.endswith("on tests/calc.mini: timed out after 1s"), problem)
+
+    def test_facts_the_schema_refuses_are_one_ci_entry_naming_the_field(self):
+        good = {"format": 1, "parse_error": None, "tests": [], "asserts": [], "suppressions": [], "mutation_skips": []}
+        test = {"name": "a", "line": 1, "end_line": 2, "markers": [], "body": None, "calls": []}
+        ast = {"line": 1, "test": None, "owner": None, "kind": "other", "left": None, "right": None, "text": "t"}
+        cases = [
+            ([], "facts: want an object"),
+            (dict(good, extra=1), "facts.extra: unknown key"),
+            ({k: v for k, v in good.items() if k != "asserts"}, "facts.asserts: missing"),
+            (dict(good, format=2), "format: want 1"),
+            (dict(good, format=True), "format: want 1"),
+            (dict(good, tests={}), "tests: want a list"),
+            (dict(good, tests=[dict(test, line=True)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=1.0)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=0)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=99999)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=3, end_line=2)]), "tests[0].end_line: want a whole number from 3 to "),
+            (dict(good, tests=[dict(test, body=[2, 1])]), "tests[0].body[1]: want a whole number from 2 to 2"),
+            (dict(good, tests=[dict(test, body=[1, 3])]), "tests[0].body[1]: want a whole number from 1 to 2"),
+            (dict(good, tests=[dict(test, body=[1])]), "tests[0].body: want null or [first, last]"),
+            (dict(good, tests=[dict(test, markers=["skip"])]), "tests[0].markers[0]: want ignore, only or should_panic"),
+            (dict(good, tests=[dict(test, markers=["only", "only"])]), "tests[0].markers[1]: `only` given twice"),
+            (dict(good, tests=[dict(test, name="")]), "tests[0].name: want a non-empty string"),
+            (dict(good, tests=[dict(test, name="x" * 70000)]), "tests[0].name: longer than 65536 characters"),
+            # CI round 3: each limit at its edge, so no off-by-one of it passes
+            (dict(good, tests=[dict(test, name="x" * 65537)]), "tests[0].name: longer than 65536 characters"),
+            (dict(good, tests=[dict(test, calls=["f"] * 100001)]), "tests[0].calls: more than 100000 entries"),
+            (dict(good, tests=[dict(test, name="a\x1fb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\x9fb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, calls=[1])]), "tests[0].calls[0]: want a non-empty string"),
+            (dict(good, tests=[dict(test, oops=1)]), "tests[0].oops: unknown key"),
+            (dict(good, asserts=[dict(ast, test="ghost")]), "asserts[0].test: `ghost` is not a name in tests"),
+            (dict(good, asserts=[dict(ast, kind="eqq")]), "asserts[0].kind: want eq, ne or other"),
+            (dict(good, asserts=[dict(ast, kind="eq")]), "asserts[0].left: want a non-empty string"),
+            (dict(good, asserts=[dict(ast, left="a")]), "asserts[0]: kind other has no operands"),
+            (dict(good, asserts=[dict(ast, text="")]), "asserts[0].text: want a non-empty string"),
+            (dict(good, suppressions=[{"line": 1, "end_line": 1, "kind": "k", "lints": "k", "reason": 0}]),
+             "suppressions[0].reason: want true or false"),
+            (dict(good, mutation_skips=[{"line": 2, "end_line": 1, "marker": "m"}]),
+             "mutation_skips[0].end_line: want a whole number from 2 to "),
+            (dict(good, parse_error={"line": 1}), "parse_error.message: missing"),
+            # review round 1: a lone surrogate (it cannot be written as UTF-8: the entry ids and the comment would
+            # crash), a control character, whitespace-only names and operands, an assert outside its test's lines
+            (dict(good, tests=[dict(test, name="\ud800")]), "tests[0].name: want text without a lone surrogate"),
+            (dict(good, asserts=[dict(ast, text="a\udfffb")]), "asserts[0].text: want text without a lone surrogate"),
+            (dict(good, parse_error={"line": 1, "message": "\ud800"}),
+             "parse_error.message: want text without a lone surrogate"),
+            (dict(good, tests=[dict(test, name="a\x1b[2Jb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\nb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="  ")]), "tests[0].name: want a non-empty string"),
+            (dict(good, tests=[dict(test, name="a\x7fb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\x85b")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\tb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left="a\x1bb", right="1")]),
+             "asserts[0].left: want text without control characters"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left="1", right="\x9b")]),
+             "asserts[0].right: want text without control characters"),
+            (dict(good, asserts=[dict(ast, text="a\x7f")]), "asserts[0].text: want text without control characters"),
+            (dict(good, asserts=[dict(ast, text=" \t ")]), "asserts[0].text: want a non-empty string"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left=" ", right="1")]),
+             "asserts[0].left: want a non-empty string"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="ne", left="1", right="\t")]),
+             "asserts[0].right: want a non-empty string"),
+            (dict(good, tests=[dict(test, line=1, end_line=1)], asserts=[dict(ast, line=2, test="a")]),
+             "asserts[0].line: 2 is outside test `a` (lines 1 to 1)"),
+        ]
+        for doc, want in cases:
+            with self.subTest(want=want):
+                _, problem = self.failed(self.emit(json.dumps(doc)))
+                self.assertIn("printed facts the schema refuses: " + want, problem)
+        for raw, want in ((b'{"format": 1, "format": 1}', "key `format` given twice"), (b"NaN", "`NaN` is not JSON"),
+                          (b"\xff", "not UTF-8"), (b"[" * 100000, "nested too deep"), (b"", "Expecting value"),
+                          # a depth limit of the core's own, whatever the interpreter's recursion limit (CI's python
+                          # parses 100000 levels): the facts nest 4 deep
+                          (b"[" * 33, "nested too deep"), (b'{"a": ' * 40 + b"1" + b"}" * 40, "nested too deep"),
+                          # only brackets count: other characters outside strings neither open nor close a level
+                          (b"X" * 40, "Expecting value"), (b"[" * 20 + b"X" * 20 + b"[" * 20, "nested too deep")):
+            with self.subTest(want=want):
+                _, problem = self.failed(self.emit(raw))
+                self.assertIn("printed invalid JSON: " + want, problem)
+        # 32 levels are within the limit: the schema, not the depth check, refuses them
+        _, problem = self.failed(self.emit(b"[" * 32 + b"]" * 32))
+        self.assertIn("printed facts the schema refuses: facts: want an object", problem)
+        # 65536 characters, a no-break space (U+00A0, past C1) and 100000 entries are within the limits
+        name = "x" * 65535 + "\xa0"
+        doc = dict(good, tests=[dict(test, name=name, calls=["f"] * 100000)])
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([f.name for f in a.test_fns("1\n2\n")], [name])
+
+    def test_operands_wrapped_by_a_formatter_are_read_with_whitespace_removed(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 3, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 1, "test": "a", "owner": "a", "kind": "eq", "left": "add(1,\n\t2)",
+                            "right": "\r\n3", "text": "eq(add(1,\n\t2),\r\n3)"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.left, x.right, x.text) for x in a.assertions("1\n2\n3\n")],
+                         [("add(1,2)", "3", "eq(add(1, 2), 3)")])
+
+    def test_an_assert_text_may_span_lines_and_a_name_repeat_within_the_spans(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 1, "markers": [], "body": None, "calls": []},
+                         {"name": "a", "line": 2, "end_line": 3, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 3, "test": "a", "owner": "a", "kind": "other", "left": None, "right": None,
+                            "text": "ok(\n\tx" + '\\"' + "[{" * 40 + ")"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.line, x.fn, x.text) for x in a.assertions("1\n2\n3\n")], [(3, "a", "ok( x" + '\\"' + "[{" * 40 + ")")])
+
+    def test_many_keys_under_the_size_limit_are_checked_in_linear_time(self):
+        keys = 300000  # about 4 MiB: a quadratic duplicate-key check takes hours here (the twice-given key is last)
+        raw = ("{" + ",".join(f'"k{i}": 0' for i in range(keys)) + f', "k{keys - 1}": 1}}').encode()
+        start = time.monotonic()
+        _, problem = self.failed(self.emit(raw))
+        self.assertIn(f"printed invalid JSON: key `k{keys - 1}` given twice", problem)
+        self.assertLess(time.monotonic() - start, 60)
+
+
+    def test_operands_are_compared_with_whitespace_removed_and_texts_normalized(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 1, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 1, "test": "a", "owner": "a", "kind": "eq", "left": " 3 ", "right": "add(1,  2)",
+                            "text": "eq( 3,\n add(1,  2))"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.fn, x.scope, x.kind, x.left, x.right, x.text, x.owner) for x in a.assertions("x\n")],
+                         [("a", True, "eq", "3", "add(1,2)", "eq( 3, add(1, 2))", "a")])
+
+    # ---- P4: the parser gets one file's text and path, in an empty dir, with no secret and no project config ----
+    def test_the_parser_gets_the_text_and_path_only_in_an_empty_dir_with_a_minimal_env(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,"),
+                          "mini.json": "{}\n", ".ekit/adapters/mini.toml": parser_toml("--exit 9")})
+        os.environ["EKIT_TEST_SECRET"] = "s3cret"
+        self.addCleanup(os.environ.pop, "EKIT_TEST_SECRET", None)
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--record " + shlex.quote(record)))
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        with open(record) as f:
+            runs = [json.loads(ln) for ln in f]
+        self.assertEqual(sorted(x["stdin"] for x in runs),
+                         sorted([BASE, BASE.replace("assertEquals(3,", "assertEquals(4,")]))
+        for x in runs:
+            self.assertEqual(x["argv"], ["--record", record, "tests/calc.mini"])
+            self.assertEqual(x["cwd_files"], [])
+            self.assertFalse(os.path.realpath(x["cwd"]).startswith(os.path.realpath(self.repo.path)), x["cwd"])
+            self.assertNotIn("EKIT_TEST_SECRET", x["env"])
+            # the core passes these five; macOS itself adds __CF_USER_TEXT_ENCODING to every process it starts
+            self.assertEqual(sorted(k for k in x["env"] if not (sys.platform == "darwin" and k in MACOS_ADDS)),
+                             ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"])
+            self.assertEqual(os.path.realpath(x["env"]["HOME"]), os.path.realpath(x["cwd"]))
+        self.assertFalse(any(os.path.exists(x["cwd"]) for x in runs), "the parser's dir outlives its run")
+
+
+    # ---- P3: R0 judges a parser-backed adapter as it judges a pattern one ----
+    def r0(self, adapter, base=None, head=None):
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", base or self.base, "--head", head or base or self.base,
+                          "--stack", "mini", "--adapter", adapter, "--fixtures", MINI_FIXTURES])
+        return r.returncode, json.loads(r.stdout)["checks"]["R0"], r
+
+    ADAPTER = ".ekit/adapters/mini.toml"
+
+    def in_repo(self, base_file, head_file=None):
+        """(the adapter's path in the checkout, base, head): base_file's text committed on base, head_file's on head."""
+        texts = []
+        for p in (base_file, head_file or base_file):
+            with open(p) as f:
+                texts.append(f.read())
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({self.ADAPTER: texts[0]}, "adapter")
+        head = self.repo.commit({self.ADAPTER: texts[1]}, "adapter at head") if texts[1] != texts[0] else base
+        return os.path.join(self.repo.path, self.ADAPTER), base, head
+
+    def test_r0_passes_a_parser_backed_adapter_on_the_mini_fixtures(self):
+        table = os.path.join(self.tmp, "mini-fns.toml")  # mini.toml with helper fns, as R0's own mini test proves it
+        with open(MINI) as f, open(table, "w") as out:
+            out.write(f.read() + FUNCTIONS)
+        path, base, _ = self.in_repo(self.adapter("--table " + shlex.quote(table)))  # its base copy is the same
+        rc, check, r = self.r0(path, base)
+        self.assertEqual((rc, check["status"]), (0, "pass"), r.stdout)
+        self.assertEqual({c["case"]: c["status"] for c in check["cases"]},
+                         {c: "pass" for c in ("delete", "comment-out", "rename", "skip", "expected-value", "weaken-assert",
+                                              "suppression", "rename-same-asserts", "reorder-asserts", "helper-asserts",
+                                              "empty-diff", "source-ident-chars", "source-empty-asserts",
+                                              "source-unbalanced-brackets", "ident-chars", "empty-asserts",
+                                              "unbalanced-brackets")})
+        twin_rc, twin, _ = self.r0(table)
+        self.assertEqual((twin_rc, [(c["case"], c["status"], c["got"]) for c in twin["cases"] if c["kind"] != "malformed-table"]),
+                         (rc, [(c["case"], c["status"], c["got"]) for c in check["cases"] if c["kind"] != "malformed-table"]))
+        self.assertEqual([c["got"].split(": ", 1)[1] for c in check["cases"] if c["kind"] == "malformed-table"],
+                         ["lexer: not with [parser]: the parser command gives the facts, a file declares no patterns beside it",
+                          "asserts: not with [parser]: the parser command gives the facts, a file declares no patterns beside it",
+                          "lexer: not with [parser]: the parser command gives the facts, a file declares no patterns beside it"])
+
+    def test_r0_fails_a_parser_that_prints_invalid_json(self):
+        path, base, _ = self.in_repo(self.emit("nope"))
+        rc, check, r = self.r0(path, base)
+        self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
+        ent = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["class"]) for e in ent], [("R0", "adapter-fix")])
+        self.assertIn("printed invalid JSON", ent[0]["problem"])
+
+    def held(self, rc, check, r):
+        """the needs-human entry of an R0 that did not run the parser: every case that reads source is unproven."""
+        self.assertEqual((rc, check["status"]), (1, "unproven"), r.stdout)
+        self.assertEqual({c["case"]: c["status"] for c in check["cases"] if c["status"] != "unproven"},
+                         {"ident-chars": "pass", "empty-asserts": "pass", "unbalanced-brackets": "pass"})
+        ents = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["class"], e["severity"]) for e in ents], [("R0", "needs-human", "fail")])
+        self.assertTrue(ents[0]["problem"].startswith("parser command changed: a person reviews it before it runs"),
+                        ents[0]["problem"])
+        return ents[0]["problem"]
+
+    def test_r0_never_runs_a_parser_command_that_differs_from_the_base_adapters(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path, base, head = self.in_repo(self.adapter(), self.adapter("--record " + shlex.quote(record), name="pr.toml"))
+        problem = self.held(*self.r0(path, base, head))
+        self.assertIn(f"[parser] of {self.ADAPTER} differs from the base branch's", problem)
+        self.assertFalse(os.path.exists(record), "R0 ran the PR's parser command")
+
+    def test_r0_holds_a_parser_whose_installer_package_or_version_alone_changed(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        base_file = self.adapter("--record " + shlex.quote(record))
+        with open(base_file) as f:
+            text = f.read()
+        for old, new in (('installer = "pip"', 'installer = "gem"'), ('package = "mini-facts"', 'package = "other"'),
+                         ('version = "1.0.0"', 'version = "1.0.1"')):
+            with self.subTest(new=new):
+                head_file = os.path.join(self.tmp, "head.toml")
+                with open(head_file, "w") as f:
+                    f.write(text.replace(old, new))
+                path, base, head = self.in_repo(base_file, head_file)
+                self.assertIn("differs from the base branch's", self.held(*self.r0(path, base, head)))
+                self.assertFalse(os.path.exists(record), "R0 ran a parser whose install changed")
+
+    def test_r0_never_runs_a_program_inside_the_reviewed_checkout(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        parser_home(self, os.path.join(self.repo.path, ".parsers"))  # the install dir in the checkout: the PR's files
+        path, base, _ = self.in_repo(self.adapter("--record " + shlex.quote(record)))
+        rc, check, r = self.r0(path, base)
+        self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
+        self.assertIn("is inside the checkout: the parser runs no code or config from the PR",
+                      json.loads(r.stdout)["entries"][0]["problem"])
+        self.assertFalse(os.path.exists(record), "R0 ran a program from the checkout")
+
+    # ---- #17: the repo's adapter file found by name at the base goes the same parser path ----
+    def test_r2_and_r0_by_stack_name_run_the_base_branchs_parser_and_never_the_prs(self):
+        base_rec, pr_rec = os.path.join(self.tmp, "base.jsonl"), os.path.join(self.tmp, "pr.jsonl")
+        table = os.path.join(self.tmp, "mini-fns.toml")
+        with open(MINI) as f, open(table, "w") as out:
+            out.write(f.read() + FUNCTIONS)
+        base_toml = parser_toml("--record " + shlex.quote(base_rec) + " --table " + shlex.quote(table))
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({self.ADAPTER: base_toml}, "repo adapter")
+        head = self.repo.commit({self.ADAPTER: parser_toml("--record " + shlex.quote(pr_rec)),
+                                 "tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")}, "pr")
+        r = _kit.run_cli(["r2", "--repo", self.repo.path, "--base", base, "--head", head, "--stack", "mini",
+                          "--test-paths", "tests/**"])
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        self.assertTrue(os.path.exists(base_rec), "r2 did not run the base branch's parser")
+        os.remove(base_rec)
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", base, "--head", head, "--stack", "mini",
+                          "--fixtures", MINI_FIXTURES])
+        check = json.loads(r.stdout)["checks"]["R0"]
+        self.assertEqual(check["status"], "pass", r.stdout)
+        self.assertTrue(os.path.exists(base_rec), "r0 did not run the base branch's parser")
+        self.assertFalse(os.path.exists(pr_rec), "the PR's parser command ran")
+
+    def test_r0_never_runs_a_parser_with_no_base_copy(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        problem = self.held(*self.r0(self.adapter("--record " + shlex.quote(record))))  # outside the repo
+        self.assertIn("is not in the repo: no base copy to compare its [parser] with", problem)
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        head = self.repo.commit({self.ADAPTER: parser_toml("--record " + shlex.quote(record))}, "new adapter")
+        problem = self.held(*self.r0(os.path.join(self.repo.path, self.ADAPTER), self.base, head))
+        self.assertIn(f"{self.ADAPTER} has no [parser] on the base branch", problem)
+        self.assertFalse(os.path.exists(record), "R0 ran the PR's parser command")
+
+    def test_r0_binds_each_fixture_to_its_own_path(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path, base, _ = self.in_repo(self.adapter("--record " + shlex.quote(record)))
+        self.r0(path, base)
+        with open(record) as f:
+            paths = {json.loads(ln)["argv"][-1] for ln in f}
+        self.assertNotIn("input.mini", paths)
+        self.assertIn(".ekit/scenarios/r0/seed.mini", paths)
+        self.assertIn(".ekit/scenarios/r0/skip.mini", paths)
+
+
+    def test_a_renamed_file_is_parsed_at_its_base_path_for_base_text_and_its_head_path_for_head_text(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        self.repo.git("mv", "tests/calc.mini", "tests/sums.mini")
+        head = self.repo.commit({"tests/sums.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")}, "rename")
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--record " + shlex.quote(record)))
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        with open(record) as f:
+            runs = sorted((json.loads(ln)["argv"][-1], json.loads(ln)["stdin"] == BASE) for ln in f)
+        self.assertEqual(runs, [("tests/calc.mini", True), ("tests/sums.mini", False)])
+
+    def test_a_program_installed_inside_the_checkout_is_refused_before_it_runs(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        parser_home(self, os.path.join(self.repo.path, ".parsers"))
+        _, problem = self.failed(self.adapter("--record " + shlex.quote(record)))
+        self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
+        self.assertFalse(os.path.exists(record), "the command ran")
+
+    def test_after_the_first_file_the_parser_fails_on_no_later_file_is_parsed(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({"tests/a.mini": BASE, "tests/b.mini": BASE}, "two files")
+        head = self.repo.commit({"tests/a.mini": BASE.replace("3,", "4,"), "tests/b.mini": BASE.replace("3,", "5,")}, "h")
+        r = r2(self.repo, base, head, adapter=self.adapter("--record " + shlex.quote(record) + " --exit 3"))
+        ents = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["file"]) for e in ents], [("CI", "tests/a.mini")])
+        with open(record) as f:
+            self.assertEqual([json.loads(ln)["argv"][-1] for ln in f], ["tests/a.mini"])
+
+    def test_a_background_child_the_parser_leaves_is_killed(self):
+        flag = os.path.join(self.tmp, "child-ran")
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--spawn " + shlex.quote(flag)))
+        self.assertEqual(len(json.loads(r.stdout)["entries"]), 1, r.stderr)
+        time.sleep(3)
+        self.assertFalse(os.path.exists(flag), "the parser's background child outlived its run")
+
+    def command_adapter(self, opts, words):
+        """an adapter whose command is the installed stub (opts) with these words after it."""
+        path = os.path.join(self.tmp, "cmd.toml")
+        text = parser_toml(opts)
+        line = next(ln for ln in text.splitlines() if ln.startswith("command = "))
+        with open(path, "w") as f:
+            f.write(text.replace(line, line[:-1] + f' {words}"'))
+        return path
+
+    def test_a_checkout_path_inside_an_option_value_is_refused_before_it_runs(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        repo = self.repo.path
+        for word in (f"--note=x:{repo}/tools/x.py", f"--a=b:{repo}", f"--n=x@{repo}"):
+            with self.subTest(word=word):
+                _, problem = self.failed(self.command_adapter("--record " + shlex.quote(record), word))
+                self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
+                self.assertFalse(os.path.exists(record), "the command ran")
+
+    def test_a_sibling_of_the_checkout_is_not_inside_it(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        sibling = self.repo.path + "2/x"  # beside the checkout `repo`, not in it
+        r = r2(self.repo, self.base, head, adapter=self.command_adapter("--record " + shlex.quote(record),
+                                                                         f"--note=x:{sibling}"))
+        self.assertEqual([e["check"] for e in json.loads(r.stdout)["entries"]], ["R2"], r.stderr)
+        self.assertTrue(os.path.exists(record), "the command did not run")
+
+class HandWrittenFacts(unittest.TestCase):
+    """R2 from facts written by hand (tests/fixtures/parser/canned_facts.py, no ekit import): what the core does with
+    a parser's facts, independent of ekit's scanner."""
+
+    BASE = 'test("adds", {\n  check(add(1, 2) == 3)\n  same(add(2, 2), 4)\n})\ntest("subs", {\n  same(sub(3, 1), 2)\n})\n'
+
+    @staticmethod
+    def fn_fact(name, line, end, markers=()):
+        return {"name": name, "line": line, "end_line": end, "markers": list(markers), "body": [line + 1, end - 1],
+                "calls": ["test", "same", "check"]}
+
+    @staticmethod
+    def assert_fact(line, test, kind, text, left=None, right=None):
+        return {"line": line, "test": test, "owner": test, "kind": kind, "left": left, "right": right, "text": text}
+
+    def facts(self, tests, asserts):
+        return {"format": 1, "parse_error": None, "tests": tests, "asserts": asserts, "suppressions": [],
+                "mutation_skips": []}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.dir = os.path.join(tmp.name, "facts")
+        os.mkdir(self.dir)
+        self.repo = Repo(os.path.join(tmp.name, "repo"))
+        parser_home(self)
+        adds = [self.assert_fact(2, "adds", "other", "check(add(1, 2) == 3)"),
+                self.assert_fact(3, "adds", "eq", "same(add(2, 2), 4)", "add(2, 2)", "4")]
+        subs = [self.assert_fact(6, "subs", "eq", "same(sub(3, 1), 2)", "sub(3, 1)", "2")]
+        self.can(self.BASE, self.facts([self.fn_fact("adds", 1, 4), self.fn_fact("subs", 5, 7)], adds + subs))
+        self.base = self.repo.commit({"tests/calc.mini": self.BASE}, "base")
+        self.adapter = os.path.join(self.tmp, "canned.toml")
+        with open(self.adapter, "w") as f:
+            f.write(parser_toml(shlex.quote(self.dir), target=CANNED, package="canned-facts")
+                    .replace('skipped_text = "test `{name}` marked xtest"\n', ""))
+        self.adds, self.subs = adds, subs
+
+    def can(self, text, facts):
+        name = hashlib.sha256(text.encode()).hexdigest() + ".json"
+        with open(os.path.join(self.dir, name), "w") as f:
+            json.dump(facts, f)
+
+    def entries(self, text, facts):
+        self.can(text, facts)
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        head = self.repo.commit({"tests/calc.mini": text}, "head")
+        r = r2(self.repo, self.base, head, adapter=self.adapter)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return [(e["check"], e["severity"], e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]]
+
+    def test_a_removed_test_is_a_fail(self):
+        text = self.BASE.split('test("subs"')[0]
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4)], self.adds)),
+                         [("R2", "fail", 5, "test fn `subs` removed")])
+
+    def test_a_skipped_test_is_a_fail(self):
+        text = self.BASE.replace('test("subs"', 'skip("subs"')
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4),
+                                                        self.fn_fact("subs", 5, 7, ["ignore"])], self.adds + self.subs)),
+                         [("R2", "fail", 5, "test `subs` marked skipped")])
+
+    def test_a_weakened_assert_is_a_confirm_quoting_both(self):
+        text = self.BASE.replace("same(add(2, 2), 4)", "check(add(2, 2) > 0)")
+        weak = [self.adds[0], self.assert_fact(3, "adds", "other", "check(add(2, 2) > 0)")]
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4), self.fn_fact("subs", 5, 7)],
+                                                       weak + self.subs)),
+                         [("R2", "confirm", 3, "assertion replaced in `adds`: `same(add(2, 2), 4)` -> "
+                                               "`check(add(2, 2) > 0)`")])
+
+class ParserTable(unittest.TestCase):
+    """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
+
+    def load(self, text):
+        return adapter_file.loads(text.encode("utf-8"), "p.toml")
+
+    def error(self, text):
+        with self.assertRaises(adapter_file.AdapterFileError) as cm:
+            self.load(text)
+        return str(cm.exception)
+
+    def test_a_parser_table_loads_with_its_command_split_into_argv(self):
+        a = self.load(parser_toml(extra="timeout = 5\n"))
+        self.assertEqual((a.name, a.parser["command"], a.parser["timeout"], a.parser["version"]),
+                         ("mini", ["mini-facts", "--stub=none"], 5, "1.0.0"))
+        self.assertEqual([self.load(parser_toml(extra=extra)).parser["timeout"]
+                          for extra in ("", "timeout = 1\n", "timeout = 600\n")], [30, 1, 600])
+        self.assertEqual(self.load(parser_toml().replace('skipped_text = "test `{name}` marked xtest"\n', ""))
+                         .ignored_text("t"), "test `t` marked skipped")
+
+    def test_each_bad_parser_value_is_an_error_naming_the_field(self):
+        base = parser_toml()
+        inst = lambda installer, package, version: (
+            base.replace('installer = "pip"', f"installer = {json.dumps(installer)}")
+            .replace('package = "mini-facts"', f"package = {json.dumps(package)}")
+            .replace('version = "1.0.0"', f"version = {json.dumps(version)}"))
+        cmd = next(ln for ln in base.splitlines() if ln.startswith("command = "))
+        cases = [
+            (base.replace(cmd, 'command = "   "'), "parser.command: want a command, not only whitespace"),
+            (base.replace(cmd, 'command = ""'), "parser.command: want a non-empty string"),
+            (base.replace(cmd, 'command = ["facts"]'), "parser.command: want a non-empty string"),
+            (base.replace(cmd, 'command = "facts \'unbalanced"'), "parser.command: `facts 'unbalanced`: No closing quotation"),
+            # owner's allowlist: one bare program name the package installs, then long options only
+            (base.replace(cmd, 'command = "python3 -I -"'), 'parser.command: `python3` is an interpreter or shell: want the parser program the package installs'),
+            (base.replace(cmd, 'command = "python3.12 x"'), 'parser.command: `python3.12` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "node --print=1"'), 'parser.command: `node` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "ruby --x"'), 'parser.command: `ruby` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "perl"'), 'parser.command: `perl` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "Rscript"'), 'parser.command: `Rscript` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "java"'), 'parser.command: `java` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "deno"'), 'parser.command: `deno` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "ipython --x"'), 'parser.command: `ipython` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "ts-node --x"'), 'parser.command: `ts-node` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "tsx --x"'), 'parser.command: `tsx` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "py"'), 'parser.command: `py` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "npx --x"'), 'parser.command: `npx` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "uvx --x"'), 'parser.command: `uvx` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "poetry --x"'), 'parser.command: `poetry` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "cargo --x"'), 'parser.command: `cargo` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "go --x"'), 'parser.command: `go` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "julia --x"'), 'parser.command: `julia` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "dotnet --x"'), 'parser.command: `dotnet` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "node-repl --x"'), 'parser.command: `node-repl` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "IPython.exe --x"'), 'parser.command: `IPython.exe` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "bash"'), 'parser.command: `bash` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "pwsh.exe"'), 'parser.command: `pwsh.exe` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "env facts"'), 'parser.command: `env` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "/abs/tool"'), 'parser.command: `/abs/tool`: want a bare program name'),
+            (base.replace(cmd, 'command = "./tool"'), 'parser.command: `./tool`: want a bare program name'),
+            (base.replace(cmd, "command = \"'tools\\\\x'\""), "parser.command: `tools\\x`: want a bare program name"),
+            (base.replace(cmd, 'command = "-tool"'), 'parser.command: `-tool`: want a bare program name'),
+            (base.replace(cmd, 'command = "facts -"'), 'parser.command: `-`: want a long option'),
+            (base.replace(cmd, 'command = "facts -I"'), 'parser.command: `-I`: want a long option'),
+            (base.replace(cmd, 'command = "facts x.py"'), 'parser.command: `x.py`: want a long option'),
+            (base.replace(cmd, 'command = "facts --X=1"'), 'parser.command: `--X=1`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=/abs"'), 'parser.command: `--x=/abs`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=~/y"'), 'parser.command: `--x=~/y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=../y"'), 'parser.command: `--x=../y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a/../y"'), 'parser.command: `--x=a/../y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a:/.."'), 'parser.command: `--x=a:/..`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a:..:b"'), 'parser.command: `--x=a:..:b`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=.."'), 'parser.command: `--x=..`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=-y"'), 'parser.command: `--x=-y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x="'), 'parser.command: `--x=`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a;b"'), 'parser.command: `--x=a;b`: want a long option'),
+            (base.replace(cmd, "command = 'facts \"--x=a b\"'"), "parser.command: `--x=a b`: want a long option"),
+            (base.replace(cmd, 'command = "facts ---x"'), 'parser.command: `---x`: want a long option'),
+            # a NUL anywhere is outside the allowlist (no check of its own: the grammar has no NUL)
+            (base.replace(cmd, 'command = "fac\\u0000ts"'), "parser.command: `fac\x00ts`: want a bare program name"),
+            (base.replace(cmd, 'command = "facts --x=a\\u0000b"'), "parser.command: `--x=a\x00b`: want a long option"),
+            (base.replace(cmd, 'command = "facts --"'), 'parser.command: `--`: want a long option'),
+            (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
+            (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
+            # review round 2: the install step is built by the core from installer, package and version
+            (base + 'install = "pip install mini-facts==1.0.0"\n', "parser.install: unknown key"),
+            (base.replace('installer = "pip"\n', ""), "parser.installer: missing"),
+            (base.replace('package = "mini-facts"\n', ""), "parser.package: missing"),
+            (base.replace('version = "1.0.0"\n', ""), "parser.version: missing"),
+            (inst("brew", "x", "1.0.0"), "parser.installer: `brew`: want pip, npm, cargo, gem or go"),
+            (inst("pip", "git+https://h/x", "1.0.0"), "parser.package: `git+https://h/x`: want a pip package name"),
+            (inst("pip", "x y", "1.0.0"), "parser.package: `x y`: want a pip package name"),
+            (inst("pip", "x==1.0", "1.0.0"), "parser.package: `x==1.0`: want a pip package name"),
+            (inst("pip", "x;python_version<'3'", "1.0.0"), "parser.package: `x;python_version<'3'`: want a pip"),
+            (inst("pip", "--index-url=https://evil/simple", "1.0.0"), "parser.package: `--index-url=https://evil/simple`"),
+            (inst("pip", "", "1.0.0"), "parser.package: want a non-empty string"),
+            (inst("npm", "x@latest", "1.0.0"), "parser.package: `x@latest`: want a npm package name"),
+            (inst("npm", "@scope", "1.0.0"), "parser.package: `@scope`: want a npm package name"),
+            (inst("npm", "Upper", "1.0.0"), "parser.package: `Upper`: want a npm package name"),
+            (inst("cargo", "1x", "1.0.0"), "parser.package: `1x`: want a cargo package name"),
+            (inst("gem", "x/y", "1.0.0"), "parser.package: `x/y`: want a gem package name"),
+            (inst("go", "x", "v1.0.0"), "parser.package: `x`: want a go package name"),
+            (inst("go", "example.com/../x", "v1.0.0"), "parser.package: `example.com/../x`: want a go package name"),
+            (inst("go", "example.com/x@v1", "v1.0.0"), "parser.package: `example.com/x@v1`: want a go package name"),
+            (inst("pip", "x", "1.0.*"), "parser.version: `1.0.*`: want one pinned version for pip"),
+            (inst("pip", "x", "~=1.0"), "parser.version: `~=1.0`: want one pinned version for pip"),
+            (inst("pip", "x", "1.0;x"), "parser.version: `1.0;x`: want one pinned version for pip"),
+            (inst("npm", "x", "1.0"), "parser.version: `1.0`: want one pinned version for npm"),
+            (inst("npm", "x", "^1.0.0"), "parser.version: `^1.0.0`: want one pinned version for npm"),
+            (inst("cargo", "x", "1.0.0 2.0.0"), "parser.version: `1.0.0 2.0.0`: want one pinned version for cargo"),
+            (inst("gem", "x", ">= 1.0"), "parser.version: `>= 1.0`: want one pinned version for gem"),
+            (inst("go", "example.com/x", "latest"), "parser.version: `latest`: want one pinned version for go"),
+            (inst("go", "example.com/x", "v1.0"), "parser.version: `v1.0`: want one pinned version for go"),
+            (base + "timeout = 0\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "timeout = 601\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "timeout = true\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "shell = true\n", "parser.shell: unknown key"),
+            (base.replace("marked xtest", "marked {nme}"), "parser.skipped_text: unknown placeholder `{nme}`"),
+            (base + '\n[lexer]\nblock_style = "braces"\nbrackets = ["()", "{}"]\n', "lexer: not with [parser]"),
+            (base + '\n[asserts]\n', "asserts: not with [parser]"),
+            (base + '\n[tests]\nstyle = "calls"\ncases = ["t"]\n', "tests: not with [parser]"),
+            (base + '\n[[suppressions]]\ndirectives = ["x"]\ncovers = { x = "line" }\n', "suppressions: not with [parser]"),
+            (base + '\n[mutation]\nskip_comments = ["keep"]\n', "mutation.skip_comments: not with [parser]"),
+            (base.split("[parser]")[0], "lexer: missing"),  # no parser: the pattern tables are required
+        ]
+        for text, want in cases:
+            with self.subTest(want=want):
+                self.assertIn(want, self.error(text))
+        for ok, argv in (('command = "facts"', ["facts"]), ('command = "rb-test.facts_2"', ["rb-test.facts_2"]),
+                         ('command = "facts --json --lang=ruby --cfg=a/b.c:d@e+f-g --x2-y"',
+                          ["facts", "--json", "--lang=ruby", "--cfg=a/b.c:d@e+f-g", "--x2-y"])):
+            with self.subTest(ok=ok):
+                self.assertEqual(self.load(base.replace(cmd, ok)).parser["command"], argv)
+        h = "/h"
+        for (installer, package, version), steps, program in (
+                (("pip", "mini-facts", "1.0.0"),
+                 [["python3", "-m", "venv", "/h/pip/mini-facts/1.0.0"],
+                  ["/h/pip/mini-facts/1.0.0/bin/python", "-m", "pip", "install", "mini-facts==1.0.0"]],
+                 "/h/pip/mini-facts/1.0.0/bin/facts"),
+                (("pip", "x", "2.1rc1.post3"),
+                 [["python3", "-m", "venv", "/h/pip/x/2.1rc1.post3"],
+                  ["/h/pip/x/2.1rc1.post3/bin/python", "-m", "pip", "install", "x==2.1rc1.post3"]],
+                 "/h/pip/x/2.1rc1.post3/bin/facts"),
+                (("npm", "@ekit/facts", "1.0.0-beta.1"),
+                 [["npm", "install", "--no-save", "--prefix", "/h/npm/@ekit/facts/1.0.0-beta.1", "@ekit/facts@1.0.0-beta.1"]],
+                 "/h/npm/@ekit/facts/1.0.0-beta.1/node_modules/.bin/facts"),
+                (("cargo", "rs-facts", "0.3.1"),
+                 [["cargo", "install", "rs-facts", "--version", "0.3.1", "--locked", "--root", "/h/cargo/rs-facts/0.3.1"]],
+                 "/h/cargo/rs-facts/0.3.1/bin/facts"),
+                (("gem", "rb_test-facts", "1.4.2.pre"),
+                 [["gem", "install", "rb_test-facts", "-v", "1.4.2.pre", "--install-dir", "/h/gem/rb_test-facts/1.4.2.pre",
+                   "--bindir", "/h/gem/rb_test-facts/1.4.2.pre/bin"]],
+                 "/h/gem/rb_test-facts/1.4.2.pre/bin/facts"),
+                (("go", "example.com/x/cmd/facts", "1.0.0"),
+                 [["env", "GOBIN=/h/go/example.com/x/cmd/facts/1.0.0/bin", "go", "install", "example.com/x/cmd/facts@v1.0.0"]],
+                 "/h/go/example.com/x/cmd/facts/1.0.0/bin/facts"),
+                (("go", "example.com/x/cmd/facts", "v1.0.0"),
+                 [["env", "GOBIN=/h/go/example.com/x/cmd/facts/v1.0.0/bin", "go", "install", "example.com/x/cmd/facts@v1.0.0"]],
+                 "/h/go/example.com/x/cmd/facts/v1.0.0/bin/facts")):
+            with self.subTest(installer=installer, package=package):
+                parser = self.load(inst(installer, package, version).replace(cmd, 'command = "facts --json"')).parser
+                self.assertEqual((parser_cmd.install_steps(parser, h), parser_cmd.program_path(parser, h)),
+                                 (steps, program))
+        gem = self.load(inst("gem", "rb", "1.0.0")).parser
+        self.assertEqual(parser_cmd.run_env(gem, h), {"GEM_HOME": "/h/gem/rb/1.0.0", "GEM_PATH": "/h/gem/rb/1.0.0"})
+        self.assertEqual(parser_cmd.run_env(self.load(base).parser, h), {})
+        self.assertEqual(parser_cmd.prefix(gem, "/h/"), "/h/gem/rb/1.0.0")
+        os.environ.pop(HOME_VAR, None)
+        self.assertEqual(parser_cmd.home(), os.path.join(os.path.expanduser("~"), ".cache", "ekit", "parsers"))
+        parser_home(self, "/elsewhere")
+        self.assertEqual(parser_cmd.home(), "/elsewhere")
+        self.assertEqual(self.load(base + '\n[mutation]\nconfig_files = ["m.toml"]\nconfig_name = "m"\n')
+                         .mutation_config("x/m.toml", None), "m")
+
+
+if __name__ == "__main__":
+    unittest.main()

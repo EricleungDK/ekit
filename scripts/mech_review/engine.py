@@ -18,7 +18,7 @@ def test_paths(globs):
     return globs + [g for g in CORE_TEST_PATHS if g not in globs]
 
 
-def prove(stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None):
+def prove(stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None, parser_hold=r0_mod.NO_BASE):
     """R0's static half for one adapter: (check, raw entries). adapter: an adapter file's Adapter (adapter_path its file,
     read again as bytes for the malformed cases), else the built-in ADAPTERS[stack]. fixtures_dir: the fixture dir, else
     the adapter file's (beside it) or the built-in's. r0.FixtureError: a fixture dir that does not read."""
@@ -29,13 +29,18 @@ def prove(stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None)
     if fixtures_dir is None:
         fixtures_dir = r0_mod.adapter_fixtures(adapter_path) if adapter_path else r0_mod.builtin_fixtures(stack)
     return r0_mod.static(adapter or ADAPTERS[stack](), r0_mod.load_fixtures(fixtures_dir), test_paths(test_globs),
-                         adapter_raw=raw, where=adapter_path or "")
+                         adapter_raw=raw, where=adapter_path or "", parser_hold=parser_hold)
 
 
 def r0(repo, base_ref, head_ref, stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None):
     """The `r0` subcommand: R0's static half as an envelope (the other checks skipped, `not run by r0`)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir)
+    # a parser-backed adapter's command runs only when it is the base branch's (#27): never one the PR wrote, and
+    # never with a word inside the reviewed checkout, in R0's own throwaway repos too
+    if hasattr(adapter, "in_checkout"):
+        adapter = adapter.in_checkout(repo)
+    check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir,
+                       r0_mod.parser_hold(repo, mb, adapter, adapter_path))
     raw += _edit_rules(repo, mb, head, check, [adapter_path] if adapter_path else [])
     checks = {c: {"status": "skipped", "note": "not run by r0"} for c in CHECKS}
     checks["R0"] = check
