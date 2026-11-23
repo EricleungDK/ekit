@@ -89,7 +89,7 @@ for job_name, job in (("red-first", red), ("mutants", mut)):
     check(f"{job_name}: a TypeScript toolchain step exists", bool(tc) or any("setup-node" in l for l in job),
           str(tc))
     check(f"{job_name}: setup-node runs only for the ts stack",
-          any(l.strip() == "if: needs.stack.outputs.stack == 'ts'" for l in job), "")
+          any(l.strip() == "if: matrix.stack == 'ts'" for l in job), "")
     install = step(job, "TypeScript dependencies")
     txt = "\n".join(install)
     check(f"{job_name}: lockfile-aware install step exists", bool(install), str(install))
@@ -102,7 +102,7 @@ for job_name, job in (("red-first", red), ("mutants", mut)):
     check(f"{job_name}: project-dir guarded before use", "case \"$PROJECT_DIR\"" in txt and "exit 2" in txt, txt)
     check(f"{job_name}: install step has no third-party action", not any(l.startswith("uses:") for l in install), txt)
     check(f"{job_name}: project-dir reaches the script through env, never inline in run",
-          "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in txt
+          "PROJECT_DIR: ${{ matrix.project-dir }}" in txt
           and not any("${{" in l for l in install if not l.startswith(("PROJECT_DIR:", "- name:", "if:", "env:", "shell:"))),
           txt)
 
@@ -114,7 +114,7 @@ check("mutants: Stryker is installed into its own prefix, not the repo's node_mo
       "--prefix" in stxt and "RUNNER_TEMP" in stxt, stxt)
 check("mutants: Stryker install failure is not a stop (the engine says n/a)",
       any(l == "continue-on-error: true" for l in stryker), str(stryker))
-check("mutants: Stryker install only for the ts stack", any(l == "if: needs.stack.outputs.stack == 'ts'" for l in stryker), str(stryker))
+check("mutants: Stryker install only for the ts stack", any(l == "if: matrix.stack == 'ts'" for l in stryker), str(stryker))
 check("mutants: the Stryker binary is handed to the engine (--mutants-cmd)",
       "--mutants-cmd" in "\n".join(step(mut, "R3 mutation on the diff (shard)")), "")
 check("red-first: Stryker is not installed (R1/R4 run tests only)", "Stryker" not in "\n".join(red))

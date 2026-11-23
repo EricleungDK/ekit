@@ -5,7 +5,7 @@ has a stack plan, so a drift result without it adds nothing), r0 owns R0 (#20: a
 n/a; their entries stay, marked `blocked`, and still count); a CI entry in a job's result is kept too. A job with no usable result (missing,
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
-checks stay skipped.
+checks stay skipped. Several stacks (#17): each stack's results merge apart, then combine_stacks reports them as one.
 """
 import hashlib
 import json
