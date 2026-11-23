@@ -66,6 +66,17 @@ class RepoAdapterRunSide(Fixture):
         rc, env = self.run_check("all", base, head)
         self.assertEqual((rc, env["checks"]["R1"]["status"], [e["check"] for e in env["entries"]]), (1, "fail", ["R1"]))
 
+    def test_all_lists_r2s_and_r1s_entries_in_file_then_line_order_file_level_last(self):
+        # R2's entries come first unsorted; within the test file a line-anchored entry (R1 no-red at `fresh`) sorts
+        # before a file-level one (R2: an assert outside the tests dropped, line 0)
+        base = self.commit({"src/calc.mini": "fn add(a, b) { a + b }\n", ".ekit/adapters/mini.toml": MINI_R2 + MINI_RUN,
+                            "tests/calc.mini": "assertTrue(ready())\n" + MINI_TEST})
+        head = self.commit({"tests/calc.mini": MINI_FRESH, "tests/outcomes": "fresh pass pass\n",
+                            "src/calc.mini": "fn add(a, b) { a + b } # fixed\n"})
+        rc, env = self.run_check("all", base, head)
+        self.assertEqual((rc, [(e["check"], e["file"], e["line"]) for e in env["entries"]]),
+                         (1, [("R1", "tests/calc.mini", 5), ("R2", "tests/calc.mini", 0)]))
+
     def test_without_run_red_stays_n_a_naming_the_missing_table(self):
         base, head = self.mini_pr(MINI_R2)
         rc, env = self.run_check("red", base, head)
