@@ -154,6 +154,9 @@ class Declared(unittest.TestCase):
     def test_name_is_a_plain_word(self):
         self.assertEqual(self.err(with_tool(changed(name="a b"))),
                          "mutation.tool.name: `a b`: want letters, digits, _, - or .")
+        self.assertEqual(self.err(with_tool(changed(name="mütt"))),
+                         "mutation.tool.name: `mütt`: want letters, digits, _, - or .")
+        self.assertEqual(parse(with_tool(changed(name="pit_2.x-y"))).mutation_tool["name"], "pit_2.x-y")
 
 
 class LinesFormat(unittest.TestCase):

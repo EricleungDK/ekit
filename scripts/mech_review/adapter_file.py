@@ -303,6 +303,7 @@ TOOL_ARGS = ("mutate", "timeout_ms", "timeout_s", "report")  # [mutation.tool].a
 RANGE = ("file", "first", "last")  # [mutation.tool].mutate placeholders: one changed-line range
 STATUS_KINDS = ("missed", "caught", "timeout", "unviable")  # format lines: what each status word means for R3
 LINE_GROUPS = ("file", "line", "status")
+TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # the tool's name in notes: ASCII, no space or quote
 DEFAULT_TOOL_TIMEOUT = 120  # seconds per mutant when the workflow's mutant-timeout is auto
 
 
@@ -314,7 +315,7 @@ def _tool(d, config_files, run):
                   "os", "timeout", "baseline_failed", "pattern", "status", "runners"),
            ("name", "command", "report", "format", "os"))
     name = _str(d["name"], f + ".name")
-    if not all(ch.isalnum() or ch in "_-." for ch in name):
+    if not TOOL_NAME.fullmatch(name):
         _err(f + ".name", f"`{name}`: want letters, digits, _, - or .")
     _command(d["command"], f + ".command")
     args = _strs(d.get("args", []), f + ".args")
