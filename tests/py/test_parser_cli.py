@@ -3,6 +3,7 @@
 The stub (tests/fixtures/parser/mini_facts.py) reads `mini` files the way tests/fixtures/adapters/mini.toml does, so
 the parser-backed file and the pattern file must give the same R2 entries. A parser that cannot run, or prints what the
 fact schema refuses, gives one blocking `CI` entry and never a pattern fallback. Through cli.main in this process."""
+import hashlib
 import json
 import os
 import shlex
@@ -17,6 +18,7 @@ from test_adapter_cli import BASE, MINI, Repo, r2
 from test_r0 import FUNCTIONS
 
 STUB = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "mini_facts.py")
+CANNED = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "canned_facts.py")
 MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
 
 
@@ -382,6 +384,77 @@ class ParserR2(unittest.TestCase):
         self.assertEqual(len(json.loads(r.stdout)["entries"]), 1, r.stderr)
         time.sleep(3)
         self.assertFalse(os.path.exists(flag), "the parser's background child outlived its run")
+
+class HandWrittenFacts(unittest.TestCase):
+    """R2 from facts written by hand (tests/fixtures/parser/canned_facts.py, no ekit import): what the core does with
+    a parser's facts, independent of ekit's scanner."""
+
+    BASE = 'test("adds", {\n  check(add(1, 2) == 3)\n  same(add(2, 2), 4)\n})\ntest("subs", {\n  same(sub(3, 1), 2)\n})\n'
+
+    @staticmethod
+    def fn_fact(name, line, end, markers=()):
+        return {"name": name, "line": line, "end_line": end, "markers": list(markers), "body": [line + 1, end - 1],
+                "calls": ["test", "same", "check"]}
+
+    @staticmethod
+    def assert_fact(line, test, kind, text, left=None, right=None):
+        return {"line": line, "test": test, "owner": test, "kind": kind, "left": left, "right": right, "text": text}
+
+    def facts(self, tests, asserts):
+        return {"format": 1, "parse_error": None, "tests": tests, "asserts": asserts, "suppressions": [],
+                "mutation_skips": []}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.dir = os.path.join(tmp.name, "facts")
+        os.mkdir(self.dir)
+        self.repo = Repo(os.path.join(tmp.name, "repo"))
+        adds = [self.assert_fact(2, "adds", "other", "check(add(1, 2) == 3)"),
+                self.assert_fact(3, "adds", "eq", "same(add(2, 2), 4)", "add(2, 2)", "4")]
+        subs = [self.assert_fact(6, "subs", "eq", "same(sub(3, 1), 2)", "sub(3, 1)", "2")]
+        self.can(self.BASE, self.facts([self.fn_fact("adds", 1, 4), self.fn_fact("subs", 5, 7)], adds + subs))
+        self.base = self.repo.commit({"tests/calc.mini": self.BASE}, "base")
+        cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", CANNED, self.dir])
+        self.adapter = os.path.join(self.tmp, "canned.toml")
+        with open(self.adapter, "w") as f:
+            f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines() if ln.startswith("command = ")),
+                                          f"command = {json.dumps(cmd)}").replace('skipped_text = "test `{name}` marked '
+                                                                                  'xtest"\n', ""))
+        self.adds, self.subs = adds, subs
+
+    def can(self, text, facts):
+        name = hashlib.sha256(text.encode()).hexdigest() + ".json"
+        with open(os.path.join(self.dir, name), "w") as f:
+            json.dump(facts, f)
+
+    def entries(self, text, facts):
+        self.can(text, facts)
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        head = self.repo.commit({"tests/calc.mini": text}, "head")
+        r = r2(self.repo, self.base, head, adapter=self.adapter)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return [(e["check"], e["severity"], e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]]
+
+    def test_a_removed_test_is_a_fail(self):
+        text = self.BASE.split('test("subs"')[0]
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4)], self.adds)),
+                         [("R2", "fail", 5, "test fn `subs` removed")])
+
+    def test_a_skipped_test_is_a_fail(self):
+        text = self.BASE.replace('test("subs"', 'skip("subs"')
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4),
+                                                        self.fn_fact("subs", 5, 7, ["ignore"])], self.adds + self.subs)),
+                         [("R2", "fail", 5, "test `subs` marked skipped")])
+
+    def test_a_weakened_assert_is_a_confirm_quoting_both(self):
+        text = self.BASE.replace("same(add(2, 2), 4)", "check(add(2, 2) > 0)")
+        weak = [self.adds[0], self.assert_fact(3, "adds", "other", "check(add(2, 2) > 0)")]
+        self.assertEqual(self.entries(text, self.facts([self.fn_fact("adds", 1, 4), self.fn_fact("subs", 5, 7)],
+                                                       weak + self.subs)),
+                         [("R2", "confirm", 3, "assertion replaced in `adds`: `same(add(2, 2), 4)` -> "
+                                               "`check(add(2, 2) > 0)`")])
 
 class ParserTable(unittest.TestCase):
     """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
