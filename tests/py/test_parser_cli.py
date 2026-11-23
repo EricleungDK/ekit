@@ -22,6 +22,7 @@ CANNED = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "canned_facts.py
 MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
 
 
+MACOS_ADDS = ("__CF_USER_TEXT_ENCODING",)  # set by macOS in a process's environment at launch, not passed by the core
 HOME_VAR = "EKIT_PARSER_HOME"  # where the core looks for installed parsers: the tests point it at a temp dir
 WRAPPER = """#!{python} -I
 # an installed-style parser for the tests: `--stub=<id>` picks the stub script and its options from beside it
@@ -343,7 +344,10 @@ class ParserR2(unittest.TestCase):
             self.assertEqual(x["argv"], ["--record", record, "tests/calc.mini"])
             self.assertEqual(x["cwd_files"], [])
             self.assertFalse(os.path.realpath(x["cwd"]).startswith(os.path.realpath(self.repo.path)), x["cwd"])
-            self.assertEqual(sorted(x["env"]), ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"])
+            self.assertNotIn("EKIT_TEST_SECRET", x["env"])
+            # the core passes these five; macOS itself adds __CF_USER_TEXT_ENCODING to every process it starts
+            self.assertEqual(sorted(k for k in x["env"] if not (sys.platform == "darwin" and k in MACOS_ADDS)),
+                             ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"])
             self.assertEqual(os.path.realpath(x["env"]["HOME"]), os.path.realpath(x["cwd"]))
         self.assertFalse(any(os.path.exists(x["cwd"]) for x in runs), "the parser's dir outlives its run")
 
