@@ -367,6 +367,8 @@ class RunSideNotBuilt(unittest.TestCase):
         r, env = self.cli("all")
         self.assertEqual((r.returncode, env["checks"]["R2"]["status"], env["checks"]["R1"]["status"],
                           env["checks"]["R4"]["status"]), (0, "pass", "n/a", "n/a"), r.stderr)
+        self.assertEqual(env["checks"]["R0"], {"status": "skipped", "note": "not run by all on the repo's adapter "
+                                                                            "file: r0 proves it"})
 
     def test_mutants_reports_r3_n_a(self):
         r, env = self.cli("mutants")
@@ -465,6 +467,51 @@ class MergeOnARepoStack(unittest.TestCase):
         r = _kit.run_cli(["merge", "--base", "a" * 40, "--head", "b" * 40, "--stack", "a.b", "--shards", "0"])
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("argument --stack: invalid choice: 'a.b'", r.stderr)
+
+
+FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
+
+
+class R0OnARepoAdapter(unittest.TestCase):
+    """r0 --stack <name> with no --adapter proves the repo's adapter file for that name, read at the PR's base (with
+    its `<name>.r0/` fixtures there), as r2 judges with it; R0's editing rules read that file's change in the PR."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+        files = {".ekit/adapters/mini.toml": mini()}
+        for fn in sorted(os.listdir(FIXTURES)):
+            with open(os.path.join(FIXTURES, fn), newline="") as f:
+                files[f".ekit/adapters/mini.r0/{fn}"] = f.read()
+        self.base = self.repo.commit(files)
+
+    def r0(self, head, stack="mini"):
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", self.base, "--head", head, "--stack", stack,
+                          "--test-paths", "tests/**"])
+        return r, (json.loads(r.stdout) if r.stdout else None)
+
+    def test_the_bases_file_and_fixtures_are_proved(self):
+        # the PR's file no longer knows xtest as a skip, and drops the fixtures: the base's file is proved all the same
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini().replace('skip = ["xtest"]', 'skip = []'),
+                                 ".ekit/adapters/mini.r0/skip.mini.r0": None})
+        r, env = self.r0(head)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        r0 = env["checks"]["R0"]
+        self.assertEqual((r0["status"], r0["note"], r0["adapter"]),
+                         ("fail", "static half: 16 of 17 cases proved; failed: helper-asserts", "mini"))
+        self.assertEqual([c["case"] for c in r0["cases"] if c["status"] != "pass"], ["helper-asserts"])
+        self.assertTrue(r0["cases"][-1]["got"].startswith("adapter file .ekit/adapters/mini.toml (unbalanced-brackets)"),
+                        r0["cases"][-1]["got"])
+
+    def test_the_editing_rules_read_the_repo_file(self):
+        head = self.repo.commit({".ekit/adapters/mini.toml": mini("macos")})
+        r, env = self.r0(head)
+        self.assertEqual([e["problem"] for e in env["entries"] if e["class"] == "needs-human"],
+                         ["a person decides: adapter file .ekit/adapters/mini.toml target-os linux -> macos"], r.stderr)
+
+    def test_an_unknown_name_is_still_a_usage_error(self):
+        r, _ = self.r0(self.base, "gradle")
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("argument --stack: invalid choice: 'gradle'", r.stderr)
 
 
 if __name__ == "__main__":

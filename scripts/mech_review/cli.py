@@ -2,9 +2,11 @@
 import argparse
 import json
 import math
+import os
 import re
 import signal
 import sys
+import tempfile
 
 from . import adapter_file, doctor, engine, gitio, merge, r0, red, report, resolve, stack_plan
 from .stack import ADAPTERS
@@ -77,7 +79,7 @@ resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D
   and `stacks` [{name, stack, project_dir, adapter, target_os}]: target_os (linux, macos or windows) is the base stack
   plan's entry's target-os, else the adapter's (--adapter or the repo's file: its target-os), else linux; null with no
   stack. Exit 0, 1 when no single project or no planned stack to run (error names them), 2 usage or git.
-  r2 --stack NAME with no --adapter judges with the repo's adapter file for NAME at --base, when there is one.
+  r2 and r0 --stack NAME with no --adapter use the repo's adapter file for NAME at --base, when there is one.
 
 r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .] [--test-paths G]`): R0's static half
   for the built-in stack or the adapter file (the PR's version: the file as checked out), with its fixtures (the
@@ -367,6 +369,7 @@ def _not_built(args, adapter=None):
             checks, entries = env["checks"], env["entries"]
             checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job "
                                                          "mutants)"}
+            checks["R0"] = {"status": "skipped", "note": "not run by all on the repo's adapter file: r0 proves it"}
         else:
             checks, entries = {c: {"status": "skipped", "note": f"not run by {args.check}"} for c in report.CHECKS}, []
     except gitio.Die as e:
@@ -484,6 +487,28 @@ def _load_adapter(path, stack):
     return adapter, None
 
 
+def _r0_repo(args, adapter, path):
+    """r0 on the repo's adapter file (#17): the file and its fixtures as they are at the base, written to a throwaway
+    dir that r0 runs from, so the file keeps its repo path (in the proof's messages, and for R0's editing rules, which
+    read its change in the PR from git)."""
+    repo = os.path.abspath(args.repo)
+    fixtures = os.path.abspath(args.fixtures) if args.fixtures else None
+    here = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            stack_plan.write_adapter(repo, gitio.resolve(repo, args.base), path, tmp)
+            os.chdir(tmp)
+            env = engine.r0(repo, args.base, args.head, args.stack, args.test_paths, adapter=adapter, adapter_path=path,
+                            fixtures_dir=fixtures)
+        except (gitio.Die, r0.FixtureError) as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+        finally:
+            os.chdir(here)
+    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
+    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+
+
 def _r0(argv):
     """R0's static half (#20): the adapter against the cheat suite and the controls, git and adapter only. Exit 0 pass
     or unproven, 1 a fail entry, 2 usage or git error."""
@@ -508,9 +533,17 @@ def _r0(argv):
         if err:
             print(f"mech-review: {err}", file=sys.stderr)
             return 2
-    elif args.stack not in ADAPTERS:
-        p.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
-                + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
+    else:
+        try:  # #17: the repo's adapter file for this stack at the base, as r2 takes it
+            found, path = stack_plan.repo_adapter_at(args.repo, gitio.resolve(args.repo, args.base), args.stack)
+        except (gitio.Die, adapter_file.AdapterFileError) as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+        if found is not None:
+            return _r0_repo(args, found, path)
+        if args.stack not in ADAPTERS:
+            p.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
+                    + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
     try:
         env = engine.r0(args.repo, args.base, args.head, args.stack, args.test_paths, adapter=adapter,
                         adapter_path=args.adapter, fixtures_dir=args.fixtures)

@@ -11,6 +11,7 @@ plan entry's folder holds it, at any depth, and the entry's adapter lists its na
 
 Every problem with a plan is a PlanError naming the entry and the field, never a silent default: a bad plan never reads
 as clean. tomllib (python 3.11+) is imported only when a plan exists."""
+import os
 import time
 from collections import namedtuple
 
@@ -459,25 +460,48 @@ def repo_adapters(repo, sha, paths):
 
 
 def repo_adapter(repo, sha, stack, folder="."):
-    """the adapter the repo defines at sha for a stack named on the command line, or None (the built-in of that name
-    applies, if any): the plan's entry for the stack and folder (entry_for) when it names an adapter file, else
-    `.ekit/adapters/<stack>.toml`. A plan entry naming a built-in keeps the built-in; a plan that does not read lends
-    none (its drift check fails D). adapter_file.AdapterFileError: that file does not read, or is named otherwise."""
+    """repo_adapter_at's adapter, or None."""
+    return repo_adapter_at(repo, sha, stack, folder)[0]
+
+
+def repo_adapter_at(repo, sha, stack, folder="."):
+    """(adapter, its repo path) the repo defines at sha for a stack named on the command line, or (None, None) (the
+    built-in of that name applies, if any): the plan's entry for the stack and folder (entry_for) when it names an
+    adapter file, else `.ekit/adapters/<stack>.toml`. A plan entry naming a built-in keeps the built-in; a plan that
+    does not read lends none (its drift check fails D). adapter_file.AdapterFileError: that file does not read, or is
+    named otherwise."""
     if not valid_name(stack):
-        return None
+        return None, None
     try:
         plan = at(repo, sha)
     except PlanError:
         plan = None
     entry = entry_for(plan, stack, folder)
     if entry is not None:
-        return None if entry.adapter_ref in ADAPTERS else entry.adapter
+        if entry.adapter_ref in ADAPTERS:
+            return None, None
+        return entry.adapter, _folder(entry.adapter_ref, "adapter")
     path = f"{ADAPTERS_DIR}/{stack}.toml"
     try:
         gitio.git(repo, "cat-file", "-e", f"{sha}:{path}")
     except gitio.Die:
-        return None  # nothing there: the built-in, if any
-    return repo_adapters(repo, sha, [path])[stack]  # a file that is not one, or does not read, is named
+        return None, None  # nothing there: the built-in, if any
+    return repo_adapters(repo, sha, [path])[stack], path  # a file that is not one, or does not read, is named
+
+
+def write_adapter(repo, sha, path, dest):
+    """Write the adapter file at path and its R0 fixtures (`<path without .toml>.r0/`, as r0 finds them beside it) as
+    they are at sha under dest, at the same relative paths."""
+    stem = path[:-len(".toml")] if path.endswith(".toml") else path
+    listed = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", sha, "--", stem + ".r0/").split("\0")
+    for p in [path, *(p for p in listed if p)]:
+        raw = _blob(repo, sha, p)
+        if raw is None:
+            continue
+        full = os.path.join(dest, *p.split("/"))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(raw)
 
 
 def to_run(plan, paths):
