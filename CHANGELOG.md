@@ -50,6 +50,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Fixed
 
+- **`mech-review.py resolve` from a subdir** (#29): with `--repo` (or the current dir) inside a repo's subdir, auto read the tree relative to that subdir and printed a wrong `project_dir`; it now reads the tree from the repo root. `resolve --help` lists the options only, with no text of its own: the main `--help` describes `resolve`.
 - **Stop gate: a blocked report no longer makes a later done true** (predates this release): a `done` report on a tree that only a `blocked` report was given for runs the verify commands again; before, it was let through unchecked.
 - **Scenario runner**: a background child (`server &`) is stopped with its scenario on POSIX too (its process group), as on Windows (its job); `--repo` naming no directory says so (exit 2), not "no scenarios found".
 - **R3's runner over budget on an OS without process groups** (#34): no `os.killpg` or `SIGKILL` (Windows) stops the run with `SIGTERM` instead of raising. `MECH_TEST_STUB` may be a `.py` file, run with the engine's Python (Windows starts no script by its shebang).
