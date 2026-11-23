@@ -414,11 +414,11 @@ class RunUsage(Fixture):
 
     def test_r3_through_a_file_is_a_usage_error(self):
         head = self.commit({"tests/calc.test.ts": TEST})
+        # #19: no longer a usage error: R3 runs through the file's [mutation.tool] (ts.toml declares Stryker); with no
+        # production change it is skipped, as the built-in's is (tests/py/test_adapter_mutation_ts.py runs it)
         for check in ("mutants", "baseline"):
             r = self.red(head, head, check=check)
-            self.assertEqual(r.returncode, 2)
-            self.assertIn("error: --adapter applies to r2, red and all (R3 through an adapter file is not built yet)\n",
-                          r.stderr)
+            self.assertEqual((r.returncode, json.loads(r.stdout)["checks"]["R3"]["status"]), (0, "skipped"), r.stderr)
 
     def test_all_runs_r0_r1_r2_and_r4_through_the_file(self):
         base, head = self.ts_repo("fresh fail pass\n")
