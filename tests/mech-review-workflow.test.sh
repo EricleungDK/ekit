@@ -255,6 +255,19 @@ def step(lines, name):
         out.append(l.strip())
     return out
 
+py_bl = text(step(bl, "Python toolchain"))
+check("baseline: python venv with pytest and mutmut pinned, for the python stack (#64)",
+      py_bl.startswith("if: needs.stack.outputs.stack == 'python'") and '"pytest==9.2.0" "mutmut==3.8.1"' in py_bl
+      and 'echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"' in py_bl, py_bl)
+bl_names = [l.strip()[len("- name: "):] for l in bl if l.strip().startswith("- name: ")]
+check("baseline: the python venv after the checkouts, before the baseline runs (#64)",
+      "Python toolchain" in bl_names and bl_names.index("Python toolchain") == 2
+      and bl_names.index("Python toolchain") < bl_names.index("R3 baseline (once; shard count, derived timeout)"), str(bl_names))
+RUST_OR_PY = "(needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python')"
+check("baseline: extra apt packages and setup command run for rust and python (#64)",
+      RUST_OR_PY in text(step(bl, "extra apt packages")) and RUST_OR_PY in text(step(bl, "setup command")),
+      text(step(bl, "extra apt packages")) + " | " + text(step(bl, "setup command")))
+
 
 tcs = step(mu, "Rust toolchain")
 tc_uses = next((l.split("uses:", 1)[1].split("#")[0].strip() for l in tcs if l.startswith("uses:")), "")
