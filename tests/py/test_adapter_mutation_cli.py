@@ -232,6 +232,27 @@ class Formats(Case):
         self.assertEqual({e["id"] for e in env["entries"]}, {e["id"] for e in env2["entries"]})
 
 
+class ParserBacked(Case):
+    """#27: a parser-backed adapter file ([parser] in place of the pattern tables) declares the same tool: R3 reads the
+    tool's report, not source, so it gives the pattern adapter's entries."""
+
+    def test_a_parser_backed_file_runs_its_declared_tool(self):
+        from test_parser_cli import HOME_VAR, parser_toml
+        self.pr()
+        env = self.report("elements.json", "out/report.json")
+        _, pattern = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env=env)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(HOME_VAR, None)  # load only: R3 runs no parser
+            text = parser_toml()
+        path = os.path.join(self.tmp, "parser.toml")
+        with open(path, "w") as f:
+            f.write(text + ELEMENTS)
+        r, parsed = self.cli("mutants", path, env=env)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual((parsed["entries"], parsed["checks"]["R3"]["note"]),
+                         (pattern["entries"], pattern["checks"]["R3"]["note"]))
+        self.assertEqual(len(parsed["entries"]), 2)
+
 class NotRun(Case):
     def test_no_tool_is_n_a_named_in_the_summary(self):  # T3
         self.pr()
