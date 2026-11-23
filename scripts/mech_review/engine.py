@@ -1,10 +1,42 @@
 """Mechanical review engine: runs the checks a subcommand asks for and builds the contract envelope."""
-from . import mutants, red, report, stack_plan
+from . import mutants, r0 as r0_mod, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
 from .report import CHECKS, envelope, finalize
 from .stack import ADAPTERS
+
+# test paths the core adds for every stack (#20): scenarios are test code whatever the caller's test-paths say
+CORE_TEST_PATHS = (".ekit/scenarios/**",)
+
+
+def test_paths(globs):
+    """the caller's test globs plus CORE_TEST_PATHS (once each)."""
+    globs = list(globs)
+    return globs + [g for g in CORE_TEST_PATHS if g not in globs]
+
+
+def prove(stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None):
+    """R0's static half for one adapter: (check, raw entries). adapter: an adapter file's Adapter (adapter_path its file,
+    read again as bytes for the malformed cases), else the built-in ADAPTERS[stack]. fixtures_dir: the fixture dir, else
+    the adapter file's (beside it) or the built-in's. r0.FixtureError: a fixture dir that does not read."""
+    raw = None
+    if adapter is not None and adapter_path is not None:
+        with open(adapter_path, "rb") as f:
+            raw = f.read()
+    if fixtures_dir is None:
+        fixtures_dir = r0_mod.adapter_fixtures(adapter_path) if adapter_path else r0_mod.builtin_fixtures(stack)
+    return r0_mod.static(adapter or ADAPTERS[stack](), r0_mod.load_fixtures(fixtures_dir), test_paths(test_globs),
+                         adapter_raw=raw, where=adapter_path or "")
+
+
+def r0(repo, base_ref, head_ref, stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None):
+    """The `r0` subcommand: R0's static half as an envelope (the other checks skipped, `not run by r0`)."""
+    base, head, mb = merge_base(repo, base_ref, head_ref)
+    check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir)
+    checks = {c: {"status": "skipped", "note": "not run by r0"} for c in CHECKS}
+    checks["R0"] = check
+    return envelope(base, head, finalize(raw), checks)
 
 
 def plan(repo, base_ref, head_ref, stack, test_globs):

@@ -6,7 +6,7 @@ import re
 import signal
 import sys
 
-from . import adapter_file, doctor, engine, gitio, merge, red, resolve, stack_plan
+from . import adapter_file, doctor, engine, gitio, merge, r0, red, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -390,7 +390,57 @@ def _drift(argv):
     return rc or (1 if any(e["severity"] == "fail" for e in env["entries"]) else 0)
 
 
+def _load_adapter(path, stack):
+    """(the adapter file's Adapter, None), or (None, usage error text)."""
+    try:
+        adapter = adapter_file.load(path)
+    except adapter_file.AdapterFileError as e:
+        return None, str(e)
+    if adapter.name != stack:
+        return None, f"adapter file {path} describes stack `{adapter.name}`, not `{stack}`"
+    return adapter, None
+
+
+def _r0(argv):
+    """R0's static half (#20): the adapter against the cheat suite and the controls, git and adapter only. Exit 0 pass
+    or unproven, 1 a fail entry, 2 usage or git error."""
+    p = argparse.ArgumentParser(prog="mech-review.py r0",
+                                description="prove the stack adapter (R0, static half): every R2 cheat caught, every "
+                                            "negative control clean, malformed adapter tables refused; git and adapter "
+                                            "only, in a throwaway repo")
+    p.add_argument("--repo", default=".", help="git repo (default .)")
+    p.add_argument("--base", required=True, help="base ref")
+    p.add_argument("--head", required=True, help="head ref")
+    p.add_argument("--stack", required=True, help="a built-in (" + ", ".join(sorted(ADAPTERS)) + ") or, with --adapter, "
+                                                  "the adapter file's name")
+    p.add_argument("--adapter", metavar="FILE", help="an adapter file (TOML) in place of the built-in: R0 proves it")
+    p.add_argument("--fixtures", metavar="DIR", help="the fixture dir (default: the built-in's, or `<adapter>.r0/` beside "
+                                                     "the adapter file)")
+    p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
+    p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
+    args = p.parse_args(argv)
+    adapter = None
+    if args.adapter is not None:
+        adapter, err = _load_adapter(args.adapter, args.stack)
+        if err:
+            print(f"mech-review: {err}", file=sys.stderr)
+            return 2
+    elif args.stack not in ADAPTERS:
+        p.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
+                + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
+    try:
+        env = engine.r0(args.repo, args.base, args.head, args.stack, args.test_paths, adapter=adapter,
+                        adapter_path=args.adapter, fixtures_dir=args.fixtures)
+    except (gitio.Die, r0.FixtureError) as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
+    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+
+
 def main(argv):
+    if argv[:1] == ["r0"]:
+        return _r0(argv[1:])
     if argv[:1] == ["drift"]:
         return _drift(argv[1:])
     if argv[:1] == ["doctor"]:

@@ -1,0 +1,13 @@
+# R0 seed (mini): each test is a run of non-blank lines; `adds` has two asserts, each on its own line.
+fn add(a, b) { a + b }
+
+test("adds", {
+  # lint-off unused
+  let x = add(1, 2)
+  assertEquals(3, x)
+  assertTrue(x != 4)
+})
+
+test("adds zero", {
+  assertEquals(2, add(0, 2))
+})

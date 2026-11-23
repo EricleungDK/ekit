@@ -6,14 +6,16 @@ import os
 PLUGIN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".claude-plugin", "plugin.json"))
 CHECKS = ("R1", "R2", "R3", "R4")
 # checks an envelope holds only when they apply: D (the stack plan's drift check, #56) only when a plan exists, so a
-# repo with no plan reads exactly as before
-OPTIONAL = ("D",)
+# repo with no plan reads exactly as before; R0 (the adapter proof, #20) only from the subcommands that run it
+FIRST = ("R0",)
+OPTIONAL = FIRST + ("D",)
 ALL = CHECKS + OPTIONAL
 
 
 def names(checks):
-    """the checks a result reports, in order: R1-R4 always, then each optional one it holds."""
-    return CHECKS + tuple(c for c in OPTIONAL if c in checks)
+    """the checks a result reports, in order: R0 when it holds it, R1-R4 always, then each other optional one."""
+    return (tuple(c for c in FIRST if c in checks) + CHECKS
+            + tuple(c for c in OPTIONAL if c in checks and c not in FIRST))
 
 
 def ekit_version():
@@ -60,7 +62,7 @@ def _partial_label(check, name):
 def summarize(head, checks, entries):
     """`all pass <head>` only when every check passed and there are no entries. Otherwise
     `<pass|fail> <head> (<F> fail, <C> confirm[, <W> waived]; ran: <checks>[; partial: R3 (<tested>/<total>)]
-    [; skipped: <checks>][; n/a: <checks>])`.
+    [; unproven: R0][; skipped: <checks>][; n/a: <checks>])`. unproven (#20): R0 ran, a cheat has no fixture: never all pass.
     `, <W> waived` appears only when a person waived an entry (waiver.py); a waived check counts as ran, a partial one too.
     n/a (toolchain absent) is not ran and not skipped: it is named so it never reads as a pass. A check with status
     `fail` makes it `fail` even with no fail entry (one lost on the way must not turn the result green)."""
@@ -73,11 +75,14 @@ def summarize(head, checks, entries):
     skipped = [c for c in order if checks[c]["status"] == "skipped"]
     na = [c for c in order if checks[c]["status"] == "n/a"]
     partial = [c for c in order if checks[c]["status"] == "partial"]
+    unproven = [c for c in order if checks[c]["status"] == "unproven"]  # R0: a case with no fixture (#20)
     ran = [c for c in order if c not in skipped and c not in na]
     counts = f"{fails} fail, {confirms} confirm" + (f", {waived} waived" if waived else "")
     parts = f"{counts}; ran: {' '.join(ran) or 'none'}"
     if partial:
         parts += "; partial: " + " ".join(_partial_label(checks[c], c) for c in partial)
+    if unproven:
+        parts += f"; unproven: {' '.join(unproven)}"
     if skipped:
         parts += f"; skipped: {' '.join(skipped)}"
     if na:
