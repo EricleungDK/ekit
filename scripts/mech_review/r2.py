@@ -5,6 +5,7 @@ from collections import Counter
 
 from .gitio import added_lines, blob, changes
 from .globs import any_glob
+from .parser_cmd import ParserError
 from .report import entry
 
 def unmatched(xs, ys):
@@ -22,9 +23,13 @@ def unmatched(xs, ys):
 
 
 def r2(rv, protected_globs):
-    """R2 over mb..head: path rules (protected paths, mutation config) per change, then r2_file per source file."""
+    """R2 over mb..head: path rules (protected paths, mutation config) per change, then r2_file per source file.
+    An adapter file's parser command that fails (ParserError, #27) makes every file's entries one blocking CI entry,
+    never a fallback; the path rules stay."""
     repo, mb, head, adapter, test_globs, _ = rv
-    entries = []
+    if hasattr(adapter, "in_checkout"):  # a parser-backed adapter (#27): no command word may point into the repo
+        adapter = adapter.in_checkout(repo)
+    entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
     for ch in changes(repo, mb, head):
         if any_glob(ch.old or "", protected_globs) or any_glob(ch.new or "", protected_globs):
@@ -43,12 +48,23 @@ def r2(rv, protected_globs):
         # a source file renamed to a non-source path is a deletion; a non-source file renamed to source is an addition
         old = ch.old if ch.old and adapter.classify(ch.old, test_globs) is not None else None
         new = ch.new if ch.new and adapter.classify(ch.new, test_globs) is not None else None
-        if old is None and new is None:
+        if (old is None and new is None) or failed:
             continue
-        entries += r2_file(adapter, test_globs, old, new,
-                           blob(repo, mb, old) if old else None, blob(repo, head, new) if new else None,
-                           {ln for ln, _ in added.get(new, [])})
-    return entries
+        try:
+            files += r2_file(adapter, test_globs, old, new,
+                             blob(repo, mb, old) if old else None, blob(repo, head, new) if new else None,
+                             {ln for ln, _ in added.get(new, [])})
+        except ParserError as e:
+            failed = parser_entry(new or old, e)
+    return entries + ([failed] if failed else files)
+
+
+def parser_entry(path, err):
+    """the one CI entry of a parser command that failed on the file at path (#27): R2 cannot read the stack."""
+    return entry("CI", path, 0, "parser", "adapter-fix", "fail", f"the adapter's parser failed: {err}",
+                 "fix the parser command or its pinned install step in the adapter file, in a PR of its own; R2 reads "
+                 "nothing of this stack until the parser runs", "falling back to patterns, or skipping R2, when the "
+                 "parser fails")
 
 
 def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
@@ -57,7 +73,10 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     those paths (None with the path). added: head line numbers the change adds; suppressions and mutation skips count
     only there. A side that does not parse is the only result: its test changes cannot be checked."""
     path = new or old
-    unparsed = _unparsed(adapter, path, before, after)
+    base_side = adapter
+    if hasattr(adapter, "at"):  # a parser-backed adapter (#27): its command gets each side's own path
+        base_side, adapter = adapter.at(old or path), adapter.at(path)
+    unparsed = _unparsed(adapter, path, before, after, base_side)
     if unparsed:
         return unparsed
     # each side is classified by its own path: a file moved between test and prod paths is judged per side
@@ -66,9 +85,9 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     # a side whose path cannot hold tests (python: a production file not named like a test file) has none to read
     held_b = before if old is not None and adapter.holds_tests(old, test_globs) else None
     held_a = after if new is not None and adapter.holds_tests(new, test_globs) else None
-    bas = [a for a in adapter.assertions(held_b) if whole_b or a.scope] if held_b is not None else []
+    bas = [a for a in base_side.assertions(held_b) if whole_b or a.scope] if held_b is not None else []
     aas = [a for a in adapter.assertions(held_a) if whole_a or a.scope] if held_a is not None else []
-    bfns = adapter.test_fns(held_b) if held_b is not None else []
+    bfns = base_side.test_fns(held_b) if held_b is not None else []
     afns = adapter.test_fns(held_a) if held_a is not None else []
     gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a)
     entries = _removed(path, gone) + _renamed_changed(path, changed)
@@ -83,16 +102,17 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     return entries
 
 
-def _unparsed(adapter, path, before, after):
+def _unparsed(adapter, path, before, after, base_side=None):
     """a file the stack cannot parse is a truthful fail: one entry per side that does not parse. With an adapter file
-    the cause may be the file's lexer table, not the PR: a person decides (needs-human)."""
+    the cause may be the file's lexer table, not the PR: a person decides (needs-human). base_side: the adapter that
+    reads the base text (a parser-backed one bound to the base path), default adapter."""
     out = []
     cls, hint = "agent-fixable", "fix the syntax error: this file cannot be checked against base"
     if adapter.from_file:
         cls, hint = "needs-human", ("fix the syntax error; if the file is valid, the adapter file's lexer table cannot "
                                     "read it: a person fixes the adapter file")
-    for lab, text in (("base", before), ("head", after)):
-        err = adapter.parse_error(text) if text is not None else None
+    for lab, text, side in (("base", before, base_side or adapter), ("head", after, adapter)):
+        err = side.parse_error(text) if text is not None else None
         if err:
             where = "base file" if lab == "base" else "file"
             out.append(entry("R2", path, err[0], f"unparseable:{lab}", cls, "fail",
