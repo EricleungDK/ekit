@@ -461,6 +461,17 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 | `reason_strip` | optional, without `reason_after`: the reason is the text after the directive, with these characters stripped from its start, set by set (`[":", "-–— "]`) |
 | `problem` / `hint` | optional: the R2 text; `{lints}` is the directive and its rules |
 
+`[limits]` (optional, #20): the stack's check limits, whole numbers. Nothing reads them for a run yet (later tickets do); R0's [editing rules](#r0-adapter-proof) need a person for a looser one.
+
+| Key | Value |
+|---|---|
+| `max-mutants` | >= 1, default 40: the R3 cap (lower is looser) |
+| `mutation-budget` | >= 1, default 10: R3 minutes (lower is looser) |
+| `census` | 0 to 100, default 100: the share of the runner's tests the scanner must find (lower is looser) |
+| `assert-density` | 0 to 100, default 10: the share of tests with no recognised assert allowed (higher is looser) |
+
+Any other key, or a value that is not a whole number in range, is an error naming it: `limits.max-mutants: want a whole number >= 1`.
+
 `[mutation]` (optional): what hides code from R3 (an R2 `needs-human` fail).
 
 | Key | Value |
@@ -544,18 +555,21 @@ python3 -I scripts/mech-review.py r0 --repo . --base main --head HEAD --stack mi
   | `rename-same-asserts`, `reorder-asserts` (the core) | control | no entry |
   | `helper-asserts` (asserts moved into a helper the test calls) | control | no entry |
   | `empty-diff` (R2 on an empty diff of every fixture file) | control | no entry |
-  | `ident-chars`, `empty-asserts`, `unbalanced-brackets` (an adapter file with a bad `lexer.ident_chars`, no assert shape, a one-character bracket pair) | malformed | a clean load error naming the field: never a crash, never a load. A built-in has no table: skipped |
+  | `source-ident-chars` (a test renamed with characters outside the identifier set, its assert gone) | malformed source | any R2 `fail`: a parse error or the removal |
+  | `source-empty-asserts` (a test whose asserts are all gone) | malformed source | R2 `fail`: fewer asserts |
+  | `source-unbalanced-brackets` | malformed source | R2 `fail`: the file does not parse |
+  | `ident-chars`, `empty-asserts`, `unbalanced-brackets` (an adapter file with a bad `lexer.ident_chars`, no assert shape, a one-character bracket pair) | malformed table | a clean load error naming the field: never a crash, never a load. A built-in has no table: skipped |
 
-- **Fixtures.** A dir of `<case><ext>.r0` files (the `.r0` suffix keeps them out of the repo's own checks): `seed<ext>.r0` and one head file per fixture case (`skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts`), each the seed with one change. The seed's first line is a line comment (its first word is the opener `comment-out` uses); each test in it is a run of non-blank lines, and one test has two asserts, each on a line of its own. The built-ins' fixtures ship with ekit (`scripts/mech_review/r0_fixtures/<stack>/`); an adapter file's sit beside it (`.ekit/adapters/mini.toml` → `.ekit/adapters/mini.r0/`), or `--fixtures DIR`. `tests/fixtures/adapters/mini.r0/` is an example.
+- **Fixtures.** A dir of `<case><ext>.r0` files (the `.r0` suffix keeps them out of the repo's own checks): `seed<ext>.r0` and one head file per fixture case (`skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts` and the three `source-` cases), each the seed with one change. A seed or fixture the adapter cannot parse (the `source-` cases aside), or an adapter that crashes on one, fails that case and names the file and the error: a fixture dir from a PR never crashes R0. Any other error in `r0` exits 2 with no result. The seed's first line is a line comment (its first word is the opener `comment-out` uses); each test in it is a run of non-blank lines, and one test has two asserts, each on a line of its own. The built-ins' fixtures ship with ekit (`scripts/mech_review/r0_fixtures/<stack>/`); an adapter file's sit beside it (`.ekit/adapters/mini.toml` → `.ekit/adapters/mini.r0/`), or `--fixtures DIR`. `tests/fixtures/adapters/mini.r0/` is an example.
 - **Unproven.** A cheat or control with no fixture reads `unproven`: R0's status is `unproven`, the summary says `unproven: R0`, and it never reads `all pass`. Not a fail: exit 0.
-- **A failed case** is one `fail` entry (check `R0`, class `adapter-fix`, not `agent-fixable`) naming every failed case, e.g. ``R0 static half failed for the `mini` adapter: cheat `skip` gave no R2 fail: … entry``. The checks that read tests through the adapter (`R1`, `R2`, `R4`) are then `n/a` with the note `blocked: R0 failed (<cause>)` and their entries are left out, in `all` and in the merged result alike. The fix is a repair of the adapter in a PR of its own (ci-doctor's repair mode), never by the PR under review. A person may [waive](#waivers) the entry (`/mech-waive R0-…`) to land an urgent PR while the repair is pending; the blocked checks stay `n/a`.
-- **The PR's version.** `r0` proves the adapter file it is given as checked out, so in CI the PR's version; R1-R4 read the adapter and the plan from the base branch. The workflow does not pass `--adapter` yet: the guard proves the built-in stack.
-- **Editing rules.** Editing an adapter file or the stack plan needs no person: R0 judges the adapter and the drift check the plan. Only these do, as one `fail` entry of class `needs-human` (check `R0`) naming each, e.g. ``a person decides: `ignore` gains `src` in .ekit/stack-plan.toml; `max-mutants` 40 -> 20 in .ekit/adapters/mini.toml``:
-  - a looser limit in an adapter file (base against head, the plan's adapter files and `--adapter`): `max-mutants`, `mutation-budget` or `census` lower, `assert-density` higher. A limit is a number under that name (`-` or `_`, with or without `-threshold`) at any table level; a missing one reads its default (40, 10, 100, 10);
+- **A failed case** is one `fail` entry (check `R0`, class `adapter-fix`, not `agent-fixable`) naming every failed case, e.g. ``R0 static half failed for the `mini` adapter: cheat `skip` gave no R2 fail: … entry``; its file is the adapter file, else the fixture dir (`ekit:scripts/mech_review/r0_fixtures/<stack>` for a built-in). The checks that read tests through the adapter (`R1`, `R2`, `R4`), each one that ran, are then `n/a` with the note `blocked: R0 failed (<cause>)` (their own result under `before`), in `all` and in the merged result alike. Their entries are kept, marked `blocked: R0` (the comment's severity cell reads e.g. `fail (R2 blocked by R0)`), and still count: a protected-path or other `needs-human` entry never hides behind a failed proof. The fix is a repair of the adapter in a PR of its own (ci-doctor's repair mode), never by the PR under review. A person may [waive](#waivers) the R0 entry (`/mech-waive R0-…`) to land an urgent PR while the repair is pending; each `fail` entry of a blocked check still needs its own waiver, so waiving R0 alone never turns the run `pass`.
+- **The PR's version.** `r0` proves the adapter file it is given as checked out, so in CI the PR's version; R1-R4 read the adapter and the plan from the base branch. The workflow does not pass `--adapter` yet: the guard proves the built-in stack only, until #17 wires a repo's adapter files into the workflow.
+- **Editing rules.** Editing an adapter file or the stack plan needs no person: R0 judges the adapter and the drift check the plan. Only these do, as one `fail` entry of class `needs-human` (check `R0`) naming each, e.g. ``a person decides: `ignore` gains `src` in .ekit/stack-plan.toml; `limits.max-mutants` 40 -> 20 for the stack in folder `m` (.ekit/adapters/mini.toml)``:
+  - a looser limit: an adapter file's [`[limits]`](#keys) `max-mutants`, `mutation-budget` or `census` lower, `assert-density` higher; or a caller workflow's `max-mutants` or `mutation-budget` input lower (every workflow under `.github/workflows/` that `uses:` `mech-review.yml`). A missing limit reads its default (40, 10, 100, 10). A workflow input that is not a number is named (it cannot be compared);
   - a folder added to the plan's `ignore` list;
-  - a changed target OS: a plan entry's `target-os`, or an adapter file's.
+  - a changed target OS: a plan entry's `target-os`, or its adapter file's.
 
-  A tighter limit, a removed `ignore` folder, and an adapter file or plan entry that is new or gone (the drift check judges those) give none. The entry fails `R0` but blocks nothing. On python < 3.11 (no TOML reader) a changed plan or adapter file is the entry: it cannot be read, so it never passes silently.
+  Stacks are matched by folder, and each side's adapter is read through that side's plan: pointing a stack at a new adapter file, or renaming the stack, is still compared (a file missing on one side reads the defaults). An adapter file that does not load at head is named too. A tighter limit, a removed `ignore` folder, and a stack whose folder is new or gone (the drift check judges those) give none. The entry fails `R0` but blocks nothing. On python < 3.11 (no TOML reader) a changed plan or adapter file is the entry: it cannot be read, so it never passes silently.
 - **Test paths.** `.ekit/scenarios/**` is a test path for every stack, added by the core beside `test-paths`.
 - Exit: 0 pass or unproven, 1 a fail entry, 2 usage (an adapter file that does not load, a fixture dir with mixed extensions) or git error.
 

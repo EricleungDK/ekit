@@ -416,46 +416,28 @@ def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
 
 
 PLAN = ".ekit/stack-plan.toml"  # stack_plan.PATH (r0 sits below stack_plan in the layering)
-# a limit: (which way is looser, its default when a file names none). Spelled with - or _, with or without -threshold,
-# at any table level of an adapter file (#13's proposed defaults: max-mutants 40, census 100%, assert density 10%)
+BUILTIN_STACKS = ("python", "rust", "ts")  # a plan `adapter` that is no file; their target OS is linux
+# a limit: (which way is looser, its default when none is set: #13's proposed defaults). Read only where they are
+# defined: an adapter file's [limits] table, and the caller workflow's mech-review inputs (max-mutants, mutation-budget)
 LIMITS = {"max-mutants": ("lower", 40), "mutation-budget": ("lower", 10), "census": ("lower", 100),
           "assert-density": ("higher", 10)}
-
-
-def _limit(key):
-    k = key.lower().replace("_", "-")
-    k = k[:-len("-threshold")] if k.endswith("-threshold") else k
-    return k if k in LIMITS else None
-
-
-def limits(data, prefix=""):
-    """{dotted key: (limit name, value)} of every number a TOML table holds under a LIMITS name, at any depth."""
-    out = {}
-    items = data.items() if isinstance(data, dict) else enumerate(data) if isinstance(data, list) else ()
-    for k, v in items:
-        path = f"{prefix}.{k}" if prefix and isinstance(k, str) else f"{prefix}[{k}]" if prefix else str(k)
-        if isinstance(v, (dict, list)):
-            out.update(limits(v, path))
-        elif isinstance(k, str) and _limit(k) and isinstance(v, (int, float)) and not isinstance(v, bool):
-            out[path] = (_limit(k), v)
-    return out
+WORKFLOWS = ".github/workflows/"
+USES_MECH = re.compile(r"^\s*(?:-\s+)?uses:\s*['\"]?[^\s'\"]*/mech-review\.ya?ml@", re.M)
+WITH_LIMIT = re.compile(r"^\s+(max-mutants|mutation-budget):[ \t]*(.*?)[ \t]*(?:#.*)?$", re.M)
 
 
 def _fmt(v):
     return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
 
 
-def _looser(base, head):
-    """[text] for each limit head loosens against base (a missing limit reads its default)."""
+def _looser(base, head, label, where):
+    """[text] for each limit head loosens against base ({key: number}; a missing one reads its default)."""
     out = []
-    for path in sorted(set(base) | set(head)):
-        name = (base.get(path) or head.get(path))[0]
-        way, default = LIMITS[name]
-        b = base[path][1] if path in base else default
-        h = head[path][1] if path in head else default
+    for key in sorted(set(base) | set(head)):
+        way, default = LIMITS[key]
+        b, h = base.get(key, default), head.get(key, default)
         if (h < b) if way == "lower" else (h > b):
-            out.append(f"`{path}` {_fmt(b)}{'' if path in base else ' (default)'} -> {_fmt(h)}"
-                       f"{'' if path in head else ' (default)'}")
+            out.append(f"`{label}{key}` {_fmt(b)} -> {_fmt(h)} {where}")
     return out
 
 
@@ -470,7 +452,7 @@ def _blob(repo, sha, path):
 
 
 def _toml(raw):
-    """the table a TOML file's bytes hold, or None (no file, not TOML: the drift check and R0's proof name those)."""
+    """the table a TOML file's bytes hold, or None (no file, not TOML: the drift check names a bad plan)."""
     if raw is None:
         return None
     try:
@@ -480,50 +462,101 @@ def _toml(raw):
         return None
 
 
-def _stacks(plan):
-    return [s for s in (plan or {}).get("stack") or [] if isinstance(s, dict)]
+def _adapter_side(repo, sha, ref):
+    """(target OS, {limit: n}, path or None, load error or None) of a plan `adapter` value at sha. A built-in or a
+    file that is not there reads linux and the defaults."""
+    if not isinstance(ref, str) or ref in BUILTIN_STACKS or not ("/" in ref or ref.endswith(".toml")):
+        return "linux", {}, None, None
+    raw = _blob(repo, sha, ref)
+    if raw is None:
+        return "linux", {}, ref, None
+    try:
+        a = adapter_file.loads(raw, ref)
+    except adapter_file.AdapterFileError as e:
+        return "linux", {}, ref, str(e)
+    return a.target_os, getattr(a, "limits", {}), ref, None
+
+
+def _by_folder(repo, sha, plan):
+    """{folder: (stack entry, its adapter side)} of a plan; a folder twice keeps its first entry."""
+    out = {}
+    for st in (plan or {}).get("stack") or []:
+        if isinstance(st, dict) and isinstance(st.get("folder"), str) and st["folder"] not in out:
+            out[st["folder"]] = (st, _adapter_side(repo, sha, st.get("adapter")))
+    return out
+
+
+def _workflow_limits(repo, sha):
+    """{workflow path: {input: value text}} of every workflow at sha that calls mech-review.yml."""
+    try:
+        paths = gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", sha, "--", WORKFLOWS).split("\0")
+    except gitio.Die:
+        return {}
+    out = {}
+    for p in paths:
+        if p.endswith((".yml", ".yaml")):
+            text = (_blob(repo, sha, p) or b"").decode("utf-8", "replace")
+            if USES_MECH.search(text):
+                out[p] = {k: v.strip("'\"") for k, v in WITH_LIMIT.findall(text)}
+    return out
+
+
+def _numbers(vals, where, items):
+    """{key: number} of workflow input texts; one that is not a number is an item (a person reads it)."""
+    out = {}
+    for k, v in vals.items():
+        try:
+            out[k] = float(v) if "." in v else int(v)
+        except ValueError:
+            items.append(f"`{k}: {v}` {where} is not a number: its limit cannot be compared")
+    return out
 
 
 def editing(repo, mb, head, adapter_paths=()):
-    """The editing rules: [one needs-human entry] when mb..head loosens a limit or changes a target OS in the stack plan
-    or an adapter file (the plan's at either side, and adapter_paths), else []. A file missing on one side is new or
-    gone: the drift check judges that. Without tomllib (python < 3.11) a changed plan or adapter file is the entry:
-    it cannot be read, so it is never passed silently."""
-    raw = {side: {PLAN: _blob(repo, sha, PLAN)} for side, sha in (("base", mb), ("head", head))}
+    """The editing rules: [one needs-human entry] when mb..head loosens a limit or changes a target OS, else []. Read
+    where they are defined: the plan (`ignore`; each stack, matched by folder, its target-os and its adapter's, each
+    side's adapter read through that side's plan, so a new adapter file or a renamed stack is still compared; a file
+    missing on one side reads the defaults), each adapter file's [limits] (one that does not load at head is named),
+    adapter_paths (compared as is), and the max-mutants and mutation-budget inputs of every workflow that calls
+    mech-review.yml. Without tomllib (python < 3.11) a changed plan or adapter file is the entry: never passed silently."""
+    items, files = [], []
+
+    def add(new, path):
+        items.extend(new)
+        if new:
+            files.append(path)
+
     if importlib.util.find_spec("tomllib") is None:  # the plan and adapter files are TOML
         changed = [p for p in [PLAN, *adapter_paths] if _blob(repo, mb, p) != _blob(repo, head, p)]
-        items = [f"{p} changed and cannot be read here (needs python 3.11+ for TOML)" for p in changed]
-        return _editing_entry(changed[:1], items)
-    plans = {side: _toml(raw[side][PLAN]) for side in raw}
-    paths = list(dict.fromkeys([s.get("adapter") for side in plans for s in _stacks(plans[side])
-                                if isinstance(s.get("adapter"), str) and ("/" in s["adapter"]
-                                                                          or s["adapter"].endswith(".toml"))]
-                               + list(adapter_paths)))
-    items, files = [], []
-    if plans["base"] is not None and plans["head"] is not None:
-        b_ign = [str(x).strip("/") for x in plans["base"].get("ignore") or [] if isinstance(x, str)]
-        gained = [str(x).strip("/") for x in plans["head"].get("ignore") or []
-                  if isinstance(x, str) and str(x).strip("/") not in b_ign]
-        items += [f"`ignore` gains `{g}` in {PLAN}" for g in gained]
-        b_os = {s.get("name"): s.get("target-os") for s in _stacks(plans["base"])}
-        for s in _stacks(plans["head"]):
-            if s.get("name") in b_os and s.get("target-os") != b_os[s.get("name")]:
-                items.append(f"stack `{s.get('name')}` target-os {b_os[s.get('name')] or 'unset'} -> "
-                             f"{s.get('target-os') or 'unset'} in {PLAN}")
-        files += [PLAN] if items else []
-    for p in paths:
-        b, h = _toml(_blob(repo, mb, p)), _toml(_blob(repo, head, p))
-        if b is None or h is None:
-            continue
-        mine = [f"{t} in {p}" for t in _looser(limits(b), limits(h))]
-        if b.get("target-os", "linux") != h.get("target-os", "linux"):
-            mine.append(f"adapter file {p} target-os {b.get('target-os', 'linux')} -> {h.get('target-os', 'linux')}")
-        items += mine
-        files += [p] if mine else []
-    return _editing_entry(files[:1], items)
-
-
-def _editing_entry(files, items):
+        add([f"{p} changed and cannot be read here (needs python 3.11+ for TOML)" for p in changed], PLAN)
+    else:
+        plans = {side: _toml(_blob(repo, sha, PLAN)) for side, sha in (("base", mb), ("head", head))}
+        if plans["base"] is not None and plans["head"] is not None:
+            b_ign = [str(x).strip("/") for x in plans["base"].get("ignore") or [] if isinstance(x, str)]
+            add([f"`ignore` gains `{g}` in {PLAN}" for g in dict.fromkeys(
+                str(x).strip("/") for x in plans["head"].get("ignore") or [] if isinstance(x, str)) if g not in b_ign],
+                PLAN)
+            bf, hf = _by_folder(repo, mb, plans["base"]), _by_folder(repo, head, plans["head"])
+            for folder in sorted(set(bf) & set(hf)):
+                (bst, (b_os, b_lim, _, _)), (hst, (h_os, h_lim, h_path, h_err)) = bf[folder], hf[folder]
+                b_os, h_os = bst.get("target-os") or b_os, hst.get("target-os") or h_os
+                if b_os != h_os:
+                    where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
+                    add([f"stack in folder `{folder}` target-os {b_os} -> {h_os} in {where}"], where)
+                if h_err:
+                    add([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
+                add(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"), h_path or PLAN)
+        for p in adapter_paths:
+            b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
+            if h[3]:
+                add([f"adapter file {p} does not load: {h[3]}"], p)
+            if b[0] != h[0]:
+                add([f"adapter file {p} target-os {b[0]} -> {h[0]}"], p)
+            add(_looser(b[1], h[1], "limits.", f"in {p}"), p)
+    bw, hw = _workflow_limits(repo, mb), _workflow_limits(repo, head)
+    for p in sorted(set(bw) & set(hw)):
+        where = f"in {p} (the mech-review inputs)"
+        add(_looser(_numbers(bw[p], where, []), _numbers(hw[p], where, items), "", where), p)
     if not items:
         return []
     return [entry("R0", files[0] if files else PLAN, 0, "loosened:" + "\0".join(items), "needs-human", "fail",

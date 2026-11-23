@@ -267,65 +267,93 @@ folder = "m"
 adapter = ".ekit/adapters/mini.toml"
 status = "current"
 """
-LIMITS = "max-mutants = 40\nmutation-budget = 10\n\n[proof]\ncensus = 100\nassert-density = 10\n"
+def adapter_with(limits="max-mutants = 40\nmutation-budget = 10\ncensus = 100\nassert-density = 10\n", top=""):
+    """mini.toml with these [limits] (and top-level lines before its first key)."""
+    return top + mini_text() + "\n[limits]\n" + limits
+
+
+LIMITS = adapter_with()
+CALLER = """name: mech-review
+on: pull_request
+jobs:
+  mech:
+    uses: EricleungDK/ekit/.github/workflows/mech-review.yml@v0
+    with:
+      stack: python
+      max-mutants: "40"
+      mutation-budget: 10
+"""
 
 
 class EditingRules(unittest.TestCase):
-    """C6: editing the plan or an adapter file needs no person, except loosening a limit (max-mutants, mutation budget,
-    census or assert-density threshold, the plan's ignore list) or changing a target OS: exactly one needs-human entry
-    naming each. Tightening gives none."""
+    """C6: editing the plan or an adapter file needs no person, except loosening a limit (an adapter file's [limits]:
+    max-mutants, mutation-budget, census, assert-density; the caller workflow's max-mutants and mutation-budget inputs;
+    the plan's ignore list) or changing a target OS: exactly one needs-human entry naming each. Tightening gives none.
+    Stacks are matched by folder, each side's adapter read through its own plan."""
 
     def setUp(self):
         self.repo, _ = tmp_repo(self)
-        self.base = self.repo.commit({".ekit/stack-plan.toml": PLAN, ".ekit/adapters/mini.toml": LIMITS})
+        self.base = self.repo.commit({".ekit/stack-plan.toml": PLAN, ".ekit/adapters/mini.toml": LIMITS,
+                                      ".github/workflows/mech.yml": CALLER})
 
-    def entries(self, plan=PLAN, limits=LIMITS):
-        head = self.repo.commit({".ekit/stack-plan.toml": plan, ".ekit/adapters/mini.toml": limits})
+    def entries(self, plan=PLAN, limits=LIMITS, caller=CALLER, extra=None):
+        files = {".ekit/stack-plan.toml": plan, ".ekit/adapters/mini.toml": limits, ".github/workflows/mech.yml": caller}
+        head = self.repo.commit(dict(files, **(extra or {})))
         r = r0(self.repo, self.base, head, "--stack", "python")
         self.assertIn(r.returncode, (0, 1), r.stderr)
         env = json.loads(r.stdout)
-        return r.returncode, [e for e in env["entries"]], env
-
-    def test_a_removed_limit_reads_its_default(self):
-        rc, ents, _ = self.entries(limits=LIMITS.replace("max-mutants = 40\n", ""))  # the default is 40: not looser
-        self.assertEqual(ents, [])
-        rc, ents, _ = self.entries(limits=LIMITS.replace("census = 100\n", "census = 100\nmax-mutants = 80\n").replace(
-            "max-mutants = 40\n", ""))
-        self.assertEqual(ents, [])
+        return r.returncode, env["entries"], env
 
     def test_tightening_every_limit_needs_no_person(self):
-        tight = LIMITS.replace("40", "60").replace("mutation-budget = 10", "mutation-budget = 20").replace(
-            "census = 100", "census = 100").replace("assert-density = 10", "assert-density = 5")
-        rc, ents, env = self.entries(plan=PLAN.replace('ignore = ["examples"]', "ignore = []"), limits=tight)
+        tight = adapter_with("max-mutants = 60\nmutation-budget = 20\ncensus = 100\nassert-density = 5\n")
+        rc, ents, env = self.entries(plan=PLAN.replace('ignore = ["examples"]', "ignore = []"), limits=tight,
+                                     caller=CALLER.replace('"40"', '"80"').replace("budget: 10", "budget: 15"))
         self.assertEqual((rc, ents, env["checks"]["R0"]["status"]), (0, [], "pass"))
 
+    def test_a_removed_limit_reads_its_default(self):
+        rc, ents, _ = self.entries(limits=adapter_with("mutation-budget = 10\ncensus = 100\nassert-density = 10\n"))
+        self.assertEqual(ents, [])  # max-mutants' default is 40: not looser
+
     def test_loosening_a_limit_and_changing_a_target_os_give_exactly_one_needs_human_entry(self):
-        loose = LIMITS.replace("max-mutants = 40", "max-mutants = 20").replace("assert-density = 10",
-                                                                              "assert-density = 30")
+        loose = adapter_with("max-mutants = 20\nmutation-budget = 10\ncensus = 100\nassert-density = 30\n")
         plan = PLAN.replace('ignore = ["examples"]', 'ignore = ["examples", "src"]').replace(
             'target-os = "linux"', 'target-os = "windows"')
         rc, ents, env = self.entries(plan=plan, limits=loose)
         self.assertEqual(rc, 1)
         self.assertEqual([(e["check"], e["class"], e["severity"], e["file"]) for e in ents],
                          [("R0", "needs-human", "fail", ".ekit/stack-plan.toml")])
-        self.assertEqual(ents[0]["problem"], "a person decides: `ignore` gains `src` in .ekit/stack-plan.toml; stack `app` "
-                                             "target-os linux -> windows in .ekit/stack-plan.toml; `max-mutants` 40 -> 20 "
-                                             "in .ekit/adapters/mini.toml; `proof.assert-density` 10 -> 30 in "
-                                             ".ekit/adapters/mini.toml")
+        self.assertEqual(ents[0]["problem"], "a person decides: `ignore` gains `src` in .ekit/stack-plan.toml; stack in "
+                                             "folder `.` target-os linux -> windows in .ekit/stack-plan.toml; "
+                                             "`limits.assert-density` 10 -> 30 for the stack in folder `m` "
+                                             "(.ekit/adapters/mini.toml); `limits.max-mutants` 40 -> 20 for the stack "
+                                             "in folder `m` (.ekit/adapters/mini.toml)")
 
     def test_each_loosening_alone_is_named(self):
         cases = [
-            (LIMITS.replace("mutation-budget = 10", "mutation-budget = 5"),
-             "`mutation-budget` 10 -> 5 in .ekit/adapters/mini.toml"),
-            (LIMITS.replace("census = 100", "census = 90"), "`proof.census` 100 -> 90 in .ekit/adapters/mini.toml"),
-            (LIMITS.replace("max-mutants = 40\n", "max-mutants = 41\n").replace("[proof]\n", "[proof]\nmax_mutants = 3\n"),
-             "`proof.max_mutants` 40 (default) -> 3 in .ekit/adapters/mini.toml"),
-            ('target-os = "macos"\n' + LIMITS, "adapter file .ekit/adapters/mini.toml target-os linux -> macos"),
+            ({"limits": adapter_with("mutation-budget = 5\n")},
+             "`limits.mutation-budget` 10 -> 5 for the stack in folder `m`"),
+            ({"limits": adapter_with("census = 90\n")}, "`limits.census` 100 -> 90 for the stack in folder `m`"),
+            ({"limits": adapter_with(top='target-os = "macos"\n')},
+             "stack in folder `m` target-os linux -> macos in .ekit/adapters/mini.toml"),
+            ({"caller": CALLER.replace('"40"', '"20"')},
+             "`max-mutants` 40 -> 20 in .github/workflows/mech.yml (the mech-review inputs)"),
+            ({"caller": CALLER.replace("budget: 10", "budget: 2")},
+             "`mutation-budget` 10 -> 2 in .github/workflows/mech.yml (the mech-review inputs)"),
+            # a new adapter file: its limits compare with the old one's, through each side's plan
+            ({"plan": PLAN.replace(".ekit/adapters/mini.toml", ".ekit/adapters/n.toml"),
+              "extra": {".ekit/adapters/n.toml": adapter_with("max-mutants = 5\n")}},
+             "`limits.max-mutants` 40 -> 5 for the stack in folder `m` (.ekit/adapters/n.toml)"),
+            # a renamed stack keeps its folder: the target OS change is still seen
+            ({"plan": PLAN.replace('name = "app"', 'name = "app2"').replace('target-os = "linux"',
+                                                                             'target-os = "windows"')},
+             "stack in folder `.` target-os linux -> windows"),
+            ({"limits": adapter_with('max-mutants = "60"\n')},
+             "limits.max-mutants: want a whole number >= 1"),
         ]
-        for limits, want in cases:
+        for kw, want in cases:
             with self.subTest(want=want):
-                rc, ents, _ = self.entries(limits=limits)
-                self.assertEqual(len(ents), 1)
+                rc, ents, _ = self.entries(**kw)
+                self.assertEqual(len(ents), 1, ents)
                 self.assertEqual(ents[0]["class"], "needs-human")
                 self.assertIn(want, ents[0]["problem"])
 
@@ -404,6 +432,31 @@ class BadFixturesFailCleanly(unittest.TestCase):
             r = r0(repo, base, base, "--stack", "python")
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("mech-review: r0 crashed: RuntimeError: boom", r.stderr)
+
+
+class LimitsTable(unittest.TestCase):
+    """the adapter file's optional [limits] table (#20): max-mutants, mutation-budget, assert-density, census; whole
+    numbers, validated like every other key."""
+
+    def load(self, table):
+        from scripts.mech_review import adapter_file
+        return adapter_file.loads((mini_text() + "\n[limits]\n" + table).encode(), "x.toml")
+
+    def test_whole_numbers_load_and_read_back(self):
+        a = self.load("max-mutants = 20\nmutation-budget = 5\nassert-density = 10\ncensus = 100\n")
+        self.assertEqual(a.limits, {"max-mutants": 20, "mutation-budget": 5, "assert-density": 10, "census": 100})
+        self.assertEqual(self.load("").limits, {})
+
+    def test_a_bad_value_or_key_is_a_load_error_naming_it(self):
+        from scripts.mech_review import adapter_file
+        for table, want in [('max-mutants = "60"\n', "limits.max-mutants: want a whole number >= 1"),
+                            ("census = 101\n", "limits.census: want a whole number from 0 to 100"),
+                            ("maxMutants = 3\n", "limits.maxMutants: unknown key"),
+                            ("mutation-budget = true\n", "limits.mutation-budget: want a whole number >= 1")]:
+            with self.subTest(table=table):
+                with self.assertRaises(adapter_file.AdapterFileError) as e:
+                    self.load(table)
+                self.assertIn(want, str(e.exception))
 
 
 if __name__ == "__main__":
