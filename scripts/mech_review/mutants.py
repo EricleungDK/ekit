@@ -1,6 +1,8 @@
 """R3 mutation on the diff. One tool per stack: cargo-mutants (rust, pinned) runs `--in-diff` and reads its output files;
 mutmut (python, pinned) runs on the changed files and reads its results through `mutmut results` and `mutmut show`.
 Both run in the crate dir (project-dir). The shared parts (budget runner, verdict shape, partial entry, timing) live here.
+An adapter file's declared tool (#19, DeclaredTool) is read by its report's format, not by the tool: mutation-testing-
+elements JSON, PIT mutations.xml, or a line pattern (read_report); with no tool declared, R3 is n/a (NoTool).
 
 cargo-mutants contract (27.1.0, read from its source and checked on real runs; see docs/mech-review-ci.md):
   exit: 0 nothing missed (or no mutants in the diff: no output dir), 2 MISSED, 3 TIMEOUT (wins over 2),

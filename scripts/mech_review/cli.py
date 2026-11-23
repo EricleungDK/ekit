@@ -158,8 +158,9 @@ def build_parser():
     p.add_argument("--stack", required=True, metavar="{" + ",".join(sorted(ADAPTERS)) + "}",
                    help="language adapter; with --adapter, the name the adapter file gives")
     p.add_argument("--adapter", metavar="FILE",
-                   help="r2, red, all: an adapter file (TOML) that describes the stack named by --stack, in place of a "
-                        "built-in; red and all need its [run] table (format: docs/mech-review-ci.md#adapter-file)")
+                   help="r2, red, all, mutants, baseline, plan: an adapter file (TOML) that describes the stack named by "
+                        "--stack, in place of a built-in; red and all need its [run] table, R3 runs its [mutation.tool] "
+                        "(none: n/a) (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
     p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
