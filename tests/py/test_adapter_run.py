@@ -257,7 +257,8 @@ for line in open("tests/outcomes"):
 text, rc = {"pass": ("ok: 1 passed\n", 0), "fail": ("1 failed, 0 passed\n", 1), "skipped": ("0 passed, 1 skipped\n", 0),
             "notest": ("no test named " + leaf + "\n", 1), "build": ("compile error: add/3 undefined\n", 2),
             "env": ("minitest: runtime not installed\n", 127), "passrc": ("1 passed\n", 1),
-            "quiet": ("minitest 1.0\n", 0)}[outcome]
+            "quiet": ("minitest 1.0\n", 0), "envbanner": ("minitest 1.0\nboot: runtime not installed (erlang)\n", 127),
+            "notestbanner": ("minitest 1.0\nno test named " + leaf + "\n", 1)}[outcome]
 sys.stdout.write(text)
 sys.exit(rc)
 '''
@@ -327,6 +328,17 @@ class MiniRunThroughTheFile(Fixture):
         self.assertEqual(checks["R1"], {"status": "n/a", "note": "toolchain absent (env): `minitest: runtime not "
                                         "installed`: run the adapter's install command (`mini fetch`), or set "
                                         "setup-command (tests on the base's production code)"})
+
+    def test_the_env_note_quotes_the_line_the_env_pattern_matched_not_the_banner(self):
+        _, checks, _ = self.mini("fresh envbanner pass\n")
+        self.assertEqual(checks["R1"]["note"], "toolchain absent (env): `boot: runtime not installed (erlang)`: run the "
+                                               "adapter's install command (`mini fetch`), or set setup-command (tests "
+                                               "on the base's production code)")
+
+    def test_a_no_such_test_entry_quotes_the_line_no_test_matched(self):
+        _, _, entries = self.mini("fresh notestbanner pass\n")
+        self.assertEqual(entries, [("R1", "`Calc / fresh` cannot be proven red on the base's production code "
+                                          "(none: no test named fresh)")])
 
 
 class RunUsage(Fixture):

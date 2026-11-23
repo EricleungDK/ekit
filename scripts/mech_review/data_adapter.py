@@ -328,6 +328,16 @@ class DataAdapter(Adapter):
         rx = self._rx.get(key)
         return sum(int(n) for n in rx.findall(text) if n.isdigit()) if rx else 0
 
+    def why(self, verdict, out):
+        """the output line a run's verdict came from, when a pattern decided it (env, no_test: what the note or entry
+        quotes in place of the first line, a banner), else None."""
+        rx = self._rx.get({"env": "env", "none": "no_test"}.get(verdict))
+        m = rx.search(out or "") if rx else None
+        if not m:
+            return None
+        end = out.find("\n", m.start())
+        return out[out.rfind("\n", 0, m.start()) + 1:len(out) if end < 0 else end].strip()
+
     def outcome(self, rc, out):
         """verdict of one run from [run.outcome]. Counts (passed, failed, skipped) are read from the last summary line
         (summary's group, or the whole match), or from the whole output without summary. A failed count is fail; a

@@ -107,10 +107,14 @@ def unparseable(rv):
 
 
 def run_named(runner, adapter, cmd, cwd, path, name):
-    """(verdict, first line of output): the line says why a run had no test result."""
+    """(verdict, a line of output): the line says why a run had no test result. The first line, or the line the
+    adapter's verdict came from when it names one (adapter.why: an adapter file's env or no_test pattern)."""
     rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    verdict = adapter.outcome(rc, out)
+    why = getattr(adapter, "why", None)
+    line = why(verdict, out) if why and rc is not None else None
     lines = [l.strip() for l in out.splitlines() if l.strip()]
-    return adapter.outcome(rc, out), (lines[0][:200] if lines else "")
+    return verdict, (line or (lines[0] if lines else ""))[:200]
 
 
 def run_in(rv, runner, cmd, wt, path, name):
