@@ -71,9 +71,10 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     those paths (None with the path). added: head line numbers the change adds; suppressions and mutation skips count
     only there. A side that does not parse is the only result: its test changes cannot be checked."""
     path = new or old
-    if hasattr(adapter, "at"):  # a parser-backed adapter (#27): its command gets the file's path
-        adapter = adapter.at(path)
-    unparsed = _unparsed(adapter, path, before, after)
+    base_side = adapter
+    if hasattr(adapter, "at"):  # a parser-backed adapter (#27): its command gets each side's own path
+        base_side, adapter = adapter.at(old or path), adapter.at(path)
+    unparsed = _unparsed(adapter, path, before, after, base_side)
     if unparsed:
         return unparsed
     # each side is classified by its own path: a file moved between test and prod paths is judged per side
@@ -82,9 +83,9 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     # a side whose path cannot hold tests (python: a production file not named like a test file) has none to read
     held_b = before if old is not None and adapter.holds_tests(old, test_globs) else None
     held_a = after if new is not None and adapter.holds_tests(new, test_globs) else None
-    bas = [a for a in adapter.assertions(held_b) if whole_b or a.scope] if held_b is not None else []
+    bas = [a for a in base_side.assertions(held_b) if whole_b or a.scope] if held_b is not None else []
     aas = [a for a in adapter.assertions(held_a) if whole_a or a.scope] if held_a is not None else []
-    bfns = adapter.test_fns(held_b) if held_b is not None else []
+    bfns = base_side.test_fns(held_b) if held_b is not None else []
     afns = adapter.test_fns(held_a) if held_a is not None else []
     gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a)
     entries = _removed(path, gone) + _renamed_changed(path, changed)
@@ -99,16 +100,17 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     return entries
 
 
-def _unparsed(adapter, path, before, after):
+def _unparsed(adapter, path, before, after, base_side=None):
     """a file the stack cannot parse is a truthful fail: one entry per side that does not parse. With an adapter file
-    the cause may be the file's lexer table, not the PR: a person decides (needs-human)."""
+    the cause may be the file's lexer table, not the PR: a person decides (needs-human). base_side: the adapter that
+    reads the base text (a parser-backed one bound to the base path), default adapter."""
     out = []
     cls, hint = "agent-fixable", "fix the syntax error: this file cannot be checked against base"
     if adapter.from_file:
         cls, hint = "needs-human", ("fix the syntax error; if the file is valid, the adapter file's lexer table cannot "
                                     "read it: a person fixes the adapter file")
-    for lab, text in (("base", before), ("head", after)):
-        err = adapter.parse_error(text) if text is not None else None
+    for lab, text, side in (("base", before, base_side or adapter), ("head", after, adapter)):
+        err = side.parse_error(text) if text is not None else None
         if err:
             where = "base file" if lab == "base" else "file"
             out.append(entry("R2", path, err[0], f"unparseable:{lab}", cls, "fail",

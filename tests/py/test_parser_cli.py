@@ -281,6 +281,18 @@ class ParserR2(unittest.TestCase):
         self.assertIn("printed invalid JSON", ent[0]["problem"])
 
 
+    def test_a_renamed_file_is_parsed_at_its_base_path_for_base_text_and_its_head_path_for_head_text(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        self.repo.git("mv", "tests/calc.mini", "tests/sums.mini")
+        head = self.repo.commit({"tests/sums.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")}, "rename")
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--record " + shlex.quote(record)))
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        with open(record) as f:
+            runs = sorted((json.loads(ln)["argv"][-1], json.loads(ln)["stdin"] == BASE) for ln in f)
+        self.assertEqual(runs, [("tests/calc.mini", True), ("tests/sums.mini", False)])
+
 class ParserTable(unittest.TestCase):
     """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
 
