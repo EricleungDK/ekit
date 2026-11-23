@@ -41,9 +41,10 @@ def _fence(text):
 
 def _label(e):
     """Human severity: a fail entry of class needs-human reads needs-human. The JSON keeps severity fail."""
-    if e["severity"] == "fail" and e.get("class") == "needs-human":
-        return "needs-human"
-    return e["severity"]
+    label = "needs-human" if e["severity"] == "fail" and e.get("class") == "needs-human" else e["severity"]
+    if e.get("blocked"):  # its check is n/a (a failed R0, #20): the entry still counts
+        label += f" ({e.get('check', '')} blocked by {e['blocked']})"
+    return label
 
 
 def headline(env):

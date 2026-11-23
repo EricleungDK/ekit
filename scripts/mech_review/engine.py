@@ -82,7 +82,8 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None,
         max_mutants=mutants.DEFAULT_MAX_MUTANTS, fixtures_dir=None):
     """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack].
-    `all` runs R0's static half first (#20); when it fails, the checks it blocks (r0.BLOCKS) are n/a, not run."""
+    `all` runs R0's static half first (#20); when it fails, the checks it blocks (r0.BLOCKS) that ran are n/a (their
+    entries kept, marked `blocked`)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
     rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_paths(test_globs), project_dir)
     want = WHICH[which]
@@ -91,9 +92,6 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     if "R0" in want:
         checks["R0"], more = prove(stack, test_globs, adapter, None, fixtures_dir)
         raw += more + _edit_rules(repo, mb, head, checks["R0"], [])
-        blocked = r0_mod.blocked(checks["R0"], want)
-        checks.update(blocked)
-        want = tuple(c for c in want if c not in blocked)
     if "R2" in want:
         raw += r2(rv, list(protected_globs))
         fails = sum(1 for e in raw if e["severity"] == "fail")
@@ -114,6 +112,10 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
                                        max_mutants=max_mutants)
     entries = sorted(finalize(raw) + r3, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
+    if "R0" in want:  # a failed R0 makes the checks it blocks n/a; their entries stay, marked, and still count
+        stop = r0_mod.blocked(checks["R0"], checks)
+        checks.update(stop)
+        entries = r0_mod.mark(entries, stop)
     env = envelope(base, head, entries, checks)
     if "R3" in want:  # which shard this result is, and its cap: merge checks them (#42)
         k, _, n = (shard or "0/1").partition("/")

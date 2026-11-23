@@ -11,7 +11,8 @@ The static half proves that R2 reads the stack the way the rules need, through t
 Fixtures are new files in a throwaway git repo (never patches against real files), at FIXTURE_DIR, a test path for every
 stack. A cheat or control with no fixture is `unproven`: the check reads unproven, never pass, and the summary is never
 all-pass. A failed case is one `fail` entry of class `adapter-fix` naming every failed case; the checks in BLOCKS (they
-read tests through the adapter) are then n/a (blocked), with the cause named.
+read tests through the adapter) are then n/a (blocked), with the cause named. Their entries are kept, marked `blocked`,
+and still count: a waiver of the R0 entry never passes them.
 
 Fixture dir (fixtures_dir): files `<case><ext>.r0` (the `.r0` keeps them out of the repo's own checks): `seed<ext>.r0`
 and one head file per fixture case (CASES with how == "fixture"). Each fixture case is the seed with one change. The
@@ -460,9 +461,17 @@ def _editing_entry(files, items):
                   "(a tighter limit needs no one)", "loosening a check's limit or moving its runner to pass the gate")]
 
 
-def blocked(check, names):
-    """{name: n/a check} for each check a failed half blocks, its cause named; {} when the half did not fail."""
+def blocked(check, checks):
+    """{name: n/a check} for each check in checks ({name: check}) a failed half blocks, its cause named and its own
+    result kept under `before`; {} when the half did not fail. A check that did not run (skipped) stays as it is."""
     if check.get("status") != "fail" or not check.get("blocks"):
         return {}
-    return {c: {"status": "n/a", "note": f"blocked: R0 failed ({check.get('cause', check.get('note', ''))})"}
-            for c in check["blocks"] if c in names}
+    cause = check.get("cause", check.get("note", ""))
+    return {c: {"status": "n/a", "note": f"blocked: R0 failed ({cause})", "before": checks[c]}
+            for c in check["blocks"] if c in checks and checks[c].get("status") != "skipped"}
+
+
+def mark(entries, stop):
+    """entries with each one of a blocked check marked `blocked: R0`. Nothing is left out: a blocked check's entries
+    still count, so waiving R0 never passes them (each needs its own waiver), and the person deciding sees them all."""
+    return [dict(e, blocked="R0") if e.get("check") in stop else e for e in entries]

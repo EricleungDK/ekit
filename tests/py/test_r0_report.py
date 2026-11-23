@@ -24,10 +24,11 @@ class Merge(unittest.TestCase):
     def test_a_failed_r0_blocks_r2_in_the_merged_result_and_keeps_its_one_entry(self):
         parts, head = envelopes(self, broken_python_fixtures(self))
         env = merge.merge(parts, {})
-        self.assertEqual([(e["check"], e["class"]) for e in env["entries"]], [("R0", "adapter-fix")])
+        self.assertEqual(sorted((e["check"], e["class"], e.get("blocked")) for e in env["entries"]),
+                         [("R0", "adapter-fix", None), ("R2", "agent-fixable", "R0")])
         self.assertEqual(env["checks"]["R2"]["status"], "n/a")
         self.assertTrue(env["checks"]["R2"]["note"].startswith("blocked: R0 failed (R0 static half failed"))
-        self.assertEqual(env["summary"], f"fail {head} (1 fail, 0 confirm; ran: R0; skipped: R1 R3 R4; n/a: R2)")
+        self.assertEqual(env["summary"], f"fail {head} (2 fail, 0 confirm; ran: R0; skipped: R1 R3 R4; n/a: R2)")
 
     def test_a_passed_r0_leaves_the_other_jobs_as_they_are(self):
         parts, head = envelopes(self)
@@ -51,12 +52,12 @@ class Comment(unittest.TestCase):
     def test_the_comment_shows_r0_its_blocked_checks_and_a_ready_made_waiver_line(self):
         parts, _ = envelopes(self, broken_python_fixtures(self))
         env = merge.merge(parts, {})
-        eid = env["entries"][0]["id"]
-        self.assertTrue(eid.startswith("R0-"))
+        eid = next(e["id"] for e in env["entries"] if e["check"] == "R0")
         body = comment.render(env)
         self.assertIn("R0: `static half: 10 of 11 cases proved; failed: skip`", body)
         self.assertIn("Did not run: R2 (blocked: R0 failed (", body)
         self.assertIn(f"/mech-waive {eid} {waiver.PLACEHOLDER}", body)
+        self.assertIn("| fail (R2 blocked by R0) |", body)
         self.assertEqual(comment.exit_code(env), 1)
 
 
@@ -66,15 +67,17 @@ class Waive(unittest.TestCase):
     def test_a_person_waives_the_r0_entry(self):
         parts, head = envelopes(self, broken_python_fixtures(self))
         env = merge.merge(parts, {})
-        eid = env["entries"][0]["id"]
+        eid = next(e["id"] for e in env["entries"] if e["check"] == "R0")
         comments = [{"user": {"login": "owner", "type": "User"}, "author_association": "OWNER",
                      "body": f"/mech-waive {eid} urgent fix; the adapter repair is pending", "html_url": "u",
                      "created_at": "t", "updated_at": "t"}]
         out = waiver.apply(env, waiver.collect(comments))
-        self.assertEqual([(e["severity"], e["waiver"]["by"]) for e in out["entries"]], [("waived", "owner")])
+        self.assertEqual([(e["check"], e["severity"]) for e in out["entries"]], [("R0", "waived"), ("R2", "fail")]
+                         if out["entries"][0]["check"] == "R0" else [("R2", "fail"), ("R0", "waived")])
         self.assertEqual(out["checks"]["R0"]["status"], "waived")
-        self.assertEqual(out["summary"], f"pass {head} (0 fail, 0 confirm, 1 waived; ran: R0; skipped: R1 R3 R4; n/a: R2)")
-        self.assertEqual(comment.exit_code(out), 0)
+        # the blocked check's own fail entry still needs its own waiver (#20 review): waiving R0 never passes it
+        self.assertEqual(out["summary"], f"fail {head} (1 fail, 0 confirm, 1 waived; ran: R0; skipped: R1 R3 R4; n/a: R2)")
+        self.assertEqual(comment.exit_code(out), 1)
 
 
 if __name__ == "__main__":

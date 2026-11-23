@@ -2,7 +2,7 @@
 
 Each job owns its checks: r2 owns R2, red owns R1 and R4, mutants owns R3, drift owns D (#56: there only when the repo
 has a stack plan, so a drift result without it adds nothing), r0 owns R0 (#20: a failed R0 makes the checks it blocks
-n/a, with their entries left out); a CI entry in a job's result is kept too. A job with no usable result (missing,
+n/a; their entries stay, marked `blocked`, and still count); a CI entry in a job's result is kept too. A job with no usable result (missing,
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
 checks stay skipped.
@@ -12,7 +12,7 @@ import json
 
 from .report import CHECKS, entry, envelope, finalize
 from .mutants import partial_entry
-from .r0 import blocked
+from .r0 import blocked, mark
 
 OWNS = {"r2": ("R2",), "red": ("R1", "R4"), "mutants": ("R3",), "drift": ("D",), "r0": ("R0",)}
 
@@ -42,10 +42,10 @@ def merge(parts, reasons):
         # a job's own CI entries (the mutants merge: a missing or mismatched shard, #42) reach the comment too
         kept += [e for e in env["entries"] if e["check"] in owned or e["check"] == "CI"]
     # a failed R0 (#20) blocks the checks that read tests through the adapter, whichever job ran them: n/a, cause named
-    # (one no job ran stays skipped)
-    stop = blocked(checks.get("R0") or {}, [c for c in checks if checks[c].get("status") != "skipped"])
+    # (one no job ran stays skipped); their entries stay and count, marked
+    stop = blocked(checks.get("R0") or {}, checks)
     checks.update(stop)
-    kept = [e for e in kept if e["check"] not in stop]
+    kept = mark(kept, stop)
     ci = finalize(ci)
     entries = sorted(kept + ci, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return envelope(first["base"], first["head"], entries, checks)

@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import _kit
+from scripts.mech_review import comment, waiver
 
 CHEATS = ["delete", "comment-out", "rename", "skip", "expected-value", "weaken-assert", "suppression"]
 CONTROLS = ["rename-same-asserts", "reorder-asserts", "helper-asserts", "empty-diff"]
@@ -207,15 +208,30 @@ class AllRunsR0First(unittest.TestCase):
         r = self.run_all("--fixtures", broken_python_fixtures(self))
         self.assertEqual(r.returncode, 1, r.stderr)
         env = json.loads(r.stdout)
-        self.assertEqual([(e["check"], e["class"], e["severity"]) for e in env["entries"]],
-                         [("R0", "adapter-fix", "fail")])
+        self.assertEqual([e for e in env["entries"] if e["class"] == "adapter-fix"],
+                         [e for e in env["entries"] if e["check"] == "R0"])
+        self.assertEqual(len([e for e in env["entries"] if e["check"] == "R0"]), 1)
         self.assertEqual(env["checks"]["R0"]["status"], "fail")
-        for c in ("R1", "R2", "R4"):
+        for c in ("R2", "R4"):
             self.assertEqual(env["checks"][c]["status"], "n/a", c)
             self.assertTrue(env["checks"][c]["note"].startswith("blocked: R0 failed (R0 static half failed for the "
                                                                 "`python` adapter: cheat `skip` gave no"), env["checks"][c])
+        self.assertEqual(env["checks"]["R1"]["status"], "skipped")  # it did not run: nothing to block
         self.assertEqual(env["checks"]["R3"]["status"], "skipped")
-        self.assertEqual(env["summary"], f"fail {self.head} (1 fail, 0 confirm; ran: R0; skipped: R3; n/a: R1 R2 R4)")
+
+    def test_a_failed_r0_hides_no_entry_and_its_waiver_never_passes_the_blocked_ones(self):
+        head = self.repo.commit({".github/x.yml": "x\n"})
+        r = _kit.run_cli(["all", "--repo", self.repo.path, "--base", self.base, "--head", head, "--stack", "python",
+                          "--test-paths", "tests/**", "--protected-paths", ".github/**",
+                          "--fixtures", broken_python_fixtures(self)])
+        env = json.loads(r.stdout)
+        got = sorted((e["check"], e["class"], e["severity"], e.get("blocked")) for e in env["entries"])
+        self.assertEqual(got, [("R0", "adapter-fix", "fail", None), ("R2", "agent-fixable", "fail", "R0"),
+                               ("R2", "needs-human", "fail", "R0")])
+        r0e = next(e for e in env["entries"] if e["check"] == "R0")
+        out = waiver.apply(env, {r0e["id"]: {"by": "owner", "reason": "urgent", "url": ""}})
+        self.assertTrue(out["summary"].startswith(f"fail {head} (2 fail, 0 confirm, 1 waived;"), out["summary"])
+        self.assertEqual(comment.exit_code(out), 1)
 
     def test_a_passed_r0_runs_the_rest_as_before(self):
         r = self.run_all()
