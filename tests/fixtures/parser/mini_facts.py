@@ -7,10 +7,12 @@ entries are expected of both. Options before the path, for the failure and safet
   --exit N       print the facts, then exit with status N
   --hang         sleep before printing anything (the core's timeout must stop it)
   --table FILE   read with this pattern adapter file in place of mini.toml (its twin for that file)
+  --spawn FILE   start a background child that writes FILE after 2 s, and do not wait for it (the core must kill it)
   --record FILE  append one JSON line {cwd, cwd_files, env, argv, stdin} to FILE, then print the facts
 Fact schema: docs/mech-review-ci.md#parser."""
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -58,6 +60,9 @@ def main(argv):
             return 0
         if opt == "--exit":
             code = int(args.pop(0))
+        elif opt == "--spawn":
+            subprocess.Popen([sys.executable, "-I", "-c", "import sys, time; time.sleep(2); open(sys.argv[1], 'w').close()",
+                              args.pop(0)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif opt == "--table":
             table = args.pop(0)
         elif opt == "--hang":

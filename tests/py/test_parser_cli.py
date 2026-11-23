@@ -364,6 +364,25 @@ class ParserR2(unittest.TestCase):
                 self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
                 self.assertFalse(os.path.exists(record), "the command ran")
 
+    def test_after_the_first_file_the_parser_fails_on_no_later_file_is_parsed(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({"tests/a.mini": BASE, "tests/b.mini": BASE}, "two files")
+        head = self.repo.commit({"tests/a.mini": BASE.replace("3,", "4,"), "tests/b.mini": BASE.replace("3,", "5,")}, "h")
+        r = r2(self.repo, base, head, adapter=self.adapter("--record " + shlex.quote(record) + " --exit 3"))
+        ents = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["file"]) for e in ents], [("CI", "tests/a.mini")])
+        with open(record) as f:
+            self.assertEqual([json.loads(ln)["argv"][-1] for ln in f], ["tests/a.mini"])
+
+    def test_a_background_child_the_parser_leaves_is_killed(self):
+        flag = os.path.join(self.tmp, "child-ran")
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--spawn " + shlex.quote(flag)))
+        self.assertEqual(len(json.loads(r.stdout)["entries"]), 1, r.stderr)
+        time.sleep(3)
+        self.assertFalse(os.path.exists(flag), "the parser's background child outlived its run")
+
 class ParserTable(unittest.TestCase):
     """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
 
