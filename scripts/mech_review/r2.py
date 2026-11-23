@@ -5,6 +5,7 @@ from collections import Counter
 
 from .gitio import added_lines, blob, changes
 from .globs import any_glob
+from .parser_cmd import ParserError
 from .report import entry
 
 def unmatched(xs, ys):
@@ -22,9 +23,11 @@ def unmatched(xs, ys):
 
 
 def r2(rv, protected_globs):
-    """R2 over mb..head: path rules (protected paths, mutation config) per change, then r2_file per source file."""
+    """R2 over mb..head: path rules (protected paths, mutation config) per change, then r2_file per source file.
+    An adapter file's parser command that fails (ParserError, #27) makes every file's entries one blocking CI entry,
+    never a fallback; the path rules stay."""
     repo, mb, head, adapter, test_globs, _ = rv
-    entries = []
+    entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
     for ch in changes(repo, mb, head):
         if any_glob(ch.old or "", protected_globs) or any_glob(ch.new or "", protected_globs):
@@ -43,12 +46,23 @@ def r2(rv, protected_globs):
         # a source file renamed to a non-source path is a deletion; a non-source file renamed to source is an addition
         old = ch.old if ch.old and adapter.classify(ch.old, test_globs) is not None else None
         new = ch.new if ch.new and adapter.classify(ch.new, test_globs) is not None else None
-        if old is None and new is None:
+        if (old is None and new is None) or failed:
             continue
-        entries += r2_file(adapter, test_globs, old, new,
-                           blob(repo, mb, old) if old else None, blob(repo, head, new) if new else None,
-                           {ln for ln, _ in added.get(new, [])})
-    return entries
+        try:
+            files += r2_file(adapter, test_globs, old, new,
+                             blob(repo, mb, old) if old else None, blob(repo, head, new) if new else None,
+                             {ln for ln, _ in added.get(new, [])})
+        except ParserError as e:
+            failed = parser_entry(new or old, e)
+    return entries + ([failed] if failed else files)
+
+
+def parser_entry(path, err):
+    """the one CI entry of a parser command that failed on the file at path (#27): R2 cannot read the stack."""
+    return entry("CI", path, 0, "parser", "adapter-fix", "fail", f"the adapter's parser failed: {err}",
+                 "fix the parser command or its pinned install step in the adapter file, in a PR of its own; R2 reads "
+                 "nothing of this stack until the parser runs", "falling back to patterns, or skipping R2, when the "
+                 "parser fails")
 
 
 def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
@@ -57,6 +71,8 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     those paths (None with the path). added: head line numbers the change adds; suppressions and mutation skips count
     only there. A side that does not parse is the only result: its test changes cannot be checked."""
     path = new or old
+    if hasattr(adapter, "at"):  # a parser-backed adapter (#27): its command gets the file's path
+        adapter = adapter.at(path)
     unparsed = _unparsed(adapter, path, before, after)
     if unparsed:
         return unparsed

@@ -1,0 +1,304 @@
+"""R2 through a parser-backed adapter file (#27): `[parser]` names one command that prints a file's facts as JSON.
+
+The stub (tests/fixtures/parser/mini_facts.py) reads `mini` files the way tests/fixtures/adapters/mini.toml does, so
+the parser-backed file and the pattern file must give the same R2 entries. A parser that cannot run, or prints what the
+fact schema refuses, gives one blocking `CI` entry and never a pattern fallback. Through cli.main in this process."""
+import json
+import os
+import shlex
+import sys
+import tempfile
+import unittest
+
+import _kit
+from scripts.mech_review import adapter_file
+from test_adapter_cli import BASE, MINI, Repo, r2
+from test_r0 import FUNCTIONS
+
+STUB = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "mini_facts.py")
+MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
+
+
+def parser_toml(opts="", extra=""):
+    """the parser-backed twin of mini.toml: same name, manifest and extensions, the stub as its command."""
+    cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB] + shlex.split(opts))
+    return (f'format = 1\nname = "mini"\nmanifests = ["mini.json"]\nextensions = [".mini"]\n\n[parser]\n'
+            f'command = {json.dumps(cmd)}\ninstall = "pip install mini-facts==1.0.0"\nversion = "1.0.0"\n'
+            f'skipped_text = "test `{{name}}` marked xtest"\n{extra}')
+
+
+class ParserR2(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.repo = Repo(os.path.join(tmp.name, "repo"))
+        self.base = self.repo.commit({"tests/calc.mini": BASE, "src/calc.mini": "fn add(a, b) { a + b }\n"}, "base")
+
+    def adapter(self, opts="", extra="", name="parser.toml"):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as f:
+            f.write(parser_toml(opts, extra))
+        return path
+
+    def head(self, files):
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        return self.repo.commit(files, "head")
+
+    def entries(self, head, adapter):
+        r = r2(self.repo, self.base, head, adapter=adapter)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        return json.loads(r.stdout)["entries"]
+
+    def test_valid_facts_give_the_same_r2_entries_as_the_pattern_adapter(self):
+        heads = {
+            "removed": {"tests/calc.mini": BASE.replace('  test("subtracts", {\n    assertTrue(sub(3, 1) == 2)\n  })\n', "")},
+            "skipped": {"tests/calc.mini": BASE.replace('test("adds"', 'xtest("adds"')},
+            "expected": {"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")},
+            "dropped": {"tests/calc.mini": BASE.replace("    assertTrue(sub(3, 1) == 2)\n", "")},
+            "replaced": {"tests/calc.mini": BASE.replace("assertTrue(sub(3, 1) == 2)", "assertTrue(sub(3, 1) > 0)")},
+            "suppression": {"src/calc.mini": "# lint-off unused\nfn add(a, b) { a + b }\n"},
+            "unparsed": {"tests/calc.mini": BASE.replace("add(1, 2))", "add(1, 2)")},
+            "renamed": {"tests/calc.mini": BASE.replace('test("adds"', 'test("sums"')},
+        }
+        parser = self.adapter()
+        got = {}
+        for case, files in heads.items():
+            head = self.head(files)
+            want = self.entries(head, MINI)
+            have = self.entries(head, parser)
+            self.assertEqual(have, want, case)
+            got[case] = [(e["check"], e["severity"], e["line"], e["problem"]) for e in have]
+        self.assertEqual(got, {
+            "removed": [("R2", "fail", 5, "test fn `Calc / subtracts` removed")],
+            "skipped": [("R2", "fail", 2, "test `Calc / adds` marked xtest")],
+            "expected": [("R2", "confirm", 3, "expected value changed in `Calc / adds`: was 3, now 4")],
+            "dropped": [("R2", "fail", 5, "assertions in test `Calc / subtracts` dropped from 1 to 0")],
+            "replaced": [("R2", "confirm", 6, "assertion replaced in `Calc / subtracts`: `assertTrue(sub(3, 1) == 2)` -> "
+                                              "`assertTrue(sub(3, 1) > 0)`")],
+            "suppression": [("R2", "fail", 1, "`lint-off unused` added without a reason")],
+            "unparsed": [("R2", "fail", 4, "file does not parse: unexpected `}` (line 4)")],
+            "renamed": [],
+        })
+
+
+    # ---- P2: a parser that cannot run, or prints what the schema refuses: one CI entry, no fallback ----
+    def removed_head(self):
+        """a head that removes a test, so a pattern fallback would give an R2 entry, and edits a protected path."""
+        return self.head({"tests/calc.mini": BASE.replace('  test("subtracts", {\n    assertTrue(sub(3, 1) == 2)\n  })\n', ""),
+                          ".github/ci.yml": "x: 1\n"})
+
+    def failed(self, adapter, head=None):
+        """(exit code, [(check, class, severity, file)], the CI entry's problem) of R2 at a head the parser fails on."""
+        r = r2(self.repo, self.base, head or self.removed_head(), "--protected-paths", ".github/**", adapter=adapter)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        env = json.loads(r.stdout)
+        ents = env["entries"]
+        self.assertEqual(env["checks"]["R2"]["status"], "fail")
+        ci = [e for e in ents if e["check"] == "CI"]
+        self.assertEqual(len(ci), 1, ents)
+        return sorted((e["check"], e["class"], e["severity"], e["file"]) for e in ents), ci[0]["problem"]
+
+    def emit(self, text):
+        path = os.path.join(self.tmp, "canned.json")
+        with open(path, "wb") as f:
+            f.write(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return self.adapter("--emit " + shlex.quote(path))
+
+    def test_invalid_json_is_one_ci_entry_and_no_fallback(self):
+        ents, problem = self.failed(self.emit("{not json"))
+        self.assertEqual(ents, [("CI", "adapter-fix", "fail", "tests/calc.mini"),
+                                ("R2", "needs-human", "fail", ".github/ci.yml")])
+        self.assertTrue(problem.startswith(f"the adapter's parser failed: parser `{sys.executable}` on tests/calc.mini: "
+                                           "printed invalid JSON: "), problem)
+
+    def test_a_non_zero_exit_is_one_ci_entry_naming_the_status(self):
+        ents, problem = self.failed(self.adapter("--exit 3"))
+        self.assertEqual(ents[0], ("CI", "adapter-fix", "fail", "tests/calc.mini"))
+        self.assertTrue(problem.endswith("on tests/calc.mini: exited with status 3"), problem)
+
+    def test_a_command_that_cannot_run_is_one_ci_entry(self):
+        path = self.adapter()
+        with open(path) as f:
+            text = f.read()
+        with open(path, "w") as f:
+            f.write(text.replace(json.dumps(sys.executable)[1:-1], os.path.join(self.tmp, "no-such-parser"), 1))
+        ents, problem = self.failed(path)
+        self.assertIn("cannot run `" + os.path.join(self.tmp, "no-such-parser") + "`", problem)
+
+    def test_output_past_the_size_limit_is_refused_unread(self):
+        _, problem = self.failed(self.emit(b" " * (16 * 1024 * 1024 + 1)))
+        self.assertTrue(problem.endswith("on tests/calc.mini: printed more than 16777216 bytes"), problem)
+
+    def test_a_parser_that_hangs_hits_the_timeout_and_is_one_ci_entry(self):
+        ents, problem = self.failed(self.adapter("--hang", extra="timeout = 1\n"))
+        self.assertTrue(problem.endswith("on tests/calc.mini: timed out after 1s"), problem)
+
+    def test_facts_the_schema_refuses_are_one_ci_entry_naming_the_field(self):
+        good = {"format": 1, "parse_error": None, "tests": [], "asserts": [], "suppressions": [], "mutation_skips": []}
+        test = {"name": "a", "line": 1, "end_line": 2, "markers": [], "body": None, "calls": []}
+        ast = {"line": 1, "test": None, "owner": None, "kind": "other", "left": None, "right": None, "text": "t"}
+        cases = [
+            ([], "facts: want an object"),
+            (dict(good, extra=1), "facts.extra: unknown key"),
+            ({k: v for k, v in good.items() if k != "asserts"}, "facts.asserts: missing"),
+            (dict(good, format=2), "format: want 1"),
+            (dict(good, format=True), "format: want 1"),
+            (dict(good, tests={}), "tests: want a list"),
+            (dict(good, tests=[dict(test, line=True)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=1.0)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=0)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=99999)]), "tests[0].line: want a whole number from 1 to "),
+            (dict(good, tests=[dict(test, line=3, end_line=2)]), "tests[0].end_line: want a whole number from 3 to "),
+            (dict(good, tests=[dict(test, body=[2, 1])]), "tests[0].body[1]: want a whole number from 2 to 2"),
+            (dict(good, tests=[dict(test, body=[1, 3])]), "tests[0].body[1]: want a whole number from 1 to 2"),
+            (dict(good, tests=[dict(test, body=[1])]), "tests[0].body: want null or [first, last]"),
+            (dict(good, tests=[dict(test, markers=["skip"])]), "tests[0].markers[0]: want ignore, only or should_panic"),
+            (dict(good, tests=[dict(test, markers=["only", "only"])]), "tests[0].markers[1]: `only` given twice"),
+            (dict(good, tests=[dict(test, name="")]), "tests[0].name: want a non-empty string"),
+            (dict(good, tests=[dict(test, name="x" * 70000)]), "tests[0].name: longer than 65536 characters"),
+            (dict(good, tests=[dict(test, calls=[1])]), "tests[0].calls[0]: want a non-empty string"),
+            (dict(good, tests=[dict(test, oops=1)]), "tests[0].oops: unknown key"),
+            (dict(good, asserts=[dict(ast, test="ghost")]), "asserts[0].test: `ghost` is not a name in tests"),
+            (dict(good, asserts=[dict(ast, kind="eqq")]), "asserts[0].kind: want eq, ne or other"),
+            (dict(good, asserts=[dict(ast, kind="eq")]), "asserts[0].left: want a non-empty string"),
+            (dict(good, asserts=[dict(ast, left="a")]), "asserts[0]: kind other has no operands"),
+            (dict(good, asserts=[dict(ast, text="")]), "asserts[0].text: want a non-empty string"),
+            (dict(good, suppressions=[{"line": 1, "end_line": 1, "kind": "k", "lints": "k", "reason": 0}]),
+             "suppressions[0].reason: want true or false"),
+            (dict(good, mutation_skips=[{"line": 2, "end_line": 1, "marker": "m"}]),
+             "mutation_skips[0].end_line: want a whole number from 2 to "),
+            (dict(good, parse_error={"line": 1}), "parse_error.message: missing"),
+        ]
+        for doc, want in cases:
+            with self.subTest(want=want):
+                _, problem = self.failed(self.emit(json.dumps(doc)))
+                self.assertIn("printed facts the schema refuses: " + want, problem)
+        for raw, want in ((b'{"format": 1, "format": 1}', "key `format` given twice"), (b"NaN", "`NaN` is not JSON"),
+                          (b"\xff", "not UTF-8"), (b"[" * 100000, "nested too deep"), (b"", "Expecting value")):
+            with self.subTest(want=want):
+                _, problem = self.failed(self.emit(raw))
+                self.assertIn("printed invalid JSON: " + want, problem)
+
+
+    def test_operands_are_compared_with_whitespace_removed_and_texts_normalized(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 1, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 1, "test": "a", "owner": "a", "kind": "eq", "left": " 3 ", "right": "add(1,  2)",
+                            "text": "eq( 3,\n add(1,  2))"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.fn, x.scope, x.kind, x.left, x.right, x.text, x.owner) for x in a.assertions("x\n")],
+                         [("a", True, "eq", "3", "add(1,2)", "eq( 3, add(1, 2))", "a")])
+
+    # ---- P4: the parser gets one file's text and path, in an empty dir, with no secret and no project config ----
+    def test_the_parser_gets_the_text_and_path_only_in_an_empty_dir_with_a_minimal_env(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,"),
+                          "mini.json": "{}\n", ".ekit/adapters/mini.toml": parser_toml("--exit 9")})
+        os.environ["EKIT_TEST_SECRET"] = "s3cret"
+        self.addCleanup(os.environ.pop, "EKIT_TEST_SECRET", None)
+        r = r2(self.repo, self.base, head, adapter=self.adapter("--record " + shlex.quote(record)))
+        self.assertEqual([e["problem"] for e in json.loads(r.stdout)["entries"]],
+                         ["expected value changed in `Calc / adds`: was 3, now 4"], r.stderr)
+        with open(record) as f:
+            runs = [json.loads(ln) for ln in f]
+        self.assertEqual(sorted(x["stdin"] for x in runs),
+                         sorted([BASE, BASE.replace("assertEquals(3,", "assertEquals(4,")]))
+        for x in runs:
+            self.assertEqual(x["argv"], ["--record", record, "tests/calc.mini"])
+            self.assertEqual(x["cwd_files"], [])
+            self.assertFalse(os.path.realpath(x["cwd"]).startswith(os.path.realpath(self.repo.path)), x["cwd"])
+            self.assertEqual(sorted(x["env"]), ["HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"])
+            self.assertEqual(os.path.realpath(x["env"]["HOME"]), os.path.realpath(x["cwd"]))
+        self.assertFalse(any(os.path.exists(x["cwd"]) for x in runs), "the parser's dir outlives its run")
+
+
+    # ---- P3: R0 judges a parser-backed adapter as it judges a pattern one ----
+    def r0(self, adapter):
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", self.base, "--head", self.base, "--stack", "mini",
+                          "--adapter", adapter, "--fixtures", MINI_FIXTURES])
+        return r.returncode, json.loads(r.stdout)["checks"]["R0"], r
+
+    def test_r0_passes_a_parser_backed_adapter_on_the_mini_fixtures(self):
+        table = os.path.join(self.tmp, "mini-fns.toml")  # mini.toml with helper fns, as R0's own mini test proves it
+        with open(MINI) as f, open(table, "w") as out:
+            out.write(f.read() + FUNCTIONS)
+        rc, check, r = self.r0(self.adapter("--table " + shlex.quote(table)))
+        self.assertEqual((rc, check["status"]), (0, "pass"), r.stdout)
+        self.assertEqual({c["case"]: c["status"] for c in check["cases"]},
+                         {c: "pass" for c in ("delete", "comment-out", "rename", "skip", "expected-value", "weaken-assert",
+                                              "suppression", "rename-same-asserts", "reorder-asserts", "helper-asserts",
+                                              "empty-diff", "source-ident-chars", "source-empty-asserts",
+                                              "source-unbalanced-brackets", "ident-chars", "empty-asserts",
+                                              "unbalanced-brackets")})
+        twin_rc, twin, _ = self.r0(table)
+        self.assertEqual((twin_rc, [(c["case"], c["status"], c["got"]) for c in twin["cases"] if c["kind"] != "malformed-table"]),
+                         (rc, [(c["case"], c["status"], c["got"]) for c in check["cases"] if c["kind"] != "malformed-table"]))
+        self.assertEqual([c["got"].split(": ", 1)[1] for c in check["cases"] if c["kind"] == "malformed-table"],
+                         ["lexer: not with [parser]: the parser command gives the facts, a file declares no patterns beside it",
+                          "asserts: not with [parser]: the parser command gives the facts, a file declares no patterns beside it",
+                          "lexer: not with [parser]: the parser command gives the facts, a file declares no patterns beside it"])
+
+    def test_r0_fails_a_parser_that_prints_invalid_json(self):
+        rc, check, r = self.r0(self.emit("nope"))
+        self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
+        ent = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["class"]) for e in ent], [("R0", "adapter-fix")])
+        self.assertIn("printed invalid JSON", ent[0]["problem"])
+
+
+class ParserTable(unittest.TestCase):
+    """adapter_file.loads on a [parser] table: every bad value a clean error naming the field."""
+
+    def load(self, text):
+        return adapter_file.loads(text.encode("utf-8"), "p.toml")
+
+    def error(self, text):
+        with self.assertRaises(adapter_file.AdapterFileError) as cm:
+            self.load(text)
+        return str(cm.exception)
+
+    def test_a_parser_table_loads_with_its_command_split_into_argv(self):
+        a = self.load(parser_toml(extra="timeout = 5\n"))
+        self.assertEqual((a.name, a.parser["command"], a.parser["timeout"], a.parser["version"]),
+                         ("mini", [sys.executable, "-I", STUB], 5, "1.0.0"))
+        self.assertEqual(self.load(parser_toml().replace('skipped_text = "test `{name}` marked xtest"\n', ""))
+                         .ignored_text("t"), "test `t` marked skipped")
+
+    def test_each_bad_parser_value_is_an_error_naming_the_field(self):
+        base = parser_toml()
+        cmd = next(ln for ln in base.splitlines() if ln.startswith("command = "))
+        cases = [
+            (base.replace(cmd, 'command = "   "'), "parser.command: want a command, not only whitespace"),
+            (base.replace(cmd, 'command = ""'), "parser.command: want a non-empty string"),
+            (base.replace(cmd, 'command = ["facts"]'), "parser.command: want a non-empty string"),
+            (base.replace(cmd, 'command = "facts \'unbalanced"'), "parser.command: `facts 'unbalanced`: No closing quotation"),
+            (base.replace(cmd, 'command = "tools/facts --json"'), "parser.command: `tools/facts`: want a program on PATH"),
+            (base.replace(cmd, 'command = "./facts"'), "parser.command: `./facts`: want a program on PATH"),
+            (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
+            (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
+            (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
+            (base.replace('version = "1.0.0"', 'version = "1.0.1"'), "parser.install: does not name version `1.0.1`"),
+            (base.replace('version = "1.0.0"\n', ""), "parser.version: missing"),
+            (base.replace('install = "pip install mini-facts==1.0.0"\n', ""), "parser.install: missing"),
+            (base + "timeout = 0\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "timeout = 601\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "timeout = true\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
+            (base + "shell = true\n", "parser.shell: unknown key"),
+            (base.replace("marked xtest", "marked {nme}"), "parser.skipped_text: unknown placeholder `{nme}`"),
+            (base + '\n[lexer]\nblock_style = "braces"\nbrackets = ["()", "{}"]\n', "lexer: not with [parser]"),
+            (base + '\n[asserts]\n', "asserts: not with [parser]"),
+            (base + '\n[tests]\nstyle = "calls"\ncases = ["t"]\n', "tests: not with [parser]"),
+            (base + '\n[[suppressions]]\ndirectives = ["x"]\ncovers = { x = "line" }\n', "suppressions: not with [parser]"),
+            (base + '\n[mutation]\nskip_comments = ["keep"]\n', "mutation.skip_comments: not with [parser]"),
+            (base.split("[parser]")[0], "lexer: missing"),  # no parser: the pattern tables are required
+        ]
+        for text, want in cases:
+            with self.subTest(want=want):
+                self.assertIn(want, self.error(text))
+        self.assertEqual(self.load(base + '\n[mutation]\nconfig_files = ["m.toml"]\nconfig_name = "m"\n')
+                         .mutation_config("x/m.toml", None), "m")
+
+
+if __name__ == "__main__":
+    unittest.main()

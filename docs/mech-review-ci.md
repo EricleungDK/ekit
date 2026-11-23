@@ -380,7 +380,7 @@ python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts
 
 ### Keys
 
-Top level (required unless marked):
+Top level (required unless marked). `[lexer]`, `[tests]` and `[asserts]` are required too, except in a file with [`[parser]`](#parser), which has none of the pattern tables.
 
 | Key | Value |
 |---|---|
@@ -479,6 +479,47 @@ Any other key, or a value that is not a whole number in range, is an error namin
 | `skip_comments` | comment bodies that start with these words (whitespace between words free): a mutation skip marker |
 | `config_files` | file names (any dir) of the mutation tool's config |
 | `config_name` | the tool config's name in the entry, required with `config_files` |
+
+### Parser
+
+For a language the lexer table cannot describe (Ruby, Elixir, indentation- or DSL-heavy test styles), an adapter file declares one parser command in place of the patterns (#27). Such a file has `format`, `name`, `extensions`, optionally `manifests`, `target-os`, `[limits]` and `[mutation]` (`config_files`, `config_name`), and `[parser]`. The pattern tables `[lexer]`, `[tests]`, `[functions]`, `[asserts]`, `[[suppressions]]` and `mutation.skip_comments` are an error beside it (`lexer: not with [parser]`): the facts come from the command alone, never from both, and a failed parser never falls back to patterns.
+
+`[parser]`:
+
+| Key | Value |
+|---|---|
+| `command` | the command, as one string split into words as a shell would (`"rb-test-facts --json"`; quotes group, no shell runs it). Its program is a name on PATH or an absolute path: a relative path (`tools/facts`, `./facts`) is an error, since it would run a file from the checkout. Unbalanced quotes, only whitespace or a NUL are errors |
+| `install` | the install step that puts the program on PATH at a pinned version, a command in the same form (`"gem install rb-test-facts -v 1.4.2"`). It must name `version` |
+| `version` | the pinned version, e.g. `"1.4.2"`: letters, digits, `.`, `_`, `+`, `-`, with a digit; no range (`>=1.0`), no `latest` or `*` |
+| `timeout` | optional, default `30`: seconds per file, 1 to 600 |
+| `skipped_text` | optional: the R2 problem for a newly skipped test, `{name}` is the test (as `tests.skipped_text`) |
+
+How it runs: once per source file side R2 reads (base and head), with the file's text on stdin and its path (at head, or at base for a deleted file) as the last argument: `argv = [*command, path]`. Its cwd and `HOME` are a fresh empty temp dir (no checkout, no project config), its environment is `PATH`, `HOME`, `TMPDIR`, `LANG` and `LC_ALL` only (no token, no secret), and it is stopped (its whole process group) at the timeout. R2 reads the adapter file it is given; in CI that is the base branch's copy (ADR 0001), so a PR never runs a parser command or install step of its own. The workflow does not pass `--adapter` yet: the guard job's install step for the parser (`parser.install`, read from the base's adapter file and passed through `env`, never interpolated into a `run:` script) lands with #17.
+
+A command that cannot run, exits non-zero, times out, prints more than 16 MiB, or prints what the schema below refuses gives one R2 entry for the whole run: check `CI`, class `adapter-fix`, `fail`, on the first file it failed on (``the adapter's parser failed: parser `rb-test-facts` on spec/calc_spec.rb: printed invalid JSON: …``). It is not `n/a`: R2 is the hard guard, so it fails until the parser or its install step is fixed in a PR of its own. The path rules (protected paths, mutation config) still give their entries; no file gives any other.
+
+Facts: one JSON object on stdout, the adapter interface (`scripts/mech_review/stack.py`) serialized. Every key is required and no other key is allowed, at any level; a key given twice, `NaN` or `Infinity`, output that is not UTF-8, and a string longer than 65536 characters or a list longer than 100000 entries are refused.
+
+| Key | Value |
+|---|---|
+| `format` | `1` |
+| `parse_error` | `null`, or `{"line", "message"}`: the file does not parse (an R2 `needs-human` fail, as with the lexer); the lists are then not read |
+| `tests` | `[{"name", "line", "end_line", "markers", "body", "calls"}]`: `name` the test's full name (groups included); `line` where it starts, `end_line` where it ends; `markers` a list of `ignore` (skipped), `only`, `should_panic`, each at most once; `body` `null` or `[first, last]`, the lines R2 compares to pair a renamed test (inside `line`..`end_line`); `calls` the names the test calls (an assert moved into a helper it calls is no drop) |
+| `asserts` | `[{"line", "test", "owner", "kind", "left", "right", "text"}]`: `test` the name of the test it is in (one of `tests`), or `null` outside tests; `owner` the innermost test or function holding it, or `null`; `kind` `eq`, `ne` or `other`; `left`, `right` the operands as strings for `eq`/`ne` (compared with whitespace removed), `null` for `other`; `text` the assert as written (for messages, and compared for `other`) |
+| `suppressions` | `[{"line", "end_line", "kind", "lints", "reason"}]`: the lines it silences; `kind` the directive; `lints` the name the entry gives (`lint-off unused`); `reason` `true` when it gives one |
+| `mutation_skips` | `[{"line", "end_line", "marker"}]`: a marker that hides production code from R3 |
+
+A line is a whole number (`true` and `1.0` are not) from 1 to the file's line count (its newlines plus one), and an end is never before its start. Example, for `test("adds", {\n  assertEquals(3, add(1, 2))\n})\n`:
+
+```json
+{"format": 1, "parse_error": null,
+ "tests": [{"name": "adds", "line": 1, "end_line": 3, "markers": [], "body": [2, 2], "calls": ["add", "assertEquals"]}],
+ "asserts": [{"line": 2, "test": "adds", "owner": "adds", "kind": "eq", "left": "3", "right": "add(1,2)",
+              "text": "assertEquals(3, add(1, 2))"}],
+ "suppressions": [], "mutation_skips": []}
+```
+
+R0 proves a parser-backed file as it proves a pattern one: the same cases on the same fixtures (`<adapter>.r0/`), and the malformed-table cases, which add a pattern table, fail to load cleanly. `tests/fixtures/parser/mini_facts.py` is a stub parser for the worked example's language; `tests/py/test_parser_cli.py` checks that it gives the same R2 entries as `mini.toml` and that R0 passes it.
 
 ### Fixed, not configurable
 

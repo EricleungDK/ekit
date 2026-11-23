@@ -1,10 +1,15 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
 scanner (scan.py). R2 side only: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
-The run side (test command, outcomes) is #18; R2 is all `--adapter` drives for now."""
+The run side (test command, outcomes) is #18; R2 is all `--adapter` drives for now.
+ParserAdapter (#27): the same interface from the facts a parser command prints (parser_cmd.py), for a file with
+[parser] in place of the pattern tables."""
+import collections
+import copy
 import functools
 import os
 import re
 
+from . import parser_cmd
 from .globs import any_glob
 from .scan import Call, line_of, norm
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
@@ -24,9 +29,9 @@ class DataAdapter(Adapter):
         self.target_os = cfg.get("target-os", "linux")
         self.extensions = tuple(cfg["extensions"])
         self.lexer = lexer
-        self.tests = cfg["tests"]
-        self.chains = cfg["asserts"].get("chain", [])
-        self.call_shapes = cfg["asserts"].get("call", [])
+        self.tests = cfg.get("tests", {})
+        self.chains = cfg.get("asserts", {}).get("chain", [])
+        self.call_shapes = cfg.get("asserts", {}).get("call", [])
         self.fn_shapes = fn_shapes
         self.sups = cfg.get("suppressions", [])
         self.mutation = cfg.get("mutation", {})
@@ -267,3 +272,72 @@ class DataAdapter(Adapter):
         if os.path.basename(path) in self.mutation.get("config_files", []):
             return self.mutation["config_name"]
         return None
+
+
+class ParserAdapter(DataAdapter):
+    """An adapter file with [parser]: each source file's facts come from its parser command (parser_cmd.run), never
+    from patterns. at(path) is the adapter for one file: the command gets that path (r2_file binds it); unbound, the
+    path is `input` plus the first extension. A command that fails raises parser_cmd.ParserError from any method that
+    reads a file: R2 makes it one CI entry."""
+
+    CACHE = 16  # facts kept per adapter: R2 asks several methods about the base and head text of each file
+
+    def __init__(self, cfg, parser):
+        """cfg: the adapter file's tables; parser: its [parser] table as adapter_file._parser validated it."""
+        super().__init__(cfg, None, [])
+        self.parser = parser
+        if parser["skipped_text"]:
+            self.tests = {"skipped_text": parser["skipped_text"]}
+        self.path = "input" + self.extensions[0]
+        self._facts_cache = collections.OrderedDict()
+
+    def at(self, path):
+        bound = copy.copy(self)  # shares the facts cache
+        bound.path = path
+        return bound
+
+    def facts(self, text):
+        key = (self.path, text)
+        cache = self._facts_cache
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        try:
+            got = parser_cmd.run(self.parser["command"], self.path, text, self.parser["timeout"])
+        except parser_cmd.ParserError as e:
+            raise parser_cmd.ParserError(f"parser `{self.parser['command'][0]}` on {self.path}: {e}") from None
+        cache[key] = got
+        while len(cache) > self.CACHE:
+            cache.popitem(last=False)
+        return got
+
+    def parse_error(self, text):
+        return self.facts(text)["parse_error"]
+
+    def test_fns(self, text):
+        return [TestFn(name, line, list(markers), body) for name, line, _, markers, body, _ in self.facts(text)["tests"]]
+
+    def test_bodies(self, text):
+        lines = text.splitlines()
+        return {name: (line, norm("".join(lines[line - 1:end])))
+                for name, line, end, _, _, _ in self.facts(text)["tests"]}
+
+    def calls(self, text):
+        out = {}
+        for name, _, _, _, _, calls in self.facts(text)["tests"]:
+            out.setdefault(name, set()).update(calls)
+        return out
+
+    def assertions(self, text):
+        return [Assertion(line, test, test is not None, kind, norm(left), norm(right), " ".join(atext.split()), owner)
+                for line, test, owner, kind, left, right, atext in self.facts(text)["asserts"]]
+
+    def suppressions(self, text):
+        return [Suppression(line, end, kind, lints, lints, reason)
+                for line, end, kind, lints, reason in self.facts(text)["suppressions"]]
+
+    def suppression_text(self, sup):
+        return DEFAULT_PROBLEM.format(lints=sup.lint_text), DEFAULT_HINT.format(lints=sup.lint_text)
+
+    def mutation_skips(self, text):
+        return [(line, end, " ".join(marker.split())) for line, end, marker in self.facts(text)["mutation_skips"]]

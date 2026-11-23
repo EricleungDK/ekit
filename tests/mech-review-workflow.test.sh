@@ -407,6 +407,13 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
     check(f"{job_name}: setup-command after extra apt packages, before the tests",
           order == ["extra apt packages", "setup command", run_name], str(names))
 
+# ---- an adapter's parser command (#27) never reaches a run: script; it runs as argv inside the engine ----
+# The workflow reads no repo adapter file yet (#17 wires them in, with the guard's install step for the parser): until
+# then no expression that names a parser may appear in the workflow except as an env value.
+parser_lines = [l for l in W if "${{" in l and "parser" in l.lower()]
+check("parser: the command or install step is never interpolated into a run: line (only env values)",
+      all(re.match(r"\s*[A-Z_]+: \$\{\{", l) for l in parser_lines), str(parser_lines))
+
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"
 S = read(SW)

@@ -3,9 +3,10 @@
 Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileError that names the field
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
+import shlex
 import string
 
-from .data_adapter import DataAdapter
+from .data_adapter import DataAdapter, ParserAdapter
 from .scan import Lexer, ShapeError
 
 FORMAT = 1
@@ -310,10 +311,64 @@ def target_os(v, field="target-os"):
     return v
 
 
+# [parser] (#27): one command in place of the patterns. These tables describe source as patterns: not with [parser]
+PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
+PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
+UNPINNED = ("latest", "*", "x")
+
+
+def _parser(data):
+    """the [parser] table, validated: {command: argv, install, version, timeout, skipped_text}."""
+    f = "parser"
+    d = _table(data["parser"], f, ("command", "install", "version", "timeout", "skipped_text"),
+               ("command", "install", "version"))
+    for t in PATTERN_TABLES:
+        if t in data:
+            _err(t, "not with [parser]: the parser command gives the facts, a file declares no patterns beside it")
+    if "skip_comments" in data.get("mutation", {}):
+        _err("mutation.skip_comments", "not with [parser]: the parser command gives the mutation skips")
+    argv = _argv(d["command"], f + ".command")
+    if "/" in argv[0] and not argv[0].startswith("/"):
+        _err(f + ".command", f"`{argv[0]}`: want a program on PATH or an absolute path: a relative path would run a "
+                             f"file from the checkout")
+    version = _str(d["version"], f + ".version")
+    if (version.lower() in UNPINNED or not any(ch.isdigit() for ch in version)
+            or not all(ch.isalnum() or ch in "._+-" for ch in version)):
+        _err(f + ".version", f"`{version}`: want one pinned version, such as \"1.4.2\" (no range, no `latest`)")
+    install = _argv(d["install"], f + ".install")
+    if not any(version in w for w in install):
+        _err(f + ".install", f"does not name version `{version}`: the install step pins the parser at parser.version")
+    lo, hi, timeout = PARSER_TIMEOUT
+    if "timeout" in d:
+        timeout = d["timeout"]
+        if type(timeout) is not int or not lo <= timeout <= hi:
+            _err(f + ".timeout", f"want a whole number of seconds from {lo} to {hi}")
+    if "skipped_text" in d:
+        _template(d["skipped_text"], f + ".skipped_text", "name")
+    return {"command": argv, "install": install, "version": version, "timeout": timeout,
+            "skipped_text": d.get("skipped_text")}
+
+
+def _argv(v, field):
+    """a command string split as a shell would split words (no shell runs it): non-empty, balanced quotes, no NUL."""
+    _str(v, field)
+    try:
+        argv = shlex.split(v)
+    except ValueError as e:
+        _err(field, f"`{v}`: {e}")
+    if not argv:
+        _err(field, "want a command, not only whitespace")
+    if any("\0" in w for w in argv):
+        _err(field, "a NUL character cannot be in a command")
+    return argv
+
+
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
-                      "suppressions", "mutation", "limits"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
+                      "suppressions", "mutation", "limits", "parser"),
+           ("format", "name", "extensions") + (() if isinstance(data, dict) and "parser" in data
+                                               else ("lexer", "tests", "asserts")))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
@@ -330,13 +385,18 @@ def parse(data):
             _err(f"extensions[{i}]", f"`{e}`: want a file extension such as \".ts\"")
         if e in exts[:i]:
             _err(f"extensions[{i}]", f"`{e}` is listed twice")
-    lexer = _lexer(data["lexer"])
-    _tests(data["tests"], lexer)
-    shapes = _functions(data["functions"], lexer) if "functions" in data else []
-    _asserts(data["asserts"], lexer)
-    _suppressions(data.get("suppressions", []))
-    _mutation(data.get("mutation", {}))
-    adapter = DataAdapter(data, lexer, shapes)
+    if "parser" in data:
+        parser = _parser(data)
+        _mutation(data.get("mutation", {}))
+        adapter = ParserAdapter(data, parser)
+    else:
+        lexer = _lexer(data["lexer"])
+        _tests(data["tests"], lexer)
+        shapes = _functions(data["functions"], lexer) if "functions" in data else []
+        _asserts(data["asserts"], lexer)
+        _suppressions(data.get("suppressions", []))
+        _mutation(data.get("mutation", {}))
+        adapter = DataAdapter(data, lexer, shapes)
     adapter.limits = limits(data.get("limits", {}))
     return adapter
 
