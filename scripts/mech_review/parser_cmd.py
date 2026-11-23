@@ -274,7 +274,7 @@ def _facts(doc, n_lines):
                 raise _Bad(f"{f}: kind other has no operands: want left and right null")
             left = right = None
         else:
-            left, right = _str(a["left"], f + ".left"), _str(a["right"], f + ".right")
+            left, right = (_str(a[k], f"{f}.{k}", allowed=MULTILINE) for k in ("left", "right"))
         out["asserts"].append((line, test, _str(a["owner"], f + ".owner", null=True),
                                kind, left, right, _str(a["text"], f + ".text", allowed=MULTILINE)))
     for i, s in enumerate(_list(doc["suppressions"], "suppressions")):

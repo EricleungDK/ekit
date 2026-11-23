@@ -181,6 +181,14 @@ class ParserR2(unittest.TestCase):
             (dict(good, tests=[dict(test, name="a\x1b[2Jb")]), "tests[0].name: want text without control characters"),
             (dict(good, tests=[dict(test, name="a\nb")]), "tests[0].name: want text without control characters"),
             (dict(good, tests=[dict(test, name="  ")]), "tests[0].name: want a non-empty string"),
+            (dict(good, tests=[dict(test, name="a\x7fb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\x85b")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\tb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left="a\x1bb", right="1")]),
+             "asserts[0].left: want text without control characters"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left="1", right="\x9b")]),
+             "asserts[0].right: want text without control characters"),
+            (dict(good, asserts=[dict(ast, text="a\x7f")]), "asserts[0].text: want text without control characters"),
             (dict(good, asserts=[dict(ast, text=" \t ")]), "asserts[0].text: want a non-empty string"),
             (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left=" ", right="1")]),
              "asserts[0].left: want a non-empty string"),
@@ -198,6 +206,15 @@ class ParserR2(unittest.TestCase):
             with self.subTest(want=want):
                 _, problem = self.failed(self.emit(raw))
                 self.assertIn("printed invalid JSON: " + want, problem)
+
+    def test_operands_wrapped_by_a_formatter_are_read_with_whitespace_removed(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 3, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 1, "test": "a", "owner": "a", "kind": "eq", "left": "add(1,\n\t2)",
+                            "right": "\r\n3", "text": "eq(add(1,\n\t2),\r\n3)"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.left, x.right, x.text) for x in a.assertions("1\n2\n3\n")],
+                         [("add(1,2)", "3", "eq(add(1, 2), 3)")])
 
     def test_an_assert_text_may_span_lines_and_a_name_repeat_within_the_spans(self):
         doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
