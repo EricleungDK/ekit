@@ -375,7 +375,8 @@ def _parser(data):
 
 
 def _argv(v, field):
-    """a command string split as a shell would split words (no shell runs it): non-empty, balanced quotes, no NUL."""
+    """a command string split as a shell would split words (no shell runs it): non-empty, balanced quotes. The words are
+    then held to the allowlist (PROGRAM, OPTION), which has no NUL."""
     _str(v, field)
     try:
         argv = shlex.split(v)
@@ -383,8 +384,6 @@ def _argv(v, field):
         _err(field, f"`{v}`: {e}")
     if not argv:
         _err(field, "want a command, not only whitespace")
-    if any("\0" in w for w in argv):
-        _err(field, "a NUL character cannot be in a command")
     return argv
 
 

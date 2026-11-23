@@ -671,6 +671,9 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "facts --x=a;b"'), 'parser.command: `--x=a;b`: want a long option'),
             (base.replace(cmd, "command = 'facts \"--x=a b\"'"), "parser.command: `--x=a b`: want a long option"),
             (base.replace(cmd, 'command = "facts ---x"'), 'parser.command: `---x`: want a long option'),
+            # a NUL anywhere is outside the allowlist (no check of its own: the grammar has no NUL)
+            (base.replace(cmd, 'command = "fac\\u0000ts"'), "parser.command: `fac\x00ts`: want a bare program name"),
+            (base.replace(cmd, 'command = "facts --x=a\\u0000b"'), "parser.command: `--x=a\x00b`: want a long option"),
             (base.replace(cmd, 'command = "facts --"'), 'parser.command: `--`: want a long option'),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
