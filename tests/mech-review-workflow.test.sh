@@ -393,6 +393,23 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
     check(f"{job_name}: setup-command after extra apt packages, before the tests",
           order == ["extra apt packages", "setup command", run_name], str(names))
 
+# ---- #18 trust: an adapter file's commands ([commands], [run]) run only through the subcommands that run tests (red,
+# all, mutants, baseline), and those run only in the jobs that already run PR code with a read-only token. The workflow
+# passes no adapter file yet: these hold the rule for when it does ----
+RUNS_PR_CODE = ("red-first", "baseline", "mutants")
+for job_name in sorted(child_keys(jobs)):
+    subs = re.findall(r'mech-review\.py"?\s+(\w+)', text(block(jobs, job_name) or []))
+    if job_name not in RUNS_PR_CODE:
+        check(f"{job_name}: runs no subcommand that runs an adapter's commands (red, all, mutants, baseline)",
+              not {"red", "all", "mutants", "baseline"} & set(subs), str(subs))
+for job_name in RUNS_PR_CODE:
+    jperm = block(block(jobs, job_name) or [], "permissions") or []
+    check(f"{job_name}: runs PR code (and an adapter's commands) with contents: read only",
+          {k: value(jperm, k) for k in child_keys(jperm)} == {"contents": "read"}, str(jperm))
+check("adapter values: reach a run: step only through env (an env value or an if:, never a run: line)",
+      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:)", l) for l in W if "${{" in l and re.search(r"adapter|commands", l, re.I)),
+      str([l for l in W if "${{" in l and re.search(r"adapter|commands", l, re.I)]))
+
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"
 S = read(SW)

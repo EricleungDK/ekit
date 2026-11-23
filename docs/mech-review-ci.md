@@ -363,7 +363,7 @@ In `report`, the `fetch drift result` step (`actions/download-artifact@v4`, `con
 
 ## Adapter file
 
-An adapter file is a TOML file that describes one stack to R2 as data: which files are this stack's, how tests are written and named, what an assert looks like, how a lint is silenced and with what reason, and what hides code from R3. ekit's own scanner reads the source with it (comments and strings masked, brackets matched, arguments split), so the file holds tables and words, never a regex over the file.
+An adapter file is a TOML file that describes one stack to R2 as data: which files are this stack's, how tests are written and named, what an assert looks like, how a lint is silenced and with what reason, and what hides code from R3. Its run side tells R1 and R4 how to run one test by name and read the result, and names the stack's install, build, lint and test commands. ekit's own scanner reads the source with it (comments and strings masked, brackets matched, arguments split), so the file holds tables and words, never a regex over the file.
 
 ```
 python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts \
@@ -371,11 +371,11 @@ python3 -I scripts/mech-review.py r2 --repo . --base main --head HEAD --stack ts
 ```
 
 - `--adapter FILE` takes the stack from the file in place of the built-in of that name. `--stack` must equal the file's `name`; a name that is not built in is allowed only with `--adapter`. Without `--adapter`, `rust`, `python` and `ts` run as before.
-- R2 only for now (`r2`): the run side of the file (test command, outcomes, mutation tool: R1, R3, R4) is not built yet, and `--adapter` with another check subcommand is a usage error. `resolve --adapter FILE` reads the file's `target-os` only (#58). The workflow does not pass `--adapter` yet.
+- `r2`, `red` and `all` (#18): `red` and `all` run R1 and R4 through the file's [`[run]`](#run-side-r1-and-r4) and [`[commands]`](#run-side-r1-and-r4) tables; a file without `[run]` is R2 only, and `red` or `all` with it is a usage error that names the table. R3 through a file (its mutation tool) is not built yet: `mutants` and `baseline` with `--adapter` are a usage error. `resolve --adapter FILE` reads the file's `target-os` only (#58). The workflow does not pass `--adapter` yet.
 - Reading the file needs python 3.11 or newer (`tomllib`); on an older python `--adapter` is a usage error that says so, and the built-in stacks keep working.
 - A file that is unreadable, not TOML, or invalid is a usage error (exit 2, nothing on stdout) that names the field: `adapter file x.toml: tests.cases: want at least one entry`. An unknown key is an error too, so a misspelt key never passes silently.
 - A source file whose masked text does not balance (a bracket never closed, an unterminated block comment or multiline string) is an R2 `fail` of class `needs-human`: the cause may be the file's lexer table, not the PR. The built-in stacks keep `agent-fixable`.
-- Reference: [`scripts/mech_review/adapters/ts.toml`](../scripts/mech_review/adapters/ts.toml) describes TypeScript/JavaScript and gives the same R2 entries as the built-in `ts` adapter (`tests/mech-adapter.test.sh` runs the TS suites through it).
+- Reference: [`scripts/mech_review/adapters/ts.toml`](../scripts/mech_review/adapters/ts.toml) describes TypeScript/JavaScript and gives the same R2 entries and R1/R4 results as the built-in `ts` adapter (`tests/mech-adapter.test.sh` runs the TS suites through it, `mech-ts-red` included).
 
 ### Keys
 
@@ -467,6 +467,83 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 | `skip_comments` | comment bodies that start with these words (whitespace between words free): a mutation skip marker |
 | `config_files` | file names (any dir) of the mutation tool's config |
 | `config_name` | the tool config's name in the entry, required with `config_files` |
+
+### Run side (R1 and R4)
+
+`[commands]` (required with `[run]`): the stack's commands, each a shell command string. Every key is required; `""` says the stack has none (a missing key is a load error that names it: `commands.build: missing: want the command that builds the project, or "" when the stack has none`).
+
+| Key | Value |
+|---|---|
+| `install` | installs the project's dependencies (`npm ci`). A missing runner's `n/a (env)` note names it as the fix |
+| `build` | builds the project (`""`: no build step before the tests) |
+| `lint` | lints the project |
+| `test` | runs the whole test suite. R1 and R4 start every one-test run from it (`--test-cmd` replaces it); with `[run]` it may not be `""` |
+
+R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them.
+
+`[run]` (optional; without it the file is R2 only): how one named test runs and how its result reads.
+
+| Key | Value |
+|---|---|
+| `test` | words put after the test command's words to run one test: `["{path}", "-t", "^{name}$"]`. `{path}` is the test's file (project-dir relative), `{name}` the runner's name for the test; at least one word has `{name}`. Plain placeholders only, as in the R2 templates |
+| `links` | optional: paths (project-dir relative) linked from the caller's checkout into each R1/R4 worktree, when the caller has them and the commit does not (an install git ignores: `["node_modules"]`). The caller's copy is never changed |
+| `[run.name]` | optional: how a name part becomes the runner's text. `escape`: characters that get a backslash before them (a regex filter: `'\^$.|?*+()[]{}/'`); `placeholders`: a regex for parts of a name that stand for any value (`it.each`'s `%s`), no capturing group; `any`: what a placeholder becomes (`.*`). Without it the name is passed as it is |
+| `[[run.runner]]` | optional, one table per runner of the stack (vitest, jest). `name`; `match`: text in one of the command's words that makes the command this runner's (one without `match` takes any command, so it comes last); `command` and `when`: the command for a checkout where `when` holds; `subcommand`: `{ word, after }`, a word put in after the first command word holding `after` (else at the end) when the command lacks it (vitest's `run`); `separator`: how the runner joins group and test names (default `tests.separator`) |
+| `[run.outcome]` | how a run's output reads (below) |
+
+The test's qualified name is split at `tests.separator`, each part quoted by `[run.name]`, and the parts joined by the runner's `separator`. The runner for the argv is the first `[[run.runner]]` whose `match` is in a word of the command; the command for a checkout is the first runner whose `when` holds in the project dir, else `commands.test`. `when` is `{ file }` (the file is there) or `{ file, tables, has, lacks }`: the file is JSON, and its `tables` (`["dependencies", "devDependencies"]`) hold every `has` name and no `lacks` name. A file that is missing or not JSON never holds.
+
+`[run.outcome]`: python regexes over the runner's output (multiline: `^` and `$` match at line ends), compiled at load, so a bad one is a load error that names it.
+
+| Key | Value |
+|---|---|
+| `passed` / `failed` | the passed and failed counts: one capturing group, the number (`'(\d+) passed\b'`). Every match is added up |
+| `summary` | optional: the counts are read from the last line it matches (its capturing group, when it has one: `'^\s*Tests\b:?(.*)$'`); without it, from the whole output |
+| `skipped` | optional: a skipped count, read like `passed` |
+| `build` | optional: the code did not build or load (`Cannot find module`) |
+| `no_test` | optional: the runner found no test of that name |
+| `env` | optional: the runner started but its toolchain is missing; the run is `n/a (env)` and its note quotes the first output line |
+
+The verdict of one run, in this order: no executable is `env` (the note names the executable and the install command); a timeout is `timeout`; `env` matches is `env`; a failed count is `fail`; a passed count is `pass` at exit 0, `fail` at any other exit; `build` matches is `build` (on the base's code: compile-red, which counts as red); `no_test` matches is `none`; no count read at all (no summary line, or no count pattern matched) is `error`; a skipped count is `none`; counts that are all 0 are `none` at exit 0, `error` otherwise. So `pass` needs a counted passed test: a test that did not run reads `none`, never `pass`. R1 and R4 read these verdicts exactly as they read the built-ins'.
+
+The TS run side, from `ts.toml`:
+
+```toml
+[commands]
+install = "npm ci"
+build = ""
+lint = ""
+test = "node_modules/.bin/vitest run"
+
+[run]
+test = ["{path}", "-t", "^{name}$"]
+links = ["node_modules"]
+
+[run.name]
+escape = '\^$.|?*+()[]{}/'
+placeholders = '%[sdifjoOp#%]|\$\w+'
+any = ".*"
+
+[[run.runner]]
+name = "jest"
+match = "jest"
+command = "node_modules/.bin/jest"
+when = { file = "package.json", tables = ["dependencies", "devDependencies"], has = ["jest"], lacks = ["vitest"] }
+separator = " "
+
+[[run.runner]]
+name = "vitest"
+subcommand = { word = "run", after = "vitest" }
+separator = " > "
+
+[run.outcome]
+summary = '^\s*Tests\b:?(.*)$'
+passed = '(\d+) passed\b'
+failed = '(\d+) failed\b'
+build = 'Transform failed|Failed to load url|...|Failed Suites'
+```
+
+Trust: R1 and R4 run the file's commands in `red-first` only, the job that already runs PR code with a `contents: read` token and no secrets; `guard` runs none of them. The workflow passes no adapter file yet; when it does, adapter values reach `run:` steps only through `env`, as `setup-command` does (`tests/mech-review-workflow.test.sh` holds both rules).
 
 ### Fixed, not configurable
 

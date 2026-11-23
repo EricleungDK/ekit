@@ -3,6 +3,7 @@
 Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileError that names the field
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
+import re
 import string
 
 from .data_adapter import DataAdapter
@@ -65,22 +66,25 @@ def _int(v, field):
 
 def _template(v, field, name):
     """plain `{name}` placeholders (and `{{` `}}`) only: a conversion or spec could still fail on a real value (a nested
-    field in a spec takes the value's text), so none is allowed. Each template has one placeholder name."""
+    field in a spec takes the value's text), so none is allowed. name: the one placeholder name, or a tuple of the
+    names allowed. Returns the names used."""
+    names = (name,) if isinstance(name, str) else tuple(name)
+    want = " or ".join(f"`{{{n}}}`" for n in names)
     _str(v, field)
     try:
         parts = [(f, spec, conv) for _, f, spec, conv in string.Formatter().parse(v) if f is not None]
     except ValueError as e:
         _err(field, f"bad template: {e}")
     for f, _, _ in parts:
-        if f != name:
-            _err(field, f"unknown placeholder `{{{f}}}`: want `{{{name}}}`")
+        if f not in names:
+            _err(field, f"unknown placeholder `{{{f}}}`: want {want}")
     try:
-        v.format(**{name: "x"})
+        v.format(**{n: "x" for n in names})
     except (ValueError, IndexError, KeyError) as e:
         _err(field, f"bad template: {e}")
     if any(spec or conv for _, spec, conv in parts):
-        _err(field, f"`{v}`: want plain `{{{name}}}` (no `!` conversion or `:` spec)")
-    return v
+        _err(field, f"`{v}`: want plain {want} (no `!` conversion or `:` spec)")
+    return {f for f, _, _ in parts}
 
 
 def _idents(v, field, lexer, nonempty=False):
@@ -288,6 +292,130 @@ def _mutation(d):
         _str(d["config_name"], f + ".config_name")
 
 
+COMMANDS = {  # [commands]: every key is required ("" says the stack has none), so a missing one is named, never assumed
+    "install": "the command that installs the project's dependencies",
+    "build": "the command that builds the project",
+    "lint": "the command that lints the project",
+    "test": "the command that runs the whole test suite",
+}
+ONE_TEST = ("path", "name")  # [run].test placeholders: the test's file (project-dir relative), the runner's name for it
+
+
+def _commands(d, run):
+    """[commands]: install, build, lint, test. R1 and R4 use test only (with [run], it may not be ""); the others are
+    for ci-doctor and the session's verify commands."""
+    f = "commands"
+    _table(d, f, tuple(COMMANDS))
+    for k, what in COMMANDS.items():
+        if k not in d:
+            _err(f"{f}.{k}", f"missing: want {what}, or \"\" when the stack has none")
+        _str(d[k], f"{f}.{k}", empty=True)
+    if run and not d["test"].strip():
+        _err(f + ".test", "want the whole-suite command: [run] starts every R1 and R4 run from it")
+    return d
+
+
+def _regex(v, field, groups=None):
+    """a python regex over the runner's output (multiline: ^ and $ match at line ends), compiled here so a bad one is a
+    load error. groups: the capturing groups it must have (a tuple of allowed counts), None for any."""
+    _str(v, field)
+    try:
+        rx = re.compile(v, re.M)
+    except re.error as e:
+        _err(field, f"bad regex `{v}`: {e}")
+    if groups is not None and rx.groups not in groups:
+        want = {(0,): "no capturing group: use (?:...)", (1,): "one capturing group: the count, e.g. `(\\d+) passed`",
+                (0, 1): "at most one capturing group: the part counts are read from"}[groups]
+        _err(field, f"`{v}` has {rx.groups} capturing groups: want {want}")
+    return rx
+
+
+def _when(d, field):
+    """a runner's `when`: `file` exists in the project dir; with `tables`, the file is JSON and `has` / `lacks` name keys
+    that must (must not) be in one of those tables (package.json's dependencies, devDependencies)."""
+    _table(d, field, ("file", "tables", "has", "lacks"), ("file",))
+    _str(d["file"], field + ".file")
+    _relpath(d["file"], field + ".file")
+    _strs(d.get("tables", []), field + ".tables")
+    for k in ("has", "lacks"):
+        if _strs(d.get(k, []), f"{field}.{k}") and not d.get("tables"):
+            _err(f"{field}.{k}", "needs tables: the JSON tables the names are looked up in")
+
+
+def _relpath(v, field):
+    if v.startswith("/") or "\\" in v or ".." in v.split("/"):
+        _err(field, f"`{v}`: want a path under the project dir (no .., not absolute)")
+
+
+def _run(d):
+    """[run]: how R1 and R4 run one test and read the result. Returns the compiled patterns (outcome, name)."""
+    f = "run"
+    _table(d, f, ("test", "name", "runner", "outcome", "links"), ("test", "outcome"))
+    words = _strs(d["test"], f + ".test", nonempty=True)
+    used = set()
+    for i, w in enumerate(words):
+        used |= _template(w, f"{f}.test[{i}]", ONE_TEST)
+    if "name" not in used:
+        _err(f + ".test", "no `{name}`: the words must name the one test to run")
+    for i, p in enumerate(_strs(d.get("links", []), f + ".links")):
+        _relpath(p, f"{f}.links[{i}]")
+    compiled = {}
+    if "name" in d:
+        nf = f + ".name"
+        nm = _table(d["name"], nf, ("escape", "placeholders", "any"))
+        _str(nm.get("escape", ""), nf + ".escape", empty=True)
+        if "placeholders" in nm:
+            compiled["placeholders"] = _regex(nm["placeholders"], nf + ".placeholders", (0,))
+            if "any" not in nm:
+                _err(nf + ".any", "missing: placeholders needs the text they become, e.g. \".*\"")
+        if "any" in nm:
+            _str(nm["any"], nf + ".any", empty=True)
+            if "placeholders" not in nm:
+                _err(nf + ".placeholders", "missing: any is what placeholders become")
+    runners = d.get("runner", [])
+    if not isinstance(runners, list):
+        _err(f + ".runner", "want an array of tables ([[run.runner]])")
+    seen, catch_all = {}, None
+    for i, r in enumerate(runners):
+        rf = f"{f}.runner[{i}]"
+        _table(r, rf, ("name", "match", "command", "when", "subcommand", "separator"), ("name",))
+        name = _str(r["name"], rf + ".name")
+        if name in seen:
+            _err(rf + ".name", f"`{name}` is already {seen[name]}")
+        seen[name] = rf
+        if catch_all is not None:
+            _err(rf, f"never picked for a command: {catch_all} has no match, so it takes every command")
+        if "match" in r:
+            _str(r["match"], rf + ".match")
+        else:
+            catch_all = rf
+        if "command" in r:
+            _str(r["command"], rf + ".command")
+        if "when" in r:
+            _when(r["when"], rf + ".when")
+            if "command" not in r:
+                _err(rf + ".command", "missing: when picks this runner's command for the checkout")
+        if "subcommand" in r:
+            sc = _table(r["subcommand"], rf + ".subcommand", ("word", "after"), ("word",))
+            _str(sc["word"], rf + ".subcommand.word")
+            if "after" in sc:
+                _str(sc["after"], rf + ".subcommand.after")
+        if "separator" in r:
+            _str(r["separator"], rf + ".separator")
+    of = f + ".outcome"
+    out = _table(d["outcome"], of, ("summary", "passed", "failed", "skipped", "build", "no_test", "env"),
+                 ("passed", "failed"))
+    for k in ("passed", "failed", "skipped"):
+        if k in out:
+            compiled[k] = _regex(out[k], f"{of}.{k}", (1,))
+    if "summary" in out:
+        compiled["summary"] = _regex(out["summary"], of + ".summary", (0, 1))
+    for k in ("build", "no_test", "env"):
+        if k in out:
+            compiled[k] = _regex(out[k], f"{of}.{k}")
+    return compiled
+
+
 def target_os(v, field="target-os"):
     """one of TARGET_OS, exactly (no case folding: the value is passed on to the workflow as it is)."""
     _str(v, field)
@@ -299,7 +427,8 @@ def target_os(v, field="target-os"):
 def parse(data):
     """the DataAdapter a parsed adapter file (a dict, as tomllib reads it) describes; AdapterFileError names the field."""
     _table(data, "", ("format", "name", "manifests", "extensions", "target-os", "lexer", "tests", "functions", "asserts",
-                      "suppressions", "mutation"), ("format", "name", "extensions", "lexer", "tests", "asserts"))
+                      "suppressions", "mutation", "commands", "run"), ("format", "name", "extensions", "lexer", "tests",
+                                                                       "asserts"))
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     name = _str(data["name"], "name")
@@ -322,7 +451,12 @@ def parse(data):
     _asserts(data["asserts"], lexer)
     _suppressions(data.get("suppressions", []))
     _mutation(data.get("mutation", {}))
-    return DataAdapter(data, lexer, shapes)
+    if "run" in data and "commands" not in data:
+        _err("commands", "missing: [run] needs [commands] (install, build, lint, test): R1 and R4 start from its test")
+    if "commands" in data:
+        _commands(data["commands"], "run" in data)
+    patterns = _run(data["run"]) if "run" in data else None
+    return DataAdapter(data, lexer, shapes, patterns)
 
 
 def load(path):

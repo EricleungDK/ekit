@@ -142,8 +142,8 @@ def build_parser():
     p.add_argument("--stack", required=True, metavar="{" + ",".join(sorted(ADAPTERS)) + "}",
                    help="language adapter; with --adapter, the name the adapter file gives")
     p.add_argument("--adapter", metavar="FILE",
-                   help="r2 only: an adapter file (TOML) that describes the stack named by --stack, in place of a built-in "
-                        "(format: docs/mech-review-ci.md#adapter-file)")
+                   help="r2, red, all: an adapter file (TOML) that describes the stack named by --stack, in place of a "
+                        "built-in; red and all need its [run] table (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
@@ -404,13 +404,16 @@ def main(argv):
         parser.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
                      + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
     if args.adapter is not None:
-        if args.check != "r2":
-            parser.error("--adapter applies to r2 only (the run side of an adapter file: R1, R3, R4 is not built yet)")
+        if args.check not in ("r2", "red", "all"):
+            parser.error("--adapter applies to r2, red and all (R3 through an adapter file is not built yet)")
         try:
             adapter = adapter_file.load(args.adapter)
         except adapter_file.AdapterFileError as e:
             print(f"mech-review: {e}", file=sys.stderr)
             return 2
+        if args.check != "r2" and adapter.run is None:
+            parser.error(f"--adapter applies to r2 only for {args.adapter}: it has no [run] table, and {args.check} runs "
+                         "R1 and R4 through [run] and [commands] (format: docs/mech-review-ci.md#adapter-file)")
         if adapter.name != args.stack:
             print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
                   file=sys.stderr)

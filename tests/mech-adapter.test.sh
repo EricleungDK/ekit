@@ -28,6 +28,22 @@ out=$(MECH_ADAPTER_TS="$T/no-stryker.toml" bash "$ROOT/tests/mech-mutation-skip.
 has "$out" "FAIL ts Stryker disable: exit 1" "mech-mutation-skip ts cases read the adapter file (Stryker marker)"
 has "$out" "ok   rust skip: exit 1" "mech-mutation-skip rust cases stay on the built-in"
 
+# R1 and R4 (#18): TS from the adapter file passes the TS red-first suite with its assertions unchanged (its unit section
+# on the file's argv and outcomes, and every `red` case on temp repos)
+out=$(MECH_ADAPTER_TS="$TS_FILE" bash "$ROOT/tests/mech-ts-red.test.sh" 2>&1); rc=$?
+eq "$rc" 0 "mech-ts-red passes with TS from the adapter file"
+(( rc == 0 )) || grep -E 'FAIL|Traceback|Error' <<<"$out" | head -20
+# ...and the hook reaches the run side: a copy whose jest runner joins names like vitest fails the jest cases only,
+# one with no build pattern fails the compile-red case
+sed 's/^separator = " "$/separator = " > "/' "$TS_FILE" > "$T/jest-joined.toml"
+out=$(MECH_ADAPTER_TS="$T/jest-joined.toml" bash "$ROOT/tests/mech-ts-red.test.sh" 2>&1)
+has "$out" "FAIL argv: jest joins names with a space" "mech-ts-red unit section reads the file's runners"
+has "$out" "FAIL ts jest: space-joined pattern, no run subcommand" "mech-ts-red red cases read the file's runners"
+has "$out" "ok   ts red fails, head passes: exit 0" "mech-ts-red vitest cases still pass on that copy"
+grep -v '^build = ' "$TS_FILE" > "$T/no-build.toml"
+out=$(MECH_ADAPTER_TS="$T/no-build.toml" bash "$ROOT/tests/mech-ts-red.test.sh" 2>&1)
+has "$out" "FAIL ts build failure on base counts as red, exit 0" "mech-ts-red compile-red reads the file's build pattern"
+
 # parity: a function named like a test call (`function test(`, `function it(`) declares, it is not a test
 R="$T/decl"; mkdir -p "$R/tests"; git -C "$R" init -q -b main
 cat > "$R/tests/a.test.ts" <<'EOF'

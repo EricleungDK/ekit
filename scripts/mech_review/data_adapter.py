@@ -1,9 +1,12 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
-scanner (scan.py). R2 side only: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
-The run side (test command, outcomes) is #18; R2 is all `--adapter` drives for now."""
+scanner (scan.py). R2 side: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
+Run side (#18, [run] and [commands]): the test command for a checkout, one named test's argv, the verdict of a run.
+R3 through a file (the [mutation] tool and its report) is #19."""
 import functools
+import json
 import os
 import re
+import shlex
 
 from .globs import any_glob
 from .scan import Call, line_of, norm
@@ -17,8 +20,9 @@ DEFAULT_HINT = "fix the lint, or give the suppression a reason"
 class DataAdapter(Adapter):
     from_file = True
 
-    def __init__(self, cfg, lexer, fn_shapes):
-        """cfg: the adapter file's tables, validated by adapter_file.parse; lexer and fn_shapes: built there from them."""
+    def __init__(self, cfg, lexer, fn_shapes, run_patterns=None):
+        """cfg: the adapter file's tables, validated by adapter_file.parse; lexer, fn_shapes and run_patterns (the
+        compiled [run] regexes, None without [run]): built there from them."""
         self.name = cfg["name"]
         self.manifests = tuple(cfg.get("manifests", ()))
         self.target_os = cfg.get("target-os", "linux")
@@ -32,6 +36,10 @@ class DataAdapter(Adapter):
         self.mutation = cfg.get("mutation", {})
         self._skip_res = [re.compile(r"\s*" + r"\s+".join(re.escape(w) for w in phrase.split()) + r"(?![\w])")
                           for phrase in self.mutation.get("skip_comments", [])]
+        self.commands = dict(cfg.get("commands", {}))  # install, build, lint, test ("" = none): ci-doctor reads them
+        self.run = cfg.get("run")  # None: R2 only (red and all refuse the file)
+        self.default_test_cmd = self.commands.get("test", "")
+        self._rx = run_patterns or {}
         # R2 asks several methods about the same text (base and head of each file): scan each text once
         self._parse = functools.lru_cache(maxsize=8)(self._scan)
 
@@ -267,3 +275,107 @@ class DataAdapter(Adapter):
         if os.path.basename(path) in self.mutation.get("config_files", []):
             return self.mutation["config_name"]
         return None
+
+    # ---- the run side: [run] and [commands] (R1, R4) ----
+    def test_cmd_in(self, crate):
+        """the command of the first runner whose `when` holds in the crate dir, else [commands].test."""
+        for r in self.run.get("runner", []):
+            if "when" in r and _holds(r["when"], crate):
+                return r["command"]
+        return self.default_test_cmd
+
+    def worktree_setup(self, repo, wt, project_dir):
+        """[run].links: each path (project-dir relative, an install the checkout does not track: node_modules) is linked
+        from the caller's checkout into the worktree, when the caller has it and the worktree does not."""
+        for rel in self.run.get("links", []):
+            src = os.path.join(repo, project_dir, rel)
+            dst = os.path.join(wt, project_dir, rel)
+            if os.path.exists(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
+                os.symlink(os.path.abspath(src), dst)
+
+    def _runner(self, argv):
+        """the first [[run.runner]] whose match is in one of the command's words (one with no match takes any), or None."""
+        for r in self.run.get("runner", []):
+            if "match" not in r or any(r["match"] in a for a in argv):
+                return r
+        return None
+
+    def test_argv(self, cmd, path, name):
+        """the command's words (the runner's subcommand put in when missing), then [run].test with {path} and {name}:
+        the test's qualified name split at tests.separator, each part quoted by [run.name], joined by the runner's
+        separator."""
+        argv = shlex.split(cmd)
+        runner = self._runner(argv) or {}
+        sub = runner.get("subcommand")
+        if sub and sub["word"] not in argv:
+            after = sub.get("after")
+            at = next((i for i, a in enumerate(argv) if after and after in a), len(argv) - 1)
+            argv = argv[:at + 1] + [sub["word"]] + argv[at + 1:]
+        own = self.tests.get("separator", " > ")
+        joined = runner.get("separator", own).join(self._quote(seg) for seg in name.split(own))
+        return argv + [w.format(path=path, name=joined) for w in self.run["test"]]
+
+    def _quote(self, seg):
+        """a name part as the runner reads it: [run.name] escape characters get a backslash, placeholders (it.each's
+        `%s`) become `any`. No [run.name]: the part as it is."""
+        nm = self.run.get("name", {})
+        esc = nm.get("escape", "")
+        pieces = self._rx["placeholders"].split(seg) if "placeholders" in self._rx else [seg]
+        return nm.get("any", "").join("".join("\\" + ch if ch in esc else ch for ch in p) for p in pieces)
+
+    def _count(self, key, text):
+        rx = self._rx.get(key)
+        return sum(int(n) for n in rx.findall(text) if n.isdigit()) if rx else 0
+
+    def outcome(self, rc, out):
+        """verdict of one run from [run.outcome]. Counts (passed, failed, skipped) are read from the last summary line
+        (summary's group, or the whole match), or from the whole output without summary. A failed count is fail; a
+        passed count is pass at exit 0, fail otherwise: pass needs a counted passed test. Then build, no_test and a
+        skipped count (none: the test did not run). No count read at all is error; counts of 0 are none at exit 0."""
+        if rc is None:
+            return "env"
+        if rc == "timeout":
+            return "timeout"
+        out = out or ""
+        rx = self._rx
+        if "env" in rx and rx["env"].search(out):
+            return "env"
+        if "summary" in rx:
+            lines = list(rx["summary"].finditer(out))
+            text = (lines[-1].group(rx["summary"].groups) if lines else None)
+        else:
+            text = out if any(k in rx and rx[k].search(out) for k in ("passed", "failed", "skipped")) else None
+        if text is not None:
+            if self._count("failed", text):
+                return "fail"
+            if self._count("passed", text):
+                return "pass" if rc == 0 else "fail"
+        if "build" in rx and rx["build"].search(out):
+            return "build"
+        if "no_test" in rx and rx["no_test"].search(out):
+            return "none"
+        if text is None:
+            return "error"
+        if self._count("skipped", text):
+            return "none"
+        return "none" if rc == 0 else "error"
+
+
+def _holds(when, crate):
+    """a runner's `when` in the crate dir: the file is there; with tables, it is JSON whose tables hold every `has` key
+    and no `lacks` key. A file that is missing or not JSON never holds."""
+    path = os.path.join(crate, when["file"])
+    if not os.path.isfile(path):
+        return False
+    if not when.get("tables"):
+        return True
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return False
+    keys = set()
+    for t in when["tables"]:
+        if isinstance(doc, dict) and isinstance(doc.get(t), dict):
+            keys.update(doc[t])
+    return all(k in keys for k in when.get("has", [])) and not any(k in keys for k in when.get("lacks", []))

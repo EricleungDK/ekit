@@ -49,9 +49,11 @@ import tempfile
 
 sys.path.insert(0, sys.argv[1] + "/scripts")
 FX = sys.argv[2]
+from mech_review import adapter_file
 from mech_review.stack import TsAdapter
 
-A = TsAdapter()
+# MECH_ADAPTER_TS=<adapter file>: the same checks against TS described by that file (#18, tests/mech-adapter.test.sh)
+A = adapter_file.load(os.environ["MECH_ADAPTER_TS"]) if os.environ.get("MECH_ADAPTER_TS") else TsAdapter()
 FAILS = 0
 
 
@@ -183,8 +185,8 @@ EOF
   H=$(commit "$R" "feat: fix")
 }
 
-# red <repo> <base> <head> [args]: red subcommand with the ts stack and the stub
-red() { local r="$1" b="$2" h="$3"; shift 3; MECH_TEST_STUB="$STUB" python3 -I "$MR" red --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' "$@"; }
+# red <repo> <base> <head> [args]: red subcommand with the ts stack and the stub (MECH_ADAPTER_TS set: TS from that file)
+red() { local r="$1" b="$2" h="$3"; shift 3; MECH_TEST_STUB="$STUB" python3 -I "$MR" red --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"} "$@"; }
 
 agent_repo ok
 out=$(red "$R" "$B" "$H" --head-branch agent/x); rc=$?
@@ -293,7 +295,7 @@ export function add(a: number, b: number): number {
 EOF
 H=$(commit "$R" "feat: fix")
 : > "$MECH_STUB_LOG"
-out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'pkg/tests/**' --project-dir pkg --head-branch agent/x); rc=$?
+out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'pkg/tests/**' --project-dir pkg --head-branch agent/x ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 eq "$rc" 0 "ts project-dir: red fails, head passes: exit 0"
 has "$(cat "$MECH_STUB_LOG")" "/pkg |" "ts project-dir: the runner starts in the crate dir"
 has "$(cat "$MECH_STUB_LOG")" "run tests/calc.test.ts -t ^Calc > fresh$" "ts project-dir: test path is crate-relative"
@@ -338,7 +340,7 @@ export function add(a: number, b: number): number {
 }
 EOF
 H=$(commit "$R" "feat: fix")
-out=$(env -u MECH_TEST_STUB python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --head-branch agent/x); rc=$?
+out=$(env -u MECH_TEST_STUB python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --head-branch agent/x ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 eq "$(jq -r .checks.R1.status <<<"$out")" n/a "ts no node_modules: R1 n/a"
 eq "$(jq -r .checks.R4.status <<<"$out")" n/a "ts no node_modules: R4 n/a"
 has "$(jq -r .checks.R1.note <<<"$out")" "node_modules/.bin/vitest" "ts no node_modules: the note names the runner"
@@ -352,7 +354,7 @@ if grep -q 'fixed' src/calc.ts; then cat "$FX/vitest/pass.txt"; exit 0; fi
 cat "$FX/vitest/fail.txt"; exit 1
 SH
 chmod +x "$R/node_modules/.bin/vitest"
-out=$(python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --head-branch agent/x); rc=$?
+out=$(python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --head-branch agent/x ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 eq "$(jq -r .checks.R1.status <<<"$out")" pass "ts linked node_modules: R1 runs the real runner and passes"
 eq "$(jq -r .checks.R4.status <<<"$out")" pass "ts linked node_modules: R4 runs the real runner and passes"
 eq "$([[ -x "$R/node_modules/.bin/vitest" ]] && echo kept)" kept "ts linked node_modules: the repo's own node_modules survives the run"
