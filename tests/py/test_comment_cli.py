@@ -212,6 +212,45 @@ class TestPoster(unittest.TestCase):
         p = self.call(["--envelope", path], Api())
         self.assertEqual(p.returncode, 1, p.stderr)
 
+    def drift_result(self):
+        """a real `mech-review.py drift` result (an uncovered manifest on a fixture repo), its head set to the PR's."""
+        import test_stack_plan as tsp
+        repo = tsp.Repo(self)
+        base = repo.commit({"api/pyproject.toml": "[project]\n", tsp.PLAN: tsp.plan(("api", "api", "python", "current"),
+                                                                                     ("web", "web", "ts", "planned"))})
+        head = repo.commit({"cli/Cargo.toml": "[package]\n", "web/package.json": "{}"})
+        r, env = tsp.drift(repo, base, head)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        path = os.path.join(self.tmp.name, "drift.json")
+        with open(path, "w") as f:
+            json.dump(dict(env, head=SHA), f)
+        return path, env["entries"][0]["id"]
+
+    def test_the_drift_entry_and_its_waive_line_reach_the_comment_and_fail_the_check(self):
+        path, eid = self.drift_result()
+        api = Api()
+        p = self.call(["--envelope", f"drift={path}", "--envelope", "r2=" + self.save("r2.json", []), "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        body = api.writes[0]
+        self.assertIn(f"| {eid} | fail | .ekit/stack-plan.toml:0 | manifests no stack in .ekit/stack-plan.toml covers: "
+                      "cli/Cargo.toml |", body)
+        self.assertIn(f"/mech-waive {eid} <why this is OK>", body)
+        self.assertIn("Stack plan: `planned stack `web` (web)", body.replace("``", "`"))
+        self.assertIn(f"**fail {SHA} (1 fail, 0 confirm; ran: R2 D; skipped: R1 R3 R4)**", body)
+
+    def test_a_waiver_on_the_drift_entry_turns_the_check_green(self):
+        path, eid = self.drift_result()
+        api = Api([person(f"/mech-waive {eid}: the cli is a throwaway prototype")])
+        p = self.call(["--envelope", f"drift={path}", "--head", SHA], api)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"Waived: {eid} by `eric`: the cli is a throwaway prototype", api.writes[0])
+        self.assertIn("(0 fail, 0 confirm, 1 waived; ran: D; skipped: R1 R2 R3 R4)", api.writes[0])
+
+    def test_a_drift_job_name_is_accepted_and_an_unknown_one_names_every_job(self):
+        p = self.call(["--envelope", "lint=" + self.save("x.json", [])], Api())
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("mech-comment: unknown job 'lint' (r2, red, mutants or drift)", p.stderr)
+
     def test_an_owner_waiver_turns_the_check_green_and_shows_in_the_comment(self):
         api = Api([person("/mech-waive R2-deadbeef: moved to the e2e suite")])
         p = self.post([FAIL], api)

@@ -71,5 +71,39 @@ class TestMissingShard(unittest.TestCase):
                          [("CI", "env", "fail", "mutants shard 1/2 produced no result: no result file given")])
 
 
+def job_env(checks, entries=()):
+    full = {c: {"status": "skipped", "note": "not run"} for c in ("R1", "R2", "R3", "R4")}
+    full.update(checks)
+    return {"base": BASE, "head": HEAD, "summary": "", "entries": list(entries), "checks": full}
+
+
+class TestDriftJob(unittest.TestCase):
+    """The drift job owns check D (#56): merged in when its envelope holds it, absent when the repo has no plan."""
+
+    R2 = {"R2": {"status": "pass", "note": "0 fail, 0 confirm"}}
+
+    def test_no_plan_leaves_the_merged_result_as_it_was(self):
+        alone = merge.merge({"r2": job_env(self.R2)}, {})
+        both = merge.merge({"r2": job_env(self.R2), "drift": job_env({})}, {})
+        self.assertNotIn("D", both["checks"])
+        self.assertEqual((both["checks"], both["entries"], both["summary"]), (alone["checks"], alone["entries"],
+                                                                              alone["summary"]))
+
+    def test_the_drift_check_and_its_entry_are_kept(self):
+        d = {"status": "fail", "note": "judged by the base branch's plan", "messages": ["planned stack `web` (web): x"]}
+        e = {"id": "D-0a1b2c3d", "check": "D", "class": "adapter-fix", "severity": "fail", "file": ".ekit/stack-plan.toml",
+             "line": 0, "problem": "p", "hint": "h", "forbidden": "f"}
+        env = merge.merge({"r2": job_env(self.R2), "drift": job_env({"D": d}, [e])}, {})
+        self.assertEqual(env["checks"]["D"], d)
+        self.assertEqual(env["entries"], [e])
+        self.assertEqual(env["summary"], f"fail {HEAD} (1 fail, 0 confirm; ran: R2 D; skipped: R1 R3 R4)")
+
+    def test_a_drift_job_with_no_result_fails_d_with_a_ci_entry(self):
+        env = merge.merge({"r2": job_env(self.R2), "drift": None}, {"drift": "no JSON from the job"})
+        self.assertEqual(env["checks"]["D"]["status"], "fail")
+        [ci] = env["entries"]
+        self.assertEqual((ci["check"], ci["problem"]), ("CI", "drift job produced no result: no JSON from the job"))
+
+
 if __name__ == "__main__":
     unittest.main()

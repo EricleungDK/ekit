@@ -136,9 +136,9 @@ check("guard: uploads the JSON artifact", "upload-artifact" in gt)
 check("guard: artifact overwrites on re-run", re.search(r"overwrite:\s*true", gt) is not None)
 check("report: downloads the JSON artifact", "download-artifact" in text(report))
 check("report: posts via mech-comment.py", "mech-comment.py" in text(report))
-check("report: downloads the guard, red-first, baseline and mutants artifacts (#46)",
-      text(report).count("download-artifact@v4") == 4 and "mech-review-red-json" in text(report)
-      and "mech-review-baseline-json" in text(report), text(report))
+check("report: downloads the guard, drift, red-first, baseline and mutants artifacts (#46, #56)",
+      text(report).count("download-artifact@v4") == 5 and "mech-review-red-json" in text(report)
+      and "mech-review-baseline-json" in text(report) and "mech-review-drift-json" in text(report), text(report))
 check("report: named envelopes, guard as r2 and red-first as red",
       "--envelope r2=" in text(report) and "--envelope red=" in text(report), text(report))
 
@@ -322,9 +322,33 @@ check("stack: runs mech-review.py resolve with the stack and project-dir inputs 
       "mech-review.py\" resolve" in stt and "STACK: ${{ inputs.stack }}" in stt
       and "PROJECT_DIR: ${{ inputs.project-dir }}" in stt and '--project-dir "$PROJECT_DIR"' in stt, stt)
 check("stack: no language toolchain, no PR code (git only)", re.search(r"setup-|toolchain|cargo|rustup|\bnpm\b|\bpip\b", stt) is None, stt)
-check("stack: caller checkout only for auto", "if: inputs.stack == 'auto'" in stt, stt)
-check("stack: exposes stack, project-dir and error outputs",
-      child_keys(block(st, "outputs")) == {"stack", "project-dir", "error"}, str(block(st, "outputs")))
+check("stack: caller checkout for every stack (a plan's target-os reaches explicit-stack callers, #58)",
+      "inputs.stack == 'auto'" not in stt and "caller checkout (full history, PR head)" in stt, stt)
+check("stack: exposes stack, project-dir, target-os and error outputs",
+      child_keys(block(st, "outputs")) == {"stack", "project-dir", "target-os", "error"}, str(block(st, "outputs")))
+check("stack: target-os from resolve's target_os",
+      "target-os: ${{ steps.resolve.outputs.target-os }}" in stt and '"target-os": r.get("target_os") or ""' in stt, stt)
+RUNS_ON_OS = ("runs-on: ${{ fromJSON('{\"linux\":\"ubuntu-latest\",\"macos\":\"macos-latest\","
+              "\"windows\":\"windows-latest\"}')[needs.stack.outputs.target-os] }}")
+for job_name in ("red-first", "baseline", "mutants"):
+    check(f"{job_name}: runs on the target OS (#58)", value(block(jobs, job_name) or [], "runs-on") == RUNS_ON_OS[len("runs-on: "):],
+          str(value(block(jobs, job_name) or [], "runs-on")))
+for job_name in ("stack", "guard", "plan", "report"):
+    check(f"{job_name}: stays on ubuntu-latest (git only, #58)", value(block(jobs, job_name) or [], "runs-on") == "ubuntu-latest",
+          str(value(block(jobs, job_name) or [], "runs-on")))
+apt_ifs = [step(block(jobs, j) or [], "extra apt packages") for j in ("red-first", "baseline", "mutants")]
+check("extra apt packages: Linux only (#58)", all(s and s[0].startswith("if: runner.os == 'Linux' && ") for s in apt_ifs),
+      str([s[:1] for s in apt_ifs]))
+g_names = [l.strip()[len("- name: "):] for l in (block(jobs, "guard") or []) if l.strip().startswith("- name: ")]
+check("guard: the drift step (D) right after the checkouts, before R2 guard (#56)",
+      g_names[2:5] == ["drift check (stack plan, D)", "upload drift result", "R2 guard"], str(g_names))
+dt = text(step(block(jobs, "guard") or [], "drift check (stack plan, D)"))
+check("guard: drift runs mech-review.py drift, no result stops the job",
+      "mech-review.py\" drift" in dt and "[ -s mech-review-drift.json ] || rm -f mech-review-drift.json" in dt
+      and 'exit "$(( rc > 0 ? rc : 2 ))"' in dt, dt)
+check("report: the drift envelope only when its file is there (#56)",
+      "if [ -f drift-result/mech-review-drift.json ]; then" in text(report)
+      and "extra+=(--envelope drift=drift-result/mech-review-drift.json)" in text(report), text(report))
 check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
 check("stack: inputs.stack and inputs.project-dir are read in the stack job only",
       "inputs.stack" not in text(W[W.index("  guard:"):]) and "inputs.project-dir" not in text(W[W.index("  guard:"):]))
@@ -332,7 +356,8 @@ for job_name in ("guard", "red-first", "plan", "baseline", "mutants", "report"):
     check(f"{job_name}: needs stack", "stack" in re.split(r"[\s,\[\]]+", value(block(jobs, job_name) or [], "needs") or ""),
           str(value(block(jobs, job_name) or [], "needs")))
 check("stack outputs: only in env values or if: conditions, never interpolated into a run: line",
-      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:|\w[\w-]*: \$\{\{ steps\.resolve)", l) for l in W if "needs.stack.outputs" in l
+      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:|\w[\w-]*: \$\{\{ steps\.resolve)", l) or l.strip() == RUNS_ON_OS
+          for l in W if "needs.stack.outputs" in l
           or "steps.resolve.outputs" in l),
       str([l for l in W if "needs.stack.outputs" in l or "steps.resolve.outputs" in l]))
 check("report: no stack posts the stack job's error as the reason",

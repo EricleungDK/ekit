@@ -21,6 +21,7 @@ class DataAdapter(Adapter):
         """cfg: the adapter file's tables, validated by adapter_file.parse; lexer and fn_shapes: built there from them."""
         self.name = cfg["name"]
         self.manifests = tuple(cfg.get("manifests", ()))
+        self.target_os = cfg.get("target-os", "linux")
         self.extensions = tuple(cfg["extensions"])
         self.lexer = lexer
         self.tests = cfg["tests"]

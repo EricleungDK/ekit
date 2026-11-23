@@ -46,5 +46,19 @@ class TestSummary(unittest.TestCase):
                          "fail abc (1 fail, 0 confirm; ran: none; skipped: R1 R2 R4; n/a: R3)")
 
 
+    def test_the_drift_check_is_named_only_when_the_envelope_holds_it(self):
+        checks = self.checks(R2="pass")
+        self.assertEqual(report.summarize("abc", checks, []), "pass abc (0 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
+        with_d = dict(checks, D={"status": "pass", "note": ""})
+        self.assertEqual(report.summarize("abc", with_d, []), "pass abc (0 fail, 0 confirm; ran: R2 D; skipped: R1 R3 R4)")
+
+    def test_a_failed_drift_check_fails_the_summary_and_keeps_all_pass_away(self):
+        every = {c: {"status": "pass", "note": ""} for c in report.CHECKS}
+        self.assertEqual(report.summarize("abc", every, []), "all pass abc")
+        self.assertEqual(report.summarize("abc", dict(every, D={"status": "pass", "note": ""}), []), "all pass abc")
+        self.assertEqual(report.summarize("abc", dict(every, D={"status": "fail", "note": ""}), []),
+                         "fail abc (0 fail, 0 confirm; ran: R1 R2 R3 R4 D)")
+
+
 if __name__ == "__main__":
     unittest.main()

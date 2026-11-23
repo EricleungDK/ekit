@@ -116,7 +116,7 @@ def _table(entries):
     return "\n".join(rows)
 
 
-CHECK_ORDER = ("R1", "R2", "R3", "R4")
+CHECK_ORDER = ("R1", "R2", "R3", "R4", "D")
 
 
 def _not_run_lines(env):
@@ -126,6 +126,13 @@ def _not_run_lines(env):
     na = [f"{c} ({(checks.get(c) or {}).get('note', '')})" for c in CHECK_ORDER
           if (checks.get(c) or {}).get("status") == "n/a"]
     return ["Did not run: " + "; ".join(na)] if na else []
+
+
+def _plan_lines(env):
+    """One line per drift message (#56: planned, retiring and vanished stacks), as a code span: the text holds paths and
+    names from the PR. None without a plan."""
+    d = (env.get("checks") or {}).get("D") or {}
+    return _capped([f"Stack plan: {_span(_line(m))}" for m in d.get("messages") or []], "stack plan messages")
 
 
 def _login(name):
@@ -181,6 +188,9 @@ def _body(env, shown, json_text, omit_lines=False):
     waived = _waiver_lines(env)
     if waived:
         lines += waived + [""]
+    plan = _plan_lines(env)
+    if plan:
+        lines += plan + [""]
     timing = _timing_lines(env)
     if timing:
         lines += timing + [""]

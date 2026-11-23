@@ -1,0 +1,10 @@
+# stack-plan/malformed: misuse, a plan that does not read is a usage error naming the entry and the field, never clean
+
+- story: As a repo owner I make the usual mistakes in `.ekit/stack-plan.toml` (a bad or missing field, a typo in an adapter or a target OS, an unknown key, a folder outside the repo or under an ignored or fixture folder, a duplicate, not TOML) and the drift check stops with exit 2 naming the entry and the field, while its result still fails `D`, so no reader takes my repo for clean.
+- covers: #56 56.1 (`.ekit/stack-plan.toml`: entries name, folder, adapter, optional target OS, status planned|current|retiring, one ignore list; a malformed plan is a usage error naming the entry and the field, never clean); misuse/failure (a bad base plan fails a PR that does not touch it; the PR that fixes it is judged by its own plan; unknown ref and not-a-repo are git errors with nothing on stdout)
+- steps:
+  1. Parent's install (kit clone). Repo with `web/package.json`, `api/pyproject.toml` on base, no plan.
+  2. One plan per mistake, run as the PR's own plan (base..head) and as the base plan (head..head): status `done`, status/name/adapter/folder missing, `target-os = "Linux"` and `"darwin"`, `colour = "red"`, adapter `typescript`, folder `../web`, `tests/web`, a folder in `ignore`, `ignore = ["."]`, `ignore = "samples"`, not TOML, a duplicate name, a duplicate stack/folder/status, a second entry with status `Current`, an adapter file that is not there.
+  3. A bad base plan and a PR that adds only a README; then a PR that fixes the plan (plan-only edit).
+  4. A good plan with CRLF line ends; `drift --base nosuchref`; `drift --repo <plain dir>`.
+- expected: step 2 every run exit 2, stderr naming `.ekit/stack-plan.toml at <sha>` and `stack[i] \`name\`, field <field>` (or `ignore`, `not valid TOML`), stdout a result whose `D` is `fail` with exactly one `CI` entry of class `adapter-fix` naming the same, summary never `pass`. Step 3: the README PR exit 2 with D fail; the fix PR exit 0 with D pass. Step 4: CRLF exit 0, D pass; the git errors exit 2 with empty stdout. No traceback.

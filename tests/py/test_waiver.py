@@ -249,5 +249,28 @@ class TestSummary(unittest.TestCase):
         self.assertEqual(env["summary"], f"fail {SHA} (1 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)")
 
 
+class TestDriftWaiver(unittest.TestCase):
+    """The drift check's entry (check D, #56) is waived like any other fail entry."""
+
+    def env(self):
+        checks = {c: {"status": "skipped", "note": "not run by drift"} for c in ("R1", "R2", "R3", "R4")}
+        checks["D"] = {"status": "fail", "note": "judged by the base branch's plan", "messages": ["m"]}
+        e = dict(entry("D-0a1b2c3d", check="D", cls="adapter-fix"), file=".ekit/stack-plan.toml", line=0)
+        return {"ekit": "0", "base": "b" * 40, "head": SHA, "checks": checks, "entries": [e],
+                "summary": summarize(SHA, checks, [e])}
+
+    def test_a_waive_comment_on_the_drift_entry_waives_it(self):
+        out = waiver.apply(self.env(), waiver.collect([note("/mech-waive D-0a1b2c3d: the demo app is not a project")]))
+        [e] = out["entries"]
+        self.assertEqual((e["severity"], e["waiver"]["reason"]), ("waived", "the demo app is not a project"))
+        self.assertEqual(out["checks"]["D"]["status"], "waived")
+        self.assertEqual(out["checks"]["D"]["messages"], ["m"])
+        self.assertEqual(out["summary"], f"pass {SHA} (0 fail, 0 confirm, 1 waived; ran: D; skipped: R1 R2 R3 R4)")
+
+    def test_the_drift_id_is_read_from_a_comment(self):
+        self.assertEqual(set(waiver.collect([note("/mech-waive D-0a1b2c3d ok")])), {"D-0a1b2c3d"})
+        self.assertEqual(waiver.collect([note("/mech-waive D-0a1b2c3 ok"), note("/mech-waive R0-0a1b2c3d ok")]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

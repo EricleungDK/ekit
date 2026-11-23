@@ -208,7 +208,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 
 | Hook | Does |
 |---|---|
-| `SessionStart` | Preflight warnings (missing tools, sandbox limits) + three working rules into context; prints the scenario runner path. |
+| `SessionStart` | Preflight warnings (missing tools, sandbox limits) + three working rules into context; prints the scenario runner path. In a repo with a stack plan, the drift check at HEAD (git only): each manifest no stack covers and each planned, retiring or vanished stack's message; nothing when clean. |
 | `UserPromptSubmit` | Prompt starts with `/ekit:orchestrate-agent` → arms the finish gate for the session. |
 | `PostToolUseFailure` | Known Bash failure signatures (sandbox, port in use, missing tool, red test) → one line with the check that settles it. |
 | `TaskCreated`, `TaskCompleted` | Sessions that have a task list (Claude Code leaves the task tools out on newer models unless `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`). A task whose description has a ``Verify: `<command>` `` line completes only after that command passed, through `task-verify.py run`, on the files as they are now. The hook runs nothing itself: the agent runs the command, under the session's permission rules. Tasks without the line are not gated. |

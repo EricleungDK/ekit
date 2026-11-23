@@ -6,7 +6,7 @@ import re
 import signal
 import sys
 
-from . import adapter_file, doctor, engine, gitio, merge, red, resolve
+from . import adapter_file, doctor, engine, gitio, merge, red, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -63,9 +63,15 @@ doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base 
   {ekit, head, detected, inputs, trial, entries, summary}: `inputs` is what the caller needs, each entry names one exact fix.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
-resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D]`): the workflow's `stack` job. An explicit
-  --stack is printed as given; auto finds the one project at base and at head (doctor's detection, tracked files, git only).
-  Prints {stack, project_dir, error}. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
+  `stack` job. An explicit --stack is printed as given; auto finds the one project at base and at head (doctor's detection,
+  tracked files, git only). Prints {stack, project_dir, error, target_os}: target_os (linux, macos or windows) is the base
+  stack plan's entry's target-os, else the adapter's (--adapter: its target-os, --stack names its stack), else linux; null
+  with no stack. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+
+drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
+  only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
+  planned, retiring and vanished stacks. Exit 0 clean or messages only, 1 the adapter-fix entry, 2 bad plan, usage or git.
 
 envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summary.
 
@@ -291,6 +297,15 @@ def _tracked(repo, ref):
     return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", gitio.resolve(repo, ref)).split("\0") if p]
 
 
+def _is_repo(path):
+    """True when path is in a git repo (a directory that is not, or none at all: False)."""
+    try:
+        gitio.git(path, "rev-parse", "--git-dir")
+    except gitio.Die:
+        return False
+    return True
+
+
 def _resolve(argv):
     """`stack: auto` (the workflow's stack job): print {stack, project_dir, error}. Exit 0, 1 on error, 2 usage or git."""
     p = argparse.ArgumentParser(prog="mech-review.py resolve",
@@ -302,21 +317,82 @@ def _resolve(argv):
     p.add_argument("--stack", default=resolve.AUTO, help="auto (default) or a language adapter: " + ", ".join(sorted(ADAPTERS)))
     p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
                    help="project dir (default .: auto may find it; a set dir is kept)")
+    p.add_argument("--adapter", metavar="FILE",
+                   help="an adapter file (TOML) that describes the stack named by --stack: its target-os is the output's")
     args = p.parse_args(argv)
+    adapter = None
+    if args.adapter is not None:
+        try:
+            adapter = adapter_file.load(args.adapter)
+        except adapter_file.AdapterFileError as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+        if adapter.name != args.stack:
+            print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
+                  file=sys.stderr)
+            return 2
     try:
-        if args.stack == resolve.AUTO:
+        if adapter is not None:
+            got = {"stack": adapter.name, "project_dir": args.project_dir, "error": None}
+        elif args.stack == resolve.AUTO:
             got = resolve.pick_pr(_tracked(args.repo, args.base), _tracked(args.repo, args.head), args.stack,
                                   args.project_dir)
         else:
             got = resolve.pick_pr([], [], args.stack, args.project_dir)
+        # #56: the base branch's plan entry for this stack and dir sets the target OS (a PR cannot pick its own runner);
+        # a base plan that does not read never blocks the run (its drift check fails D): see stack_plan.target_plan.
+        # An explicit stack with no git repo there (the workflow checks the caller out for auto only) reads no plan.
+        entry = bad = plan = None
+        if got["stack"] is not None and _is_repo(args.repo):
+            plan, bad = stack_plan.target_plan(args.repo, args.base, args.head)
+            entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"])
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    got["target_os"] = entry.target_os if entry else resolve.target_os(got, adapter)
+    if bad is not None:  # named, so a bad plan never moves the runner silently
+        print(f"mech-review: {bad}", file=sys.stderr)
+        print("mech-review: the base branch's stack plan does not read: " + (
+            "this PR fixes it (it edits the plan or an adapter file and adds no manifest), so its own plan sets target_os"
+            if plan is not None else f"no entry sets target_os, the adapter's ({got['target_os']}) applies; the drift "
+                                     f"check fails D until a PR fixes the plan"), file=sys.stderr)
     print(json.dumps(got))
     return 1 if got["error"] else 0
 
 
+def _drift(argv):
+    """The drift check (#56): the stack plan against the tracked manifests, git only. Exit 0 clean or messages only,
+    1 a fail entry, 2 usage (a bad plan names the entry and the field) or git error."""
+    p = argparse.ArgumentParser(prog="mech-review.py drift",
+                                description="compare .ekit/stack-plan.toml with the tracked manifests (git only); the "
+                                            "base branch's plan judges, a PR that only edits the plan or its adapter "
+                                            "files and adds no manifest is judged by its own")
+    p.add_argument("--repo", default=".", help="git repo (default .)")
+    p.add_argument("--base", required=True, help="base ref")
+    p.add_argument("--head", required=True, help="head ref")
+    p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
+    args = p.parse_args(argv)
+    rc = None
+    try:
+        env = engine.drift(args.repo, args.base, args.head)
+    except gitio.Die as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    except stack_plan.PlanError as e:  # a usage error, and a failing result beside it: never read as no plan
+        print(f"mech-review: {e}", file=sys.stderr)
+        env, rc = engine.drift_error(args.repo, args.base, args.head, e), 2
+    if args.format == "json":
+        print(json.dumps(env))  # compact: every reader parses it
+    else:
+        print(render_text(env))
+        for m in env["checks"].get("D", {}).get("messages", []):
+            print(f"message: {m}")
+    return rc or (1 if any(e["severity"] == "fail" for e in env["entries"]) else 0)
+
+
 def main(argv):
+    if argv[:1] == ["drift"]:
+        return _drift(argv[1:])
     if argv[:1] == ["doctor"]:
         return _doctor(argv[1:])
     if argv[:1] == ["resolve"]:

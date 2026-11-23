@@ -23,6 +23,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 | `env` | sandbox/env | No app code or test change. Fix the environment (install the missing tool, or rerun where it failed). Protected CI config → Needs-you. Can't rerun → verification debt. |
 | `agent-fixable`, check `R4` | flaky | Follow [flaky.md](flaky.md). |
 | `agent-fixable`, other | real bug | Fix red→green: the entry's test or rule. |
+| `adapter-fix` | Needs-you | A manifest no stack in `.ekit/stack-plan.toml` covers (check `D`). No edit in this PR: an entry added here does not count, the base branch's plan judges. Run `/ekit:ci-doctor` to open a PR of its own that adds the plan entry (or the folder to `ignore`) and adds no manifest; a person merges it, then this PR is re-run. Or the user waives the entry (Needs-you block, `Decide:`). |
 | `needs-human` | Needs-you | No edit. Needs-you block (finish shape; `Decide:` in place of `Run:`). If the answer is yes, the user posts the entry's ready-made line from the sticky comment (`/mech-waive <id> <reason>`) on the PR; the check re-runs on its own where the repo has the mech-waive caller, else they re-run the failed `report` job. You never post, edit or delete that comment. |
 
 Each `agent-fixable` fail: open its fix plan with two lines, verbatim: `Fix: <hint>` and `Forbidden: <forbidden>`. Your steps go after them. Never take the forbidden route.
