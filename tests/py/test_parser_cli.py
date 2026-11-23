@@ -301,6 +301,7 @@ class ParserTable(unittest.TestCase):
 
     def test_each_bad_parser_value_is_an_error_naming_the_field(self):
         base = parser_toml()
+        inst = lambda cmd: base.replace('install = "pip install mini-facts==1.0.0"', f"install = {json.dumps(cmd)}")
         cmd = next(ln for ln in base.splitlines() if ln.startswith("command = "))
         cases = [
             (base.replace(cmd, 'command = "   "'), "parser.command: want a command, not only whitespace"),
@@ -312,7 +313,17 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
-            (base.replace('version = "1.0.0"', 'version = "1.0.1"'), "parser.install: does not name version `1.0.1`"),
+            (base.replace('version = "1.0.0"', 'version = "1.0.1"'), "parser.install: does not pin version `1.0.1`"),
+            # review round 1: the pin is an exact word of a pinned form, and no range operator anywhere
+            (inst('pip install x==11.0.0'), "parser.install: does not pin version `1.0.0`"),
+            (inst('pip install x>=1.0.0'), "parser.install: `x>=1.0.0` holds `>`: a range, not a pin"),
+            (inst('pip install x~=1.0.0'), "parser.install: `x~=1.0.0` holds `~`: a range, not a pin"),
+            (inst('npm i -g x@^1.0.0'), "parser.install: `x@^1.0.0` holds `^`: a range, not a pin"),
+            (inst('pip install x==1.0.0 y<2'), "parser.install: `y<2` holds `<`: a range, not a pin"),
+            (inst('pip install "x==1.0.*"'), "parser.install: `x==1.0.*` holds `*`: a range, not a pin"),
+            (inst('echo 1.0.0'), "parser.install: does not pin version `1.0.0`"),
+            (inst('pip install x==1.0.0.post1'), "parser.install: does not pin version `1.0.0`"),
+            (inst('gem install x -v1.0.0'), "parser.install: does not pin version `1.0.0`"),
             (base.replace('version = "1.0.0"\n', ""), "parser.version: missing"),
             (base.replace('install = "pip install mini-facts==1.0.0"\n', ""), "parser.install: missing"),
             (base + "timeout = 0\n", "parser.timeout: want a whole number of seconds from 1 to 600"),
@@ -330,6 +341,10 @@ class ParserTable(unittest.TestCase):
         for text, want in cases:
             with self.subTest(want=want):
                 self.assertIn(want, self.error(text))
+        for ok in ("pip install x==1.0.0", "npm install -g x@1.0.0", "cargo install x@1.0.0", "gem install x -v 1.0.0",
+                   "cargo install x --version 1.0.0", "go install example.com/x@1.0.0", "gem install x --version=1.0.0"):
+            with self.subTest(ok=ok):
+                self.assertEqual(self.load(inst(ok)).parser["version"], "1.0.0")
         self.assertEqual(self.load(base + '\n[mutation]\nconfig_files = ["m.toml"]\nconfig_name = "m"\n')
                          .mutation_config("x/m.toml", None), "m")
 

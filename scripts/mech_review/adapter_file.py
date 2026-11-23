@@ -315,6 +315,20 @@ def target_os(v, field="target-os"):
 PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
 PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
 UNPINNED = ("latest", "*", "x")
+RANGE_OPS = ("<", ">", "~", "^", "*", "!=")  # in any word of parser.install: a range, never a pin
+VERSION_FLAGS = ("-v", "--version")
+PIN_FORMS = "a word ending in `==<version>` or `@<version>`, `--version=<version>`, or `-v`/`--version` then the version"
+
+
+def _pins(words, version):
+    """the install words pin version exactly, in one of PIN_FORMS."""
+    for i, w in enumerate(words):
+        if w == "--version=" + version or any(w.endswith(sep + version) and len(w) > len(sep + version)
+                                               for sep in ("==", "@")):  # a name before the pin
+            return True
+        if w == version and i and words[i - 1] in VERSION_FLAGS:
+            return True
+    return False
 
 
 def _parser(data):
@@ -336,8 +350,12 @@ def _parser(data):
             or not all(ch.isalnum() or ch in "._+-" for ch in version)):
         _err(f + ".version", f"`{version}`: want one pinned version, such as \"1.4.2\" (no range, no `latest`)")
     install = _argv(d["install"], f + ".install")
-    if not any(version in w for w in install):
-        _err(f + ".install", f"does not name version `{version}`: the install step pins the parser at parser.version")
+    for w in install:
+        op = next((o for o in RANGE_OPS if o in w), None)
+        if op:
+            _err(f + ".install", f"`{w}` holds `{op}`: a range, not a pin (want {PIN_FORMS})")
+    if not _pins(install, version):
+        _err(f + ".install", f"does not pin version `{version}`: want {PIN_FORMS}")
     lo, hi, timeout = PARSER_TIMEOUT
     if "timeout" in d:
         timeout = d["timeout"]
