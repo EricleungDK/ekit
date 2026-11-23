@@ -338,6 +338,16 @@ class RunUsage(Fixture):
             self.assertIn(f"error: --adapter applies to r2 only for {MINI}: it has no [run] table, and {check} runs R1 "
                           "and R4 through [run] and [commands] (format: docs/mech-review-ci.md#adapter-file)\n", r.stderr)
 
+    def test_a_file_whose_test_command_has_unbalanced_quotes_is_a_usage_error_not_a_crash(self):
+        with open(TS_FILE) as f:
+            text = f.read()
+        bad = os.path.join(self.tmp, "ts.toml")
+        with open(bad, "w") as f:
+            f.write(text.replace('test = "node_modules/.bin/vitest run"', 'test = "vitest \'run"'))
+        r = self.red(*self.ts_repo("fresh fail pass\n"), adapter=bad)
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("commands.test: `vitest 'run`: unbalanced quotes (No closing quotation)", r.stderr)
+
     def test_r3_through_a_file_is_a_usage_error(self):
         head = self.commit({"tests/calc.test.ts": TEST})
         for check in ("mutants", "baseline"):

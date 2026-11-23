@@ -285,12 +285,13 @@ class DataAdapter(Adapter):
         return self.default_test_cmd
 
     def worktree_setup(self, repo, wt, project_dir):
-        """[run].links: each path (project-dir relative, an install the checkout does not track: node_modules) is linked
-        from the caller's checkout into the worktree, when the caller has it and the worktree does not."""
+        """[run].links: each directory (project-dir relative, an install the checkout does not track: node_modules) is
+        linked from the caller's checkout into the worktree, when the caller has it as a directory (as the built-in ts
+        does) and the worktree does not."""
         for rel in self.run.get("links", []):
             src = os.path.join(repo, project_dir, rel)
             dst = os.path.join(wt, project_dir, rel)
-            if os.path.exists(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
+            if os.path.isdir(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
                 os.symlink(os.path.abspath(src), dst)
 
     def _runner(self, argv):

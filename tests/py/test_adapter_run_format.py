@@ -139,6 +139,35 @@ class RunSideFormat(unittest.TestCase):
         self.assertEqual(str(e.exception), "adapter file x.toml: commands.build: missing: want the command that builds "
                                            "the project, or \"\" when the stack has none")
 
+    def test_a_command_with_unbalanced_quotes_is_named_at_load(self):
+        self.bad(with_("commands.test", "vitest 'run"),
+                 "commands.test: `vitest 'run`: unbalanced quotes (No closing quotation)")
+        self.bad(with_("commands.install", 'npm "ci'),
+                 "commands.install: `npm \"ci`: unbalanced quotes (No closing quotation)")
+        self.bad(with_("run.runner", [{"name": "j", "match": "j", "command": 'jest "x', "when": {"file": "p.json"}}]),
+                 "run.runner[0].command: `jest \"x`: unbalanced quotes (No closing quotation)")
+
+    def test_a_blank_runner_command_is_named_at_load(self):
+        self.bad(with_("run.runner", [{"name": "j", "match": "j", "command": "   ", "when": {"file": "p.json"}}]),
+                 "run.runner[0].command: want a command, not blank")
+
+    def test_a_runner_command_without_when_is_never_used(self):
+        self.bad(with_("run.runner", [{"name": "j", "match": "j", "command": "jest"}]),
+                 "run.runner[0].command: never used: a runner's command is picked by its when")
+
+    def test_a_when_file_that_names_a_dir_can_never_hold(self):
+        for path in ("./", ".", "a/", "a//b", "a/./b"):
+            self.bad(with_("run.runner", [{"name": "j", "match": "j", "command": "jest", "when": {"file": path}}]),
+                     f"run.runner[0].when.file: `{path}`: want a file name under the project dir, such as package.json")
+
+    def test_a_pattern_that_matches_empty_text_is_named_at_load(self):
+        for key, pat in (("build", "x?"), ("env", "a*"), ("no_test", "^"), ("summary", "(.*)"), ("build", r"\b"),
+                         ("passed", r"(\d*)(?: passed)?")):
+            self.bad(with_(f"run.outcome.{key}", pat),
+                     f"run.outcome.{key}: `{pat}` matches empty text: want a pattern that needs some output to match")
+        self.bad(with_("run.name", {"placeholders": "x*", "any": ".*"}),
+                 "run.name.placeholders: `x*` matches empty text: want a pattern that needs some output to match")
+
     def test_a_path_with_a_backslash_is_not_under_the_project_dir(self):
         self.bad(with_("run.links", ["a\\b"]),
                  "run.links[0]: `a\\b`: want a path under the project dir (no .., not absolute)")
@@ -169,6 +198,8 @@ class RunSideBehaviour(unittest.TestCase):
             (0, "== 1 ok", "pass"),
             (1, "== 1 ok", "fail"),
             (0, "3 bad\n== 2 ok", "pass"),  # counts come from the last summary line only
+            (0, "== 1 bad\n== 1 ok", "pass"),
+            (1, "== 1 ok\n== 1 bad", "fail"),
             (1, "cannot compile x\n== 0 ok", "build"),
             (1, "no such test x\n== 0 ok", "none"),
             (1, "== 0 ok 1 skip", "none"),
@@ -205,6 +236,30 @@ class RunSideBehaviour(unittest.TestCase):
             with open(os.path.join(d, name), "w") as f:
                 f.write(text)
         return d
+
+    def test_a_count_group_that_is_not_a_number_counts_nothing(self):
+        a = self.adapter(outcome={"summary": r"^Result:(.*)$", "passed": r"(\w+) passed", "failed": r"(\w+) failed"})
+        self.assertEqual(a.outcome(0, "Result: all passed"), "none")
+        self.assertEqual(a.outcome(0, "Result: 2 passed"), "pass")
+
+    def test_a_when_file_that_is_not_json_never_holds(self):
+        a = self.adapter(runner=[{"name": "b", "match": "bee", "command": "bee test",
+                                  "when": {"file": "pkg.json", "tables": ["deps"], "has": ["bee"]}}])
+        self.assertEqual(a.test_cmd_in(self.crate({"pkg.json": "{not json"})), "minitest")
+        self.assertEqual(a.test_cmd_in(self.crate({"pkg.json": "\xff"})), "minitest")
+
+    def test_a_link_is_not_made_where_the_worktree_has_no_project_dir(self):
+        a = self.adapter(links=["deps"])
+        repo, wt = self.crate({}), self.crate({})
+        os.makedirs(os.path.join(repo, "pkg", "deps"))
+        a.worktree_setup(repo, wt, "pkg")
+        self.assertEqual(os.listdir(wt), [])
+
+    def test_a_link_is_made_for_a_directory_only_as_the_built_in_ts_does(self):
+        a = self.adapter(links=["node_modules"])
+        repo, wt = self.crate({"node_modules": "a file, not an install"}), self.crate({})
+        a.worktree_setup(repo, wt, ".")
+        self.assertFalse(os.path.lexists(os.path.join(wt, "node_modules")))
 
     def test_the_command_for_a_checkout_is_the_first_runner_whose_when_holds(self):
         a = self.runners()

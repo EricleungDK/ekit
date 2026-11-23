@@ -4,6 +4,7 @@ Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileErro
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
 import re
+import shlex
 import string
 
 from .data_adapter import DataAdapter
@@ -309,10 +310,26 @@ def _commands(d, run):
     for k, what in COMMANDS.items():
         if k not in d:
             _err(f"{f}.{k}", f"missing: want {what}, or \"\" when the stack has none")
-        _str(d[k], f"{f}.{k}", empty=True)
+        _command(d[k], f"{f}.{k}", blank=True)
     if run and not d["test"].strip():
         _err(f + ".test", "want the whole-suite command: [run] starts every R1 and R4 run from it")
     return d
+
+
+def _command(v, field, blank=False):
+    """a command string, split as the engine splits it (shlex), so unbalanced quotes are a load error, not a crash in
+    R1 or R4. blank: "" (and whitespace) allowed, the declared none."""
+    _str(v, field, empty=blank)
+    if not blank and not v.strip():
+        _err(field, "want a command, not blank")
+    try:
+        shlex.split(v)
+    except ValueError as e:
+        _err(field, f"`{v}`: unbalanced quotes ({e})")
+    return v
+
+
+EMPTY_PROBES = ("", "\n", "x", " x\n")  # a pattern with a zero-width match in any of these can match no output at all
 
 
 def _regex(v, field, groups=None):
@@ -327,6 +344,8 @@ def _regex(v, field, groups=None):
         want = {(0,): "no capturing group: use (?:...)", (1,): "one capturing group: the count, e.g. `(\\d+) passed`",
                 (0, 1): "at most one capturing group: the part counts are read from"}[groups]
         _err(field, f"`{v}` has {rx.groups} capturing groups: want {want}")
+    if any(m.start() == m.end() for probe in EMPTY_PROBES for m in rx.finditer(probe)):
+        _err(field, f"`{v}` matches empty text: want a pattern that needs some output to match")
     return rx
 
 
@@ -336,6 +355,8 @@ def _when(d, field):
     _table(d, field, ("file", "tables", "has", "lacks"), ("file",))
     _str(d["file"], field + ".file")
     _relpath(d["file"], field + ".file")
+    if any(part in ("", ".") for part in d["file"].split("/")):
+        _err(field + ".file", f"`{d['file']}`: want a file name under the project dir, such as package.json")
     _strs(d.get("tables", []), field + ".tables")
     for k in ("has", "lacks"):
         if _strs(d.get(k, []), f"{field}.{k}") and not d.get("tables"):
@@ -390,7 +411,9 @@ def _run(d):
         else:
             catch_all = rf
         if "command" in r:
-            _str(r["command"], rf + ".command")
+            _command(r["command"], rf + ".command")
+            if "when" not in r:
+                _err(rf + ".command", "never used: a runner's command is picked by its when")
         if "when" in r:
             _when(r["when"], rf + ".when")
             if "command" not in r:
