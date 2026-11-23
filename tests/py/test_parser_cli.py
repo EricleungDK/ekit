@@ -248,16 +248,30 @@ class ParserR2(unittest.TestCase):
 
 
     # ---- P3: R0 judges a parser-backed adapter as it judges a pattern one ----
-    def r0(self, adapter):
-        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", self.base, "--head", self.base, "--stack", "mini",
-                          "--adapter", adapter, "--fixtures", MINI_FIXTURES])
+    def r0(self, adapter, base=None, head=None):
+        r = _kit.run_cli(["r0", "--repo", self.repo.path, "--base", base or self.base, "--head", head or base or self.base,
+                          "--stack", "mini", "--adapter", adapter, "--fixtures", MINI_FIXTURES])
         return r.returncode, json.loads(r.stdout)["checks"]["R0"], r
+
+    ADAPTER = ".ekit/adapters/mini.toml"
+
+    def in_repo(self, base_file, head_file=None):
+        """(the adapter's path in the checkout, base, head): base_file's text committed on base, head_file's on head."""
+        texts = []
+        for p in (base_file, head_file or base_file):
+            with open(p) as f:
+                texts.append(f.read())
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        base = self.repo.commit({self.ADAPTER: texts[0]}, "adapter")
+        head = self.repo.commit({self.ADAPTER: texts[1]}, "adapter at head") if texts[1] != texts[0] else base
+        return os.path.join(self.repo.path, self.ADAPTER), base, head
 
     def test_r0_passes_a_parser_backed_adapter_on_the_mini_fixtures(self):
         table = os.path.join(self.tmp, "mini-fns.toml")  # mini.toml with helper fns, as R0's own mini test proves it
         with open(MINI) as f, open(table, "w") as out:
             out.write(f.read() + FUNCTIONS)
-        rc, check, r = self.r0(self.adapter("--table " + shlex.quote(table)))
+        path, base, _ = self.in_repo(self.adapter("--table " + shlex.quote(table)))  # its base copy is the same
+        rc, check, r = self.r0(path, base)
         self.assertEqual((rc, check["status"]), (0, "pass"), r.stdout)
         self.assertEqual({c["case"]: c["status"] for c in check["cases"]},
                          {c: "pass" for c in ("delete", "comment-out", "rename", "skip", "expected-value", "weaken-assert",
@@ -274,11 +288,50 @@ class ParserR2(unittest.TestCase):
                           "lexer: not with [parser]: the parser command gives the facts, a file declares no patterns beside it"])
 
     def test_r0_fails_a_parser_that_prints_invalid_json(self):
-        rc, check, r = self.r0(self.emit("nope"))
+        path, base, _ = self.in_repo(self.emit("nope"))
+        rc, check, r = self.r0(path, base)
         self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
         ent = json.loads(r.stdout)["entries"]
         self.assertEqual([(e["check"], e["class"]) for e in ent], [("R0", "adapter-fix")])
         self.assertIn("printed invalid JSON", ent[0]["problem"])
+
+    def held(self, rc, check, r):
+        """the needs-human entry of an R0 that did not run the parser: every case that reads source is unproven."""
+        self.assertEqual((rc, check["status"]), (1, "unproven"), r.stdout)
+        self.assertEqual({c["case"]: c["status"] for c in check["cases"] if c["status"] != "unproven"},
+                         {"ident-chars": "pass", "empty-asserts": "pass", "unbalanced-brackets": "pass"})
+        ents = json.loads(r.stdout)["entries"]
+        self.assertEqual([(e["check"], e["class"], e["severity"]) for e in ents], [("R0", "needs-human", "fail")])
+        self.assertTrue(ents[0]["problem"].startswith("parser command changed: a person reviews it before it runs"),
+                        ents[0]["problem"])
+        return ents[0]["problem"]
+
+    def test_r0_never_runs_a_parser_command_that_differs_from_the_base_adapters(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path, base, head = self.in_repo(self.adapter(), self.adapter("--record " + shlex.quote(record), name="pr.toml"))
+        problem = self.held(*self.r0(path, base, head))
+        self.assertIn(f"[parser] of {self.ADAPTER} differs from the base branch's", problem)
+        self.assertFalse(os.path.exists(record), "R0 ran the PR's parser command")
+
+    def test_r0_never_runs_a_parser_with_no_base_copy(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        problem = self.held(*self.r0(self.adapter("--record " + shlex.quote(record))))  # outside the repo
+        self.assertIn("is not in the repo: no base copy to compare its [parser] with", problem)
+        self.repo.git("checkout", "-q", "--detach", self.base)
+        head = self.repo.commit({self.ADAPTER: parser_toml("--record " + shlex.quote(record))}, "new adapter")
+        problem = self.held(*self.r0(os.path.join(self.repo.path, self.ADAPTER), self.base, head))
+        self.assertIn(f"{self.ADAPTER} has no [parser] on the base branch", problem)
+        self.assertFalse(os.path.exists(record), "R0 ran the PR's parser command")
+
+    def test_r0_binds_each_fixture_to_its_own_path(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path, base, _ = self.in_repo(self.adapter("--record " + shlex.quote(record)))
+        self.r0(path, base)
+        with open(record) as f:
+            paths = {json.loads(ln)["argv"][-1] for ln in f}
+        self.assertNotIn("input.mini", paths)
+        self.assertIn(".ekit/scenarios/r0/seed.mini", paths)
+        self.assertIn(".ekit/scenarios/r0/skip.mini", paths)
 
 
     def test_a_renamed_file_is_parsed_at_its_base_path_for_base_text_and_its_head_path_for_head_text(self):

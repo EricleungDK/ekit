@@ -330,29 +330,94 @@ def _judge(c, es):
     return "fail", "; ".join(e["problem"] for e in es) or "no entry"
 
 
-def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
+NO_BASE = "no base copy of the adapter file was compared"
+
+
+def _at(adapter, path):
+    """the adapter for the file at path: a parser-backed one gives its command that path (#27)."""
+    return adapter.at(path) if hasattr(adapter, "at") else adapter
+
+
+def parser_hold(repo, mb, adapter, adapter_path):
+    """None when R0 may run the adapter's parser command (#27): its [parser] command, install and version equal those
+    of the same file on the base branch (mb). Else why not: R0 never runs a parser command a PR wrote or changed. A
+    pattern adapter (no parser) is None."""
+    if getattr(adapter, "parser", None) is None:
+        return None
+    full, top = os.path.realpath(adapter_path or ""), os.path.realpath(repo)
+    if not adapter_path or not full.startswith(top + os.sep):
+        return f"{adapter_path or 'the adapter file'} is not in the repo: no base copy to compare its [parser] with"
+    rel = os.path.relpath(full, top).replace(os.sep, "/")
+    try:
+        with open(full, "rb") as f:
+            head = _toml(f.read())
+    except OSError as e:
+        return f"{rel} does not read: {e}"
+    base = _toml(_blob(repo, mb, rel))
+    bp, hp = (d.get("parser") if isinstance(d, dict) else None for d in (base, head))
+    if not isinstance(bp, dict):
+        return f"{rel} has no [parser] on the base branch"
+    if any(bp.get(k) != (hp or {}).get(k) for k in PARSER_KEYS):
+        return f"[parser] of {rel} differs from the base branch's (command, install or version)"
+    return None
+
+
+PARSER_KEYS = ("command", "install", "version")
+
+
+def _held(adapter, adapter_raw, where, why):
+    """the static half of a parser-backed adapter whose command R0 may not run: the malformed-table cases (loads only)
+    and every other case unproven, with one needs-human entry."""
+    got = f"not run: the parser command is not the base branch's ({why})"
+    results = [{"case": c.name, "kind": c.kind, "want": _want_text(c.want), "status": "unproven", "got": got}
+               for c in CASES] + malformed(adapter_raw, where)
+    failed = [r for r in results if r["status"] == "fail"]
+    proved = [r for r in results if r["status"] == "pass"]
+    note = (f"static half: {len(proved)} of {len(results)} cases proved; unproven: the parser command is not run until "
+            f"a person reviews it ({why})")
+    check = {"status": "fail" if failed else "unproven", "note": note, "half": HALF, "adapter": adapter.name,
+             "cases": results}
+    entries = [entry("R0", where, 0, "parser-changed", "needs-human", "fail",
+                     f"parser command changed: a person reviews it before it runs ({why})",
+                     "a person reviews the [parser] command and its install step; R0 runs it once the base branch has "
+                     "it, and R2 always reads the base branch's adapter", "running a PR's own parser command in CI")]
+    if failed:
+        cause = f"R0 static half failed for the `{adapter.name}` adapter: " + "; ".join(_failure_text(r) for r in failed)
+        check.update(blocks=list(BLOCKS[HALF]), cause=cause)
+        entries.append(entry("R0", where, 0, "static:" + ",".join(r["case"] for r in failed), "adapter-fix", "fail",
+                             cause, "repair the adapter (ci-doctor repair mode) in a PR of its own, then re-run R0",
+                             "tuning the adapter or its fixtures until this PR passes"))
+    return check, entries
+
+
+def static(adapter, fixtures, test_globs=(), adapter_raw=None, where="", parser_hold=NO_BASE):
     """(R0 check, raw entries) of the static half for one adapter. fixtures: Fixtures or None (every cheat and control
     unproven). adapter_raw: the adapter file's bytes (None: a built-in). where: the entry's file (the adapter file, else
     the fixture dir). A seed or fixture the adapter cannot parse, and an adapter that crashes, fail their cases: R0
-    itself never crashes on what a PR's fixture dir holds."""
+    itself never crashes on what a PR's fixture dir holds. parser_hold: None when a parser-backed adapter's command may
+    run (parser_hold() found it equal to the base branch's), else why not: its command never runs, every case that
+    reads source is unproven, and one needs-human entry names the change (#27)."""
+    if getattr(adapter, "parser", None) is not None and parser_hold is not None:
+        return _held(adapter, adapter_raw, where, parser_hold)
     globs = list(test_globs) + [FIXTURE_DIR + "/**"]
     ext = fixtures.ext if fixtures else ""
     seed = fixtures.seed if fixtures else None
     why = {}  # case: why it failed before R2 ran (a fixture that does not parse, an adapter crash)
-    seed_err = _parse(adapter, seed) if seed is not None else None
+    seed_err = _parse(_at(adapter, f"{FIXTURE_DIR}/seed{ext}"), seed) if seed is not None else None
     if seed_err:
         why.update({c.name: f"`seed{ext}{SUFFIX}` does not parse: {seed_err}" for c in CASES})
         core, why_core = {}, None
     else:
         try:
-            core, why_core = made(adapter, seed)
+            core, why_core = made(_at(adapter, f"{FIXTURE_DIR}/seed{ext}"), seed)
         except Exception as e:
             core, why_core = {}, None
             why.update({c.name: _crash(e) for c in CASES if c.how == "core"})
     heads = dict(core)
     for c in CASES:
         if c.how == "fixture" and fixtures and c.name in fixtures.cases and seed is not None and c.name not in why:
-            err = None if c.kind == "malformed-source" else _parse(adapter, fixtures.cases[c.name])
+            err = None if c.kind == "malformed-source" else _parse(_at(adapter, f"{FIXTURE_DIR}/{c.name}{ext}"),
+                                                                          fixtures.cases[c.name])
             if err:
                 why[c.name] = f"fixture `{c.name}{ext}{SUFFIX}` does not parse: {err}"
             else:
