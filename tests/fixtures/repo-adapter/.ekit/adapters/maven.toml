@@ -1,0 +1,38 @@
+# A repo-defined adapter (#17): the mini language of ../../adapters/mini.toml as stack `maven`, found by its pom.xml.
+format = 1
+name = "maven"
+target-os = "macos"
+manifests = ["pom.xml"]
+extensions = [".mini"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+line_comments = ["#"]
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[tests]
+style = "calls"
+groups = ["suite"]
+cases = ["test", "xtest"]
+skip = ["xtest"]
+separator = " / "
+skipped_text = "test `{name}` marked xtest"
+
+[[asserts.call]]
+names = ["assertEquals"]
+kind = "eq"
+operands = [0, 1]
+
+[[asserts.call]]
+names = ["assertTrue"]
+kind = "other"
+
+[[suppressions]]
+directives = ["lint-off"]
+covers = { "lint-off" = "next-line" }
+lints = "rules"
+reason_after = "--"

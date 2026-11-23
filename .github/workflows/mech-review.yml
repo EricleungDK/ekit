@@ -112,7 +112,13 @@ jobs:
           import sys
 
           r = json.load(open("stack.json"))
-          values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": r["error"] or "",
+          error = r["error"] or ""
+          stacks = r.get("stacks") or []  # #17: a plan with several stacks to run; one set of checks per stack is not
+          if len(stacks) > 1 and not error:  # wired yet (the report merges one stack's results), so stop, named
+              found = ", ".join(f"{s['name']}: {s['stack']} in {s['project_dir']}" for s in stacks)
+              error = (f"stack auto: the stack plan has several stacks to run ({found}); this workflow runs one stack: "
+                       "set the stack and project-dir inputs to the one to check")
+          values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": error,
                     "target-os": r.get("target_os") or ""}
           assert not any(c in v for v in values.values() for c in "\r\n"), values  # one line each: an output per line
           with open(sys.argv[1], "a") as out:
@@ -180,11 +186,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STACK: ${{ needs.stack.outputs.stack }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
           PROTECTED_PATHS: ${{ inputs.protected-paths }}
         run: |
           set -uo pipefail
-          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
+          # the project dir picks the plan entry whose adapter file judges (#17)
+          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR")
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
@@ -205,10 +213,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STACK: ${{ needs.stack.outputs.stack }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -uo pipefail
-          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
+          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR")
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
