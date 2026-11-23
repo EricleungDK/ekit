@@ -362,6 +362,19 @@ check("guard: drift runs mech-review.py drift, no result stops the job",
 check("report: the drift envelope only when its file is there (#56)",
       "if [ -f drift-result/mech-review-drift.json ]; then" in text(report)
       and "extra+=(--envelope drift=drift-result/mech-review-drift.json)" in text(report), text(report))
+check("guard: R0's static half right after R2 guard, before the upload (#20)",
+      g_names[4:7] == ["R2 guard", "R0 static half (adapter proof)", "upload result"], str(g_names))
+r0t = text(step(block(jobs, "guard") or [], "R0 static half (adapter proof)"))
+check("guard: R0 runs mech-review.py r0 on the settled stack and the test paths, git only",
+      "mech-review.py\" r0 \"${args[@]}\" > mech-review-r0.json" in r0t and "STACK: ${{ needs.stack.outputs.stack }}" in r0t
+      and "TEST_PATHS: ${{ inputs.test-paths }}" in r0t and "--test-cmd" not in r0t, r0t)
+check("guard: an R0 usage or git error leaves no result and stops the job",
+      'if [ "$rc" -gt 1 ]; then' in r0t and "rm -f mech-review-r0.json" in r0t and 'exit "$rc"' in r0t, r0t)
+gu = text(step(block(jobs, "guard") or [], "upload result"))
+check("guard: the R0 result rides in the guard's artifact beside R2's, uploaded always",
+      "if: always()" in gu and "name: mech-review-json" in gu and "mech-review.json" in gu and "mech-review-r0.json" in gu, gu)
+check("report: always names the R0 result, so a missing one fails R0 with a CI entry (#20)",
+      "--envelope r0=r2-result/mech-review-r0.json" in text(report), text(report))
 check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
 check("stack: inputs.stack and inputs.project-dir are read in the stack job only",
       "inputs.stack" not in text(W[W.index("  guard:"):]) and "inputs.project-dir" not in text(W[W.index("  guard:"):]))
