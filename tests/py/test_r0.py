@@ -385,6 +385,17 @@ class BadFixturesFailCleanly(unittest.TestCase):
         env = self.run_r0(fixtures)
         self.assertEqual(env["entries"][0]["file"], fixtures)
 
+    def test_a_built_in_entry_names_ekit_s_fixture_dir(self):
+        from scripts.mech_review import r0 as r0_mod
+        from scripts.mech_review.stack import ADAPTERS
+
+        class SkipBlind(ADAPTERS["python"]):
+            def test_fns(self, text):
+                return [f._replace(markers=[]) for f in super().test_fns(text)]
+
+        _, entries = r0_mod.static(SkipBlind(), r0_mod.load_fixtures(BUILTIN_PY))
+        self.assertEqual(entries[0]["file"], "ekit:scripts/mech_review/r0_fixtures/python")
+
     def test_an_internal_error_is_a_usage_exit_with_no_result_never_exit_1(self):
         from unittest import mock
         from scripts.mech_review import r0 as r0_mod

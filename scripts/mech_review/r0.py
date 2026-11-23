@@ -309,6 +309,17 @@ def _parse(adapter, text):
     return f"{err[1]} (line {err[0]})" if err else None
 
 
+def _where(fixtures):
+    """the fixture dir an entry names: ekit's own as `ekit:<path in ekit>` (it is not in the reviewed repo)."""
+    if fixtures is None:
+        return ""
+    root = os.path.dirname(os.path.dirname(BUILTIN_FIXTURES))  # scripts/
+    d = os.path.abspath(fixtures.where)
+    if d.startswith(os.path.abspath(BUILTIN_FIXTURES) + os.sep):
+        return "ekit:" + os.path.relpath(d, os.path.dirname(root)).replace(os.sep, "/")
+    return fixtures.where
+
+
 def _judge(c, es):
     """(status, got) of one case from the R2 entries its head gave."""
     if c.want is None:
@@ -396,7 +407,7 @@ def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
         cause = f"R0 static half failed for the `{adapter.name}` adapter: " + "; ".join(_failure_text(r) for r in failed)
         check["blocks"] = list(BLOCKS[HALF])
         check["cause"] = cause
-        entries.append(entry("R0", where or (fixtures.where if fixtures else ""), 0,
+        entries.append(entry("R0", where or _where(fixtures), 0,
                              "static:" + ",".join(r["case"] for r in failed), "adapter-fix", "fail",
                              cause, "repair the adapter (ci-doctor repair mode) in a PR of its own, then re-run R0; the "
                                     "PR under review never edits its own checker",
