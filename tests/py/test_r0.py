@@ -11,6 +11,7 @@ from scripts.mech_review import comment, waiver
 
 CHEATS = ["delete", "comment-out", "rename", "skip", "expected-value", "weaken-assert", "suppression"]
 CONTROLS = ["rename-same-asserts", "reorder-asserts", "helper-asserts", "empty-diff"]
+SOURCE_CASES = ["source-ident-chars", "source-empty-asserts", "source-unbalanced-brackets"]
 
 
 class Repo:
@@ -60,6 +61,8 @@ class BuiltinsPass(unittest.TestCase):
         self.assertEqual(c["half"], "static")
         self.assertEqual({x["case"]: x["status"] for x in c["cases"] if x["kind"] in ("cheat", "control")},
                          dict.fromkeys(CHEATS + CONTROLS, "pass"))
+        self.assertEqual({x["case"]: x["status"] for x in c["cases"] if x["case"].startswith("source-")},
+                         dict.fromkeys(SOURCE_CASES, "pass"))
         self.assertEqual(env["entries"], [])
         self.assertEqual(env["summary"], f"pass {base} (0 fail, 0 confirm; ran: R0; skipped: R1 R2 R3 R4)")
 
@@ -106,7 +109,7 @@ class AdapterFiles(unittest.TestCase):
         rc, env = self.run_r0(adapter_copy(self, mini_text() + FUNCTIONS))
         c = env["checks"]["R0"]
         self.assertEqual((rc, c["status"], env["entries"]), (0, "pass", []), c)
-        got = {x["case"]: (x["status"], x["got"]) for x in c["cases"] if x["kind"] == "malformed"}
+        got = {x["case"]: (x["status"], x["got"]) for x in c["cases"] if x["kind"] == "malformed-table"}
         self.assertEqual({k: v[0] for k, v in got.items()},
                          {"ident-chars": "pass", "empty-asserts": "pass", "unbalanced-brackets": "pass"})
         self.assertIn("(ident-chars): lexer.ident_chars: `(` cannot be part of a word", got["ident-chars"][1])
@@ -339,6 +342,57 @@ class RustUnbalanced(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual([(e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]],
                          [(2, "file does not parse: `{` is never closed (line 2)")])
+
+
+def fixture_copy(case, src, replace):
+    """a copy of the fixture dir src with replace's {file name: text} written over it: its path."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    for fn in os.listdir(src):
+        with open(os.path.join(src, fn)) as f, open(os.path.join(tmp.name, fn), "w") as dst:
+            dst.write(f.read())
+    for fn, text in replace.items():
+        with open(os.path.join(tmp.name, fn), "w") as dst:
+            dst.write(text)
+    return tmp.name
+
+
+class BadFixturesFailCleanly(unittest.TestCase):
+    """a seed or fixture the adapter cannot parse is an R0 fail naming it (fixture dirs may come from the PR), never a
+    crash; a built-in's entry points at its fixture dir."""
+
+    def run_r0(self, fixtures):
+        repo, base = tmp_repo(self)
+        r = r0(repo, base, base, "--stack", "python", "--fixtures", fixtures)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_a_seed_that_does_not_parse(self):
+        env = self.run_r0(fixture_copy(self, BUILTIN_PY, {"seed.py.r0": "# x\ndef test_a(:\n"}))
+        [e] = env["entries"]
+        self.assertEqual(e["class"], "adapter-fix")
+        self.assertIn("`seed.py.r0` does not parse: ", e["problem"])
+        self.assertEqual({x["status"] for x in env["checks"]["R0"]["cases"] if x["kind"] != "malformed-table"}, {"fail"})
+
+    def test_a_fixture_that_does_not_parse(self):
+        env = self.run_r0(fixture_copy(self, BUILTIN_PY, {"skip.py.r0": "def test_a(:\n"}))
+        c = env["checks"]["R0"]
+        self.assertEqual([x["case"] for x in c["cases"] if x["status"] == "fail"], ["skip"])
+        self.assertIn("fixture `skip.py.r0` does not parse: ", env["entries"][0]["problem"])
+
+    def test_the_entry_names_the_fixture_dir(self):
+        fixtures = broken_python_fixtures(self)
+        env = self.run_r0(fixtures)
+        self.assertEqual(env["entries"][0]["file"], fixtures)
+
+    def test_an_internal_error_is_a_usage_exit_with_no_result_never_exit_1(self):
+        from unittest import mock
+        from scripts.mech_review import r0 as r0_mod
+        repo, base = tmp_repo(self)
+        with mock.patch.object(r0_mod, "static", side_effect=RuntimeError("boom")):
+            r = r0(repo, base, base, "--stack", "python")
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("mech-review: r0 crashed: RuntimeError: boom", r.stderr)
 
 
 if __name__ == "__main__":

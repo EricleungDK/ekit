@@ -446,6 +446,9 @@ def _r0(argv):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    except Exception as e:  # never exit 1 with no result: the guard keeps an exit-1 result
+        print(f"mech-review: r0 crashed: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
     return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
 

@@ -218,10 +218,10 @@ jobs:
           # git and adapter only, seconds; its result rides in the guard's artifact beside R2's. exit 1 = a fail entry
           # (adapter-fix, or needs-human for a loosened limit): a result, kept. exit 2+ = usage or git error: no result,
           # and the report fails R0 with a CI entry naming the job
-          if [ "$rc" -gt 1 ]; then
+          if [ "$rc" -gt 1 ] || [ ! -s mech-review-r0.json ]; then
             rm -f mech-review-r0.json
-            echo "::error::mech-review r0 exit $rc (usage or git error): no R0 result"
-            exit "$rc"
+            echo "::error::mech-review r0 exit $rc: no R0 result"
+            exit "$(( rc > 0 ? rc : 2 ))"
           fi
       - name: upload result
         if: always()

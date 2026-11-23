@@ -52,6 +52,9 @@ SKIPPED = ("fail", "#[ignore] / skip / xfail / only on a test")
 EXPECTED = ("confirm", "editing an expected value to match the code's current output")
 WEAKENED = ("confirm", "weakening an assertion in place")
 SUPPRESSED = ("fail", "silencing a lint without a reason")
+DROPPED = ("fail", "fewer asserts in test")
+UNPARSED = ("fail", "unparseable file hides test changes")
+ANY_FAIL = ("fail", "")  # any fail entry: the adapter named the change, a parse error or a removed test
 
 # how: core (made by the core from the seed), fixture (a head file in the fixture dir), every (every fixture file)
 Case = namedtuple("Case", "name kind want how")
@@ -67,7 +70,13 @@ CASES = (
     Case("reorder-asserts", "control", None, "core"),
     Case("helper-asserts", "control", None, "fixture"),
     Case("empty-diff", "control", None, "every"),
+    # malformed source fed to the adapter (fixtures): it must name each, never crash, never stay silent
+    # a test renamed with characters outside the identifier set, its assert gone: a parse error or the removal
+    Case("source-ident-chars", "malformed-source", ANY_FAIL, "fixture"),
+    Case("source-empty-asserts", "malformed-source", DROPPED, "fixture"),  # a test whose assert list is now empty
+    Case("source-unbalanced-brackets", "malformed-source", UNPARSED, "fixture"),
 )
+KIND = {c.name: c.kind for c in CASES}
 MALFORMED = ("ident-chars", "empty-asserts", "unbalanced-brackets")
 
 Fixtures = namedtuple("Fixtures", "ext seed cases where")  # cases: {name: head text}; where: the dir, for messages
@@ -208,7 +217,7 @@ def _r2_on(adapter, test_globs, ext, seed, heads):
 
 
 def _want_text(want):
-    return "no entry" if want is None else f"R2 {want[0]}: {want[1]}"
+    return "no entry" if want is None else f"R2 {want[0]}: {want[1] or 'any rule'}"
 
 
 def _toml_value(v):
@@ -252,73 +261,123 @@ def malformed(adapter_raw, adapter_path):
     AdapterFileError (clean), never another exception (a crash) and never load (passing silently). adapter_raw None
     (a built-in): skipped."""
     if adapter_raw is None:
-        return [{"case": c, "kind": "malformed", "status": "skipped", "want": "a clean load error",
+        return [{"case": c, "kind": "malformed-table", "status": "skipped", "want": "a clean load error",
                  "got": "a built-in adapter has no adapter file to feed"} for c in MALFORMED]
     try:
         import tomllib
         data = tomllib.loads(adapter_raw.decode("utf-8"))
     except Exception as e:  # the file loaded once already: this is no adapter file R0 can vary
-        return [{"case": c, "kind": "malformed", "status": "fail", "want": "a clean load error",
+        return [{"case": c, "kind": "malformed-table", "status": "fail", "want": "a clean load error",
                  "got": f"cannot read the adapter file to vary it: {e}"} for c in MALFORMED]
     out = []
     for c, d in _malformed_variants(data).items():
         try:
             adapter_file.loads(toml_text(d).encode("utf-8"), f"{adapter_path} ({c})")
         except adapter_file.AdapterFileError as e:
-            out.append({"case": c, "kind": "malformed", "status": "pass", "want": "a clean load error", "got": str(e)})
+            out.append({"case": c, "kind": "malformed-table", "status": "pass", "want": "a clean load error", "got": str(e)})
         except Exception as e:  # any other exception is the crash this case exists to catch
-            out.append({"case": c, "kind": "malformed", "status": "fail", "want": "a clean load error",
+            out.append({"case": c, "kind": "malformed-table", "status": "fail", "want": "a clean load error",
                         "got": f"crashed: {type(e).__name__}: {e}"})
         else:
-            out.append({"case": c, "kind": "malformed", "status": "fail", "want": "a clean load error",
+            out.append({"case": c, "kind": "malformed-table", "status": "fail", "want": "a clean load error",
                         "got": "loaded with no error (passed silently)"})
     return out
 
 
 def _failure_text(res):
+    if res["got"].startswith(("`seed", "fixture `", "the adapter crashed")):
+        return f"{res['kind']} `{res['case']}`: {res['got']}"
     if res["kind"] == "cheat":
         return f"cheat `{res['case']}` gave no {res['want']} entry"
     if res["kind"] == "control":
         return f"control `{res['case']}` gave {res['got']} (want no entry)"
+    if res["case"].startswith("source-"):
+        return f"malformed input `{res['case']}` gave no {res['want']} entry ({res['got']})"
     return f"malformed input `{res['case']}`: {res['got']}"
+
+
+def _crash(e):
+    return f"the adapter crashed: {type(e).__name__}: {e}"
+
+
+def _parse(adapter, text):
+    """None when the adapter parses text, else why not (its parse error, or its crash)."""
+    try:
+        err = adapter.parse_error(text)
+    except Exception as e:  # an adapter that crashes on its own fixture is a failed proof, never a crashed R0
+        return _crash(e)
+    return f"{err[1]} (line {err[0]})" if err else None
+
+
+def _judge(c, es):
+    """(status, got) of one case from the R2 entries its head gave."""
+    if c.want is None:
+        return ("fail", f"{len(es)} entries: {es[0]['problem']}") if es else ("pass", "no entry")
+    hit = [e for e in es if e["severity"] == c.want[0] and e["forbidden"].startswith(c.want[1])]
+    if hit:
+        return "pass", hit[0]["problem"]
+    return "fail", "; ".join(e["problem"] for e in es) or "no entry"
 
 
 def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
     """(R0 check, raw entries) of the static half for one adapter. fixtures: Fixtures or None (every cheat and control
-    unproven). adapter_raw: the adapter file's bytes (None: a built-in). where: the adapter's path, the entry's file."""
+    unproven). adapter_raw: the adapter file's bytes (None: a built-in). where: the entry's file (the adapter file, else
+    the fixture dir). A seed or fixture the adapter cannot parse, and an adapter that crashes, fail their cases: R0
+    itself never crashes on what a PR's fixture dir holds."""
     globs = list(test_globs) + [FIXTURE_DIR + "/**"]
+    ext = fixtures.ext if fixtures else ""
     seed = fixtures.seed if fixtures else None
-    core, why_core = made(adapter, seed)
+    why = {}  # case: why it failed before R2 ran (a fixture that does not parse, an adapter crash)
+    seed_err = _parse(adapter, seed) if seed is not None else None
+    if seed_err:
+        why.update({c.name: f"`seed{ext}{SUFFIX}` does not parse: {seed_err}" for c in CASES})
+        core, why_core = {}, None
+    else:
+        try:
+            core, why_core = made(adapter, seed)
+        except Exception as e:
+            core, why_core = {}, None
+            why.update({c.name: _crash(e) for c in CASES if c.how == "core"})
     heads = dict(core)
     for c in CASES:
-        if c.how == "fixture" and fixtures and c.name in fixtures.cases and seed is not None:
-            heads[c.name] = fixtures.cases[c.name]
-    got = _r2_on(adapter, globs, fixtures.ext, seed, heads) if heads else {}
+        if c.how == "fixture" and fixtures and c.name in fixtures.cases and seed is not None and c.name not in why:
+            err = None if c.kind == "malformed-source" else _parse(adapter, fixtures.cases[c.name])
+            if err:
+                why[c.name] = f"fixture `{c.name}{ext}{SUFFIX}` does not parse: {err}"
+            else:
+                heads[c.name] = fixtures.cases[c.name]
+    try:
+        got = _r2_on(adapter, globs, ext, seed, heads) if heads else {}
+    except gitio.Die:
+        raise
+    except Exception as e:
+        why.update({c: _crash(e) for c in heads if c not in why})
+        got = {}
     results = []
     for c in CASES:
         res = {"case": c.name, "kind": c.kind, "want": _want_text(c.want)}
-        if c.how == "every":
+        if c.name in why:
+            res.update(status="fail", got=why[c.name])
+        elif c.how == "every":
             if seed is None:
                 res.update(status="unproven", got="no seed fixture")
             else:
-                p = f"{FIXTURE_DIR}/seed{fixtures.ext}"
-                noisy = [(n, e) for n, t in [("seed", seed)] + sorted(heads.items())
-                         for e in r2_file(adapter, globs, p, p, t, t)]
-                res.update(status="fail" if noisy else "pass",
-                           got=f"{len(noisy)} entries, first on `{noisy[0][0]}`: {noisy[0][1]['problem']}" if noisy
-                           else "no entry")
+                p = f"{FIXTURE_DIR}/seed{ext}"
+                texts = [("seed", seed)] + sorted((n, t) for n, t in heads.items() if KIND[n] != "malformed-source")
+                try:
+                    noisy = [(n, e) for n, t in texts for e in r2_file(adapter, globs, p, p, t, t)]
+                except Exception as e:
+                    res.update(status="fail", got=_crash(e))
+                else:
+                    res.update(status="fail" if noisy else "pass",
+                               got=f"{len(noisy)} entries, first on `{noisy[0][0]}`: {noisy[0][1]['problem']}"
+                               if noisy else "no entry")
         elif c.name not in heads:
             res.update(status="unproven", got=why_core if c.how == "core" else
-                       ("no seed fixture" if seed is None else f"no fixture `{c.name}{fixtures.ext}{SUFFIX}`"))
+                       ("no seed fixture" if seed is None else f"no fixture `{c.name}{ext}{SUFFIX}`"))
         else:
-            es = got.get(c.name, [])
-            if c.want is None:
-                res.update(status="fail" if es else "pass",
-                           got=f"{len(es)} entries: {es[0]['problem']}" if es else "no entry")
-            else:
-                hit = [e for e in es if e["severity"] == c.want[0] and e["forbidden"].startswith(c.want[1])]
-                res.update(status="pass" if hit else "fail",
-                           got=hit[0]["problem"] if hit else ("; ".join(e["problem"] for e in es) or "no entry"))
+            status, text = _judge(c, got.get(c.name, []))
+            res.update(status=status, got=text)
         results.append(res)
     results += malformed(adapter_raw, where)
     failed = [r for r in results if r["status"] == "fail"]
@@ -337,7 +396,8 @@ def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
         cause = f"R0 static half failed for the `{adapter.name}` adapter: " + "; ".join(_failure_text(r) for r in failed)
         check["blocks"] = list(BLOCKS[HALF])
         check["cause"] = cause
-        entries.append(entry("R0", where, 0, "static:" + ",".join(r["case"] for r in failed), "adapter-fix", "fail",
+        entries.append(entry("R0", where or (fixtures.where if fixtures else ""), 0,
+                             "static:" + ",".join(r["case"] for r in failed), "adapter-fix", "fail",
                              cause, "repair the adapter (ci-doctor repair mode) in a PR of its own, then re-run R0; the "
                                     "PR under review never edits its own checker",
                              "tuning the adapter or its fixtures until this PR passes"))

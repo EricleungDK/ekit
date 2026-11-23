@@ -54,7 +54,7 @@ class Comment(unittest.TestCase):
         env = merge.merge(parts, {})
         eid = next(e["id"] for e in env["entries"] if e["check"] == "R0")
         body = comment.render(env)
-        self.assertIn("R0: `static half: 10 of 11 cases proved; failed: skip`", body)
+        self.assertIn("R0: `static half: 13 of 14 cases proved; failed: skip`", body)
         self.assertIn("Did not run: R2 (blocked: R0 failed (", body)
         self.assertIn(f"/mech-waive {eid} {waiver.PLACEHOLDER}", body)
         self.assertIn("| fail (R2 blocked by R0) |", body)
