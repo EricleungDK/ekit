@@ -64,10 +64,13 @@ doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base 
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
 resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
-  `stack` job. An explicit --stack is printed as given; auto finds the one project at base and at head (doctor's detection,
-  tracked files, git only). Prints {stack, project_dir, error, target_os}: target_os (linux, macos or windows) is the base
-  stack plan's entry's target-os, else the adapter's (--adapter: its target-os, --stack names its stack), else linux; null
-  with no stack. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+  `stack` job. An explicit --stack is printed as given; auto takes the stacks from the base branch's stack plan, else finds
+  the one project at base and at head (doctor's detection over the built-ins and the base's .ekit/adapters/<name>.toml,
+  tracked files, git only). Prints {stack, project_dir, error, target_os}, and with several stacks from the plan stack null
+  and `stacks` [{name, stack, project_dir, adapter, target_os}]: target_os (linux, macos or windows) is the base stack
+  plan's entry's target-os, else the adapter's (--adapter or the repo's file: its target-os), else linux; null with no
+  stack. Exit 0, 1 when no single project or no planned stack to run (error names them), 2 usage or git.
+  r2 --stack NAME with no --adapter judges with the repo's adapter file for NAME at --base, when there is one.
 
 drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
   only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
@@ -307,8 +310,35 @@ def _is_repo(path):
     return True
 
 
+def _detect(args):
+    """auto with no plan (#17): (result, {stack: adapter} of the repo's adapter files at the base), detection over the
+    built-ins and those files, a file named like a built-in in its place."""
+    base_paths = _tracked(args.repo, args.base)
+    try:
+        repo = stack_plan.repo_adapters(args.repo, gitio.resolve(args.repo, args.base), base_paths)
+    except adapter_file.AdapterFileError as e:
+        return resolve.fail(args.project_dir, str(e)), {}
+    return resolve.pick_pr(base_paths, _tracked(args.repo, args.head), args.stack, args.project_dir,
+                           {**ADAPTERS, **repo}), repo
+
+
+def _named(args):
+    """an explicit stack in a git repo (#17): (result, {stack: adapter}) with the adapter the repo defines for that name
+    at the base (a plan entry's adapter file, or .ekit/adapters/<name>.toml), else the built-in."""
+    base = gitio.resolve(args.repo, args.base)
+    try:
+        found = stack_plan.repo_adapter(args.repo, base, args.stack, args.project_dir)
+    except adapter_file.AdapterFileError as e:
+        return {"stack": None, "project_dir": args.project_dir, "error": f"stack {args.stack}: {e}"}, {}
+    repo = {args.stack: found} if found is not None else {}
+    names = {p.rpartition("/")[2][:-len(".toml")]: None for p in _tracked(args.repo, base)
+             if p.rpartition("/")[0] == stack_plan.ADAPTERS_DIR and p.endswith(".toml")}
+    return resolve.pick_pr([], [], args.stack, args.project_dir, {**ADAPTERS, **names, **repo}), repo
+
+
 def _resolve(argv):
-    """`stack: auto` (the workflow's stack job): print {stack, project_dir, error}. Exit 0, 1 on error, 2 usage or git."""
+    """`stack: auto` (the workflow's stack job): print {stack, project_dir, error, target_os} (several stacks: `stacks`).
+    Exit 0, 1 on error, 2 usage or git."""
     p = argparse.ArgumentParser()  # no help text of its own (#29): the main --help describes resolve
     p.add_argument("--repo", default=".")
     p.add_argument("--base", required=True)
@@ -329,25 +359,30 @@ def _resolve(argv):
                   file=sys.stderr)
             return 2
     try:
+        # #56: the base branch's plan (a PR cannot pick its own stacks or runner); a base plan that does not read never
+        # blocks the run (its drift check fails D): see stack_plan.target_plan. An explicit stack with no git repo there
+        # reads no plan. #17: with a plan, auto takes its stacks from it, and detection is not used.
+        bad = plan = None
+        repo = {}  # the repo's adapter files in play, by stack
+        if args.stack == resolve.AUTO or _is_repo(args.repo):
+            plan, bad = stack_plan.target_plan(args.repo, args.base, args.head)
         if adapter is not None:
             got = {"stack": adapter.name, "project_dir": args.project_dir, "error": None}
+        elif args.stack == resolve.AUTO and plan is not None:
+            got = resolve.from_plan(stack_plan.to_run(plan, _tracked(args.repo, args.base) + _tracked(args.repo, args.head)),
+                                    args.project_dir)
         elif args.stack == resolve.AUTO:
-            got = resolve.pick_pr(_tracked(args.repo, args.base), _tracked(args.repo, args.head), args.stack,
-                                  args.project_dir)
+            got, repo = _detect(args)
+        elif _is_repo(args.repo):
+            got, repo = _named(args)
         else:
             got = resolve.pick_pr([], [], args.stack, args.project_dir)
-        # #56: the base branch's plan entry for this stack and dir sets the target OS (a PR cannot pick its own runner);
-        # a base plan that does not read never blocks the run (its drift check fails D): see stack_plan.target_plan.
-        # An explicit stack with no git repo there (the workflow checks the caller out for auto only) reads no plan.
-        entry = bad = plan = None
-        if got["stack"] is not None and _is_repo(args.repo):
-            plan, bad = stack_plan.target_plan(args.repo, args.base, args.head)
-            entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"])
+        entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"]) if got["stack"] is not None else None
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
-    got["target_os"] = entry.target_os if entry else resolve.target_os(got, adapter)
-    if bad is not None:  # named, so a bad plan never moves the runner silently
+    got["target_os"] = entry.target_os if entry else resolve.target_os(got, adapter or repo.get(got["stack"]))
+    if bad is not None and got["stack"] is not None:  # named, so a bad plan never moves the runner silently
         print(f"mech-review: {bad}", file=sys.stderr)
         print("mech-review: the base branch's stack plan does not read: " + (
             "this PR fixes it (it edits the plan or an adapter file and adds no manifest), so its own plan sets target_os"
@@ -397,7 +432,13 @@ def main(argv):
     parser = build_parser()
     args = parser.parse_args(argv)
     adapter = None
-    if args.adapter is None and args.stack not in ADAPTERS:
+    if args.adapter is None and args.check == "r2":
+        try:  # #17: the repo's adapter file for this stack at the base, in place of a built-in of that name
+            adapter = stack_plan.repo_adapter(args.repo, gitio.resolve(args.repo, args.base), args.stack, args.project_dir)
+        except (gitio.Die, adapter_file.AdapterFileError) as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+    if adapter is None and args.adapter is None and args.stack not in ADAPTERS:
         parser.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
                      + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
     if args.adapter is not None:

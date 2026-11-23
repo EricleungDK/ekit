@@ -19,7 +19,9 @@ from .resolve import SKIP_DIRS
 from .stack import ADAPTERS
 
 PATH = ".ekit/stack-plan.toml"
+ADAPTERS_DIR = ".ekit/adapters"  # the repo's adapter files with no plan (#17): <name>.toml
 STATUSES = ("planned", "current", "retiring")
+RANK = ("current", "retiring", "planned")  # which entry stands for a stack and folder with several
 RETIRING_DAYS = 30  # spec default (#56): a stack retiring this long or longer gets a reminder
 DAY = 86400
 ENTRY_KEYS = ("name", "folder", "adapter", "status", "target-os")
@@ -425,7 +427,59 @@ def entry_for(plan, stack, folder):
     """the plan entry for a settled stack (its adapter's name) in a folder: current first, then retiring, then planned;
     None when no entry is for it."""
     mine = [e for e in (plan.entries if plan else ()) if e.folder == folder and e.adapter and e.adapter.name == stack]
-    return min(mine, key=lambda e: ("current", "retiring", "planned").index(e.status), default=None)
+    return min(mine, key=lambda e: RANK.index(e.status), default=None)
+
+
+def repo_adapters(repo, sha, paths):
+    """{name: Adapter} of the repo's adapter files at sha (#17): `.ekit/adapters/<name>.toml` (paths: the tracked
+    paths there), each named for its stack. adapter_file.AdapterFileError: one that does not read, or whose `name` is
+    not its file name, named."""
+    out = {}
+    for path in sorted(paths):
+        folder, _, file = path.rpartition("/")
+        if folder != ADAPTERS_DIR or not file.endswith(".toml"):
+            continue
+        raw = _blob(repo, sha, path)
+        if raw is None:
+            raise adapter_file.AdapterFileError(f"adapter file {path}: not a file")
+        a = adapter_file.loads(raw, path)
+        if a.name != file[:-len(".toml")]:
+            raise adapter_file.AdapterFileError(f"adapter file {path}: name: `{a.name}`: want `{file[:-len('.toml')]}`, "
+                                                f"its file name")
+        out[a.name] = a
+    return out
+
+
+def repo_adapter(repo, sha, stack, folder="."):
+    """the adapter the repo defines at sha for a stack named on the command line, or None (the built-in of that name
+    applies, if any): the plan's entry for the stack and folder (entry_for) when it names an adapter file, else
+    `.ekit/adapters/<stack>.toml`. A plan entry naming a built-in keeps the built-in; a plan that does not read lends
+    none (its drift check fails D). adapter_file.AdapterFileError: that file does not read, or is named otherwise."""
+    if not stack or not all(ch.isalnum() or ch in "_-" for ch in stack):
+        return None
+    try:
+        plan = at(repo, sha)
+    except PlanError:
+        plan = None
+    entry = entry_for(plan, stack, folder)
+    if entry is not None:
+        return None if entry.adapter_ref in ADAPTERS else entry.adapter
+    path = f"{ADAPTERS_DIR}/{stack}.toml"
+    return repo_adapters(repo, sha, [path]).get(stack) if _blob(repo, sha, path) is not None else None
+
+
+def to_run(plan, paths):
+    """the plan's entries whose checks run (#17): a proven adapter with a manifest it covers in paths (the base and head
+    trees). So a planned stack starts once its manifest is there, and a vanished one stops. One entry per stack and
+    folder (current, then retiring, then planned), in the plan's order."""
+    found = manifests(paths, manifest_names(plan), plan.ignore)
+    keep = {}
+    for e in plan.entries:
+        if any(covers(e, p) for p in found):
+            key = (e.adapter.name, e.folder)
+            if key not in keep or RANK.index(e.status) < RANK.index(keep[key].status):
+                keep[key] = e
+    return list(keep.values())
 
 
 def drift_at(repo, ref, now=None):
