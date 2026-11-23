@@ -310,6 +310,11 @@ class BadAdapterNames(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("argument --stack: invalid choice: 'a.b'", r.stderr)
 
+    def test_a_file_whose_name_only_starts_like_a_stack_name_lists_no_stack(self):
+        sha = self.repo.commit({"pyproject.toml": "", ".ekit/adapters/maven.x.toml": mini()})
+        r, got = resolve(self.repo, sha, sha, "--stack", "gradle")
+        self.assertEqual((r.returncode, got["error"]), (1, "stack gradle: want auto, python, rust or ts"), r.stderr)
+
     def test_auto_names_a_file_whose_name_is_no_stack_name(self):
         for file, why in (("a.b.toml", "file name `a.b.toml`: want <stack>.toml, the stack letters, digits, _ or -"),
                           (".toml", "file name `.toml`: want <stack>.toml, the stack letters, digits, _ or -")):
@@ -348,6 +353,12 @@ class RunSideNotBuilt(unittest.TestCase):
                          {"R1": {"status": "n/a", "note": NOT_BUILT.format("R1")},
                           "R4": {"status": "n/a", "note": NOT_BUILT.format("R4")}})
         self.assertEqual(env["summary"], f"pass {self.head} (0 fail, 0 confirm; ran: none; skipped: R2 R3; n/a: R1 R4)")
+
+    def test_red_prints_text_when_asked(self):
+        r, _ = _kit.run_cli(["red", "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack", "mini",
+                             "--test-paths", "tests/**", "--format", "text"]), None
+        self.assertEqual((r.returncode, r.stdout), (0, f"pass {self.head} (0 fail, 0 confirm; ran: none; skipped: R2 R3; "
+                                                       f"n/a: R1 R4)\n"), r.stderr)
 
     def test_all_runs_r2_through_the_file_and_r1_r4_n_a(self):
         r, env = self.cli("all")
