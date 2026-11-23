@@ -400,6 +400,33 @@ class ParserR2(unittest.TestCase):
         time.sleep(3)
         self.assertFalse(os.path.exists(flag), "the parser's background child outlived its run")
 
+    def command_adapter(self, cmd):
+        path = os.path.join(self.tmp, "cmd.toml")
+        with open(path, "w") as f:
+            f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines() if ln.startswith("command = ")),
+                                          f"command = {json.dumps(cmd)}"))
+        return path
+
+    def test_a_checkout_path_anywhere_inside_a_command_word_is_refused(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        repo = self.repo.path
+        for word in (f"-t{repo}/x", f"--a=b={repo}/x", f"--note=open('{repo}/tools/x.py').read()", f"x:{repo}",
+                     f"--n={self.tmp}/elsewhere/../repo/tools/x.py"):
+            with self.subTest(word=word):
+                cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB, "--record", record, word])
+                _, problem = self.failed(self.command_adapter(cmd))
+                self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
+                self.assertFalse(os.path.exists(record), "the command ran")
+
+    def test_a_sibling_of_the_checkout_is_not_inside_it(self):
+        record = os.path.join(self.tmp, "repo2", "record.jsonl")  # beside the checkout `repo`, not in it
+        os.makedirs(os.path.dirname(record))
+        cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB, "--record", record])
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        r = r2(self.repo, self.base, head, adapter=self.command_adapter(cmd))
+        self.assertEqual([e["check"] for e in json.loads(r.stdout)["entries"]], ["R2"], r.stderr)
+        self.assertTrue(os.path.exists(record), "the command did not run")
+
 class HandWrittenFacts(unittest.TestCase):
     """R2 from facts written by hand (tests/fixtures/parser/canned_facts.py, no ekit import): what the core does with
     a parser's facts, independent of ekit's scanner."""
@@ -508,6 +535,23 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "/usr/bin/env -S facts"'),
              "parser.command: `env` with `-S`: want the program itself (no assignment or option for env)"),
             (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
+            # review round 2: no shell, and no inline program (code in config)
+            (base.replace(cmd, 'command = "sh -c facts"'), "parser.command: `sh` is a shell: want the parser program"),
+            (base.replace(cmd, 'command = "/bin/bash facts.sh"'), "parser.command: `/bin/bash` is a shell"),
+            (base.replace(cmd, 'command = "zsh x"'), "parser.command: `zsh` is a shell"),
+            (base.replace(cmd, 'command = "dash x"'), "parser.command: `dash` is a shell"),
+            (base.replace(cmd, 'command = "fish x"'), "parser.command: `fish` is a shell"),
+            (base.replace(cmd, 'command = "pwsh.exe x"'), "parser.command: `pwsh.exe` is a shell"),
+            (base.replace(cmd, 'command = "CMD /c x"'), "parser.command: `CMD` is a shell"),
+            (base.replace(cmd, 'command = "/usr/bin/env bash x"'), "parser.command: `bash` is a shell"),
+            (base.replace(cmd, 'command = "python3 -c \\"exec(1)\\""'), "parser.command: `-c` runs an inline program"),
+            (base.replace(cmd, 'command = "node -e 1"'), "parser.command: `-e` runs an inline program"),
+            (base.replace(cmd, 'command = "node --eval=1"'), "parser.command: `--eval=1` runs an inline program"),
+            (base.replace(cmd, 'command = "ruby -Command x"'), "parser.command: `-Command` runs an inline program"),
+            (base.replace(cmd, 'command = "python3 -Ic 1"'), "parser.command: `-Ic` runs an inline program"),
+            (base.replace(cmd, 'command = "python3 -cprint(1)"'), "parser.command: `-cprint(1)` runs an inline program"),
+            (base.replace(cmd, 'command = "perl -ne 1"'), "parser.command: `-ne` runs an inline program"),
+            (base.replace(cmd, 'command = "x --exec y"'), "parser.command: `--exec` runs an inline program"),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
             # review round 2: the install step is built by the core from installer, package and version

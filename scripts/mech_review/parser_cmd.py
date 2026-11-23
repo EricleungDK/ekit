@@ -71,9 +71,9 @@ def run(argv, path, text, timeout, roots=()):
     `--flag=<path>` word whose value is) is refused before anything runs, since it would run the PR's code or read its
     config. ParserError names what went wrong."""
     for w in argv:
-        for p in {w, w.partition("=")[2]}:
-            if os.path.isabs(p) and _inside(p, roots):
-                raise ParserError(f"`{w}` is inside the checkout: the parser runs no code or config from the PR")
+        # every `/` in a word starts a path it may name (`-t/x`, `--a=b=/x`, `open('/x')`): none may lead into a root
+        if any(_inside(w[i:], roots) for i, ch in enumerate(w) if ch == "/"):
+            raise ParserError(f"`{w}` is inside the checkout: the parser runs no code or config from the PR")
     with tempfile.TemporaryDirectory(prefix="ekit-parser-") as tmp:
         work = os.path.join(tmp, "cwd")
         os.mkdir(work)
@@ -107,8 +107,10 @@ def run(argv, path, text, timeout, roots=()):
 
 
 def _inside(p, roots):
-    full = os.path.realpath(p)
-    return any(full == r or full.startswith(r.rstrip(os.sep) + os.sep) for r in (os.path.realpath(x) for x in roots))
+    """p, as written or resolved, is a root or under one (a sibling `/repo2` is not under `/repo`)."""
+    seen = {os.path.normpath(p), os.path.realpath(p)}
+    tops = {t for x in roots for t in (os.path.normpath(os.path.abspath(x)), os.path.realpath(x))}
+    return any(f == t or f.startswith(t.rstrip(os.sep) + os.sep) for f in seen for t in tops)
 
 
 def _kill(proc):

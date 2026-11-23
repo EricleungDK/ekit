@@ -317,6 +317,12 @@ def target_os(v, field="target-os"):
 # [parser] (#27): one command in place of the patterns. These tables describe source as patterns: not with [parser]
 PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
 PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
+SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "pwsh", "powershell", "cmd")
+# an option that runs code given inline: a single-dash word of letters that reaches c or e (`-c`, `-e`, `-Ic`, `-ne`,
+# `-cprint(1)`, `-Command`), or `--eval`, `--exec`, `--command` in any spelling. Fail closed: `-Werror` is refused too
+INLINE = re.compile(r"-[A-Za-z]*[cCeE]|--(?:eval|exec|command)", re.I)
+
+
 def _parser(data):
     """the [parser] table, validated: {command: argv, installer, package, version, timeout, skipped_text}."""
     f = "parser"
@@ -335,6 +341,12 @@ def _parser(data):
         prog = next((i for i, w in enumerate(argv[1:], 1) if not (w.startswith("-") or "=" in w)), len(argv))
         if prog > 1:
             _err(f + ".command", f"`env` with `{argv[1]}`: want the program itself (no assignment or option for env)")
+    prog = argv[1] if os.path.basename(argv[0]) == "env" and len(argv) > 1 else argv[0]
+    if re.sub(r"\.exe$", "", os.path.basename(prog).lower()) in SHELLS:
+        _err(f + ".command", f"`{prog}` is a shell: want the parser program itself (a shell runs any code)")
+    for w in argv[1:]:
+        if INLINE.match(w):
+            _err(f + ".command", f"`{w}` runs an inline program: code belongs in the installed parser, not in config")
     installer = _str(d["installer"], f + ".installer")
     if installer not in parser_cmd.INSTALLERS:
         _err(f + ".installer", f"`{installer}`: want " + ", ".join(list(parser_cmd.INSTALLERS)[:-1]) + " or go")
