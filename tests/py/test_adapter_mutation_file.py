@@ -238,6 +238,12 @@ class Runners(unittest.TestCase):
                          "mutation.tool.runners.fast.config_file: `other.json` is not in mutation.config_files: it is "
                          "written only when the project has none of them")
 
+    def test_a_config_file_with_no_config_files_at_all_is_named(self):
+        r = {"fast": {"config_file": "mut.json", "config": "{}"}}
+        self.assertEqual(self.err(with_tool(changed(runners=r), None, **RUN)),
+                         "mutation.tool.runners.fast.config_file: `mut.json` is not in mutation.config_files: it is "
+                         "written only when the project has none of them")
+
     def test_the_config_text_is_a_json_object(self):
         for bad in ("[1]", "{", "{\"a\": NaN}"):
             with self.subTest(bad):
