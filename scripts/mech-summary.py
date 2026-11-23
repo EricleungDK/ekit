@@ -31,6 +31,7 @@ from mech_review import merge, report  # noqa: E402 - imported after the sys.pat
 REPORT = "mech-review report"
 BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
 PLAN_JOB = "mech-review plan (R3 runs?)"
+MATRIX_LABEL = "${{ matrix.label }}"  # the end of a matrix job's name in mech-review.yml
 JOBS = {"r2": ("mech-review-json", "mech-review.json"), "red": ("mech-review-red-json", "mech-review-red.json")}
 # the guard job's drift check (#56, the owner's upload step): merged when the run has it (D only when it holds D); a run
 # without it reads as before, as the report job reads it
@@ -194,7 +195,9 @@ def run_jobs(run, rid, repo):
         view = json.loads(out)
         status, jobs = view["status"], view["jobs"]
         done = sum(1 for j in jobs if j["status"] == "completed")
-        conclusions = {j["name"].rsplit(" / ", 1)[-1]: j["conclusion"] for j in jobs}
+        # a skipped matrix job (#17: the baseline, one leg per stack) is listed under its name template, the label
+        # expression unexpanded; for one stack that label is empty, so the name is the job's own
+        conclusions = {j["name"].rsplit(" / ", 1)[-1].removesuffix(MATRIX_LABEL): j["conclusion"] for j in jobs}
     except (ValueError, KeyError, TypeError) as e:
         raise Stop(f"gh run view {rid}: unreadable output ({type(e).__name__}: {e})")
     if status != "completed":
