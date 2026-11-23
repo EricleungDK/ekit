@@ -171,7 +171,7 @@ def _no_dupes(pairs):
     could not be echoed safely in a message (a lone surrogate, a control character)."""
     seen = set()
     for k, _ in pairs:
-        if _unsafe(k, ""):
+        if _unsafe(k):
             raise _Bad("a key holds a lone surrogate or a control character")
         if k in seen:
             raise _Bad(f"key `{k[:80]}` given twice")
@@ -179,7 +179,7 @@ def _no_dupes(pairs):
     return dict(pairs)
 
 
-def _unsafe(v, allowed):
+def _unsafe(v, allowed=frozenset()):
     """why v cannot reach an entry, an id or a comment as it is, else None: a lone surrogate (it has no UTF-8 form), or
     a control character not in allowed."""
     try:
@@ -258,7 +258,7 @@ def _list(v, field):
     return v
 
 
-def _str(v, field, null=False, allowed=""):
+def _str(v, field, null=False, allowed=frozenset()):
     """a string with something in it besides whitespace; allowed: the control characters it may hold (a multi-line
     assert's text, a parse error's message: tab and line ends)."""
     if v is None and null:
@@ -273,7 +273,7 @@ def _str(v, field, null=False, allowed=""):
     return v
 
 
-MULTILINE = "\t\n\r"
+MULTILINE = frozenset(map(chr, (9, 10, 13)))  # tab, line feed, carriage return
 
 
 def _line(v, field, n_lines, start=1):

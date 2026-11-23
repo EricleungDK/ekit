@@ -187,6 +187,14 @@ class ParserR2(unittest.TestCase):
             f.write(text.replace('command = "mini-facts', 'command = "mini-fact'))
         self.assertIn("not installed by the declared package", self.failed(path)[1])
         self.assertFalse(os.path.exists(record), "a program on PATH ran")
+        program = parser_cmd.program_path(adapter_file.loads(text.encode(), "p.toml").parser, self.home)
+        os.rename(program, program + ".file")
+        os.mkdir(program)  # a directory there (executable bit and all) is no program either
+        with open(path, "w") as f:
+            f.write(text)
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        os.rmdir(program)
+        os.rename(program + ".file", program)
         with open(path, "w") as f:  # a file there that is not executable is no installed program either
             f.write(text)
         os.chmod(parser_cmd.program_path(adapter_file.load(path).parser, self.home), 0o644)
@@ -240,6 +248,11 @@ class ParserR2(unittest.TestCase):
             (dict(good, tests=[dict(test, markers=["only", "only"])]), "tests[0].markers[1]: `only` given twice"),
             (dict(good, tests=[dict(test, name="")]), "tests[0].name: want a non-empty string"),
             (dict(good, tests=[dict(test, name="x" * 70000)]), "tests[0].name: longer than 65536 characters"),
+            # CI round 3: each limit at its edge, so no off-by-one of it passes
+            (dict(good, tests=[dict(test, name="x" * 65537)]), "tests[0].name: longer than 65536 characters"),
+            (dict(good, tests=[dict(test, calls=["f"] * 100001)]), "tests[0].calls: more than 100000 entries"),
+            (dict(good, tests=[dict(test, name="a\x1fb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\x9fb")]), "tests[0].name: want text without control characters"),
             (dict(good, tests=[dict(test, calls=[1])]), "tests[0].calls[0]: want a non-empty string"),
             (dict(good, tests=[dict(test, oops=1)]), "tests[0].oops: unknown key"),
             (dict(good, asserts=[dict(ast, test="ghost")]), "asserts[0].test: `ghost` is not a name in tests"),
@@ -285,10 +298,20 @@ class ParserR2(unittest.TestCase):
                           (b"\xff", "not UTF-8"), (b"[" * 100000, "nested too deep"), (b"", "Expecting value"),
                           # a depth limit of the core's own, whatever the interpreter's recursion limit (CI's python
                           # parses 100000 levels): the facts nest 4 deep
-                          (b"[" * 33, "nested too deep"), (b'{"a": ' * 40 + b"1" + b"}" * 40, "nested too deep")):
+                          (b"[" * 33, "nested too deep"), (b'{"a": ' * 40 + b"1" + b"}" * 40, "nested too deep"),
+                          # only brackets count: other characters outside strings neither open nor close a level
+                          (b"X" * 40, "Expecting value"), (b"[" * 20 + b"X" * 20 + b"[" * 20, "nested too deep")):
             with self.subTest(want=want):
                 _, problem = self.failed(self.emit(raw))
                 self.assertIn("printed invalid JSON: " + want, problem)
+        # 32 levels are within the limit: the schema, not the depth check, refuses them
+        _, problem = self.failed(self.emit(b"[" * 32 + b"]" * 32))
+        self.assertIn("printed facts the schema refuses: facts: want an object", problem)
+        # 65536 characters, a no-break space (U+00A0, past C1) and 100000 entries are within the limits
+        name = "x" * 65535 + "\xa0"
+        doc = dict(good, tests=[dict(test, name=name, calls=["f"] * 100000)])
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([f.name for f in a.test_fns("1\n2\n")], [name])
 
     def test_operands_wrapped_by_a_formatter_are_read_with_whitespace_removed(self):
         doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
@@ -614,6 +637,8 @@ class ParserTable(unittest.TestCase):
         a = self.load(parser_toml(extra="timeout = 5\n"))
         self.assertEqual((a.name, a.parser["command"], a.parser["timeout"], a.parser["version"]),
                          ("mini", ["mini-facts", "--stub=none"], 5, "1.0.0"))
+        self.assertEqual([self.load(parser_toml(extra=extra)).parser["timeout"]
+                          for extra in ("", "timeout = 1\n", "timeout = 600\n")], [30, 1, 600])
         self.assertEqual(self.load(parser_toml().replace('skipped_text = "test `{name}` marked xtest"\n', ""))
                          .ignored_text("t"), "test `t` marked skipped")
 
@@ -666,6 +691,9 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = "facts --x=~/y"'), 'parser.command: `--x=~/y`: want a long option'),
             (base.replace(cmd, 'command = "facts --x=../y"'), 'parser.command: `--x=../y`: want a long option'),
             (base.replace(cmd, 'command = "facts --x=a/../y"'), 'parser.command: `--x=a/../y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a:/.."'), 'parser.command: `--x=a:/..`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a:..:b"'), 'parser.command: `--x=a:..:b`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=.."'), 'parser.command: `--x=..`: want a long option'),
             (base.replace(cmd, 'command = "facts --x=-y"'), 'parser.command: `--x=-y`: want a long option'),
             (base.replace(cmd, 'command = "facts --x="'), 'parser.command: `--x=`: want a long option'),
             (base.replace(cmd, 'command = "facts --x=a;b"'), 'parser.command: `--x=a;b`: want a long option'),

@@ -328,7 +328,9 @@ INTERPRETERS = re.compile(r"(?:python|pypy|perl|php|lua|luajit|ruby|jruby|node|t
                           r"hatch|rye|cargo|go|gem|bundle|rake|mix|elixir|iex|erl|escript|julia|swift|dotnet|mono|ghci|"
                           r"runghc|clojure|clj|sbcl|guile|racket|node-repl|" + "|".join(SHELLS))
 PROGRAM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a bare name: no path, so it resolves in the package's prefix
-OPTION = re.compile(r"--[a-z][a-z0-9-]*(?:=(?![/~-])[A-Za-z0-9._:/@+-]+)?")  # `--name` or `--name=value`
+# `--name` or `--name=value`: a value of plain characters, not starting with / ~ or -, with no `..` segment (between
+# `=`, `/` or `:` and the next of those or the end)
+OPTION = re.compile(r"--[a-z][a-z0-9-]*(?:=(?![/~-])(?!(?:[^/:]*[/:])*\.\.(?:[/:]|$))[A-Za-z0-9._:/@+-]+)?")
 
 
 def _parser(data):
@@ -349,7 +351,7 @@ def _parser(data):
         _err(f + ".command", f"`{argv[0]}` is an interpreter or shell: want the parser program the package installs "
                              f"(it would run code it is given)")
     for w in argv[1:]:
-        if not OPTION.fullmatch(w) or ".." in re.split(r"[/:]", w.partition("=")[2]):
+        if not OPTION.fullmatch(w):
             _err(f + ".command", f"`{w}`: want a long option, `--name` or `--name=value` (name: a-z, 0-9, -; value: "
                                  f"letters, digits and . _ : / @ + -, not starting with / ~ or -, no `..`)")
     installer = _str(d["installer"], f + ".installer")
