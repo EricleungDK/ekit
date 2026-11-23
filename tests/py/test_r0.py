@@ -336,9 +336,9 @@ class EditingRules(unittest.TestCase):
             ({"limits": adapter_with(top='target-os = "macos"\n')},
              "stack in folder `m` target-os linux -> macos in .ekit/adapters/mini.toml"),
             ({"caller": CALLER.replace('"40"', '"20"')},
-             "`max-mutants` 40 -> 20 in .github/workflows/mech.yml (the mech-review inputs)"),
+             "`max-mutants` 40 -> 20 in .github/workflows/mech.yml, job `mech`"),
             ({"caller": CALLER.replace("budget: 10", "budget: 2")},
-             "`mutation-budget` 10 -> 2 in .github/workflows/mech.yml (the mech-review inputs)"),
+             "`mutation-budget` 10 -> 2 in .github/workflows/mech.yml, job `mech`"),
             # a new adapter file: its limits compare with the old one's, through each side's plan
             ({"plan": PLAN.replace(".ekit/adapters/mini.toml", ".ekit/adapters/n.toml"),
               "extra": {".ekit/adapters/n.toml": adapter_with("max-mutants = 5\n")}},
@@ -356,6 +356,101 @@ class EditingRules(unittest.TestCase):
                 self.assertEqual(len(ents), 1, ents)
                 self.assertEqual(ents[0]["class"], "needs-human")
                 self.assertIn(want, ents[0]["problem"])
+
+
+def plan_for(folder="svc", tos=None, adapter=".ekit/adapters/m.toml"):
+    return (f'[[stack]]\nname = "m"\nfolder = "{folder}"\nadapter = "{adapter}"\nstatus = "current"\n'
+            + (f'target-os = "{tos}"\n' if tos else ""))
+
+
+def caller(with_lines, uses="EricleungDK/ekit/.github/workflows/mech-review.yml@v0", job="mech"):
+    return f"  {job}:\n    uses: {uses}\n    with:\n" + "".join(f"      {w}\n" for w in with_lines)
+
+
+def wf(*jobs):
+    return "on: pull_request\njobs:\n" + "".join(jobs)
+
+
+class EditingRulesFailClosed(unittest.TestCase):
+    """C6, review round 2: stacks matched by normalised folder (a missing plan side reads the other side's paths, an
+    unmatched head stack compares with the defaults); caller workflows read per job, and a changed one the reader cannot
+    compare with certainty is one needs-human entry (fail closed). An unchanged workflow never gives one."""
+
+    PLAN, AD, WF = ".ekit/stack-plan.toml", ".ekit/adapters/m.toml", ".github/workflows/m.yml"
+
+    def problems(self, base, head):
+        from scripts.mech_review import r0 as r0_mod
+        repo, _ = tmp_repo(self)
+        mb = repo.commit(base)
+        h = repo.commit(head)
+        return [e["problem"] for e in r0_mod.editing(repo.path, mb, h)]
+
+    def one(self, base, head, want):
+        got = self.problems(base, head)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn(want, got[0])
+
+    def test_a_folders_are_normalised(self):
+        self.one({self.PLAN: plan_for(tos="linux")}, {self.PLAN: plan_for("svc/", tos="windows")},
+                 "stack in folder `svc` target-os linux -> windows")
+        self.one({self.PLAN: plan_for("./svc"), self.AD: adapter_with("max-mutants = 60\n")},
+                 {self.PLAN: plan_for("svc"), self.AD: adapter_with("max-mutants = 5\n")},
+                 "`limits.max-mutants` 60 -> 5 for the stack in folder `svc`")
+
+    def test_b_a_deleted_plan_never_hides_an_adapter_edit(self):
+        self.one({self.PLAN: plan_for(), self.AD: adapter_with("max-mutants = 60\n")},
+                 {self.PLAN: None, self.AD: adapter_with("max-mutants = 5\n")}, "`limits.max-mutants` 60 -> 5")
+
+    def test_c_a_moved_stack_compares_with_the_defaults(self):
+        self.one({self.PLAN: plan_for("svc", tos="linux")}, {self.PLAN: plan_for("svc2", tos="windows")},
+                 "stack in folder `svc2` target-os linux -> windows")
+        self.assertEqual(self.problems({self.PLAN: plan_for("svc", tos="windows")},
+                                       {self.PLAN: plan_for("svc2", tos="linux")}), [])  # back to the default
+
+    def test_workflow_loosening_and_tightening_per_job(self):
+        self.one({self.WF: wf(caller(["max-mutants: 60"]))}, {self.WF: wf(caller(["max-mutants: 5"]))},
+                 "`max-mutants` 60 -> 5 in .github/workflows/m.yml, job `mech`")
+        self.assertEqual(self.problems({self.WF: wf(caller(["max-mutants: 60"]))},
+                                       {self.WF: wf(caller(["max-mutants: 80"]))}), [])
+        self.one({self.WF: wf(caller(['"max-mutants": 60']))}, {self.WF: wf(caller(["'max-mutants': 5"]))},
+                 "`max-mutants` 60 -> 5")  # F: quoted keys
+        self.one({self.WF: wf(caller(["max-mutants: 60"], uses="./.github/workflows/mech-review.yml"))},
+                 {self.WF: wf(caller(["max-mutants: 5"], uses="./.github/workflows/mech-review.yml"))},
+                 "`max-mutants` 60 -> 5")  # G: a local uses
+        self.one({self.WF: wf(caller(["mutation-budget: 10"]))}, {self.WF: wf(caller(["mutation-budget: 0"]))},
+                 "`mutation-budget` 10 -> 0")
+        crlf = lambda t: t.replace("\n", "\r\n")
+        self.one({self.WF: crlf(wf(caller(["max-mutants: 60"])))}, {self.WF: crlf(wf(caller(["max-mutants: 5"])))},
+                 "`max-mutants` 60 -> 5")
+
+    def test_e_each_job_is_its_own_and_other_keys_do_not_count(self):
+        second = caller(["max-mutants: 60"], job="b")
+        self.one({self.WF: wf(caller(["max-mutants: 60"]), second)}, {self.WF: wf(caller(["max-mutants: 5"]), second)},
+                 "job `mech`")
+        self.one({self.WF: wf(caller(["max-mutants: 5"]), second)}, {self.WF: wf(caller(["max-mutants: 5"]),
+                                                                                  caller(["max-mutants: 4"], job="b"))},
+                 "`max-mutants` 60 -> 4 in .github/workflows/m.yml, job `b`")
+        env_job = "  z:\n    runs-on: x\n    env:\n      max-mutants: 99\n"
+        self.assertEqual(self.problems({self.WF: wf(caller(["max-mutants: 60"]), env_job)},
+                                       {self.WF: wf(caller(["max-mutants: 60"]), env_job.replace("99", "1"))}), [])
+
+    def test_fail_closed_when_a_changed_workflow_cannot_be_compared(self):
+        closed = "workflow limits changed and could not be compared: "
+        self.one({self.WF: wf(caller(["max-mutants: 60"]))},  # D: renamed
+                 {self.WF: None, ".github/workflows/ci.yml": wf(caller(["max-mutants: 5"]))}, closed)
+        flow = lambda n: wf(caller([])).replace("    with:\n", f"    with: {{max-mutants: {n}}}\n")
+        self.one({self.WF: flow(60)}, {self.WF: flow(5)}, closed + ".github/workflows/m.yml")  # F: flow style
+        self.one({self.WF: wf(caller(["max-mutants: &mm 60"]))}, {self.WF: wf(caller(["max-mutants: &mm 5"]))}, closed)
+        self.one({self.WF: wf(caller(["max-mutants: 60"]))}, {self.WF: wf(caller(["max-mutants: >-", "  5"]))}, closed)
+        self.one({self.WF: wf(caller(["max-mutants: 60"]))}, {self.WF: wf(caller(["max-mutants: ${{ vars.M }}"]))},
+                 closed)
+        self.one({self.WF: wf(caller(["max-mutants: 60"]))},  # a caller job renamed: no pair
+                 {self.WF: wf(caller(["max-mutants: 60"], job="other"))}, closed)
+
+    def test_h_an_unchanged_or_equal_expression_gives_none(self):
+        expr = wf(caller(["max-mutants: ${{ inputs.max-mutants }}"]))
+        self.assertEqual(self.problems({self.WF: expr}, {"y": "y"}), [])
+        self.assertEqual(self.problems({self.WF: expr}, {self.WF: expr + "# a comment\n"}), [])
 
 
 class RustUnbalanced(unittest.TestCase):

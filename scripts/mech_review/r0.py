@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 from collections import namedtuple
 
-from . import adapter_file, gitio
+from . import adapter_file, gitio, stack_plan
 from .gitio import Review
 from .r2 import r2, r2_file
 from .report import entry
@@ -415,15 +415,16 @@ def static(adapter, fixtures, test_globs=(), adapter_raw=None, where=""):
     return check, entries
 
 
-PLAN = ".ekit/stack-plan.toml"  # stack_plan.PATH (r0 sits below stack_plan in the layering)
+PLAN = stack_plan.PATH
 BUILTIN_STACKS = ("python", "rust", "ts")  # a plan `adapter` that is no file; their target OS is linux
 # a limit: (which way is looser, its default when none is set: #13's proposed defaults). Read only where they are
 # defined: an adapter file's [limits] table, and the caller workflow's mech-review inputs (max-mutants, mutation-budget)
 LIMITS = {"max-mutants": ("lower", 40), "mutation-budget": ("lower", 10), "census": ("lower", 100),
           "assert-density": ("higher", 10)}
 WORKFLOWS = ".github/workflows/"
-USES_MECH = re.compile(r"^\s*(?:-\s+)?uses:\s*['\"]?[^\s'\"]*/mech-review\.ya?ml@", re.M)
-WITH_LIMIT = re.compile(r"^\s+(max-mutants|mutation-budget):[ \t]*(.*?)[ \t]*(?:#.*)?$", re.M)
+WF_LIMITS = ("max-mutants", "mutation-budget")
+KEY_LINE = re.compile(r"""^(\s*)(?:"([^"]*)"|'([^']*)'|([^\s:#'"][^:#]*?))\s*:(?:\s+(.*?))?\s*$""")
+UNSURE = object()  # a limit value the reader cannot read with certainty
 
 
 def _fmt(v):
@@ -477,39 +478,133 @@ def _adapter_side(repo, sha, ref):
     return a.target_os, getattr(a, "limits", {}), ref, None
 
 
-def _by_folder(repo, sha, plan):
-    """{folder: (stack entry, its adapter side)} of a plan; a folder twice keeps its first entry."""
-    out = {}
-    for st in (plan or {}).get("stack") or []:
-        if isinstance(st, dict) and isinstance(st.get("folder"), str) and st["folder"] not in out:
-            out[st["folder"]] = (st, _adapter_side(repo, sha, st.get("adapter")))
-    return out
-
-
-def _workflow_limits(repo, sha):
-    """{workflow path: {input: value text}} of every workflow at sha that calls mech-review.yml."""
+def _norm(folder):
+    """a plan folder as stack_plan reads it (`./svc`, `svc/` and `svc` are one folder); a bad one stays as written."""
     try:
-        paths = gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", sha, "--", WORKFLOWS).split("\0")
-    except gitio.Die:
-        return {}
+        return stack_plan._folder(folder, "folder")
+    except stack_plan.PlanError:
+        return folder
+
+
+def _by_folder(repo, sha, entries):
+    """{folder: (stack entry, its adapter side at sha)} of plan entries, folders normalised; a folder twice keeps its
+    first entry."""
     out = {}
-    for p in paths:
-        if p.endswith((".yml", ".yaml")):
-            text = (_blob(repo, sha, p) or b"").decode("utf-8", "replace")
-            if USES_MECH.search(text):
-                out[p] = {k: v.strip("'\"") for k, v in WITH_LIMIT.findall(text)}
+    for st in entries:
+        if isinstance(st, dict) and isinstance(st.get("folder"), str) and _norm(st["folder"]) not in out:
+            out[_norm(st["folder"])] = (st, _adapter_side(repo, sha, st.get("adapter")))
     return out
 
 
-def _numbers(vals, where, items):
-    """{key: number} of workflow input texts; one that is not a number is an item (a person reads it)."""
+def _value(text):
+    """a limit value's text: an int, or UNSURE (an expression, a block scalar, an anchor or alias, flow style)."""
+    t = text.split(" #", 1)[0].strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "'\"":
+        t = t[1:-1].strip()
+    return int(t) if re.fullmatch(r"-?\d+", t) else UNSURE
+
+
+def caller_limits(text):
+    """{job: {limit: int or UNSURE}} of the jobs in a workflow that `uses:` mech-review.yml, read from each one's
+    block-style `with:` (keys bare or quoted), or None when the file cannot be read with certainty (no block-style
+    `jobs:`, flow style or a merge key in a caller's `with:`). Line based: YAML is not parsed."""
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    try:
+        start = next(i for i, ln in enumerate(lines) if ln.rstrip() == "jobs:")
+    except StopIteration:
+        return None
+    jobs, cur, job_ind = {}, None, None
+    for ln in lines[start + 1:]:
+        m = KEY_LINE.match(ln)
+        ind = len(ln) - len(ln.lstrip())
+        if ind == 0:
+            break
+        if job_ind is None:
+            job_ind = ind
+        if ind == job_ind:
+            if not m or m.group(5):
+                return None
+            cur = m.group(2) or m.group(3) or m.group(4)
+            jobs[cur] = []
+        elif cur is not None:
+            jobs[cur].append(ln)
     out = {}
-    for k, v in vals.items():
+    for job, body in jobs.items():
+        if not any(re.match(r"\s*uses:.*mech-review\.ya?ml", ln) for ln in body):
+            continue
+        out[job], with_ind = {}, None
+        for k, ln in enumerate(body):
+            m = KEY_LINE.match(ln)
+            ind = len(ln) - len(ln.lstrip())
+            if with_ind is not None and ind <= with_ind:
+                with_ind = None
+            if m and (m.group(4) or "") == "with" and with_ind is None:
+                if m.group(5):  # flow style, an anchor or alias: not read
+                    return None
+                with_ind = ind
+                continue
+            if with_ind is None or not m:
+                continue
+            key = m.group(2) if m.group(2) is not None else m.group(3) if m.group(3) is not None else m.group(4)
+            if key == "<<":
+                return None
+            if key in WF_LIMITS:
+                out[job][key] = _value(m.group(5) or "")  # no value on the line: a block scalar or a map
+    return out
+
+
+def _workflow_items(repo, mb, head):
+    """[(workflow path, [item])]: the loosened caller limits of mb..head, fail closed. Only workflow files that differ between the two sides and
+    mention mech-review.yml on either side are read; per job, a limit missing on a side reads its default. A file the
+    reader cannot read with certainty, a file or caller job with no partner on the other side, or a changed value that
+    is not a whole number: one item naming the file (a person compares it)."""
+    def files(sha):
         try:
-            out[k] = float(v) if "." in v else int(v)
-        except ValueError:
-            items.append(f"`{k}: {v}` {where} is not a number: its limit cannot be compared")
+            names = gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", sha, "--", WORKFLOWS).split("\0")
+        except gitio.Die:
+            return {}
+        return {p: (_blob(repo, sha, p) or b"").decode("utf-8", "replace") for p in names if p.endswith((".yml", ".yaml"))}
+
+    b_files, h_files = files(mb), files(head)
+    out = []
+    for p in sorted(set(b_files) | set(h_files)):
+        b, h = b_files.get(p), h_files.get(p)
+        if b == h or "mech-review.yml" not in (b or "") + (h or ""):
+            continue
+        closed = [f"workflow limits changed and could not be compared: {p}"]
+        bl = caller_limits(b) if b is not None else {}
+        hl = caller_limits(h) if h is not None else {}
+        if bl is None or hl is None:
+            out.append((p, closed))
+            continue
+        if b is None or h is None or set(bl) != set(hl):  # no partner: compare nothing, unless no limit is set at all
+            if any(v for side in (bl, hl) for v in side.values()):
+                out.append((p, closed))
+            continue
+        mine = []
+        for job in sorted(bl):
+            bj, hj = bl[job], hl[job]
+            for key in WF_LIMITS:
+                bv, hv = bj.get(key, LIMITS[key][1]), hj.get(key, LIMITS[key][1])
+                if bv is UNSURE or hv is UNSURE:
+                    if (bv is UNSURE) != (hv is UNSURE) or _raw_differs(b, h, key):
+                        mine = closed
+                        break
+                    continue
+                way = LIMITS[key][0]
+                if (hv < bv) if way == "lower" else (hv > bv):
+                    mine.append(f"`{key}` {bv} -> {hv} in {p}, job `{job}`")
+            if mine is closed:
+                break
+        if mine:
+            out.append((p, mine))
     return out
+
+
+def _raw_differs(b, h, key):
+    """True when the lines naming key differ between the two texts (an UNSURE value that changed)."""
+    pick = lambda t: [ln.strip() for ln in t.splitlines() if re.match(rf"""\s*["']?{re.escape(key)}["']?\s*:""", ln)]
+    return pick(b) != pick(h)
 
 
 def editing(repo, mb, head, adapter_paths=()):
@@ -532,20 +627,23 @@ def editing(repo, mb, head, adapter_paths=()):
     else:
         plans = {side: _toml(_blob(repo, sha, PLAN)) for side, sha in (("base", mb), ("head", head))}
         if plans["base"] is not None and plans["head"] is not None:
-            b_ign = [str(x).strip("/") for x in plans["base"].get("ignore") or [] if isinstance(x, str)]
+            b_ign = [_norm(x) for x in plans["base"].get("ignore") or [] if isinstance(x, str)]
             add([f"`ignore` gains `{g}` in {PLAN}" for g in dict.fromkeys(
-                str(x).strip("/") for x in plans["head"].get("ignore") or [] if isinstance(x, str)) if g not in b_ign],
-                PLAN)
-            bf, hf = _by_folder(repo, mb, plans["base"]), _by_folder(repo, head, plans["head"])
-            for folder in sorted(set(bf) & set(hf)):
-                (bst, (b_os, b_lim, _, _)), (hst, (h_os, h_lim, h_path, h_err)) = bf[folder], hf[folder]
-                b_os, h_os = bst.get("target-os") or b_os, hst.get("target-os") or h_os
-                if b_os != h_os:
-                    where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
-                    add([f"stack in folder `{folder}` target-os {b_os} -> {h_os} in {where}"], where)
-                if h_err:
-                    add([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
-                add(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"), h_path or PLAN)
+                _norm(x) for x in plans["head"].get("ignore") or [] if isinstance(x, str)) if g not in b_ign], PLAN)
+        # a side with no plan reads its adapter files at the other side's plan paths: a deleted plan hides nothing
+        entries = {side: [st for st in (plans[side] or plans[other] or {}).get("stack") or [] if isinstance(st, dict)]
+                   for side, other in (("base", "head"), ("head", "base"))}
+        bf, hf = _by_folder(repo, mb, entries["base"]), _by_folder(repo, head, entries["head"])
+        for folder in sorted(hf):  # a head stack with no base match compares with the defaults (linux, LIMITS)
+            bst, (b_os, b_lim, _, _) = bf.get(folder, ({}, ("linux", {}, None, None)))
+            hst, (h_os, h_lim, h_path, h_err) = hf[folder]
+            b_os, h_os = bst.get("target-os") or b_os, hst.get("target-os") or h_os
+            if b_os != h_os:
+                where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
+                add([f"stack in folder `{folder}` target-os {b_os} -> {h_os} in {where}"], where)
+            if h_err:
+                add([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
+            add(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"), h_path or PLAN)
         for p in adapter_paths:
             b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
             if h[3]:
@@ -553,10 +651,8 @@ def editing(repo, mb, head, adapter_paths=()):
             if b[0] != h[0]:
                 add([f"adapter file {p} target-os {b[0]} -> {h[0]}"], p)
             add(_looser(b[1], h[1], "limits.", f"in {p}"), p)
-    bw, hw = _workflow_limits(repo, mb), _workflow_limits(repo, head)
-    for p in sorted(set(bw) & set(hw)):
-        where = f"in {p} (the mech-review inputs)"
-        add(_looser(_numbers(bw[p], where, []), _numbers(hw[p], where, items), "", where), p)
+    for path, wf in _workflow_items(repo, mb, head):
+        add(wf, path)
     if not items:
         return []
     return [entry("R0", files[0] if files else PLAN, 0, "loosened:" + "\0".join(items), "needs-human", "fail",
