@@ -235,7 +235,7 @@ has "$(cat "$MECH_STUB_LOG")" "tests.test_a.test_fresh" "argv: unittest command 
 agent_repo allrun
 out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" all --repo "$R" --base "$B" --head "$H" --stack python --test-paths 'tests/**' --head-branch agent/x); rc=$?
 eq "$rc" 0 "python all: exit 0"
-eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R1 R2 R4; skipped: R3)" "python all: runs R1 R2 R4"
+eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R0 R1 R2 R4; skipped: R3)" "python all: runs R0 R1 R2 R4"
 
 # ---- project-dir and manifests on python: R1/R4 run in the crate dir with crate-relative ids; paths stay repo-root ----
 # pd_repo <name>: pkg/ is the crate (pyproject, calc, tests); base adds test_adds, red adds test_fresh, head fixes calc.

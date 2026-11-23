@@ -181,5 +181,63 @@ class ScenariosAreTestPaths(unittest.TestCase):
                                  [(path, f"assertions outside test fns in `{path}` dropped from 2 to 1")])
 
 
+BUILTIN_PY = os.path.join(_kit.ROOT, "scripts", "mech_review", "r0_fixtures", "python")
+
+
+def broken_python_fixtures(case):
+    """the python fixtures with `skip.py.r0` the seed itself: the skip cheat then gives no entry and R0 fails."""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    for fn in os.listdir(BUILTIN_PY):
+        with open(os.path.join(BUILTIN_PY, "seed.py.r0" if fn == "skip.py.r0" else fn)) as src:
+            text = src.read()
+        with open(os.path.join(tmp.name, fn), "w") as dst:
+            dst.write(text)
+    return tmp.name
+
+
+class AllRunsR0First(unittest.TestCase):
+    """C5, C7: `all` runs R0 first. A failed R0 is exactly one adapter-fix entry and blocks R1, R2 and R4 (n/a, the cause
+    named); a passed R0 leaves them to run as before. Subcommands that do not run R0 hold no R0."""
+
+    def setUp(self):
+        self.repo, _ = tmp_repo(self)
+        self.base = self.repo.commit({"tests/test_a.py": "def test_a():\n    assert 1 == 1\n"})
+        self.head = self.repo.commit({"tests/test_a.py": "def test_b():\n    assert 2 == 2\n"})  # removed test_a
+
+    def run_all(self, *extra):
+        return _kit.run_cli(["all", "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack",
+                             "python", "--test-paths", "tests/**", *extra])
+
+    def test_a_failed_r0_is_one_adapter_fix_entry_and_blocks_the_checks_that_read_tests(self):
+        r = self.run_all("--fixtures", broken_python_fixtures(self))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        env = json.loads(r.stdout)
+        self.assertEqual([(e["check"], e["class"], e["severity"]) for e in env["entries"]],
+                         [("R0", "adapter-fix", "fail")])
+        self.assertEqual(env["checks"]["R0"]["status"], "fail")
+        for c in ("R1", "R2", "R4"):
+            self.assertEqual(env["checks"][c]["status"], "n/a", c)
+            self.assertTrue(env["checks"][c]["note"].startswith("blocked: R0 failed (R0 static half failed for the "
+                                                                "`python` adapter: cheat `skip` gave no"), env["checks"][c])
+        self.assertEqual(env["checks"]["R3"]["status"], "skipped")
+        self.assertEqual(env["summary"], f"fail {self.head} (1 fail, 0 confirm; ran: R0; skipped: R3; n/a: R1 R2 R4)")
+
+    def test_a_passed_r0_runs_the_rest_as_before(self):
+        r = self.run_all()
+        env = json.loads(r.stdout)
+        self.assertEqual(env["checks"]["R0"]["status"], "pass")
+        self.assertEqual(env["checks"]["R2"]["status"], "fail")
+        self.assertEqual([(e["check"], e["problem"]) for e in env["entries"]], [("R2", "test fn `test_a` removed")])
+        self.assertTrue(env["summary"].startswith(f"fail {self.head} (1 fail, 0 confirm; ran: R0 R2"), env["summary"])
+
+    def test_r2_holds_no_r0(self):
+        r = _kit.run_cli(["r2", "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack", "python",
+                          "--test-paths", "tests/**"])
+        env = json.loads(r.stdout)
+        self.assertNotIn("R0", env["checks"])
+        self.assertEqual(env["summary"], f"fail {self.head} (1 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
+
+
 if __name__ == "__main__":
     unittest.main()

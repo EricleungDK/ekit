@@ -45,7 +45,14 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       hit with no MISSED -> partial (tested/total), not blocking. A baseline that fails -> fail; one that times out ->
       n/a (names mutation-budget). Tool not installed -> n/a (env). No production file -> skipped.
       `--shard K/N` runs one of N shards (K is 0-based).
-  `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4 (R3 is not in `all`: run `baseline`, then `mutants`).
+  R0  adapter proof, static half (`r0`, #20; first in `all`): git and adapter only, in a throwaway repo. Each R2 cheat
+      (delete, comment out, rename, skip, expected value, weakened assert, suppression without a reason) must give its
+      entry; the negative controls (rename with the same asserts, reordered asserts, asserts moved into a helper, the
+      empty diff of every fixture) none; an adapter file with a bad ident_chars, no assert shape or an unbalanced
+      bracket pair must fail to load cleanly. A failed case: one `fail` entry of class adapter-fix, and R1 R2 R4 are
+      n/a (blocked). A case with no fixture: R0 unproven (never all pass).
+  `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4, after R0's static half (R3 is not in `all`: run `baseline`,
+  then `mutants`). `.ekit/scenarios/**` is a test path for every stack, beside --test-paths.
   `mutants` runs R3; `baseline` prints the R3 baseline step: {run, count, mutants, timeout, checks, entries}. A check a subcommand does not run
   is skipped with `not run by <subcommand>`.
   Test runner: the stack default (rust: `cargo test`), or --test-cmd. Env MECH_TEST_STUB=<exe>
@@ -68,6 +75,10 @@ resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D
   tracked files, git only). Prints {stack, project_dir, error, target_os}: target_os (linux, macos or windows) is the base
   stack plan's entry's target-os, else the adapter's (--adapter: its target-os, --stack names its stack), else linux; null
   with no stack. Exit 0, 1 when no single project (error names the projects found), 2 usage or git.
+
+r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .] [--test-paths G]`): R0's static half
+  for the built-in stack or the adapter file (the PR's version: the file as checked out), with its fixtures (the
+  built-in's, `<adapter>.r0/` beside an adapter file, or --fixtures). Exit 0 pass or unproven, 1 a fail entry, 2 usage.
 
 drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
   only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
@@ -145,6 +156,7 @@ def build_parser():
                    help="r2 only: an adapter file (TOML) that describes the stack named by --stack, in place of a built-in "
                         "(format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
+    p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text (summary + entries)")
@@ -465,6 +477,8 @@ def main(argv):
             print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
                   file=sys.stderr)
             return 2
+    if args.fixtures is not None and args.check != "all":
+        parser.error("--fixtures applies to all and r0 only (R0's fixture dir)")
     if args.check == "merge":
         return _merge(parser, args)
     if args.check == "plan":
@@ -482,8 +496,9 @@ def main(argv):
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
                          test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
                          mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
-                         project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants)
-    except gitio.Die as e:
+                         project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
+                         fixtures_dir=args.fixtures)
+    except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     if args.format == "json":
