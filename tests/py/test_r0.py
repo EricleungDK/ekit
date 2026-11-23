@@ -318,5 +318,19 @@ class EditingRules(unittest.TestCase):
                 self.assertIn(want, ents[0]["problem"])
 
 
+class RustUnbalanced(unittest.TestCase):
+    """the rust adapter reports a file whose brackets do not balance, as python and ts do: R2 names it, never silent."""
+
+    def test_an_unclosed_brace_is_an_unparseable_entry(self):
+        repo, _ = tmp_repo(self)
+        base = repo.commit({"tests/a.rs": "#[test]\nfn one() {\n    assert_eq!(1, 1);\n}\n"})
+        head = repo.commit({"tests/a.rs": "#[test]\nfn one() {{\n    assert_eq!(1, 1);\n}\n"})
+        r = _kit.run_cli(["r2", "--repo", repo.path, "--base", base, "--head", head, "--stack", "rust",
+                          "--test-paths", "tests/**"])
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual([(e["line"], e["problem"]) for e in json.loads(r.stdout)["entries"]],
+                         [(2, "file does not parse: `{` is never closed (line 2)")])
+
+
 if __name__ == "__main__":
     unittest.main()
