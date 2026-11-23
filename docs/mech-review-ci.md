@@ -479,7 +479,7 @@ R2 compares eq/ne asserts by their operands (a changed expected value is a `conf
 | `lint` | lints the project |
 | `test` | runs the whole test suite. R1 and R4 start every one-test run from it (`--test-cmd` replaces it); with `[run]` it may not be `""` |
 
-R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them. Each command is split as the engine splits it (shell words), so unbalanced quotes are a load error that names the field. A declared-none `install` or `build` is named in the result of every run with `--adapter`: the JSON envelope's `notes` list (`adapter file declares no build command (commands.build = "")`; `[]` when the file names both) and a `note:` line under the summary in text format.
+R1 and R4 use `test` only. `install`, `build` and `lint` are for ci-doctor (the base CI jobs it writes) and the session's default verify commands; the engine never runs them. Each command is split as the engine splits it (shell words), so unbalanced quotes are a load error that names the field. A declared-none `install` or `build` is named in the result of `red` and `all` with `--adapter` (`r2` through a file prints exactly what the built-in prints): the JSON envelope's `notes` list (`adapter file declares no build command (commands.build = "")`; `[]` when the file names both) and a `note:` line under the summary in text format.
 
 `[run]` (optional; without it the file is R2 only): how one named test runs and how its result reads.
 

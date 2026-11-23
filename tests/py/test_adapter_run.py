@@ -374,9 +374,15 @@ class RunUsage(Fixture):
         with open(bare, "w") as f:
             f.write(text.replace('install = "npm ci"', 'install = ""'))
         head = self.commit({"tests/calc.test.ts": TEST})
-        env = json.loads(self.red(head, head, adapter=bare, check="r2").stdout)
+        env = json.loads(self.red(head, head, adapter=bare, check="all").stdout)
         self.assertEqual(env["notes"], ['adapter file declares no install command (commands.install = "")',
                                         'adapter file declares no build command (commands.build = "")'])
+
+    def test_r2_through_the_file_prints_what_the_built_in_prints_with_no_notes(self):
+        head = self.commit({"tests/calc.test.ts": TEST})
+        through_file = self.red(head, head, check="r2")
+        self.assertEqual(through_file.stdout, self.red(head, head, adapter=None, check="r2").stdout)
+        self.assertNotIn("notes", json.loads(through_file.stdout))
 
     def test_an_adapter_that_names_every_command_has_no_notes(self):
         head = self.commit({"tests/calc.mini": MINI_TEST})

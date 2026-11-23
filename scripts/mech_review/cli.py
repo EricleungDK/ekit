@@ -439,8 +439,8 @@ def main(argv):
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
-    if adapter is not None:  # #18: a command the file declares as none is named, so a missing step is never silent
-        env["notes"] = adapter.notes()
+    if adapter is not None and args.check != "r2":  # #18: a command the file declares as none is named (red, all);
+        env["notes"] = adapter.notes()  # r2 through a file prints what the built-in prints
     if args.format == "json":
         print(json.dumps(env, indent=2))
     else:
