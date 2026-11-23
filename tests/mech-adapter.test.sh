@@ -77,4 +77,26 @@ eq "$(jq -r '[.entries[] | [.severity, .class, .line, .problem] | join("|")] | j
 out=$(r2)
 eq "$(jq -r '.entries[0].class' <<<"$out")" agent-fixable "unbalanced, built-in ts: agent-fixable as before"
 
+# repo-defined adapter (#17): a repo with only a pom.xml and .ekit/adapters/maven.toml for it resolves to that adapter
+# (its target-os too), and `r2 --stack maven` judges with the base's file, no --adapter
+R="$T/repo-adapter"; cp -R "$ROOT/tests/fixtures/repo-adapter" "$R"; git -C "$R" init -q -b main
+git -C "$R" add -A; git -C "$R" commit -qm base; B=$(git -C "$R" rev-parse HEAD)
+out=$(python3 -I "$MR" resolve --repo "$R" --base "$B" --head "$B"); rc=$?
+eq "$rc" 0 "repo adapter: resolve exit 0"
+eq "$out" '{"stack": "maven", "project_dir": ".", "error": null, "target_os": "macos"}' "repo adapter: auto finds it by pom.xml"
+python3 - "$R/tests/calc.mini" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+open(p, "w").write(s.replace('  test("subtracts", {\n    assertTrue(sub(3, 1) == 2)\n  })\n', ""))
+PY
+sed -i 's/cases = \["test", "xtest"\]/cases = ["xtest"]/' "$R/.ekit/adapters/maven.toml"  # the PR's own file sees no test
+git -C "$R" commit -qam head; H=$(git -C "$R" rev-parse HEAD)
+out=$(python3 -I "$MR" r2 --repo "$R" --base "$B" --head "$H" --stack maven --test-paths 'tests/**'); rc=$?
+eq "$rc" 1 "repo adapter: r2 --stack maven exit 1"
+eq "$(jq -r '[.entries[] | [.severity, .file, .problem] | join("|")] | join(";")' <<<"$out")" \
+   'fail|tests/calc.mini|test fn `Calc / subtracts` removed' "repo adapter: r2 judges with the base's adapter file"
+out=$(python3 -I "$MR" resolve --repo "$R" --base "$H" --head "$H" --stack gradle); rc=$?
+eq "$rc:$(jq -r .error <<<"$out")" "1:stack gradle: want auto, maven, python, rust or ts" "repo adapter: explicit names list it"
+
 done_tests

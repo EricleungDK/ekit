@@ -11,6 +11,7 @@ plan entry's folder holds it, at any depth, and the entry's adapter lists its na
 
 Every problem with a plan is a PlanError naming the entry and the field, never a silent default: a bad plan never reads
 as clean. tomllib (python 3.11+) is imported only when a plan exists."""
+import os
 import time
 from collections import namedtuple
 
@@ -19,7 +20,9 @@ from .resolve import SKIP_DIRS
 from .stack import ADAPTERS
 
 PATH = ".ekit/stack-plan.toml"
+ADAPTERS_DIR = ".ekit/adapters"  # the repo's adapter files with no plan (#17): <name>.toml
 STATUSES = ("planned", "current", "retiring")
+RANK = ("current", "retiring", "planned")  # which entry stands for a stack and folder with several
 RETIRING_DAYS = 30  # spec default (#56): a stack retiring this long or longer gets a reminder
 DAY = 86400
 ENTRY_KEYS = ("name", "folder", "adapter", "status", "target-os")
@@ -425,7 +428,94 @@ def entry_for(plan, stack, folder):
     """the plan entry for a settled stack (its adapter's name) in a folder: current first, then retiring, then planned;
     None when no entry is for it."""
     mine = [e for e in (plan.entries if plan else ()) if e.folder == folder and e.adapter and e.adapter.name == stack]
-    return min(mine, key=lambda e: ("current", "retiring", "planned").index(e.status), default=None)
+    return min(mine, key=lambda e: RANK.index(e.status), default=None)
+
+
+def valid_name(name):
+    """a stack name, as an adapter file's `name` and a plan entry's take it: letters, digits, _ or -, not empty."""
+    return bool(name) and all(ch.isalnum() or ch in "_-" for ch in name)
+
+
+def repo_adapters(repo, sha, paths):
+    """{name: Adapter} of the repo's adapter files at sha (#17): `.ekit/adapters/<name>.toml` (paths: the tracked
+    paths there), each named for its stack. adapter_file.AdapterFileError: one that does not read, or whose `name` is
+    not its file name, named."""
+    out = {}
+    for path in sorted(paths):
+        folder, _, file = path.rpartition("/")
+        if folder != ADAPTERS_DIR or not file.endswith(".toml"):
+            continue
+        if not valid_name(file[:-len(".toml")]):
+            raise adapter_file.AdapterFileError(f"adapter file {path}: file name `{file}`: want <stack>.toml, the stack "
+                                                f"letters, digits, _ or -")
+        raw = _blob(repo, sha, path)
+        if raw is None:
+            raise adapter_file.AdapterFileError(f"adapter file {path}: not a file")
+        a = adapter_file.loads(raw, path)
+        if a.name != file[:-len(".toml")]:
+            raise adapter_file.AdapterFileError(f"adapter file {path}: name: `{a.name}`: want `{file[:-len('.toml')]}`, "
+                                                f"its file name")
+        out[a.name] = a
+    return out
+
+
+def repo_adapter(repo, sha, stack, folder="."):
+    """repo_adapter_at's adapter, or None."""
+    return repo_adapter_at(repo, sha, stack, folder)[0]
+
+
+def repo_adapter_at(repo, sha, stack, folder="."):
+    """(adapter, its repo path) the repo defines at sha for a stack named on the command line, or (None, None) (the
+    built-in of that name applies, if any): the plan's entry for the stack and folder (entry_for) when it names an
+    adapter file, else `.ekit/adapters/<stack>.toml`. A plan entry naming a built-in keeps the built-in; a plan that
+    does not read lends none (its drift check fails D). adapter_file.AdapterFileError: that file does not read, or is
+    named otherwise."""
+    if not valid_name(stack):
+        return None, None
+    try:
+        plan = at(repo, sha)
+    except PlanError:
+        plan = None
+    entry = entry_for(plan, stack, folder)
+    if entry is not None:
+        if entry.adapter_ref in ADAPTERS:
+            return None, None
+        return entry.adapter, _folder(entry.adapter_ref, "adapter")
+    path = f"{ADAPTERS_DIR}/{stack}.toml"
+    try:
+        gitio.git(repo, "cat-file", "-e", f"{sha}:{path}")
+    except gitio.Die:
+        return None, None  # nothing there: the built-in, if any
+    return repo_adapters(repo, sha, [path])[stack], path  # a file that is not one, or does not read, is named
+
+
+def write_adapter(repo, sha, path, dest):
+    """Write the adapter file at path and its R0 fixtures (`<path without .toml>.r0/`, as r0 finds them beside it) as
+    they are at sha under dest, at the same relative paths."""
+    stem = path[:-len(".toml")] if path.endswith(".toml") else path
+    listed = gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", sha, "--", stem + ".r0/").split("\0")
+    for p in [path, *(p for p in listed if p)]:
+        raw = _blob(repo, sha, p)
+        if raw is None:
+            continue
+        full = os.path.join(dest, *p.split("/"))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as f:
+            f.write(raw)
+
+
+def to_run(plan, paths):
+    """the plan's entries whose checks run (#17): a proven adapter with a manifest it covers in paths (the base and head
+    trees). So a planned stack starts once its manifest is there, and a vanished one stops. One entry per stack and
+    folder (current, then retiring, then planned), in the plan's order."""
+    found = manifests(paths, manifest_names(plan), plan.ignore)
+    keep = {}
+    for e in plan.entries:
+        if any(covers(e, p) for p in found):
+            key = (e.adapter.name, e.folder)
+            if key not in keep or RANK.index(e.status) < RANK.index(keep[key].status):
+                keep[key] = e
+    return list(keep.values())
 
 
 def drift_at(repo, ref, now=None):

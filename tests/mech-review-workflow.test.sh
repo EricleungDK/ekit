@@ -377,6 +377,46 @@ check("guard: the R0 result rides in the guard's artifact beside R2's, uploaded 
 check("report: always names the R0 result, so a missing one fails R0 with a CI entry (#20)",
       "--envelope r0=r2-result/mech-review-r0.json" in text(report), text(report))
 check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
+for step_name in ("R2 guard", "R0 static half (adapter proof)"):  # #17: the plan entry for the stack's own folder
+    gs = text(step(block(jobs, "guard") or [], step_name))
+    check(f"guard: {step_name} gets the stack job's project-dir through env",
+          "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in gs and '--project-dir "$PROJECT_DIR"' in gs, gs)
+
+
+def stack_outputs(result):
+    """run the stack job's output step (its python heredoc) on a resolve result: the outputs it writes."""
+    import json
+    import subprocess
+    import tempfile
+    import textwrap
+    lines = st  # raw lines: the heredoc keeps its indentation
+    start = next((i for i, l in enumerate(lines) if "<<'PY'" in l), None)
+    if start is None:
+        return None
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "PY")
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "stack.json"), "w") as f:
+            json.dump(result, f)
+        out = os.path.join(d, "out")
+        r = subprocess.run([sys.executable, "-I", "-c", textwrap.dedent("\n".join(lines[start + 1:end])), out], cwd=d,
+                           capture_output=True, text=True)
+        if r.returncode:
+            return r.stderr
+        with open(out) as f:
+            return dict(l.split("=", 1) for l in f.read().splitlines())
+
+
+one = stack_outputs({"stack": "python", "project_dir": "api", "error": None, "target_os": "macos"})
+check("stack: one stack gives its outputs as before",
+      one == {"stack": "python", "project-dir": "api", "error": "", "target-os": "macos"}, str(one))
+several = stack_outputs({"stack": None, "project_dir": ".", "error": None, "target_os": None, "stacks": [
+    {"name": "api", "stack": "python", "project_dir": "api", "adapter": "python", "target_os": "linux"},
+    {"name": "web", "stack": "ts", "project_dir": "web", "adapter": "ts", "target_os": "linux"}]})
+check("stack: several stacks from the plan (#17) stop the job, named, never run as no stack",
+      several == {"stack": "", "project-dir": ".", "target-os": "",
+                  "error": "stack auto: the stack plan has several stacks to run (api: python in api, web: ts in web); "
+                           "this workflow runs one stack: set the stack and project-dir inputs to the one to check"},
+      str(several))
 check("stack: inputs.stack and inputs.project-dir are read in the stack job only",
       "inputs.stack" not in text(W[W.index("  guard:"):]) and "inputs.project-dir" not in text(W[W.index("  guard:"):]))
 for job_name in ("guard", "red-first", "plan", "baseline", "mutants", "report"):
