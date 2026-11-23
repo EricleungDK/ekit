@@ -22,12 +22,55 @@ CANNED = os.path.join(_kit.ROOT, "tests", "fixtures", "parser", "canned_facts.py
 MINI_FIXTURES = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.r0")
 
 
-def parser_toml(opts="", extra=""):
-    """the parser-backed twin of mini.toml: same name, manifest and extensions, the stub as its command."""
-    cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB] + shlex.split(opts))
+HOME_VAR = "EKIT_PARSER_HOME"  # where the core looks for installed parsers: the tests point it at a temp dir
+WRAPPER = """#!{python} -I
+# an installed-style parser for the tests: `--stub=<id>` picks the stub script and its options from beside it
+import json, os, runpy, sys
+args = sys.argv[1:]
+sid = next(a.split("=", 1)[1] for a in args if a.startswith("--stub="))
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stubs", sid + ".json")) as f:
+    target, opts = json.load(f)
+sys.argv = [target] + opts + [a for a in args if not a.startswith("--stub=")]
+runpy.run_path(target, run_name="__main__")
+"""
+
+
+def install_stub(opts="", target=STUB, package="mini-facts", home=None, installer="pip"):
+    """put an installed-style program `<package>` where the core looks for `<installer>`'s `<package>` 1.0.0 (under
+    $EKIT_PARSER_HOME), running target with opts: the `--stub=<id>` word to give it."""
+    home = home or os.environ[HOME_VAR]
+    program = parser_cmd.program_path({"installer": installer, "package": package, "version": "1.0.0",
+                                       "command": [package]}, home)
+    words = shlex.split(opts)
+    sid = hashlib.sha1(json.dumps([target, words]).encode()).hexdigest()[:12]
+    os.makedirs(os.path.join(os.path.dirname(program), "stubs"), exist_ok=True)
+    with open(os.path.join(os.path.dirname(program), "stubs", sid + ".json"), "w") as f:
+        json.dump([target, words], f)
+    with open(program, "w") as f:
+        f.write(WRAPPER.format(python=sys.executable))
+    os.chmod(program, 0o755)
+    return f"--stub={sid}"
+
+
+def parser_toml(opts="", extra="", target=STUB, package="mini-facts"):
+    """the parser-backed twin of mini.toml: same name, manifest and extensions, the stub installed as its command (when
+    $EKIT_PARSER_HOME is set: a load-only test needs no program)."""
+    stub = install_stub(opts, target, package) if os.environ.get(HOME_VAR) else "--stub=none"
     return (f'format = 1\nname = "mini"\nmanifests = ["mini.json"]\nextensions = [".mini"]\n\n[parser]\n'
-            f'command = {json.dumps(cmd)}\ninstaller = "pip"\npackage = "mini-facts"\nversion = "1.0.0"\n'
+            f'command = "{package} {stub}"\ninstaller = "pip"\npackage = "{package}"\nversion = "1.0.0"\n'
             f'skipped_text = "test `{{name}}` marked xtest"\n{extra}')
+
+
+def parser_home(case, at=None):
+    """a temp $EKIT_PARSER_HOME for one test (at: that dir instead), restored after it."""
+    if at is None:
+        tmp = tempfile.TemporaryDirectory()
+        case.addCleanup(tmp.cleanup)
+        at = tmp.name
+    old = os.environ.get(HOME_VAR)
+    os.environ[HOME_VAR] = at
+    case.addCleanup(lambda: os.environ.__setitem__(HOME_VAR, old) if old is not None else os.environ.pop(HOME_VAR, None))
+    return at
 
 
 class ParserR2(unittest.TestCase):
@@ -37,6 +80,7 @@ class ParserR2(unittest.TestCase):
         self.tmp = tmp.name
         self.repo = Repo(os.path.join(tmp.name, "repo"))
         self.base = self.repo.commit({"tests/calc.mini": BASE, "src/calc.mini": "fn add(a, b) { a + b }\n"}, "base")
+        self.home = parser_home(self)
 
     def adapter(self, opts="", extra="", name="parser.toml"):
         path = os.path.join(self.tmp, name)
@@ -112,7 +156,7 @@ class ParserR2(unittest.TestCase):
         ents, problem = self.failed(self.emit("{not json"))
         self.assertEqual(ents, [("CI", "adapter-fix", "fail", "tests/calc.mini"),
                                 ("R2", "needs-human", "fail", ".github/ci.yml")])
-        self.assertTrue(problem.startswith(f"the adapter's parser failed: parser `{sys.executable}` on tests/calc.mini: "
+        self.assertTrue(problem.startswith(f"the adapter's parser failed: parser `mini-facts` on tests/calc.mini: "
                                            "printed invalid JSON: "), problem)
 
     def test_a_non_zero_exit_is_one_ci_entry_naming_the_status(self):
@@ -120,14 +164,49 @@ class ParserR2(unittest.TestCase):
         self.assertEqual(ents[0], ("CI", "adapter-fix", "fail", "tests/calc.mini"))
         self.assertTrue(problem.endswith("on tests/calc.mini: exited with status 3"), problem)
 
-    def test_a_command_that_cannot_run_is_one_ci_entry(self):
-        path = self.adapter()
+    def test_a_program_the_declared_package_did_not_install_is_one_ci_entry(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        path = self.adapter("--record " + shlex.quote(record))
         with open(path) as f:
             text = f.read()
+        for old, new in (('package = "mini-facts"', 'package = "other-facts"'), ('version = "1.0.0"', 'version = "1.0.1"'),
+                         ('installer = "pip"', 'installer = "npm"'), ('command = "mini-facts', 'command = "mini-fact')):
+            with self.subTest(new=new):
+                with open(path, "w") as f:
+                    f.write(text.replace(old, new))
+                ents, problem = self.failed(path)
+                self.assertIn("not installed by the declared package", problem)
+                self.assertFalse(os.path.exists(record), "a program from elsewhere ran")
+        on_path = os.path.join(self.tmp, "bin")  # a program of that name on PATH is never the parser
+        os.makedirs(on_path)
+        os.symlink(parser_cmd.program_path(adapter_file.load(path).parser, self.home), os.path.join(on_path, "mini-fact"))
+        os.environ["PATH"] = on_path + os.pathsep + os.environ["PATH"]
+        self.addCleanup(os.environ.__setitem__, "PATH", os.environ["PATH"].split(os.pathsep, 1)[1])
         with open(path, "w") as f:
-            f.write(text.replace(json.dumps(sys.executable)[1:-1], os.path.join(self.tmp, "no-such-parser"), 1))
-        ents, problem = self.failed(path)
-        self.assertIn("cannot run `" + os.path.join(self.tmp, "no-such-parser") + "`", problem)
+            f.write(text.replace('command = "mini-facts', 'command = "mini-fact'))
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        self.assertFalse(os.path.exists(record), "a program on PATH ran")
+        with open(path, "w") as f:  # a file there that is not executable is no installed program either
+            f.write(text)
+        os.chmod(parser_cmd.program_path(adapter_file.load(path).parser, self.home), 0o644)
+        self.assertIn("not installed by the declared package", self.failed(path)[1])
+        self.assertFalse(os.path.exists(record), "a file that is not a program ran")
+
+    def test_an_installed_gem_runs_with_its_gem_dirs_in_the_environment(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        stub = install_stub("--record " + shlex.quote(record), installer="gem")
+        path = os.path.join(self.tmp, "gem.toml")
+        text = parser_toml().replace('installer = "pip"', 'installer = "gem"')
+        line = next(ln for ln in text.splitlines() if ln.startswith("command = "))
+        with open(path, "w") as f:
+            f.write(text.replace(line, f'command = "mini-facts {stub}"'))
+        head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
+        r = r2(self.repo, self.base, head, adapter=path)
+        self.assertEqual([e["check"] for e in json.loads(r.stdout)["entries"]], ["R2"], r.stderr)
+        where = parser_cmd.prefix(adapter_file.load(path).parser, self.home)
+        with open(record) as f:
+            envs = [json.loads(ln)["env"] for ln in f]
+        self.assertEqual({(e["GEM_HOME"], e["GEM_PATH"]) for e in envs}, {(where, where)})
 
     def test_output_past_the_size_limit_is_refused_unread(self):
         _, problem = self.failed(self.emit(b" " * (16 * 1024 * 1024 + 1)))
@@ -347,20 +426,15 @@ class ParserR2(unittest.TestCase):
                 self.assertIn("differs from the base branch's", self.held(*self.r0(path, base, head)))
                 self.assertFalse(os.path.exists(record), "R0 ran a parser whose install changed")
 
-    def test_r0_never_runs_a_command_word_inside_the_reviewed_checkout(self):
+    def test_r0_never_runs_a_program_inside_the_reviewed_checkout(self):
         record = os.path.join(self.tmp, "record.jsonl")
-        inside = os.path.join(self.repo.path, "tools", "facts.py")  # the same on base and head: R0 does not hold it
-        os.makedirs(os.path.dirname(inside))
-        with open(STUB) as f, open(inside, "w") as out:
-            out.write(f.read().replace("os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(",
-                                       repr(_kit.ROOT) + "  # (").replace("os.path.abspath(__file__)))))", ""))
-        path, base, _ = self.in_repo(self.command_adapter(
-            " ".join(shlex.quote(x) for x in [sys.executable, "-I", inside, "--record", record])))
+        parser_home(self, os.path.join(self.repo.path, ".parsers"))  # the install dir in the checkout: the PR's files
+        path, base, _ = self.in_repo(self.adapter("--record " + shlex.quote(record)))
         rc, check, r = self.r0(path, base)
         self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
         self.assertIn("is inside the checkout: the parser runs no code or config from the PR",
                       json.loads(r.stdout)["entries"][0]["problem"])
-        self.assertFalse(os.path.exists(record), "R0 ran a script from the checkout")
+        self.assertFalse(os.path.exists(record), "R0 ran a program from the checkout")
 
     def test_r0_never_runs_a_parser_with_no_base_copy(self):
         record = os.path.join(self.tmp, "record.jsonl")
@@ -395,23 +469,12 @@ class ParserR2(unittest.TestCase):
             runs = sorted((json.loads(ln)["argv"][-1], json.loads(ln)["stdin"] == BASE) for ln in f)
         self.assertEqual(runs, [("tests/calc.mini", True), ("tests/sums.mini", False)])
 
-    def test_a_command_word_inside_the_checkout_is_refused_before_it_runs(self):
+    def test_a_program_installed_inside_the_checkout_is_refused_before_it_runs(self):
         record = os.path.join(self.tmp, "record.jsonl")
-        inside = os.path.join(self.repo.path, "tools", "facts.py")
-        os.makedirs(os.path.dirname(inside))
-        with open(STUB) as f, open(inside, "w") as out:
-            out.write(f.read().replace("os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(",
-                                       repr(_kit.ROOT) + "  # (").replace("os.path.abspath(__file__)))))", ""))
-        for cmd in (f"{sys.executable} -I {inside} --record {record}",
-                    f"{sys.executable} -I {STUB} --record {record} --table={os.path.join(self.repo.path, 'x.toml')}"):
-            with self.subTest(cmd=cmd):
-                path = os.path.join(self.tmp, "inside.toml")
-                with open(path, "w") as f:
-                    f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines()
-                                                       if ln.startswith("command = ")), f"command = {json.dumps(cmd)}"))
-                _, problem = self.failed(path)
-                self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
-                self.assertFalse(os.path.exists(record), "the command ran")
+        parser_home(self, os.path.join(self.repo.path, ".parsers"))
+        _, problem = self.failed(self.adapter("--record " + shlex.quote(record)))
+        self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
+        self.assertFalse(os.path.exists(record), "the command ran")
 
     def test_after_the_first_file_the_parser_fails_on_no_later_file_is_parsed(self):
         record = os.path.join(self.tmp, "record.jsonl")
@@ -432,30 +495,30 @@ class ParserR2(unittest.TestCase):
         time.sleep(3)
         self.assertFalse(os.path.exists(flag), "the parser's background child outlived its run")
 
-    def command_adapter(self, cmd):
+    def command_adapter(self, opts, words):
+        """an adapter whose command is the installed stub (opts) with these words after it."""
         path = os.path.join(self.tmp, "cmd.toml")
+        text = parser_toml(opts)
+        line = next(ln for ln in text.splitlines() if ln.startswith("command = "))
         with open(path, "w") as f:
-            f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines() if ln.startswith("command = ")),
-                                          f"command = {json.dumps(cmd)}"))
+            f.write(text.replace(line, line[:-1] + f' {words}"'))
         return path
 
-    def test_a_checkout_path_anywhere_inside_a_command_word_is_refused(self):
+    def test_a_checkout_path_inside_an_option_value_is_refused_before_it_runs(self):
         record = os.path.join(self.tmp, "record.jsonl")
         repo = self.repo.path
-        for word in (f"-t{repo}/x", f"--a=b={repo}/x", f"--note=open('{repo}/tools/x.py').read()", f"x:{repo}",
-                     f"--n={self.tmp}/elsewhere/../repo/tools/x.py"):
+        for word in (f"--note=x:{repo}/tools/x.py", f"--a=b:{repo}", f"--n=x@{repo}"):
             with self.subTest(word=word):
-                cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB, "--record", record, word])
-                _, problem = self.failed(self.command_adapter(cmd))
+                _, problem = self.failed(self.command_adapter("--record " + shlex.quote(record), word))
                 self.assertIn("is inside the checkout: the parser runs no code or config from the PR", problem)
                 self.assertFalse(os.path.exists(record), "the command ran")
 
     def test_a_sibling_of_the_checkout_is_not_inside_it(self):
-        record = os.path.join(self.tmp, "repo2", "record.jsonl")  # beside the checkout `repo`, not in it
-        os.makedirs(os.path.dirname(record))
-        cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", STUB, "--record", record])
+        record = os.path.join(self.tmp, "record.jsonl")
         head = self.head({"tests/calc.mini": BASE.replace("assertEquals(3,", "assertEquals(4,")})
-        r = r2(self.repo, self.base, head, adapter=self.command_adapter(cmd))
+        sibling = self.repo.path + "2/x"  # beside the checkout `repo`, not in it
+        r = r2(self.repo, self.base, head, adapter=self.command_adapter("--record " + shlex.quote(record),
+                                                                         f"--note=x:{sibling}"))
         self.assertEqual([e["check"] for e in json.loads(r.stdout)["entries"]], ["R2"], r.stderr)
         self.assertTrue(os.path.exists(record), "the command did not run")
 
@@ -485,17 +548,16 @@ class HandWrittenFacts(unittest.TestCase):
         self.dir = os.path.join(tmp.name, "facts")
         os.mkdir(self.dir)
         self.repo = Repo(os.path.join(tmp.name, "repo"))
+        parser_home(self)
         adds = [self.assert_fact(2, "adds", "other", "check(add(1, 2) == 3)"),
                 self.assert_fact(3, "adds", "eq", "same(add(2, 2), 4)", "add(2, 2)", "4")]
         subs = [self.assert_fact(6, "subs", "eq", "same(sub(3, 1), 2)", "sub(3, 1)", "2")]
         self.can(self.BASE, self.facts([self.fn_fact("adds", 1, 4), self.fn_fact("subs", 5, 7)], adds + subs))
         self.base = self.repo.commit({"tests/calc.mini": self.BASE}, "base")
-        cmd = " ".join(shlex.quote(x) for x in [sys.executable, "-I", CANNED, self.dir])
         self.adapter = os.path.join(self.tmp, "canned.toml")
         with open(self.adapter, "w") as f:
-            f.write(parser_toml().replace(next(ln for ln in parser_toml().splitlines() if ln.startswith("command = ")),
-                                          f"command = {json.dumps(cmd)}").replace('skipped_text = "test `{name}` marked '
-                                                                                  'xtest"\n', ""))
+            f.write(parser_toml(shlex.quote(self.dir), target=CANNED, package="canned-facts")
+                    .replace('skipped_text = "test `{name}` marked xtest"\n', ""))
         self.adds, self.subs = adds, subs
 
     def can(self, text, facts):
@@ -544,7 +606,7 @@ class ParserTable(unittest.TestCase):
     def test_a_parser_table_loads_with_its_command_split_into_argv(self):
         a = self.load(parser_toml(extra="timeout = 5\n"))
         self.assertEqual((a.name, a.parser["command"], a.parser["timeout"], a.parser["version"]),
-                         ("mini", [sys.executable, "-I", STUB], 5, "1.0.0"))
+                         ("mini", ["mini-facts", "--stub=none"], 5, "1.0.0"))
         self.assertEqual(self.load(parser_toml().replace('skipped_text = "test `{name}` marked xtest"\n', ""))
                          .ignored_text("t"), "test `t` marked skipped")
 
@@ -560,30 +622,36 @@ class ParserTable(unittest.TestCase):
             (base.replace(cmd, 'command = ""'), "parser.command: want a non-empty string"),
             (base.replace(cmd, 'command = ["facts"]'), "parser.command: want a non-empty string"),
             (base.replace(cmd, 'command = "facts \'unbalanced"'), "parser.command: `facts 'unbalanced`: No closing quotation"),
-            (base.replace(cmd, 'command = "tools/facts --json"'), "parser.command: `tools/facts`: want a program on PATH"),
-            (base.replace(cmd, 'command = "./facts"'), "parser.command: `./facts`: want a program on PATH"),
-            (base.replace(cmd, 'command = "env PATH=/w/bin facts"'),
-             "parser.command: `env` with `PATH=/w/bin`: want the program itself (no assignment or option for env)"),
-            (base.replace(cmd, 'command = "/usr/bin/env -S facts"'),
-             "parser.command: `env` with `-S`: want the program itself (no assignment or option for env)"),
-            (base.replace(cmd, 'command = "facts\\u0000x"'), "parser.command: a NUL character cannot be in a command"),
-            # review round 2: no shell, and no inline program (code in config)
-            (base.replace(cmd, 'command = "sh -c facts"'), "parser.command: `sh` is a shell: want the parser program"),
-            (base.replace(cmd, 'command = "/bin/bash facts.sh"'), "parser.command: `/bin/bash` is a shell"),
-            (base.replace(cmd, 'command = "zsh x"'), "parser.command: `zsh` is a shell"),
-            (base.replace(cmd, 'command = "dash x"'), "parser.command: `dash` is a shell"),
-            (base.replace(cmd, 'command = "fish x"'), "parser.command: `fish` is a shell"),
-            (base.replace(cmd, 'command = "pwsh.exe x"'), "parser.command: `pwsh.exe` is a shell"),
-            (base.replace(cmd, 'command = "CMD /c x"'), "parser.command: `CMD` is a shell"),
-            (base.replace(cmd, 'command = "/usr/bin/env bash x"'), "parser.command: `bash` is a shell"),
-            (base.replace(cmd, 'command = "python3 -c \\"exec(1)\\""'), "parser.command: `-c` runs an inline program"),
-            (base.replace(cmd, 'command = "node -e 1"'), "parser.command: `-e` runs an inline program"),
-            (base.replace(cmd, 'command = "node --eval=1"'), "parser.command: `--eval=1` runs an inline program"),
-            (base.replace(cmd, 'command = "ruby -Command x"'), "parser.command: `-Command` runs an inline program"),
-            (base.replace(cmd, 'command = "python3 -Ic 1"'), "parser.command: `-Ic` runs an inline program"),
-            (base.replace(cmd, 'command = "python3 -cprint(1)"'), "parser.command: `-cprint(1)` runs an inline program"),
-            (base.replace(cmd, 'command = "perl -ne 1"'), "parser.command: `-ne` runs an inline program"),
-            (base.replace(cmd, 'command = "x --exec y"'), "parser.command: `--exec` runs an inline program"),
+            # owner's allowlist: one bare program name the package installs, then long options only
+            (base.replace(cmd, 'command = "python3 -I -"'), 'parser.command: `python3` is an interpreter or shell: want the parser program the package installs'),
+            (base.replace(cmd, 'command = "python3.12 x"'), 'parser.command: `python3.12` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "node --print=1"'), 'parser.command: `node` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "ruby --x"'), 'parser.command: `ruby` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "perl"'), 'parser.command: `perl` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "Rscript"'), 'parser.command: `Rscript` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "java"'), 'parser.command: `java` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "deno"'), 'parser.command: `deno` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "bash"'), 'parser.command: `bash` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "pwsh.exe"'), 'parser.command: `pwsh.exe` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "env facts"'), 'parser.command: `env` is an interpreter or shell'),
+            (base.replace(cmd, 'command = "/abs/tool"'), 'parser.command: `/abs/tool`: want a bare program name'),
+            (base.replace(cmd, 'command = "./tool"'), 'parser.command: `./tool`: want a bare program name'),
+            (base.replace(cmd, "command = \"'tools\\\\x'\""), "parser.command: `tools\\x`: want a bare program name"),
+            (base.replace(cmd, 'command = "-tool"'), 'parser.command: `-tool`: want a bare program name'),
+            (base.replace(cmd, 'command = "facts -"'), 'parser.command: `-`: want a long option'),
+            (base.replace(cmd, 'command = "facts -I"'), 'parser.command: `-I`: want a long option'),
+            (base.replace(cmd, 'command = "facts x.py"'), 'parser.command: `x.py`: want a long option'),
+            (base.replace(cmd, 'command = "facts --X=1"'), 'parser.command: `--X=1`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=/abs"'), 'parser.command: `--x=/abs`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=~/y"'), 'parser.command: `--x=~/y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=../y"'), 'parser.command: `--x=../y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a/../y"'), 'parser.command: `--x=a/../y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=-y"'), 'parser.command: `--x=-y`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x="'), 'parser.command: `--x=`: want a long option'),
+            (base.replace(cmd, 'command = "facts --x=a;b"'), 'parser.command: `--x=a;b`: want a long option'),
+            (base.replace(cmd, "command = 'facts \"--x=a b\"'"), "parser.command: `--x=a b`: want a long option"),
+            (base.replace(cmd, 'command = "facts ---x"'), 'parser.command: `---x`: want a long option'),
+            (base.replace(cmd, 'command = "facts --"'), 'parser.command: `--`: want a long option'),
             (base.replace('version = "1.0.0"', 'version = "latest"'), "parser.version: `latest`: want one pinned version"),
             (base.replace('version = "1.0.0"', 'version = ">=1.0"'), "parser.version: `>=1.0`: want one pinned version"),
             # review round 2: the install step is built by the core from installer, package and version
@@ -630,20 +698,49 @@ class ParserTable(unittest.TestCase):
         for text, want in cases:
             with self.subTest(want=want):
                 self.assertIn(want, self.error(text))
-        self.assertEqual(self.load(base.replace(cmd, 'command = "/usr/bin/env facts --x=1"')).parser["command"],
-                         ["/usr/bin/env", "facts", "--x=1"])
-        for (installer, package, version), argv in (
-                (("pip", "mini-facts", "1.0.0"), ["python3", "-m", "pip", "install", "--no-deps", "mini-facts==1.0.0"]),
-                (("pip", "x", "2.1rc1.post3"), ["python3", "-m", "pip", "install", "--no-deps", "x==2.1rc1.post3"]),
+        for ok, argv in (('command = "facts"', ["facts"]), ('command = "rb-test.facts_2"', ["rb-test.facts_2"]),
+                         ('command = "facts --json --lang=ruby --cfg=a/b.c:d@e+f-g --x2-y"',
+                          ["facts", "--json", "--lang=ruby", "--cfg=a/b.c:d@e+f-g", "--x2-y"])):
+            with self.subTest(ok=ok):
+                self.assertEqual(self.load(base.replace(cmd, ok)).parser["command"], argv)
+        h = "/h"
+        for (installer, package, version), steps, program in (
+                (("pip", "mini-facts", "1.0.0"),
+                 [["python3", "-m", "venv", "/h/pip/mini-facts/1.0.0"],
+                  ["/h/pip/mini-facts/1.0.0/bin/python", "-m", "pip", "install", "mini-facts==1.0.0"]],
+                 "/h/pip/mini-facts/1.0.0/bin/facts"),
+                (("pip", "x", "2.1rc1.post3"),
+                 [["python3", "-m", "venv", "/h/pip/x/2.1rc1.post3"],
+                  ["/h/pip/x/2.1rc1.post3/bin/python", "-m", "pip", "install", "x==2.1rc1.post3"]],
+                 "/h/pip/x/2.1rc1.post3/bin/facts"),
                 (("npm", "@ekit/facts", "1.0.0-beta.1"),
-                 ["npm", "install", "--no-save", "--prefix", "/opt/p", "@ekit/facts@1.0.0-beta.1"]),
-                (("cargo", "rs-facts", "0.3.1"), ["cargo", "install", "rs-facts", "--version", "0.3.1", "--locked"]),
-                (("gem", "rb_test-facts", "1.4.2.pre"), ["gem", "install", "rb_test-facts", "-v", "1.4.2.pre"]),
-                (("go", "example.com/x/cmd/facts", "1.0.0"), ["go", "install", "example.com/x/cmd/facts@v1.0.0"]),
-                (("go", "example.com/x/cmd/facts", "v1.0.0"), ["go", "install", "example.com/x/cmd/facts@v1.0.0"])):
+                 [["npm", "install", "--no-save", "--prefix", "/h/npm/@ekit/facts/1.0.0-beta.1", "@ekit/facts@1.0.0-beta.1"]],
+                 "/h/npm/@ekit/facts/1.0.0-beta.1/node_modules/.bin/facts"),
+                (("cargo", "rs-facts", "0.3.1"),
+                 [["cargo", "install", "rs-facts", "--version", "0.3.1", "--locked", "--root", "/h/cargo/rs-facts/0.3.1"]],
+                 "/h/cargo/rs-facts/0.3.1/bin/facts"),
+                (("gem", "rb_test-facts", "1.4.2.pre"),
+                 [["gem", "install", "rb_test-facts", "-v", "1.4.2.pre", "--install-dir", "/h/gem/rb_test-facts/1.4.2.pre",
+                   "--bindir", "/h/gem/rb_test-facts/1.4.2.pre/bin"]],
+                 "/h/gem/rb_test-facts/1.4.2.pre/bin/facts"),
+                (("go", "example.com/x/cmd/facts", "1.0.0"),
+                 [["env", "GOBIN=/h/go/example.com/x/cmd/facts/1.0.0/bin", "go", "install", "example.com/x/cmd/facts@v1.0.0"]],
+                 "/h/go/example.com/x/cmd/facts/1.0.0/bin/facts"),
+                (("go", "example.com/x/cmd/facts", "v1.0.0"),
+                 [["env", "GOBIN=/h/go/example.com/x/cmd/facts/v1.0.0/bin", "go", "install", "example.com/x/cmd/facts@v1.0.0"]],
+                 "/h/go/example.com/x/cmd/facts/v1.0.0/bin/facts")):
             with self.subTest(installer=installer, package=package):
-                parser = self.load(inst(installer, package, version)).parser
-                self.assertEqual(parser_cmd.install_argv(parser, "/opt/p"), argv)
+                parser = self.load(inst(installer, package, version).replace(cmd, 'command = "facts --json"')).parser
+                self.assertEqual((parser_cmd.install_steps(parser, h), parser_cmd.program_path(parser, h)),
+                                 (steps, program))
+        gem = self.load(inst("gem", "rb", "1.0.0")).parser
+        self.assertEqual(parser_cmd.run_env(gem, h), {"GEM_HOME": "/h/gem/rb/1.0.0", "GEM_PATH": "/h/gem/rb/1.0.0"})
+        self.assertEqual(parser_cmd.run_env(self.load(base).parser, h), {})
+        self.assertEqual(parser_cmd.prefix(gem, "/h/"), "/h/gem/rb/1.0.0")
+        os.environ.pop(HOME_VAR, None)
+        self.assertEqual(parser_cmd.home(), os.path.join(os.path.expanduser("~"), ".cache", "ekit", "parsers"))
+        parser_home(self, "/elsewhere")
+        self.assertEqual(parser_cmd.home(), "/elsewhere")
         self.assertEqual(self.load(base + '\n[mutation]\nconfig_files = ["m.toml"]\nconfig_name = "m"\n')
                          .mutation_config("x/m.toml", None), "m")
 

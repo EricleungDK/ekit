@@ -311,7 +311,9 @@ class ParserAdapter(DataAdapter):
             cache.move_to_end(key)
             return cache[key]
         try:
-            got = parser_cmd.run(self.parser["command"], self.path, text, self.parser["timeout"], self.roots)
+            at = parser_cmd.home()
+            got = parser_cmd.run(parser_cmd.installed(self.parser, at), self.path, text, self.parser["timeout"],
+                                 self.roots, parser_cmd.run_env(self.parser, at))
         except parser_cmd.ParserError as e:
             raise parser_cmd.ParserError(f"parser `{self.parser['command'][0]}` on {self.path}: {e}") from None
         cache[key] = got

@@ -37,48 +37,85 @@ TOP = ("format", "parse_error", "tests", "asserts", "suppressions", "mutation_sk
 
 
 SEMVER = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
-# installer: (package name, exact version, the install argv from package, version and an install dir). A closed set:
-# the core builds the install step (#27), so an adapter file names a package and a version, never a command. A version
-# is one release, never a range; each name pattern leaves out URLs, spaces, options and version syntax.
+# installer: (package name, exact version, install steps (package, version, prefix), the dir its programs land in under
+# the prefix, the environment they run with). A closed set: the core builds the install step (#27) into a prefix of
+# its own per installer, package and version, and runs the parser program from there only, never from PATH. A version
+# is one release, never a range (the package's own dependencies resolve at install time); each name pattern leaves out
+# URLs, spaces, options and version syntax.
 INSTALLERS = {
     "pip": (r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?",
             r"\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?",
-            lambda p, v, d: ["python3", "-m", "pip", "install", "--no-deps", f"{p}=={v}"]),
+            lambda p, v, d: [["python3", "-m", "venv", d], [f"{d}/bin/python", "-m", "pip", "install", f"{p}=={v}"]],
+            "bin", lambda d: {}),
     "npm": (r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*", SEMVER,
-            lambda p, v, d: ["npm", "install", "--no-save", "--prefix", d, f"{p}@{v}"]),
+            lambda p, v, d: [["npm", "install", "--no-save", "--prefix", d, f"{p}@{v}"]],
+            "node_modules/.bin", lambda d: {}),
     "cargo": (r"[A-Za-z][A-Za-z0-9_-]{0,63}", SEMVER,
-              lambda p, v, d: ["cargo", "install", p, "--version", v, "--locked"]),
+              lambda p, v, d: [["cargo", "install", p, "--version", v, "--locked", "--root", d]],
+              "bin", lambda d: {}),
     "gem": (r"[A-Za-z0-9][A-Za-z0-9._-]*", r"\d+(?:\.[0-9A-Za-z]+)*",
-            lambda p, v, d: ["gem", "install", p, "-v", v]),
+            lambda p, v, d: [["gem", "install", p, "-v", v, "--install-dir", d, "--bindir", f"{d}/bin"]],
+            "bin", lambda d: {"GEM_HOME": d, "GEM_PATH": d}),
     "go": (r"[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+(?:/(?!\.\.?(?:/|$))[A-Za-z0-9._~-]+)+", "v?" + SEMVER,
-           lambda p, v, d: ["go", "install", f"{p}@v{v.removeprefix('v')}"]),
+           lambda p, v, d: [["env", f"GOBIN={d}/bin", "go", "install", f"{p}@v{v.removeprefix('v')}"]],
+           "bin", lambda d: {}),
 }
+HOME_VAR = "EKIT_PARSER_HOME"  # the dir the prefixes sit under: set by the workflow (#17) and the tests, never a PR
 
 
-def install_argv(parser, prefix):
-    """the argv that installs the parser at its pinned version (#17's workflow step runs it): parser is the [parser]
-    table as adapter_file validated it; prefix: the install dir (npm installs there; the others use their own)."""
-    return INSTALLERS[parser["installer"]][2](parser["package"], parser["version"], prefix)
+def home():
+    """the dir every parser prefix sits under: $EKIT_PARSER_HOME, else ~/.cache/ekit/parsers."""
+    return os.environ.get(HOME_VAR) or os.path.join(os.path.expanduser("~"), ".cache", "ekit", "parsers")
+
+
+def prefix(parser, at):
+    """the install dir of the parser's package at its version, under at (home())."""
+    return "/".join([at.rstrip("/"), parser["installer"], parser["package"], parser["version"]])
+
+
+def install_steps(parser, at):
+    """the argvs that install the parser at its pinned version into its prefix under at (#17's workflow step runs them
+    in order): parser is the [parser] table as adapter_file validated it."""
+    return INSTALLERS[parser["installer"]][2](parser["package"], parser["version"], prefix(parser, at))
+
+
+def program_path(parser, at):
+    """where the parser program (the command's first word) is after install_steps: the only place it is run from."""
+    return "/".join([prefix(parser, at), INSTALLERS[parser["installer"]][3], parser["command"][0]])
+
+
+def run_env(parser, at):
+    """the variables the installed program needs beside the minimal environment (gem: where its gems are)."""
+    return INSTALLERS[parser["installer"]][4](prefix(parser, at))
+
+
+def installed(parser, at):
+    """the parser's argv with its program resolved in its prefix; ParserError when the package did not install it."""
+    program = program_path(parser, at)
+    if not (os.path.isfile(program) and os.access(program, os.X_OK)):
+        raise ParserError(f"not installed by the declared package ({parser['installer']} {parser['package']} "
+                          f"{parser['version']}: no program at {program})")
+    return [program] + list(parser["command"][1:])
 
 
 class ParserError(Exception):
     """the parser command failed on one file: it cannot run, exited non-zero, timed out, or printed invalid facts."""
 
 
-def run(argv, path, text, timeout, roots=()):
+def run(argv, path, text, timeout, roots=(), extra_env=None):
     """the facts (validated, see the module docstring) the command argv prints for the file at path whose text is text.
     roots: the checkout dirs (the reviewed repo, the engine's worktrees): a word of argv that is a path inside one (or a
     `--flag=<path>` word whose value is) is refused before anything runs, since it would run the PR's code or read its
     config. ParserError names what went wrong."""
     for w in argv:
-        # every `/` in a word starts a path it may name (`-t/x`, `--a=b=/x`, `open('/x')`): none may lead into a root
+        # every `/` in a word starts a path it may name (the program, `--a=b:/x`): none may lead into a root
         if any(_inside(w[i:], roots) for i, ch in enumerate(w) if ch == "/"):
             raise ParserError(f"`{w}` is inside the checkout: the parser runs no code or config from the PR")
     with tempfile.TemporaryDirectory(prefix="ekit-parser-") as tmp:
         work = os.path.join(tmp, "cwd")
         os.mkdir(work)
         env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": work, "TMPDIR": work, "LANG": "C.UTF-8",
-               "LC_ALL": "C.UTF-8"}
+               "LC_ALL": "C.UTF-8", **(extra_env or {})}
         with open(os.path.join(tmp, "stdin"), "w+b") as fin, open(os.path.join(tmp, "stdout"), "w+b") as fout, \
                 open(os.path.join(tmp, "stderr"), "w+b") as ferr:
             fin.write(text.encode("utf-8", "surrogateescape"))

@@ -318,9 +318,13 @@ def target_os(v, field="target-os"):
 PATTERN_TABLES = ("lexer", "tests", "functions", "asserts", "suppressions")
 PARSER_TIMEOUT = (1, 600, 30)  # seconds per file: min, max, default
 SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "pwsh", "powershell", "cmd")
-# an option that runs code given inline: a single-dash word of letters that reaches c or e (`-c`, `-e`, `-Ic`, `-ne`,
-# `-cprint(1)`, `-Command`), or `--eval`, `--exec`, `--command` in any spelling. Fail closed: `-Werror` is refused too
-INLINE = re.compile(r"-[A-Za-z]*[cCeE]|--(?:eval|exec|command)", re.I)
+# programs that run code they are given (a script, stdin, an option): never the parser, which is a program the package
+# installs. With SHELLS; any case, `.exe` or not
+INTERPRETERS = re.compile(r"(?:python|pypy|perl|php|lua|luajit|ruby|jruby|node|tclsh|wish)[0-9.]*|nodejs|deno|bun|irb|"
+                          r"rscript|r|java|jshell|kotlin|scala|groovy|osascript|env|busybox|[gmn]?awk|sed|xargs|nohup|"
+                          r"timeout|nice|time|sudo|doas|su|exec|" + "|".join(SHELLS))
+PROGRAM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a bare name: no path, so it resolves in the package's prefix
+OPTION = re.compile(r"--[a-z][a-z0-9-]*(?:=(?![/~-])[A-Za-z0-9._:/@+-]+)?")  # `--name` or `--name=value`
 
 
 def _parser(data):
@@ -334,23 +338,20 @@ def _parser(data):
     if "skip_comments" in data.get("mutation", {}):
         _err("mutation.skip_comments", "not with [parser]: the parser command gives the mutation skips")
     argv = _argv(d["command"], f + ".command")
-    if "/" in argv[0] and not argv[0].startswith("/"):
-        _err(f + ".command", f"`{argv[0]}`: want a program on PATH or an absolute path: a relative path would run a "
-                             f"file from the checkout")
-    if os.path.basename(argv[0]) == "env":  # env's own words could set PATH or split a string into a new command
-        prog = next((i for i, w in enumerate(argv[1:], 1) if not (w.startswith("-") or "=" in w)), len(argv))
-        if prog > 1:
-            _err(f + ".command", f"`env` with `{argv[1]}`: want the program itself (no assignment or option for env)")
-    prog = argv[1] if os.path.basename(argv[0]) == "env" and len(argv) > 1 else argv[0]
-    if re.sub(r"\.exe$", "", os.path.basename(prog).lower()) in SHELLS:
-        _err(f + ".command", f"`{prog}` is a shell: want the parser program itself (a shell runs any code)")
+    if not PROGRAM.fullmatch(argv[0]):
+        _err(f + ".command", f"`{argv[0]}`: want a bare program name the package installs (no path), such as "
+                             f"`rb-test-facts`")
+    if INTERPRETERS.fullmatch(re.sub(r"\.exe$", "", argv[0].lower())):
+        _err(f + ".command", f"`{argv[0]}` is an interpreter or shell: want the parser program the package installs "
+                             f"(it would run code it is given)")
     for w in argv[1:]:
-        if INLINE.match(w):
-            _err(f + ".command", f"`{w}` runs an inline program: code belongs in the installed parser, not in config")
+        if not OPTION.fullmatch(w) or ".." in re.split(r"[/:]", w.partition("=")[2]):
+            _err(f + ".command", f"`{w}`: want a long option, `--name` or `--name=value` (name: a-z, 0-9, -; value: "
+                                 f"letters, digits and . _ : / @ + -, not starting with / ~ or -, no `..`)")
     installer = _str(d["installer"], f + ".installer")
     if installer not in parser_cmd.INSTALLERS:
         _err(f + ".installer", f"`{installer}`: want " + ", ".join(list(parser_cmd.INSTALLERS)[:-1]) + " or go")
-    name_re, version_re, _ = parser_cmd.INSTALLERS[installer]
+    name_re, version_re = parser_cmd.INSTALLERS[installer][:2]
     package = _str(d["package"], f + ".package")
     if not re.fullmatch(name_re, package):
         _err(f + ".package", f"`{package}`: want a {installer} package name (no URL, space, option or version)")
