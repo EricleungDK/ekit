@@ -380,7 +380,7 @@ class AdapterFileUsage(unittest.TestCase):
         r = r2(self.repo, self.base, self.base, adapter=None)
         self.assertIn("error: argument --stack: invalid choice: 'mini' (choose from 'python', 'rust', 'ts')\n", r.stderr)
         r = r2(self.repo, self.base, self.base, check="mutants")
-        self.assertIn("error: --adapter applies to r2 only (the run side of an adapter file: R1, R3, R4 is not built yet)\n",
+        self.assertIn("error: --adapter applies to r2, red and all (R3 through an adapter file is not built yet)\n",
                       r.stderr)
 
     def test_stack_is_still_required(self):

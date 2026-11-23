@@ -30,6 +30,8 @@ Adapter interface:
       venv = pip into a venv, npm = npm install --prefix, cargo = cargo install); env: set for the R3 runs;
       mutants_cmd: the tool's binary under the install dir, or None (on PATH). scripts/r3-local.py reads it (#35)
   target_os: the OS the stack's tests run on (#58): linux, macos or windows. Default linux (every built-in)
+  commands: an adapter file's [commands] (#18): install, build, lint, test ("" = none), for ci-doctor and the
+      session's verify commands; R1 and R4 use test only (default_test_cmd). The built-ins have none
 
 Keep this interface narrow: a new check rule needs new data (a marker, an assertion kind) from these methods, not a
 new method for its message text.
@@ -189,7 +191,7 @@ class Adapter:
     default_test_cmd = ""
     manifests = ()  # files that make a directory a project of this stack (a missing one is named by a hint)
     from_file = False  # True: described by an adapter file (data_adapter); a file it cannot read is needs-human
-    r3_tool = None  # no R3 tool: an adapter file stack (R2 only)
+    r3_tool = None  # no R3 tool: an adapter file stack (R2, R1 and R4; R3 through a file is #19)
     target_os = "linux"  # the OS the stack's tests run on (#58): linux, macos or windows; the built-ins are linux
 
     def classify(self, path, test_globs):
