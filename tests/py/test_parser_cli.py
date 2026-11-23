@@ -8,6 +8,7 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 import unittest
 
 import _kit
@@ -169,6 +170,22 @@ class ParserR2(unittest.TestCase):
             (dict(good, mutation_skips=[{"line": 2, "end_line": 1, "marker": "m"}]),
              "mutation_skips[0].end_line: want a whole number from 2 to "),
             (dict(good, parse_error={"line": 1}), "parse_error.message: missing"),
+            # review round 1: a lone surrogate (it cannot be written as UTF-8: the entry ids and the comment would
+            # crash), a control character, whitespace-only names and operands, an assert outside its test's lines
+            (dict(good, tests=[dict(test, name="\ud800")]), "tests[0].name: want text without a lone surrogate"),
+            (dict(good, asserts=[dict(ast, text="a\udfffb")]), "asserts[0].text: want text without a lone surrogate"),
+            (dict(good, parse_error={"line": 1, "message": "\ud800"}),
+             "parse_error.message: want text without a lone surrogate"),
+            (dict(good, tests=[dict(test, name="a\x1b[2Jb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="a\nb")]), "tests[0].name: want text without control characters"),
+            (dict(good, tests=[dict(test, name="  ")]), "tests[0].name: want a non-empty string"),
+            (dict(good, asserts=[dict(ast, text=" \t ")]), "asserts[0].text: want a non-empty string"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="eq", left=" ", right="1")]),
+             "asserts[0].left: want a non-empty string"),
+            (dict(good, tests=[test], asserts=[dict(ast, test="a", kind="ne", left="1", right="\t")]),
+             "asserts[0].right: want a non-empty string"),
+            (dict(good, tests=[dict(test, line=1, end_line=1)], asserts=[dict(ast, line=2, test="a")]),
+             "asserts[0].line: 2 is outside test `a` (lines 1 to 1)"),
         ]
         for doc, want in cases:
             with self.subTest(want=want):
@@ -179,6 +196,23 @@ class ParserR2(unittest.TestCase):
             with self.subTest(want=want):
                 _, problem = self.failed(self.emit(raw))
                 self.assertIn("printed invalid JSON: " + want, problem)
+
+    def test_an_assert_text_may_span_lines_and_a_name_repeat_within_the_spans(self):
+        doc = {"format": 1, "parse_error": None, "suppressions": [], "mutation_skips": [],
+               "tests": [{"name": "a", "line": 1, "end_line": 1, "markers": [], "body": None, "calls": []},
+                         {"name": "a", "line": 2, "end_line": 3, "markers": [], "body": None, "calls": []}],
+               "asserts": [{"line": 3, "test": "a", "owner": "a", "kind": "other", "left": None, "right": None,
+                            "text": "ok(\n\tx)"}]}
+        a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
+        self.assertEqual([(x.line, x.fn, x.text) for x in a.assertions("1\n2\n3\n")], [(3, "a", "ok( x)")])
+
+    def test_many_keys_under_the_size_limit_are_checked_in_linear_time(self):
+        keys = 300000  # about 4 MiB: a quadratic duplicate-key check takes hours here (the twice-given key is last)
+        raw = ("{" + ",".join(f'"k{i}": 0' for i in range(keys)) + f', "k{keys - 1}": 1}}').encode()
+        start = time.monotonic()
+        _, problem = self.failed(self.emit(raw))
+        self.assertIn(f"printed invalid JSON: key `k{keys - 1}` given twice", problem)
+        self.assertLess(time.monotonic() - start, 60)
 
 
     def test_operands_are_compared_with_whitespace_removed_and_texts_normalized(self):

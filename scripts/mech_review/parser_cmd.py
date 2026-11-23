@@ -90,11 +90,28 @@ class _Bad(ValueError):
 
 
 def _no_dupes(pairs):
-    keys = [k for k, _ in pairs]
-    for k in keys:
-        if keys.count(k) > 1:
-            raise _Bad(f"key `{k}` given twice")
+    """an object's pairs as a dict: a key given twice is refused (linear: a set of the keys seen), and so is a key that
+    could not be echoed safely in a message (a lone surrogate, a control character)."""
+    seen = set()
+    for k, _ in pairs:
+        if _unsafe(k, ""):
+            raise _Bad("a key holds a lone surrogate or a control character")
+        if k in seen:
+            raise _Bad(f"key `{k[:80]}` given twice")
+        seen.add(k)
     return dict(pairs)
+
+
+def _unsafe(v, allowed):
+    """why v cannot reach an entry, an id or a comment as it is, else None: a lone surrogate (it has no UTF-8 form), or
+    a control character not in allowed."""
+    try:
+        v.encode("utf-8")
+    except UnicodeEncodeError:
+        return "want text without a lone surrogate"
+    if any((ord(ch) < 0x20 or 0x7f <= ord(ch) <= 0x9f) and ch not in allowed for ch in v):
+        return "want text without control characters"
+    return None
 
 
 def _no_constant(name):
@@ -139,14 +156,22 @@ def _list(v, field):
     return v
 
 
-def _str(v, field, null=False):
+def _str(v, field, null=False, allowed=""):
+    """a string with something in it besides whitespace; allowed: the control characters it may hold (a multi-line
+    assert's text, a parse error's message: tab and line ends)."""
     if v is None and null:
         return None
-    if not isinstance(v, str) or not v:
+    if not isinstance(v, str) or not v.strip():
         raise _Bad(f"{field}: want a non-empty string" + (" or null" if null else ""))
     if len(v) > MAX_TEXT:
         raise _Bad(f"{field}: longer than {MAX_TEXT} characters")
+    why = _unsafe(v, allowed)
+    if why:
+        raise _Bad(f"{field}: {why}")
     return v
+
+
+MULTILINE = "\t\n\r"
 
 
 def _line(v, field, n_lines, start=1):
@@ -168,10 +193,10 @@ def _facts(doc, n_lines):
     pe = doc["parse_error"]
     if pe is not None:
         _obj(pe, "parse_error", ("line", "message"))
-        out["parse_error"] = (_line(pe["line"], "parse_error.line", n_lines), _str(pe["message"], "parse_error.message"))
+        out["parse_error"] = (_line(pe["line"], "parse_error.line", n_lines), _str(pe["message"], "parse_error.message", allowed=MULTILINE))
     else:
         out["parse_error"] = None
-    names = set()
+    spans = {}  # test name: [(line, end_line)], to place each assert in its test
     for i, t in enumerate(_list(doc["tests"], "tests")):
         f = f"tests[{i}]"
         _obj(t, f, ("name", "line", "end_line", "markers", "body", "calls"))
@@ -190,14 +215,18 @@ def _facts(doc, n_lines):
             body = (b0, _line(body[1], f + ".body[1]", end, b0))
         calls = {_str(c, f"{f}.calls[{j}]") for j, c in enumerate(_list(t["calls"], f + ".calls"))}
         name = _str(t["name"], f + ".name")
-        names.add(name)
+        spans.setdefault(name, []).append((line, end))
         out["tests"].append((name, line, end, list(markers), body, calls))
     for i, a in enumerate(_list(doc["asserts"], "asserts")):
         f = f"asserts[{i}]"
         _obj(a, f, ("line", "test", "owner", "kind", "left", "right", "text"))
         test = _str(a["test"], f + ".test", null=True)
-        if test is not None and test not in names:
+        if test is not None and test not in spans:
             raise _Bad(f"{f}.test: `{test}` is not a name in tests")
+        line = _line(a["line"], f + ".line", n_lines)
+        if test is not None and not any(b <= line <= e for b, e in spans[test]):
+            where = ", ".join(f"lines {b} to {e}" for b, e in spans[test][:5])
+            raise _Bad(f"{f}.line: {line} is outside test `{test}` ({where})")
         kind = a["kind"]
         if kind not in KINDS:
             raise _Bad(f"{f}.kind: want eq, ne or other")
@@ -207,8 +236,8 @@ def _facts(doc, n_lines):
             left = right = None
         else:
             left, right = _str(a["left"], f + ".left"), _str(a["right"], f + ".right")
-        out["asserts"].append((_line(a["line"], f + ".line", n_lines), test, _str(a["owner"], f + ".owner", null=True),
-                               kind, left, right, _str(a["text"], f + ".text")))
+        out["asserts"].append((line, test, _str(a["owner"], f + ".owner", null=True),
+                               kind, left, right, _str(a["text"], f + ".text", allowed=MULTILINE)))
     for i, s in enumerate(_list(doc["suppressions"], "suppressions")):
         f = f"suppressions[{i}]"
         _obj(s, f, ("line", "end_line", "kind", "lints", "reason"))
