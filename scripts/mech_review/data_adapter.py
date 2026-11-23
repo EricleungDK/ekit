@@ -293,9 +293,10 @@ class ParserAdapter(DataAdapter):
         self._facts_cache = collections.OrderedDict()
 
     def in_checkout(self, *roots):
-        """the adapter for a review of the checkouts at roots: a command word inside one is refused (parser_cmd.run)."""
+        """the adapter for a review of the checkouts at roots, beside those it has already (R0's throwaway repo inside
+        the reviewed one's run keeps both): a command word inside one is refused (parser_cmd.run)."""
         bound = copy.copy(self)
-        bound.roots = tuple(roots)
+        bound.roots = self.roots + tuple(r for r in roots if r not in self.roots)
         return bound
 
     def at(self, path):

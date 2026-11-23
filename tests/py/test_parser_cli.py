@@ -347,6 +347,21 @@ class ParserR2(unittest.TestCase):
                 self.assertIn("differs from the base branch's", self.held(*self.r0(path, base, head)))
                 self.assertFalse(os.path.exists(record), "R0 ran a parser whose install changed")
 
+    def test_r0_never_runs_a_command_word_inside_the_reviewed_checkout(self):
+        record = os.path.join(self.tmp, "record.jsonl")
+        inside = os.path.join(self.repo.path, "tools", "facts.py")  # the same on base and head: R0 does not hold it
+        os.makedirs(os.path.dirname(inside))
+        with open(STUB) as f, open(inside, "w") as out:
+            out.write(f.read().replace("os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(",
+                                       repr(_kit.ROOT) + "  # (").replace("os.path.abspath(__file__)))))", ""))
+        path, base, _ = self.in_repo(self.command_adapter(
+            " ".join(shlex.quote(x) for x in [sys.executable, "-I", inside, "--record", record])))
+        rc, check, r = self.r0(path, base)
+        self.assertEqual((rc, check["status"]), (1, "fail"), r.stdout)
+        self.assertIn("is inside the checkout: the parser runs no code or config from the PR",
+                      json.loads(r.stdout)["entries"][0]["problem"])
+        self.assertFalse(os.path.exists(record), "R0 ran a script from the checkout")
+
     def test_r0_never_runs_a_parser_with_no_base_copy(self):
         record = os.path.join(self.tmp, "record.jsonl")
         problem = self.held(*self.r0(self.adapter("--record " + shlex.quote(record))))  # outside the repo

@@ -35,7 +35,10 @@ def prove(stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None,
 def r0(repo, base_ref, head_ref, stack, test_globs, adapter=None, adapter_path=None, fixtures_dir=None):
     """The `r0` subcommand: R0's static half as an envelope (the other checks skipped, `not run by r0`)."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
-    # a parser-backed adapter's command runs only when it is the base branch's (#27): never one the PR wrote
+    # a parser-backed adapter's command runs only when it is the base branch's (#27): never one the PR wrote, and
+    # never with a word inside the reviewed checkout, in R0's own throwaway repos too
+    if hasattr(adapter, "in_checkout"):
+        adapter = adapter.in_checkout(repo)
     check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir,
                        r0_mod.parser_hold(repo, mb, adapter, adapter_path))
     raw += _edit_rules(repo, mb, head, check, [adapter_path] if adapter_path else [])
