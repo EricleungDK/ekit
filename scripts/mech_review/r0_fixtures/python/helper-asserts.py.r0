@@ -1,0 +1,17 @@
+# R0 seed (python): each test is a run of non-blank lines; `test_adds` has two asserts, each on its own line.
+def add(a, b):
+    return a + b
+
+
+def check(x):
+    assert x == 3
+    assert x != 4
+
+
+def test_adds():
+    x = add(1, 2)
+    check(x)
+
+
+def test_adds_zero():
+    assert add(0, 2) == 2

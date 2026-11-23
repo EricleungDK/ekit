@@ -1,0 +1,15 @@
+// R0 seed (ts): each test is a run of non-blank lines; `adds` has two asserts, each on its own line.
+function add(a: number, b: number): number {
+  return a + b;
+}
+
+it("adds", () => {
+  // eslint-disable-next-line prefer-const
+  const x = add(1, 2);
+  expect(x).toBe(3);
+  expect(x).not.toBe(4);
+});
+
+it("adds zero", () => {
+  expect(add(0, 2)).toBe(2);
+});

@@ -200,12 +200,37 @@ jobs:
             echo "::error::mech-review engine exit $rc (usage or git error): no result"
             exit "$rc"
           fi
+      - name: R0 static half (adapter proof)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STACK: ${{ needs.stack.outputs.stack }}
+          TEST_PATHS: ${{ inputs.test-paths }}
+        run: |
+          set -uo pipefail
+          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
+          while IFS= read -r g; do
+            if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
+          done <<< "$TEST_PATHS"
+          rc=0
+          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 "${args[@]}" > mech-review-r0.json 2> mech-review-r0.err || rc=$?
+          cat mech-review-r0.err >&2
+          # git and adapter only, seconds; its result rides in the guard's artifact beside R2's. exit 1 = a fail entry
+          # (adapter-fix, or needs-human for a loosened limit): a result, kept. exit 2+ = usage or git error: no result,
+          # and the report fails R0 with a CI entry naming the job
+          if [ "$rc" -gt 1 ] || [ ! -s mech-review-r0.json ]; then
+            rm -f mech-review-r0.json
+            echo "::error::mech-review r0 exit $rc: no R0 result"
+            exit "$(( rc > 0 ? rc : 2 ))"
+          fi
       - name: upload result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mech-review-json
-          path: mech-review.json
+          path: |
+            mech-review.json
+            mech-review-r0.json
           if-no-files-found: ignore
           overwrite: true
 
@@ -755,6 +780,7 @@ jobs:
           fi
           python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
             --envelope r2=r2-result/mech-review.json \
+            --envelope r0=r2-result/mech-review-r0.json \
             --envelope red=red-result/mech-review-red.json \
             "${extra[@]}" \
             --reason "no JSON from the job (see its log)"

@@ -41,9 +41,10 @@ def _fence(text):
 
 def _label(e):
     """Human severity: a fail entry of class needs-human reads needs-human. The JSON keeps severity fail."""
-    if e["severity"] == "fail" and e.get("class") == "needs-human":
-        return "needs-human"
-    return e["severity"]
+    label = "needs-human" if e["severity"] == "fail" and e.get("class") == "needs-human" else e["severity"]
+    if e.get("blocked"):  # its check is n/a (a failed R0, #20): the entry still counts
+        label += f" ({e.get('check', '')} blocked by {e['blocked']})"
+    return label
 
 
 def headline(env):
@@ -116,7 +117,7 @@ def _table(entries):
     return "\n".join(rows)
 
 
-CHECK_ORDER = ("R1", "R2", "R3", "R4", "D")
+CHECK_ORDER = ("R0", "R1", "R2", "R3", "R4", "D")
 
 
 def _not_run_lines(env):
@@ -126,6 +127,13 @@ def _not_run_lines(env):
     na = [f"{c} ({(checks.get(c) or {}).get('note', '')})" for c in CHECK_ORDER
           if (checks.get(c) or {}).get("status") == "n/a"]
     return ["Did not run: " + "; ".join(na)] if na else []
+
+
+def _r0_lines(env):
+    """One line under the headline when R0 ran (#20): its note (cases proved, unproven, failed), as a code span: an
+    adapter file's text from the PR reaches it through the case results."""
+    c = (env.get("checks") or {}).get("R0") or {}
+    return [f"R0: {_span(_line(c['note']))}"] if c.get("note") else []
 
 
 def _plan_lines(env):
@@ -185,6 +193,9 @@ def _body(env, shown, json_text, omit_lines=False):
     not_run = _not_run_lines(env)
     if not_run:
         lines += not_run + [""]
+    r0 = _r0_lines(env)
+    if r0:
+        lines += r0 + [""]
     waived = _waiver_lines(env)
     if waived:
         lines += waived + [""]
