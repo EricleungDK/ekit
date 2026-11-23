@@ -162,6 +162,15 @@ class RepoAdapters(unittest.TestCase):
         r, got = resolve(self.repo, sha, sha, "--stack", "gradle")
         self.assertEqual((r.returncode, got["error"]), (1, "stack gradle: want auto, maven, python, rust or ts"))
 
+    def test_an_explicit_name_is_known_only_from_a_toml_file_in_the_adapters_folder(self):
+        # a .toml elsewhere (build/gradle.toml) or another file in the folder (.ekit/adapters/notes.txt) names no stack
+        sha = self.repo.commit({".ekit/adapters/maven.toml": adapter("maven", ["pom.xml"]), "build/gradle.toml": "",
+                                ".ekit/adapters/notes.txt": ""})
+        for stack in ("gradle", "notes"):
+            with self.subTest(stack):
+                r, got = resolve(self.repo, sha, sha, "--stack", stack)
+                self.assertEqual((r.returncode, got["error"]), (1, f"stack {stack}: want auto, maven, python, rust or ts"))
+
     def test_the_adapter_is_read_from_the_base(self):
         # S6: a PR that adds an adapter file (or edits one) does not change what auto finds for it
         base = self.repo.commit({"pyproject.toml": ""})

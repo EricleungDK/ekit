@@ -377,7 +377,7 @@ def _resolve(argv):
             got, repo = _named(args)
         else:
             got = resolve.pick_pr([], [], args.stack, args.project_dir)
-        entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"]) if got["stack"] is not None else None
+        entry = stack_plan.entry_for(plan, got["stack"], got["project_dir"])  # none for no stack
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
