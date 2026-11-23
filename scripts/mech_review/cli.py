@@ -373,25 +373,6 @@ def _not_built(args, adapter=None):
     return 1 if any(e["severity"] == "fail" for e in entries) else 0
 
 
-def _all_override(args, adapter):
-    """`all` on a built-in's name the repo's adapter file overrides: R2 through the file, R1 and R4 the built-in's."""
-    try:
-        r2_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
-                            which="r2", project_dir=args.project_dir, adapter=adapter)
-        env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
-                         which="all", agent_prefix=args.agent_prefix, head_branch=args.head_branch,
-                         test_cmd=args.test_cmd, project_dir=args.project_dir)
-    except gitio.Die as e:
-        print(f"mech-review: {e}", file=sys.stderr)
-        return 2
-    checks = dict(env["checks"], R2=r2_env["checks"]["R2"])
-    entries = sorted([e for e in env["entries"] if e["check"] != "R2"] + r2_env["entries"],
-                     key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
-    env = report.envelope(env["base"], env["head"], entries, checks)
-    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
-    return 1 if any(e["severity"] == "fail" for e in entries) else 0
-
-
 def _resolve(argv):
     """`stack: auto` (the workflow's stack job): print {stack, project_dir, error, target_os} (several stacks: `stacks`).
     Exit 0, 1 on error, 2 usage or git."""
@@ -517,10 +498,11 @@ def main(argv):
         return _merge(parser, args)
     if adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS:
         # until adapter files have a run side (#18, #19), a repo file named like a built-in judges R2 only: R1, R3 and
-        # R4 run the built-in, so adding the file turns no check off; `all` runs R2 through the file
-        repo_r2, adapter = (adapter if args.check == "all" else None), None
-    else:
-        repo_r2 = None
+        # R4 run the built-in, so adding the file turns no check off. `all` runs one adapter for all its checks
+        if args.check == "all":
+            parser.error(f"all on stack `{args.stack}`, which the repo's adapter file overrides: R2 is the file's, R1 "
+                         f"and R4 the built-in's; run r2 and red apart")
+        adapter = None
     if adapter is not None and args.adapter is None and args.check in ("plan", "baseline"):
         return _not_built(args)
     if args.check == "plan":
@@ -535,8 +517,6 @@ def main(argv):
             parser.error(f"--shard {args.shard}: want K/N with 0 <= K < N")
     if adapter is not None and args.adapter is None and args.check != "r2":
         return _not_built(args, adapter)
-    if repo_r2 is not None:
-        return _all_override(args, repo_r2)
     try:
         env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,

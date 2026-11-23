@@ -355,6 +355,7 @@ class RunSideNotBuilt(unittest.TestCase):
                          {"R1": {"status": "n/a", "note": NOT_BUILT.format("R1")},
                           "R4": {"status": "n/a", "note": NOT_BUILT.format("R4")}})
         self.assertEqual(env["summary"], f"pass {self.head} (0 fail, 0 confirm; ran: none; skipped: R2 R3; n/a: R1 R4)")
+        self.assertTrue(r.stdout.startswith('{\n  "ekit": '), r.stdout[:20])  # the same JSON form as every check
 
     def test_red_prints_text_when_asked(self):
         r, _ = _kit.run_cli(["red", "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack", "mini",
@@ -427,25 +428,14 @@ class OverrideKeepsTheBuiltInRunSide(unittest.TestCase):
                           "--test-paths", "tests/**"])
         self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"run": True}), r.stderr)
 
-    def test_all_runs_r2_through_the_file_and_r1_r4_on_the_built_in(self):
-        # the file is the mini language under the name ts: R2 reads .mini files (the built-in ts reads none), R1 and R4
-        # are the built-in's, as with no override
-        def run(override):
-            repo = Repo(self)
-            files = {"package.json": "{}", "tests/calc.mini": CALC, "tests/a.test.ts": 'it("x", () => { expect(1).toBe(1) })\n'}
-            if override:
-                files[".ekit/adapters/ts.toml"] = adapter("ts", ["package.json"])
-            base = repo.commit(files)
-            head = repo.commit({"tests/calc.mini": NO_SUB, "tests/a.test.ts": 'it("x", () => { expect(2).toBe(2) })\n'})
-            r = _kit.run_cli(["all", "--repo", repo.path, "--base", base, "--head", head, "--stack", "ts",
-                              "--test-paths", "tests/**"])
-            return r, json.loads(r.stdout)
-        r, env = run(True)
-        self.assertEqual((r.returncode, env["checks"]["R2"]["status"], [e["problem"] for e in env["entries"] if e["check"] == "R2"]),
-                         (1, "fail", [REMOVED]), r.stderr)
-        _, plain = run(False)
-        self.assertEqual(plain["checks"]["R2"]["status"], "pass")
-        self.assertEqual({c: env["checks"][c] for c in ("R1", "R3", "R4")}, {c: plain["checks"][c] for c in ("R1", "R3", "R4")})
+    def test_all_is_a_usage_error_naming_the_two_adapters(self):
+        # all runs one adapter for R1, R2 and R4: on an override R2 is the file's and R1, R4 the built-in's
+        repo, base, head = self.pr(True)
+        r = _kit.run_cli(["all", "--repo", repo.path, "--base", base, "--head", head, "--stack", "ts",
+                          "--test-paths", "tests/**"])
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("all on stack `ts`, which the repo's adapter file overrides: R2 is the file's, R1 and R4 the "
+                      "built-in's; run r2 and red apart", r.stderr)
 
 
 class MergeOnARepoStack(unittest.TestCase):
