@@ -529,15 +529,28 @@ with tempfile.TemporaryDirectory() as d:  # the plan job: one plan per leg
     os.makedirs(stub)
     os.makedirs(os.path.join(d, "caller"))
     with open(os.path.join(stub, "mech-review.py"), "w") as f:
-        f.write("import json, sys\nprint(json.dumps({'run': sys.argv[sys.argv.index('--stack') + 1] == 'python'}))\n")
+        # each stack is planned in its own folder (its adapter file is found by it); a stack `mini` fails, as an
+        # engine error (exit 2) would
+        f.write("import json, sys\na = sys.argv\nstack, folder = a[a.index('--stack') + 1], a[a.index('--project-dir') + 1]\n"
+                "if stack == 'mini':\n    sys.exit(2)\nprint(json.dumps({'run': stack == 'python' and folder == 'api'}))\n")
     out = os.path.join(d, "out")
-    r = run_py(heredoc(block(jobs, "plan") or [], "R3 plan"), d,
-               {"GITHUB_WORKSPACE": d, "BASE_SHA": "b", "HEAD_SHA": "h", "TEST_PATHS": "tests/**\n",
-                "LEGS": json.dumps([LEG_API, LEG_WEB])}, out)
+    plan_py = heredoc(block(jobs, "plan") or [], "R3 plan")
+    plan_env = {"GITHUB_WORKSPACE": d, "BASE_SHA": "b", "HEAD_SHA": "h", "TEST_PATHS": "tests/**\n"}
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([LEG_API, LEG_WEB])), out)
     got = outputs(out) if r.returncode == 0 else r.stderr
-    check("plan: one plan per stack; run when any runs, the baseline's legs are those whose R3 runs (#17)",
+    check("plan: one plan per stack in its project dir; run when any runs, the baseline's legs are those whose R3 runs (#17)",
           isinstance(got, dict) and got.get("run") == "true" and json.loads(got.get("legs", "null")) == [LEG_API]
           and json.loads(got.get("runs", "null")) == {"-0-api": True, "-1-web": False}, str(got))
+    LEG_MINI = dict(LEG_WEB, key="-1-lib", name="lib", stack="mini", **{"project-dir": "lib"})
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([LEG_API, LEG_MINI])), out + "2")
+    got = outputs(out + "2") if r.returncode == 0 else r.stderr
+    check("plan: a stack whose plan fails reads unknown (its R3 a CI entry); the other stacks keep theirs (review 1)",
+          isinstance(got, dict) and got.get("run") == "true" and json.loads(got.get("legs", "null")) == [LEG_API]
+          and json.loads(got.get("runs", "null")) == {"-0-api": True, "-1-lib": None}
+          and "::error::" in r.stdout, str((got, r.stdout)))
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([dict(LEG_MINI, key="", label="")])), out + "3")
+    check("plan: no stack planned at all fails the job, as a failed plan did for one stack", r.returncode != 0,
+          str((r.returncode, r.stdout)))
 pl_out = child_keys(block(block(jobs, "plan") or [], "outputs"))
 check("plan: outputs run, legs and runs", pl_out == {"run", "legs", "runs"}, str(pl_out))
 
@@ -644,6 +657,47 @@ with tempfile.TemporaryDirectory() as d:  # the report's per-stack merge, on the
           isinstance(web_r3, dict) and web_r3["checks"]["R3"]["status"] == "fail"
           and [e["problem"] for e in web_r3["entries"]]
           == ["baseline job produced no result: no JSON from the baseline job (see its log)"], str(web_r3))
+    for runs, why in (("{not json", "the plan job's answers do not read (see its log)"),
+                      (json.dumps({"-1-web": None}), "the plan job could not plan this stack (see its log)"),
+                      (json.dumps({"-0-api": True}), "the plan job gave no answer for this stack (see its log)")):
+        if os.path.exists(os.path.join(d, "mutants-merged-1-web.json")):
+            os.remove(os.path.join(d, "mutants-merged-1-web.json"))
+        r = run_py(heredoc(report, "merge each stack's mutants"), d,
+                   {"LEGS": json.dumps([LEG_WEB]), "RUNS": runs, "PLAN_RESULT": "success", "BASE_SHA": base,
+                    "HEAD_SHA": head})
+        try:
+            with open(os.path.join(d, "mutants-merged-1-web.json")) as f:
+                web_r3 = json.load(f)
+        except (OSError, ValueError) as e:
+            web_r3 = f"{e}: {r.stderr}"
+        check(f"report: a plan answer that is not true or false fails that stack's R3, named (review 1: {runs})",
+              isinstance(web_r3, dict) and web_r3["checks"]["R3"]["status"] == "fail"
+              and [e["problem"] for e in web_r3["entries"]] == [f"baseline job produced no result: {why}"], str(web_r3))
+
+
+def expr_in_run_bodies(lines):
+    """Lines of a run: block scalar (its heredocs included) that hold ${{ }}: a value there would be pasted into the
+    script before it runs. Values reach a script through env only."""
+    out = []
+    for n, l in enumerate(lines):
+        m = re.match(r"(\s*)(- )?run: [|>]", l)
+        if not m:
+            continue
+        base = len(m.group(1)) + len(m.group(2) or "")
+        for later in lines[n + 1:]:
+            if later.strip() and indent(later) <= base:
+                break
+            if "${{" in later:
+                out.append(later)
+    return out
+
+
+check("no ${{ }} in any run: body, its heredocs included (review 1)", expr_in_run_bodies(W) == [],
+      str(expr_in_run_bodies(W)))
+_sh_at = next(n for n, l in enumerate(W) if l.strip() == "import json" and n > W.index("  shards:"))
+_probe = W[:_sh_at] + [W[_sh_at].replace("import json", 'print("${{ needs.plan.outputs.legs }}")')] + W[_sh_at:]
+check("the run-body scan sees a ${{ }} inside the shards job's python heredoc (the scan is live)",
+      expr_in_run_bodies(_probe) == ['          print("${{ needs.plan.outputs.legs }}")'], str(expr_in_run_bodies(_probe)))
 
 
 # ---- an adapter's parser command (#27) never reaches a run: script; it runs as argv inside the engine ----

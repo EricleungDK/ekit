@@ -395,7 +395,8 @@ jobs:
     runs-on: ubuntu-latest
     # git only, no PR code: the write token stays here, away from the jobs that run PR code (#46). One job for every leg
     # (#17): run is true when any stack's R3 runs; legs, the baseline's matrix, are the stacks whose R3 runs; runs maps
-    # each leg's key to its own answer (the report reads it).
+    # each leg's key to its own answer (the report reads it): null for a stack whose plan failed, so its R3 alone
+    # fails with a CI entry. No stack planned at all fails the job, as a failed plan did for one stack.
     outputs:
       run: ${{ steps.plan.outputs.run }}
       legs: ${{ steps.plan.outputs.legs }}
@@ -434,15 +435,24 @@ jobs:
           tests = [a for g in os.environ["TEST_PATHS"].splitlines() if g for a in ("--test-paths", g)]
           legs = json.loads(os.environ["LEGS"])
           runs = {}
-          for leg in legs:  # a plan that does not run is a stop, as for one stack
-              out = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "plan", "--repo",
-                                    f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--head", os.environ["HEAD_SHA"],
-                                    "--stack", leg["stack"], *tests], check=True, stdout=subprocess.PIPE).stdout
-              runs[leg["key"]] = bool(json.loads(out)["run"])
+          for leg in legs:  # each stack in its own folder: the plan entry, and a repo adapter file, are found by it
+              p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "plan", "--repo",
+                                  f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--head", os.environ["HEAD_SHA"],
+                                  "--stack", leg["stack"], "--project-dir", leg["project-dir"], *tests],
+                                 stdout=subprocess.PIPE)
+              try:
+                  if p.returncode:
+                      raise ValueError(f"exit {p.returncode}")
+                  runs[leg["key"]] = bool(json.loads(p.stdout)["run"])
+              except (ValueError, KeyError, TypeError) as e:
+                  runs[leg["key"]] = None
+                  print(f"::error::mech-review plan for stack {leg['name']}: {e}: its R3 fails with a CI entry")
           with open(sys.argv[1], "a") as out:
               out.write(f"run={str(any(runs.values())).lower()}\n")
               out.write(f"legs={json.dumps([leg for leg in legs if runs[leg['key']]])}\n")
               out.write(f"runs={json.dumps(runs)}\n")
+          if legs and all(v is None for v in runs.values()):
+              sys.exit(1)
           PY
 
   baseline:
@@ -898,19 +908,27 @@ jobs:
           import sys
 
           R = "stacks-result"
+          planned = os.environ["PLAN_RESULT"] == "success"
           try:
               runs = json.loads(os.environ.get("RUNS") or "{}")
+              unread = None if isinstance(runs, dict) else "the plan job's answers do not read (see its log)"
           except ValueError:
-              runs = {}
-          planned = os.environ["PLAN_RESULT"] == "success"
+              runs, unread = {}, "the plan job's answers do not read (see its log)"
+          runs = runs if isinstance(runs, dict) else {}
           stacks = []
           for leg in json.loads(os.environ["LEGS"]):
               key = leg["key"]
               envs = {"r2": f"{R}/mech-review-json{key}/mech-review.json", "r0": f"{R}/mech-review-json{key}/mech-review-r0.json",
                       "red": f"{R}/mech-review-red-json{key}/mech-review-red.json"}
               # R3 as for one stack: when the plan ran it for this stack, or the plan job gave no answer (no baseline
-              # result fails R3 with a CI entry; a missing shard file is one too)
-              if runs.get(key) is True or not planned:
+              # result fails R3 with a CI entry; a missing shard file is one too). Only a plain false skips R3: an
+              # answer that is missing, null (that stack's plan failed) or unreadable fails it, named
+              answer = runs.get(key, "missing")
+              why = "no JSON from the baseline job (see its log)"
+              if planned and answer is not True:
+                  why = (unread or ("the plan job could not plan this stack (see its log)" if answer is None else
+                                    "the plan job gave no answer for this stack (see its log)"))
+              if answer is not False or not planned:
                   base = f"{R}/mech-review-baseline-json{key}/mech-review-baseline.json"
                   try:
                       count = json.load(open(base))["count"]
@@ -922,7 +940,7 @@ jobs:
                   if os.path.isfile(base):
                       args += ["--baseline", base]
                   else:
-                      args += ["--baseline-reason", "no JSON from the baseline job (see its log)"]
+                      args += ["--baseline-reason", why]
                   for k in range(count):
                       f = f"{R}/mech-review-mutants{key}-{k}/mech-review-mutants.json"
                       if os.path.isfile(f):
