@@ -293,8 +293,9 @@ def _doctor(argv):
 
 
 def _tracked(repo, ref):
-    """The tracked paths at ref, raw (-z: a name is never quoted or split)."""
-    return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--name-only", gitio.resolve(repo, ref)).split("\0") if p]
+    """The tracked paths at ref from the repo root (also when repo is a subdir), raw (-z: a name is never quoted or split)."""
+    return [p for p in gitio.git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", gitio.resolve(repo, ref)).split("\0")
+            if p]
 
 
 def _is_repo(path):
