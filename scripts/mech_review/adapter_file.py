@@ -3,6 +3,7 @@
 Format: docs/mech-review-ci.md#adapter-file. Every problem is an AdapterFileError that names the field
 (`lexer.strings[1].quote: want a non-empty string`): never a traceback, never a silent default for a bad value.
 tomllib (python 3.11+) is imported only in load(), so the built-in adapters keep working on older pythons."""
+import json
 import re
 import shlex
 import string
@@ -282,15 +283,147 @@ def _suppressions(v):
                 _template(s[k], f"{sf}.{k}", "lints")
 
 
-def _mutation(d):
+def _mutation(d, run=None):
+    """[mutation]: R2's skip markers and config files, and the R3 tool (#19). Returns the validated tool or None."""
     f = "mutation"
-    _table(d, f, ("skip_comments", "config_files", "config_name"))
+    _table(d, f, ("skip_comments", "config_files", "config_name", "tool"))
     _strs(d.get("skip_comments", []), f + ".skip_comments")
     if _strs(d.get("config_files", []), f + ".config_files"):
         if "config_name" not in d:
             _err(f + ".config_name", "missing: config_files needs a name for the entry")
     if "config_name" in d:
         _str(d["config_name"], f + ".config_name")
+    return _tool(d["tool"], d.get("config_files", []), run) if "tool" in d else None
+
+
+REPORT_FORMATS = ("mutation-testing-elements", "pit-xml", "lines")  # what R3 reads: report formats, not tools (#19)
+TOOL_ARGS = ("mutate", "timeout_ms", "timeout_s", "report")  # [mutation.tool].args placeholders
+RANGE = ("file", "first", "last")  # [mutation.tool].mutate placeholders: one changed-line range
+STATUS_KINDS = ("missed", "caught", "timeout", "unviable")  # format lines: what each status word means for R3
+LINE_GROUPS = ("file", "line", "status")
+DEFAULT_TOOL_TIMEOUT = 120  # seconds per mutant when the workflow's mutant-timeout is auto
+
+
+def _tool(d, config_files, run):
+    """[mutation.tool]: the command R3 runs on the changed lines, the report it writes and the report's format. Returns
+    the table with its defaults filled and its patterns compiled (version_rx, baseline_rx, pattern_rx)."""
+    f = "mutation.tool"
+    _table(d, f, ("name", "command", "args", "mutate", "mutate_join", "version", "version_pattern", "report", "format",
+                  "os", "timeout", "baseline_failed", "pattern", "status", "runners"),
+           ("name", "command", "report", "format", "os"))
+    name = _str(d["name"], f + ".name")
+    if not all(ch.isalnum() or ch in "_-." for ch in name):
+        _err(f + ".name", f"`{name}`: want letters, digits, _, - or .")
+    _command(d["command"], f + ".command")
+    args = _strs(d.get("args", []), f + ".args")
+    used = set()
+    for i, a in enumerate(args):
+        used |= _template(a, f"{f}.args[{i}]", TOOL_ARGS)
+    if "mutate" in d:
+        if "mutate" not in used:
+            _err(f + ".mutate", "never used: no arg has `{mutate}`")
+        if "file" not in _template(d["mutate"], f + ".mutate", RANGE):
+            _err(f + ".mutate", "no `{file}`: a range names its file")
+    elif "mutate" in used:
+        _err(f + ".mutate", "missing: an arg uses `{mutate}`, the changed line ranges")
+    _str(d.get("mutate_join", ","), f + ".mutate_join")
+    version = _strs(d["version"], f + ".version") if "version" in d else None
+    tool = dict(d, args=list(args), mutate_join=d.get("mutate_join", ","), version=version,
+                timeout=d.get("timeout", DEFAULT_TOOL_TIMEOUT), runners=dict(d.get("runners", {})))
+    tool["version_rx"] = None
+    if "version_pattern" in d:
+        if version is None:
+            _err(f + ".version_pattern", "needs version: the words that print the tool's version")
+        tool["version_rx"] = _regex(d["version_pattern"], f + ".version_pattern")
+    _filepath(_str(d["report"], f + ".report"), f + ".report")
+    fmt = _str(d["format"], f + ".format")
+    if fmt not in REPORT_FORMATS:
+        _err(f + ".format", f"`{fmt}`: want mutation-testing-elements, pit-xml or lines")
+    oses = _strs(d["os"], f + ".os", nonempty=True)
+    for i, o in enumerate(oses):
+        target_os(o, f"{f}.os[{i}]")
+        if o in oses[:i]:
+            _err(f"{f}.os[{i}]", f"`{o}` is listed twice")
+    t = tool["timeout"]
+    if type(t) is not int or t < 1:
+        _err(f + ".timeout", "want a whole number of seconds >= 1")
+    tool["baseline_rx"] = _regex(d["baseline_failed"], f + ".baseline_failed") if "baseline_failed" in d else None
+    tool["pattern_rx"] = _lines_format(d, f) if fmt == "lines" else None
+    if fmt != "lines":
+        for k, what in (("pattern", "no pattern"), ("status", "no status lists")):
+            if k in d:
+                _err(f"{f}.{k}", f"format {fmt} has {what} (lines only)")
+    if "runners" in d:
+        _tool_runners(d["runners"], f + ".runners", config_files, run)
+    return tool
+
+
+def _lines_format(d, f):
+    """format lines: pattern (python regex, multiline) with named groups file, line and status, and the status words."""
+    if "pattern" not in d:
+        _err(f + ".pattern", "missing: format lines reads each mutant with it")
+    rx = _regex(d["pattern"], f + ".pattern")
+    for g in LINE_GROUPS:
+        if g not in rx.groupindex:
+            _err(f + ".pattern", f"`{d['pattern']}` has no named group `{g}`: want (?P<file>...), (?P<line>...) and "
+                                 "(?P<status>...)")
+    if "status" not in d:
+        _err(f + ".status", "missing: format lines maps each status word to missed, caught, timeout or unviable")
+    st = _table(d["status"], f + ".status", STATUS_KINDS, ("missed", "caught"))
+    owner = {}
+    for k in STATUS_KINDS:
+        if k not in st:
+            continue
+        for i, w in enumerate(_strs(st[k], f"{f}.status.{k}", nonempty=True)):
+            if w in owner:
+                _err(f"{f}.status.{k}[{i}]", f"`{w}` is already in {f}.status.{owner[w]}")
+            owner[w] = k
+    return rx
+
+
+def _tool_runners(d, f, config_files, run):
+    """mutation.tool.runners.<[[run.runner]] name>: needs (a file the tool needs in the project dir: the runner's
+    binary), and for a project with none of [mutation].config_files the args added and the config file written."""
+    if run is None:
+        _err(f, "needs [run]: a runner is one of [[run.runner]]")
+    names = [r["name"] for r in run.get("runner", [])]
+    _table(d, f, tuple(d))
+    for name, r in d.items():
+        rf = f"{f}.{name}"
+        if name not in names:
+            _err(rf, "not a [[run.runner]] name: want " + (" or ".join(names) if names else "a [[run.runner]] first"))
+        _table(r, rf, ("needs", "args", "config_file", "config"))
+        if "needs" in r:
+            _filepath(_str(r["needs"], rf + ".needs"), rf + ".needs")
+        for i, a in enumerate(_strs(r.get("args", []), rf + ".args")):
+            _template(a, f"{rf}.args[{i}]", TOOL_ARGS)
+        if "config" in r and "config_file" not in r:
+            _err(rf + ".config_file", "missing: config is written to it")
+        if "config_file" in r:
+            cf = _filepath(_str(r["config_file"], rf + ".config_file"), rf + ".config_file")
+            if cf not in config_files:
+                _err(rf + ".config_file", f"`{cf}` is not in mutation.config_files: it is written only when the project "
+                                          "has none of them")
+            if "config" not in r:
+                _err(rf + ".config", "missing: the text written to config_file")
+            try:
+                doc = json.loads(_str(r["config"], rf + ".config"), parse_constant=_no_constant)
+            except (ValueError, RecursionError) as e:
+                _err(rf + ".config", f"want a JSON object: {e}")
+            if not isinstance(doc, dict):
+                _err(rf + ".config", "want a JSON object")
+
+
+def _no_constant(name):
+    raise ValueError(f"`{name}` is not JSON")
+
+
+def _filepath(v, field):
+    """a file under the project dir: relative, no `..`, no empty or `.` part (the engine writes or reads it there)."""
+    _relpath(v, field)
+    if any(part in ("", ".") for part in v.split("/")):
+        _err(field, f"`{v}`: want a file under the project dir, such as out/report.json")
+    return v
 
 
 COMMANDS = {  # [commands]: every key is required ("" says the stack has none), so a missing one is named, never assumed
@@ -487,7 +620,7 @@ def parse(data):
     shapes = _functions(data["functions"], lexer) if "functions" in data else []
     _asserts(data["asserts"], lexer)
     _suppressions(data.get("suppressions", []))
-    _mutation(data.get("mutation", {}))
+    tool = _mutation(data.get("mutation", {}), data.get("run") if isinstance(data.get("run"), dict) else None)
     if "run" in data and "commands" not in data:
         _err("commands", "missing: [run] needs [commands] (install, build, lint, test): R1 and R4 start from its test")
     if "commands" in data:
@@ -495,6 +628,7 @@ def parse(data):
     patterns = _run(data["run"]) if "run" in data else None
     adapter = DataAdapter(data, lexer, shapes, patterns)
     adapter.limits = limits(data.get("limits", {}))
+    adapter.mutation_tool = tool
     return adapter
 
 

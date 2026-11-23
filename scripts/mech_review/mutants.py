@@ -34,6 +34,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import namedtuple
 
 from . import red
 from .gitio import Die, added_lines, git
@@ -1957,6 +1958,375 @@ class Stryker:
             return check, ents
 
 
+# ---- R3 through an adapter file's declared tool (#19): report formats, not tools ----
+MAX_REPORT_BYTES = 64 * 1024 * 1024  # a report larger than this is not read (n/a): no tool's real report comes near it
+# Found: one mutant of a report. file: crate-relative path (suffix True: a path tail, PIT's package path), or None for a
+# file outside the crate; line: 1-based, or None (unlocated); kind: missed, caught, timeout, unviable, ignored (not
+# R3's: the tool's own config or a comment turned it off), pending (never run: untested); fix: survived | nocoverage
+# (missed only: the hint); desc: stable across line moves (no line number in it, where the format allows).
+Found = namedtuple("Found", "file line kind desc fix suffix")
+ELEMENTS_KIND = {"Killed": ("caught", None), "Survived": ("missed", "survived"), "NoCoverage": ("missed", "nocoverage"),
+                 "Timeout": ("timeout", None), "CompileError": ("unviable", None), "RuntimeError": ("unviable", None),
+                 "Ignored": ("ignored", None), "Pending": ("pending", None)}
+PIT_KIND = {"KILLED": ("caught", None), "SURVIVED": ("missed", "survived"), "NO_COVERAGE": ("missed", "nocoverage"),
+            "TIMED_OUT": ("timeout", None), "NON_VIABLE": ("unviable", None), "MEMORY_ERROR": ("unviable", None),
+            "RUN_ERROR": ("unviable", None), "STARTED": ("pending", None), "NOT_STARTED": ("pending", None)}
+XML_DECL = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.I)
+
+
+class ReportError(ValueError):
+    """the report is not one of its format's: R3 reads it as n/a (env), never as a pass."""
+
+
+def _text(raw):
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ReportError(f"not UTF-8 ({e.reason} at byte {e.start})") from None
+
+
+def _report_path(name, crate):
+    """a file the report names, as a crate-relative posix path; None when it is outside the crate."""
+    p = name.replace("\\", "/")
+    if p.startswith("/") or re.match(r"^[A-Za-z]:/", p):
+        root = crate.replace("\\", "/").rstrip("/") + "/"
+        if not p.startswith(root):
+            return None
+        p = p[len(root):]
+    p = posixpath.normpath(p)
+    return None if p == ".." or p.startswith("../") or p.startswith("/") else p
+
+
+def _line(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else None
+
+
+def read_elements(raw, crate):
+    """(mutants, silent) of a mutation-testing-elements JSON report (Stryker, Stryker.NET, mull). silent: Survived
+    mutants a test covers that completed no test (the runner never ran them: not a result)."""
+    try:
+        doc = json.loads(_text(raw))
+    except RecursionError:
+        raise ReportError("not JSON: nested too deep") from None
+    except ValueError as e:
+        raise ReportError(f"not JSON: {e}") from None
+    if not isinstance(doc, dict):
+        raise ReportError("not a JSON object")
+    files = doc.get("files")
+    if not isinstance(files, dict):
+        raise ReportError("no files object")
+    out, silent = [], 0
+    for name, res in files.items():
+        if not isinstance(res, dict) or not isinstance(res.get("mutants"), list):
+            raise ReportError(f"`{name}`: no mutants list")
+        src = res.get("source") if isinstance(res.get("source"), str) else ""
+        path = _report_path(name, crate)
+        for m in res["mutants"]:
+            if not isinstance(m, dict):
+                raise ReportError(f"a mutant in `{name}` is not an object")
+            status = m.get("status")
+            if not isinstance(status, str) or status not in ELEMENTS_KIND:
+                raise ReportError(f"a mutant in `{name}` has status `{status}`: want one of " + ", ".join(ELEMENTS_KIND))
+            kind, fix = ELEMENTS_KIND[status]
+            loc = m.get("location") if isinstance(m.get("location"), dict) else {}
+            start = loc.get("start") if isinstance(loc.get("start"), dict) else {}
+            if status == "Survived" and m.get("coveredBy") and not m.get("testsCompleted"):
+                silent += 1
+            out.append(Found(path, _line(start.get("line")), kind, stryker_desc(m, src), fix, False))
+    return out, silent
+
+
+def _child_text(el, tag):
+    c = el.find(tag)
+    return (c.text or "").strip() if c is not None else None
+
+
+def read_pit(raw):
+    """the mutants of PIT's mutations.xml. A DTD or an entity declaration is refused before parsing (no XXE, no entity
+    expansion). PIT names a file by its package and file name: the path is that tail (suffix), matched to the diff."""
+    import xml.etree.ElementTree as ET
+    if XML_DECL.search(raw):
+        raise ReportError("has a DTD or an entity declaration: refused")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        raise ReportError(f"not XML: {e}") from None
+    if root.tag != "mutations":
+        raise ReportError(f"root is <{root.tag}>, not <mutations>")
+    out = []
+    for i, el in enumerate(root, 1):
+        if el.tag != "mutation":
+            raise ReportError(f"<{el.tag}> in <mutations>: want <mutation> only")
+        status = el.get("status")
+        if status not in PIT_KIND:
+            raise ReportError(f"mutation {i} has status `{status}`: want one of " + ", ".join(PIT_KIND))
+        src, cls = _child_text(el, "sourceFile"), _child_text(el, "mutatedClass")
+        if not src:
+            raise ReportError(f"mutation {i} has no sourceFile")
+        if "/" in src or "\\" in src or src in (".", ".."):
+            raise ReportError(f"mutation {i} has sourceFile `{src}`: want a file name")
+        if not cls:
+            raise ReportError(f"mutation {i} has no mutatedClass")
+        pkg = cls.rpartition(".")[0]
+        path = (pkg.replace(".", "/") + "/" if pkg else "") + src
+        ln = _child_text(el, "lineNumber") or ""
+        line = int(ln) if ln.isdigit() and int(ln) >= 1 else None
+        kind, fix = PIT_KIND[status]
+        mutator = (_child_text(el, "mutator") or "").rpartition(".")[2]
+        desc = f"{mutator} in {_child_text(el, 'mutatedMethod') or '?'}: {_child_text(el, 'description') or ''}".strip()
+        out.append(Found(path, line, kind, desc, fix, True))
+    return out
+
+
+def read_lines(raw, tool, crate):
+    """the mutants a line pattern reads from a report (or the tool's output): named groups file, line, status, and desc
+    when the pattern has one (else the matched text). A status word maps to missed, caught, timeout or unviable by
+    mutation.tool.status; one in no list is refused. A zero-width match never counts (#18)."""
+    text = _text(raw)
+    rx = tool["pattern_rx"]
+    words = {w: k for k, ws in tool["status"].items() for w in ws}
+    out = []
+    for m in (m for m in rx.finditer(text) if m.end() > m.start()):
+        n = text.count("\n", 0, m.start()) + 1
+        for g in ("file", "line", "status"):
+            if m.group(g) is None:
+                raise ReportError(f"line {n}: the pattern matched without its {g} group")
+        if not m.group("line").isdigit() or int(m.group("line")) < 1:
+            raise ReportError(f"line {n}: line `{m.group('line')}` is not a whole number >= 1")
+        kind = words.get(m.group("status"))
+        if kind is None:
+            raise ReportError(f"line {n}: status `{m.group('status')}` is in no mutation.tool.status list")
+        desc = m.group("desc") if "desc" in rx.groupindex and m.group("desc") is not None else None
+        out.append(Found(_report_path(m.group("file"), crate), int(m.group("line")), kind,
+                         " ".join((desc if desc is not None else m.group(0)).split()),
+                         "survived" if kind == "missed" else None, False))
+    return out
+
+
+def read_report(tool, raw, crate):
+    """(mutants, silent) of a report in the tool's format; ReportError when it is not one."""
+    if len(raw) > MAX_REPORT_BYTES:
+        raise ReportError(f"more than {MAX_REPORT_BYTES} bytes")
+    if tool["format"] == "mutation-testing-elements":
+        return read_elements(raw, crate)
+    if tool["format"] == "pit-xml":
+        return read_pit(raw), 0
+    return read_lines(raw, tool, crate), 0
+
+
+def _tracked_at(repo, head):
+    return [p for p in git(repo, "ls-tree", "-r", "-z", "--full-tree", "--name-only", head).split("\0") if p]
+
+
+def _locate(found, project_dir, tracked):
+    """(repo path, why) of a report's mutant: why None (located), "outside" (path None: a file outside the crate), or
+    "unlocated" (no line, or a PIT path tail that several tracked files under the crate end with: the path is the
+    first of them, so one shard counts it). A tail no tracked file ends with is outside."""
+    if found.file is None:
+        return None, "outside"
+    if not found.suffix:
+        return _repo_path(project_dir, found.file), None if found.line is not None else "unlocated"
+    hits = sorted(p for p in tracked if _under(p, project_dir)
+                  and (_crate_path(project_dir, p) == found.file or p.endswith("/" + found.file)))
+    if not hits:
+        return None, "outside"
+    return hits[0], None if len(hits) == 1 and found.line is not None else "unlocated"
+
+
+class DeclaredTool:
+    """R3 through an adapter file's [mutation.tool] (#19): the declared command runs on the changed lines (`{mutate}`:
+    one `mutate` range per run of changed lines of this shard's files) in a worktree at head, and the report it writes
+    is read by its format, not by the tool: mutation-testing-elements JSON, PIT's mutations.xml, or a line pattern.
+    MISSED mutants on changed lines are fails, the rest counted. As for Stryker: shards by changed production file,
+    mutation-budget stops the run (partial, never a pass), Pending mutants are untested. The tool lists no mutant before
+    its run, so max-mutants is not applied: the note says so. mutation.tool.runners (per [[run.runner]]): what the
+    runner needs in the project dir, and when the project has none of [mutation].config_files, the args added and the
+    config file written (into the worktree; the caller's checkout is never written)."""
+
+    def __init__(self, tool):
+        self.t = tool
+
+    def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
+        return _files_baseline(rv, shards)
+
+    def _not_installed(self, cmd):
+        return _check("n/a", f"{self.t['name']} not installed (env): `{cmd}` not runnable (mutation.tool.command); "
+                             "install it (setup-command) or set mutants-cmd"), []
+
+    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
+        repo, mb, head, adapter, test_globs, project_dir = rv
+        t, name = self.t, self.t["name"]
+        if adapter.target_os not in t["os"]:
+            return _check("n/a", f"{name} does not run on {adapter.target_os} (env): mutation.tool.os lists "
+                                 f"{', '.join(t['os'])}; the stack's target-os is {adapter.target_os}"), []
+        cmd = cmd or t["command"]
+        try:
+            base = shlex.split(cmd)
+        except ValueError:
+            base = []
+        if not base:
+            return self._not_installed(cmd)
+        prod = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
+        files = shard_files(prod, shard)
+        changed = added_lines(repo, mb, head)
+        budget = None if budget_min is None else budget_min * 60
+        with red.worktree(repo, head) as wt:
+            crate, bad = crate_check(rv, wt)
+            if bad:
+                return bad
+            if not files:
+                return _check("pass", "0 mutants in the diff (no changed production file in this shard)", 0, 0), []
+            adapter.worktree_setup(repo, wt, project_dir)
+            if t["version"] is not None:
+                rc, text = runner(base + t["version"], crate, PROBE_TIMEOUT)
+                if rc != 0 or (t["version_rx"] is not None and not _matched(t["version_rx"], text)):
+                    return self._not_installed(cmd)
+            run_name = adapter.runner_name(crate) if t["runners"] else None
+            extra = t["runners"].get(run_name, {}) if run_name else {}
+            if extra.get("needs") and not os.path.isfile(os.path.join(crate, extra["needs"])):
+                return _check("n/a", f"{run_name} not installed (env): `{extra['needs']}` not runnable "
+                                     f"(mutation.tool.runners.{run_name}.needs); install the project's dependencies "
+                                     "(setup-command)"), []
+            config = next((c for c in adapter.mutation.get("config_files", []) if os.path.lexists(os.path.join(crate, c))),
+                          None)
+            ranges = []
+            for f in files:
+                crate_f = _crate_path(project_dir, f)
+                if t["mutate_join"] in crate_f:
+                    return _check("n/a", f"{f}: a file name with `{t['mutate_join']}` in it cannot be passed to {name} "
+                                         "(env): mutation.tool.mutate_join"), []
+                for a, _, b in (r.partition("-") for r in line_ranges(ln for ln, _ in changed.get(f, []))):
+                    ranges.append(t["mutate"].format(file=crate_f, first=a, last=b) if "mutate" in t else crate_f)
+            if "mutate" in t and not ranges:
+                return _check("pass", "0 mutants in the diff", 0, 0), []
+            report = os.path.join(crate, t["report"])
+            if os.path.isdir(report) and not os.path.islink(report):
+                return _check("n/a", f"{name} report {t['report']} is a directory in the checkout (env): not read"), []
+            if os.path.lexists(report):
+                os.remove(report)  # a report the repo itself committed is never read as this run's
+            secs = t["timeout"] if mutant_timeout is None else mutant_timeout
+            words = {"mutate": t["mutate_join"].join(dict.fromkeys(ranges)), "timeout_ms": str(secs * 1000),
+                     "timeout_s": str(secs), "report": t["report"]}
+            argv = base + [a.format(**words) for a in t["args"]]
+            if config is None:
+                argv += [a.format(**words) for a in extra.get("args", [])]
+                if extra.get("config") is not None:
+                    with open(os.path.join(crate, extra["config_file"]), "w", encoding="utf-8") as fh:
+                        fh.write(extra["config"])
+            t0 = time.monotonic()
+            rc, text = runner(argv, crate, budget)
+            timing = {"wall_s": round(time.monotonic() - t0, 2)}
+            if rc is None:
+                return self._not_installed(cmd)
+            capped = (f"; max-mutants not applied: {name} makes its own mutants (no listing before its run): every "
+                      "changed line runs, the budget the only stop")
+            if not os.path.lexists(report):
+                if rc == "timeout":
+                    return {"status": "partial", "note": f"budget hit before {name} wrote its report: ? mutants, none read"
+                                                         + capped, "tested": None, "total": None, "timing": timing}, []
+                if t["baseline_rx"] is not None and _matched(t["baseline_rx"], text):
+                    return _check("fail", "baseline tests fail at head: mutants not run"), finalize([
+                        entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
+                              "fix the failing tests first: mutation needs an unmutated tree that passes",
+                              "a mutation check that did not run")])
+                return _check("n/a", f"no {name} report at {t['report']} (env): {_first_line(text) or f'exit {rc}'}; "
+                                     "check the tool's run log"), []
+            real_crate = os.path.realpath(crate)
+            if not os.path.realpath(report).startswith(real_crate + os.sep):
+                return _check("n/a", f"{name} report {t['report']} leads out of the project dir (env): not read"), []
+            try:
+                with open(report, "rb") as fh:
+                    raw = fh.read(MAX_REPORT_BYTES + 1)
+                rows, silent = read_report(t, raw, real_crate)
+            except OSError as e:
+                return _check("n/a", f"{name} report {t['report']} cannot be read (env): {e.strerror or e}"), []
+            except ReportError as e:
+                return _check("n/a", f"{name} report {t['report']} is malformed (env): {e}; check the tool's version "
+                                     "and its run log"), []
+            if silent:
+                return _check("n/a", f"{name} completed no test for {silent} covered mutant(s) (env): the test runner "
+                                     "did not run them; check the tool's test runner setup"), []
+            tracked = _tracked_at(repo, head) if any(r.suffix for r in rows) else []
+            first = shard_index(shard)[0] == 0
+            counts = {k: 0 for k in ("caught", "timeout", "unviable")}
+            outside = unlocated = 0
+            found, mine = [], []
+            for r in rows:
+                file, why = _locate(r, project_dir, tracked)
+                # each mutant is one shard's: its file's, or shard 0's for a file no shard holds (outside the diff)
+                if not ((file in files) if file in prod else first):
+                    continue
+                mine.append(r)
+                if r.kind in counts:
+                    counts[r.kind] += 1
+                if r.kind != "missed":
+                    continue
+                if why == "outside" or (why is None and r.line not in {n for n, _ in changed.get(file, [])}):
+                    outside += 1
+                elif why == "unlocated":
+                    unlocated += 1
+                else:
+                    found.append((file, r))
+            rows = mine
+            ents = finalize([
+                entry("R3", file, r.line, f"missed:{file}|{r.desc}", "agent-fixable", "fail",
+                      f"MISSED mutant {file}:{r.line}: {r.desc}",
+                      (f"add an assert that fails for this mutant: {r.desc}." if r.fix != "nocoverage" else
+                       "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
+                      f"MISSED mutant `{r.desc}` in `{file}`")
+                for file, r in found])
+            if unlocated:
+                ents += finalize([entry("R3", "", 0, "unlocated", "agent-fixable", "confirm",
+                                        f"R3 unlocated: {unlocated} missed mutant(s) have no location in the {name} report "
+                                        f"({t['report']}): not blocking",
+                                        "read checks.R3.note: the report gives no single file and line for these mutants; "
+                                        "check them by hand",
+                                        "counting an unlocated mutant as outside the diff, or as a fail without a look")])
+            if not rows and rc != "timeout":
+                return {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0, "timing": timing}, ents
+            live = [r for r in rows if r.kind != "ignored"]
+            tested = sum(1 for r in live if r.kind != "pending")
+            total = len(live)
+            fails = len(found)
+            note = (f"{tested}/{total} tested: {fails} missed in the diff, {outside} missed outside the diff, "
+                    f"{unlocated} unlocated, {counts['caught']} caught, {counts['timeout']} timeout, "
+                    f"{counts['unviable']} unviable")
+            if rc == "timeout":
+                note += f"; budget hit after {name} wrote its report"
+            if config is not None:
+                note += f" (repo config {config})"
+            check = _check("fail" if fails else "partial" if tested < total or rc == "timeout" else "pass",
+                           note + capped, tested, total)
+            check["timing"] = timing
+            return check, ents
+
+
+def _matched(rx, text):
+    return any(m.end() > m.start() for m in rx.finditer(text or ""))
+
+
+class NoTool:
+    """an adapter file with no [mutation.tool] (#19, R3 tier 3): R3 is n/a with the reason, never a pass."""
+
+    @staticmethod
+    def note(rv):
+        return f"stack `{rv.adapter.name}`: the adapter file declares no mutation tool ([mutation.tool]): R3 not run"
+
+    def baseline(self, rv, cmd, budget_min, shards, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
+        return _payload(False, 0, 0, None, _check("n/a", self.note(rv)), [])
+
+    def check(self, rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=DEFAULT_MAX_MUTANTS):
+        return _check("n/a", self.note(rv)), []
+
+
+def tool_for(adapter):
+    """the R3 tool of an adapter: a built-in's own, or an adapter file's declared tool (none: n/a)."""
+    if getattr(adapter, "from_file", False):
+        tool = getattr(adapter, "mutation_tool", None)
+        return DeclaredTool(tool) if tool else NoTool()
+    return TOOLS[adapter.name]
+
+
 TOOLS = {"rust": CargoMutants(), "python": Mutmut(), "ts": Stryker()}
 
 
@@ -1966,7 +2336,7 @@ def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=D
     Returns {run, count, mutants, timeout, check, entries}."""
     if not red.prod_changes(rv):
         return _payload(False, 0, 0, None, _check("skipped", "no production file changed"), [])
-    return TOOLS[rv.adapter.name].baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    return tool_for(rv.adapter).baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
 
 
 def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
@@ -1976,7 +2346,7 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     runner = runner or default_runner()
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check)]
     return check, ents

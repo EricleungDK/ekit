@@ -1,0 +1,135 @@
+{
+ "schemaVersion": "2",
+ "thresholds": {
+  "high": 80,
+  "low": 60
+ },
+ "files": {
+  "src/calc.mini": {
+   "language": "mini",
+   "source": "fn add(a, b) {\n  a + b\n}\n\nfn pos(n) {\n  n > 0\n}\n",
+   "mutants": [
+    {
+     "id": "1",
+     "mutatorName": "ArithmeticOperator",
+     "replacement": "a - b",
+     "location": {
+      "start": {
+       "line": 2,
+       "column": 3
+      },
+      "end": {
+       "line": 2,
+       "column": 8
+      }
+     },
+     "status": "Survived",
+     "coveredBy": [
+      "t1"
+     ],
+     "testsCompleted": 1
+    },
+    {
+     "id": "2",
+     "mutatorName": "EqualityOperator",
+     "replacement": "n >= 0",
+     "location": {
+      "start": {
+       "line": 6,
+       "column": 3
+      },
+      "end": {
+       "line": 6,
+       "column": 8
+      }
+     },
+     "status": "NoCoverage"
+    },
+    {
+     "id": "3",
+     "mutatorName": "BooleanLiteral",
+     "replacement": "true",
+     "location": {
+      "start": {
+       "line": 6,
+       "column": 3
+      },
+      "end": {
+       "line": 6,
+       "column": 8
+      }
+     },
+     "status": "Killed",
+     "coveredBy": [
+      "t1"
+     ],
+     "testsCompleted": 1
+    },
+    {
+     "id": "4",
+     "mutatorName": "BlockStatement",
+     "replacement": "{}",
+     "location": {
+      "start": {
+       "line": 1,
+       "column": 14
+      },
+      "end": {
+       "line": 1,
+       "column": 15
+      }
+     },
+     "status": "Timeout"
+    },
+    {
+     "id": "5",
+     "mutatorName": "StringLiteral",
+     "replacement": "\"\"",
+     "location": {
+      "start": {
+       "line": 1,
+       "column": 1
+      },
+      "end": {
+       "line": 1,
+       "column": 3
+      }
+     },
+     "status": "CompileError"
+    },
+    {
+     "id": "6",
+     "mutatorName": "ArithmeticOperator",
+     "replacement": "a * b",
+     "location": {
+      "start": {
+       "line": 2,
+       "column": 3
+      },
+      "end": {
+       "line": 2,
+       "column": 8
+      }
+     },
+     "status": "Ignored"
+    },
+    {
+     "id": "7",
+     "mutatorName": "ConditionalExpression",
+     "replacement": "false",
+     "location": {
+      "start": {
+       "line": 6,
+       "column": 3
+      },
+      "end": {
+       "line": 6,
+       "column": 8
+      }
+     },
+     "status": "Pending"
+    }
+   ]
+  }
+ }
+}

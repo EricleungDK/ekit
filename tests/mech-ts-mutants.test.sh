@@ -3,6 +3,8 @@
 # tests/fixtures/stryker (report.json = the JSON reporter's file, stdout.txt = the run's log, head/ = the source the
 # mutants were generated from). The stub (MECH_TEST_STUB) answers --version, copies the fixture report into
 # reports/mutation/mutation.json in the crate dir, prints the log and exits MUT_RC (or hangs with MUT_HANG=1).
+# MECH_ADAPTER_TS=<adapter file>: the CLI cases run TS from that file, R3 through its [mutation.tool] (#19,
+# tests/py/test_adapter_mutation_ts.py); the pure section tests the built-in's Stryker helpers either way.
 source "$(dirname "$0")/lib.sh"
 MR="$ROOT/scripts/mech-review.py"
 FX="$ROOT/tests/fixtures/stryker"
@@ -154,7 +156,7 @@ EOF
   H=$(commit "$R" head)
 }
 # st <repo> <base> <head> [args]: mutants with the ts stack and the stub
-st() { local r="$1" b="$2" h="$3"; shift 3; MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' "$@"; }
+st() { local r="$1" b="$2" h="$3"; shift 3; MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$r" --base "$b" --head "$h" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"} "$@"; }
 
 mrepo missed
 export MUT_REPORT="$FX/missed/report.json" MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=0
@@ -229,7 +231,7 @@ eq "$(jq -r '[.entries[] | select(.check=="R3")][0].severity' <<<"$out")" confir
 
 # no tool: n/a (env), never a pass
 mrepo notool
-out=$(MECH_TEST_STUB= python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' --mutants-cmd "ekit-no-such-stryker"); rc=$?
+out=$(MECH_TEST_STUB= python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"} --mutants-cmd "ekit-no-such-stryker"); rc=$?
 eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts no stryker: R3 n/a"
 has "$(jq -r .checks.R3.note <<<"$out")" "stryker not installed (env)" "ts no stryker: the note names the install"
 lacks "$(jq -r .summary <<<"$out")" "all pass" "ts no stryker: never all pass"
@@ -276,7 +278,7 @@ EOF
 H=$(commit "$R" head)
 : > "$MECH_STUB_LOG"
 export MUT_REPORT="$FX/missed/report.json" MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=0
-out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'pkg/tests/**' --project-dir pkg); rc=$?
+out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'pkg/tests/**' --project-dir pkg ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 has "$(cat "$MECH_STUB_LOG")" "/pkg | run --mutate src/calc.ts:2-2" "ts project-dir: runs in the crate, crate-relative mutate"
 eq "$(jq -r '[.entries[].file] | unique | join(",")' <<<"$out")" "pkg/src/calc.ts" "ts project-dir: entry paths are repo-root"
 
@@ -290,7 +292,7 @@ put "$R" src/calc.ts <<'EOF'
 export const a = 2;
 EOF
 H=$(commit "$R" head)
-out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**'); rc=$?
+out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" mutants --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts no package.json: R3 n/a"
 has "$(jq -r .checks.R3.note <<<"$out")" "no package.json in .: set project-dir" "ts no package.json: the note names package.json"
 lacks "$(jq -r .checks.R3.note <<<"$out")" "Cargo" "ts no package.json: no Cargo text"
@@ -385,7 +387,7 @@ eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts report with a non-object mutan
 
 # plan: a ts production change runs the mutants job
 mrepo plan
-out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**')
+out=$(python3 -I "$MR" plan --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'tests/**' ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"})
 eq "$(jq -c . <<<"$out")" '{"run":true}' "ts plan: a production change runs the mutants job"
 
 done_tests

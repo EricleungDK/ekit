@@ -1,7 +1,7 @@
-# ekit adapter file: TypeScript / JavaScript, the R2 side (#16) and the R1/R4 run side (#18). It describes what the
-# built-in `ts` adapter (scripts/mech_review/stack.py, TsAdapter) reads and runs, and R2, R1 and R4 through it give the
-# same entries.
-# Use: mech-review.py r2 --stack ts --adapter scripts/mech_review/adapters/ts.toml (or red, all)
+# ekit adapter file: TypeScript / JavaScript, the R2 side (#16), the R1/R4 run side (#18) and R3 through Stryker (#19).
+# It describes what the built-in `ts` adapter (scripts/mech_review/stack.py, TsAdapter) reads and runs, and R2, R1, R4
+# and R3 through it give the same entries.
+# Use: mech-review.py r2 --stack ts --adapter scripts/mech_review/adapters/ts.toml (or red, all, mutants, baseline, plan)
 # Format: docs/mech-review-ci.md#adapter-file
 format = 1
 name = "ts"
@@ -97,6 +97,48 @@ config_files = [
   ".stryker.config.js", ".stryker.config.mjs", ".stryker.config.cjs", ".stryker.config.ts", ".stryker.config.mts",
   ".stryker.config.cts", ".stryker.config.json",
 ]
+
+# R3 (#19): Stryker 10.0.0 on the changed lines (`--mutate file:a-b` per run of changed lines), its JSON reporter's file
+# read as mutation-testing-elements. The workflow passes --mutants-cmd (its own Stryker install) in place of command.
+[mutation.tool]
+name = "stryker"
+command = "node_modules/.bin/stryker"
+version = ["--version"]
+version_pattern = '^\d+\.\d+\.\d+$'
+args = ["run", "--mutate", "{mutate}", "--reporters", "json", "--allowConsoleColors", "false", "--timeoutMS", "{timeout_ms}"]
+mutate = "{file}:{first}-{last}"
+mutate_join = ","
+report = "reports/mutation/mutation.json"
+format = "mutation-testing-elements"
+os = ["linux", "macos", "windows"]
+timeout = 120
+baseline_failed = 'There were failed tests in the initial test run'
+
+# vitest with no repo Stryker config: the command runner runs the suite per mutant (the vitest plugin of Stryker 10.0.0
+# completes no test nested in describe on vitest 5), per-test coverage off
+[mutation.tool.runners.vitest]
+needs = "node_modules/.bin/vitest"
+config_file = "stryker.conf.json"
+config = '''
+{
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "npx --no-install vitest run"
+  },
+  "coverageAnalysis": "off",
+  "checkers": [],
+  "reporters": [
+    "json"
+  ],
+  "thresholds": {
+    "break": null
+  }
+}'''
+
+# jest with no repo Stryker config: Stryker's jest plugin
+[mutation.tool.runners.jest]
+needs = "node_modules/.bin/jest"
+args = ["--testRunner", "jest"]
 
 # the stack's commands: ci-doctor writes base CI jobs from them; R1 and R4 start from test ("" = the stack has none)
 [commands]
