@@ -225,6 +225,7 @@ class RunSideBehaviour(unittest.TestCase):
         self.assertEqual(a.outcome(1, "suite a: 0 passed\nsuite b: 1 failed\n"), "fail")
         self.assertEqual(a.outcome(0, "suite a: 0 passed\nsuite b: 2 passed\n"), "pass")
         self.assertEqual(a.outcome(0, "suite a: 0 passed\n"), "none")
+        self.assertEqual(a.outcome(1, "suite a: 0 passed\n"), "error")  # no skipped pattern: no skipped count
         self.assertEqual(a.outcome(0, "nothing counted\n"), "error")
 
     def test_a_summary_group_is_the_text_counts_are_read_from(self):

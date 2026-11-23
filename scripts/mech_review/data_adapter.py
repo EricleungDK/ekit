@@ -326,8 +326,13 @@ class DataAdapter(Adapter):
         `%s`) become `any`. No [run.name]: the part as it is."""
         nm = self.run.get("name", {})
         esc = nm.get("escape", "")
-        pieces = self._rx["placeholders"].split(seg) if "placeholders" in self._rx else [seg]
-        return nm.get("any", "").join("".join("\\" + ch if ch in esc else ch for ch in p) for p in pieces)
+
+        def escaped(text):
+            return "".join("\\" + ch if ch in esc else ch for ch in text)
+
+        if "placeholders" not in self._rx:
+            return escaped(seg)
+        return nm["any"].join(escaped(p) for p in self._rx["placeholders"].split(seg))  # load: any comes with placeholders
 
     def _count(self, key, text):
         rx = self._rx.get(key)
