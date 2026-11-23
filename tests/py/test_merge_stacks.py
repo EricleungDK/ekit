@@ -77,6 +77,33 @@ class TestVerdict(unittest.TestCase):
         self.assertEqual(env["checks"]["D"], drift["checks"]["D"])
         self.assertNotIn("D", env["stacks"][0]["checks"])
 
+    def test_could_not_run_ranks_above_unproven(self):
+        r0 = lambda status: {"R0": {"status": status, "note": ""}}
+        for a, b in (("unproven", "n/a"), ("n/a", "unproven")):
+            env = merge.combine_stacks([(API, stack_env(**r0(a))), (WEB, stack_env(**r0(b)))])
+            self.assertEqual(env["checks"]["R0"]["status"], "n/a", (a, b))
+
+    def test_an_unknown_status_fails_the_check_never_passes(self):
+        env = merge.combine_stacks([(API, stack_env(**{"R3": {"status": "bogus", "note": ""}})), (WEB, stack_env())])
+        self.assertEqual(env["checks"]["R3"]["status"], "fail")
+        self.assertIn("api: unknown status `bogus`", env["checks"]["R3"]["note"])
+        self.assertTrue(env["summary"].startswith(f"fail {HEAD} "), env["summary"])
+
+    def test_the_drift_results_ci_entry_is_kept(self):
+        ci = {"id": "CI-12345678", "check": "CI", "class": "env", "severity": "fail", "file": "", "line": 0,
+              "problem": "the stack plan does not read", "hint": "", "forbidden": ""}
+        drift = envelope(BASE, HEAD, [ci], dict({c: {"status": "skipped", "note": ""} for c in CHECKS},
+                                                D={"status": "fail", "note": "bad plan"}))
+        env = merge.combine_stacks([(API, stack_env()), (WEB, stack_env())], drift=drift)
+        self.assertIn("CI-12345678", [e["id"] for e in env["entries"]])
+
+    def test_no_drift_result_with_several_stacks_fails_d_with_a_ci_entry(self):
+        env = merge.combine_stacks([(API, stack_env()), (WEB, stack_env())], drift_reason="result is for an older head")
+        self.assertEqual(env["checks"]["D"], {"status": "fail", "note": "no result from drift job: result is for an older head"})
+        [ci] = env["entries"]
+        self.assertEqual((ci["check"], ci["problem"]), ("CI", "drift job produced no result: result is for an older head"))
+        self.assertTrue(env["summary"].startswith(f"fail {HEAD} "), env["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

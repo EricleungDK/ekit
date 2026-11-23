@@ -8,10 +8,16 @@ import unittest
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 import test_comment_cli as tc
 from scripts.mech_review import merge
+from scripts.mech_review.report import summarize
 
 SHA = tc.SHA
 API = {"name": "api", "stack": "python", "project_dir": "api"}
 WEB = {"name": "web", "stack": "ts", "project_dir": "web"}
+def envelope(head, checks):
+    return {"ekit": "0", "base": "b" * 40, "head": head, "checks": checks, "entries": [],
+            "summary": summarize(head, checks, [])}
+
+
 PROTECTED = dict(tc.FAIL, id="R2-0badc0de", file=".github/ci.yml", line=0, problem="protected path changed",
                  **{"class": "needs-human"})
 
@@ -31,6 +37,15 @@ class TestStacksPoster(unittest.TestCase):
     def two_stacks(self, web_r2=None):
         return self.manifest((API, {"r2": self.save("api-r2.json", [PROTECTED])}),
                              (WEB, {"r2": web_r2 or self.save("web-r2.json", [PROTECTED])}))
+
+    def clean_drift(self):
+        """a drift result with D passing (a plan that matches the tree)"""
+        checks = {c: {"status": "skipped", "note": "not run by drift"} for c in ("R1", "R2", "R3", "R4")}
+        checks["D"] = {"status": "pass", "note": "clean", "messages": []}
+        path = os.path.join(self.tmp.name, "drift-clean.json")
+        with open(path, "w") as f:
+            json.dump(envelope(SHA, checks), f)
+        return path
 
     def labelled(self, leg):
         return merge.label_stack({"entries": [PROTECTED]}, leg)["entries"][0]["id"]
@@ -57,7 +72,7 @@ class TestStacksPoster(unittest.TestCase):
 
     def test_waivers_on_every_stacks_entry_pass_the_check(self):
         api = tc.Api([tc.person(f"/mech-waive {self.labelled(API)}: ok"), tc.person(f"/mech-waive {self.labelled(WEB)}: ok")])
-        p = self.call(["--stacks", self.two_stacks(), "--head", SHA], api)
+        p = self.call(["--stacks", self.two_stacks(), "--envelope", "drift=" + self.clean_drift(), "--head", SHA], api)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(f"**pass {SHA} (0 fail, 0 confirm, 2 waived;", api.writes[0])
 
@@ -99,18 +114,46 @@ class TestStacksPoster(unittest.TestCase):
         self.assertEqual(p.returncode, 4)
         self.assertIn("reason: api: r2 job: no JSON; web: r2 job: no JSON", api.writes[0])
 
-    def test_stacks_take_no_job_envelope_but_drift_and_need_a_readable_list(self):
+    def test_stacks_take_no_job_envelope_but_drift(self):
         p = self.call(["--stacks", self.two_stacks(), "--envelope", "r2=" + self.save("r2.json", []), "--head", SHA],
                       tc.Api())
         self.assertEqual(p.returncode, 2)
         self.assertIn("mech-comment: with --stacks, --envelope takes drift=FILE only (the repo's)", p.stderr)
-        bad = os.path.join(self.tmp.name, "bad.json")
-        with open(bad, "w") as f:
-            f.write("[{}]")
-        p = self.call(["--stacks", bad, "--head", SHA], tc.Api())
-        self.assertEqual(p.returncode, 2)
-        self.assertIn(f"mech-comment: --stacks {bad}: want a list of {{name, stack, project_dir, envelopes}}", p.stderr)
 
+    def test_a_malformed_stacks_file_posts_the_crash_comment_naming_it(self):
+        bad = os.path.join(self.tmp.name, "bad.json")
+        leg = dict(API, envelopes={"r2": "x.json"})
+        for text in ("[{}]", "[]", "{}", '"x"', json.dumps([dict(API, envelopes={})]), "not json",
+                     json.dumps([leg, leg]), json.dumps([leg, dict(leg, name="api2")]),
+                     json.dumps([leg, dict(leg, stack="ts", project_dir="web")])):
+            with open(bad, "w") as f:
+                f.write(text)
+            api = tc.Api()
+            p = self.call(["--stacks", bad, "--head", SHA], api)
+            self.assertEqual(p.returncode, 4, text)
+            self.assertIn(f"reason: --stacks {bad}: want a list of distinct {{name, stack, project_dir, envelopes}} "
+                          "(one per stack: no name, and no stack and project dir, twice)", api.writes[0])
+
+    def test_a_drift_result_for_another_head_is_a_ci_entry_as_for_one_stack(self):
+        path, _ = tc.TestPoster.drift_result(self)
+        with open(path) as f:
+            env = json.load(f)
+        with open(path, "w") as f:
+            json.dump(dict(env, head="c" * 40), f)
+        api = tc.Api()
+        p = self.call(["--stacks", self.manifest((API, {"r2": self.save("api-r2.json", [])}),
+                                                 (WEB, {"r2": self.save("web-r2.json", [])})),
+                       "--envelope", f"drift={path}", "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn(f"drift job produced no result: result is for an older head, not {SHA}", api.writes[0])
+        self.assertIn(f"**fail {SHA} (1 fail, 0 confirm; ran: R2 D;", api.writes[0])
+
+    def test_no_drift_result_with_several_stacks_is_a_ci_entry(self):
+        api = tc.Api()
+        p = self.call(["--stacks", self.manifest((API, {"r2": self.save("api-r2.json", [])}),
+                                                 (WEB, {"r2": self.save("web-r2.json", [])})), "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertIn("drift job produced no result: no drift result given (a stack plan always has one)", api.writes[0])
 
 if __name__ == "__main__":
     unittest.main()

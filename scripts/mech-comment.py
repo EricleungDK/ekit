@@ -63,7 +63,8 @@ def named(jobs, head, reason):
 
 
 def read_stacks(path):
-    """[{name, stack, project_dir, envelopes: {job: file}}] from the --stacks file, or None when it is not that."""
+    """[{name, stack, project_dir, envelopes: {job: file}}] from the --stacks file, or None when it is not that, or a
+    stack is in it twice (by name, or by stack and project dir): its two rows would share entry ids."""
     try:
         with open(path) as fh:
             legs = json.load(fh)
@@ -74,6 +75,9 @@ def read_stacks(path):
         and isinstance(leg.get("envelopes"), dict) and leg["envelopes"]
         and all(j in merge.OWNS and j != "drift" and isinstance(f, str) for j, f in leg["envelopes"].items())
         for leg in legs)
+    if ok and (len({leg["name"] for leg in legs}) < len(legs)
+               or len({(leg["stack"], leg["project_dir"]) for leg in legs}) < len(legs)):
+        ok = False
     return legs if ok else None
 
 
@@ -124,22 +128,26 @@ def main(argv):
             print("mech-comment: with --stacks, --envelope takes drift=FILE only (the repo's)", file=sys.stderr)
             return 2
         legs = read_stacks(args.stacks)
-        if legs is None:
-            print(f"mech-comment: --stacks {args.stacks}: want a list of {{name, stack, project_dir, envelopes}}",
-                  file=sys.stderr)
-            return 2
-        stacks, crashes = [], []
-        for leg in legs:
+        stacks, crashes, env, drift_why = [], [], None, None
+        if legs is None:  # no result to report: the crash comment names the file
+            crashes = [f"--stacks {args.stacks}: want a list of distinct {{name, stack, project_dir, envelopes}} "
+                       "(one per stack: no name, and no stack and project dir, twice)"]
+            print(f"mech-comment: {crashes[0]}", file=sys.stderr)
+        for leg in legs or []:
             got, why = named(list(leg["envelopes"].items()), args.head, args.reason)
             stacks.append(({k: leg[k] for k in ("name", "stack", "project_dir")}, got))
             crashes.append(f"{leg['name']}: {why}")
+        # several stacks come from a plan, so a drift result is always due: none, or one for another head, fails D
         drift = load(jobs[0][1]) if jobs else None
-        if drift is not None and args.head and drift["head"] != args.head:
-            drift = None
+        if not jobs:
+            drift_why = "no drift result given (a stack plan always has one)"
+        elif drift is None:
+            drift_why = args.reason
+        elif args.head and drift["head"] != args.head:
+            drift, drift_why = None, f"result is for an older head, not {args.head}"
         crash = "; ".join(crashes)
-        env = None
-        if drift is not None or any(e is not None for _, e in stacks):
-            env = merge.combine_stacks(stacks, drift)
+        if stacks and (drift is not None or any(e is not None for _, e in stacks)):
+            env = merge.combine_stacks(stacks, drift, drift_reason=drift_why)
     elif jobs and jobs[0][0] is not None:
         env, crash = named(jobs, args.head, args.reason)
     else:
@@ -162,7 +170,7 @@ def main(argv):
             notes = list(C.comments(call, api, repo, args.pr))
             waivers = waiver.collect(notes)
             if stacks is not None:  # each stack's own checks read its waivers too
-                env = merge.combine_stacks(stacks, drift, waive=lambda e: waiver.apply(e, waivers))
+                env = merge.combine_stacks(stacks, drift, waive=lambda e: waiver.apply(e, waivers), drift_reason=drift_why)
             else:
                 env = waiver.apply(env, waivers)
             failing = {e["id"] for e in env["entries"] if e["severity"] == "fail"}

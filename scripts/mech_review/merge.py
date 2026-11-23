@@ -298,17 +298,21 @@ def _no_stack_result(leg, head, base):
 
 
 def _worst(named):
-    """One check from [(stack name, check)]: the worst status; the note names each stack's status (and note)."""
-    status = min((c.get("status") for _, c in named), key=lambda x: WORST.index(x) if x in WORST else 0)
-    note = "; ".join(f"{name}: {c.get('status')}" + (f" ({c['note']})" if c.get("note") else "") for name, c in named)
+    """One check from [(stack name, check)]: the worst status; the note names each stack's status (and note). A status
+    this engine does not know fails the check, named: it never reads as a pass."""
+    unknown = [f"{name}: unknown status `{c.get('status')}`" for name, c in named if c.get("status") not in WORST]
+    status = "fail" if unknown else min((c["status"] for _, c in named), key=WORST.index)
+    note = "; ".join(unknown + [f"{name}: {c.get('status')}" + (f" ({c['note']})" if c.get("note") else "")
+                                for name, c in named if c.get("status") in WORST])
     return {"status": status, "note": note}
 
 
-def combine_stacks(legs, drift=None, waive=None):
+def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
     """One result from the results of several stacks (#17). legs: [(leg {name, stack, project_dir}, envelope or None)]
     in the plan's order, at least one envelope present; None is a stack with no result at all (it fails, named). Each
     envelope is labelled (label_stack), then waive(envelope) applies the PR's waivers to it, so each stack's own checks
-    read them too. drift: the repo's drift result (D is one for the repo, not per stack), waived the same way.
+    read them too. drift: the repo's drift result (D is one for the repo, not per stack), waived the same way; with
+    none, drift_reason (why there is none) fails D with a CI entry, as merge does for a job with no result.
     The whole: `stacks` [{name, stack, project_dir, summary, checks}], every entry, and per check the worst of the
     stacks that report it (R0 only where it ran); the summary from those."""
     present = [env for _, env in legs if env is not None] + ([drift] if drift is not None else [])
@@ -330,5 +334,10 @@ def combine_stacks(legs, drift=None, waive=None):
         if "D" in drift["checks"]:
             checks["D"] = drift["checks"]["D"]
         entries += [e for e in drift["entries"] if e["check"] in ("D", "CI")]
+    elif drift_reason is not None:
+        checks["D"] = {"status": "fail", "note": f"no result from drift job: {drift_reason}"}
+        entries += finalize([entry("CI", "", 0, "no-result:drift", "env", "fail",
+                                   f"drift job produced no result: {drift_reason}",
+                                   "see the job log; the checks it owns did not run", "a merged result without that job")])
     entries = sorted(entries, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return dict(envelope(base, head, entries, checks), stacks=stacks)
