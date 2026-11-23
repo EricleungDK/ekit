@@ -281,7 +281,10 @@ class ParserR2(unittest.TestCase):
                 _, problem = self.failed(self.emit(json.dumps(doc)))
                 self.assertIn("printed facts the schema refuses: " + want, problem)
         for raw, want in ((b'{"format": 1, "format": 1}', "key `format` given twice"), (b"NaN", "`NaN` is not JSON"),
-                          (b"\xff", "not UTF-8"), (b"[" * 100000, "nested too deep"), (b"", "Expecting value")):
+                          (b"\xff", "not UTF-8"), (b"[" * 100000, "nested too deep"), (b"", "Expecting value"),
+                          # a depth limit of the core's own, whatever the interpreter's recursion limit (CI's python
+                          # parses 100000 levels): the facts nest 4 deep
+                          (b"[" * 33, "nested too deep"), (b'{"a": ' * 40 + b"1" + b"}" * 40, "nested too deep")):
             with self.subTest(want=want):
                 _, problem = self.failed(self.emit(raw))
                 self.assertIn("printed invalid JSON: " + want, problem)
@@ -300,9 +303,9 @@ class ParserR2(unittest.TestCase):
                "tests": [{"name": "a", "line": 1, "end_line": 1, "markers": [], "body": None, "calls": []},
                          {"name": "a", "line": 2, "end_line": 3, "markers": [], "body": None, "calls": []}],
                "asserts": [{"line": 3, "test": "a", "owner": "a", "kind": "other", "left": None, "right": None,
-                            "text": "ok(\n\tx)"}]}
+                            "text": "ok(\n\tx" + '\\"' + "[{" * 40 + ")"}]}
         a = adapter_file.load(self.emit(json.dumps(doc))).at("tests/a.mini")
-        self.assertEqual([(x.line, x.fn, x.text) for x in a.assertions("1\n2\n3\n")], [(3, "a", "ok( x)")])
+        self.assertEqual([(x.line, x.fn, x.text) for x in a.assertions("1\n2\n3\n")], [(3, "a", "ok( x" + '\\"' + "[{" * 40 + ")")])
 
     def test_many_keys_under_the_size_limit_are_checked_in_linear_time(self):
         keys = 300000  # about 4 MiB: a quadratic duplicate-key check takes hours here (the twice-given key is last)

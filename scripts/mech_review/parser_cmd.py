@@ -31,6 +31,7 @@ FORMAT = 1
 MAX_OUTPUT = 16 * 1024 * 1024  # bytes of stdout: more is refused, not read
 MAX_ITEMS = 100000  # entries per list
 MAX_TEXT = 65536  # characters per string
+MAX_DEPTH = 32  # nested arrays and objects: the facts nest 4 deep; checked by the core, whatever python's own limit
 MARKERS = ("ignore", "only", "should_panic")
 KINDS = ("eq", "ne", "other")
 TOP = ("format", "parse_error", "tests", "asserts", "suppressions", "mutation_skips")
@@ -190,6 +191,28 @@ def _unsafe(v, allowed):
     return None
 
 
+def _depth(text):
+    """the deepest nesting of arrays and objects in JSON text, brackets inside strings not counted (linear)."""
+    depth = deepest = 0
+    in_str = escaped = False
+    for ch in text:
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch in "]}":
+            depth -= 1
+    return deepest
+
+
 def _no_constant(name):
     raise _Bad(f"`{name}` is not JSON")
 
@@ -197,7 +220,10 @@ def _no_constant(name):
 def check(raw, text):
     """the facts in raw (the command's stdout, bytes) for a file whose text is text, validated: ParserError otherwise."""
     try:
-        doc = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_dupes, parse_constant=_no_constant)
+        body = raw.decode("utf-8")
+        if _depth(body) > MAX_DEPTH:
+            raise RecursionError
+        doc = json.loads(body, object_pairs_hook=_no_dupes, parse_constant=_no_constant)
     except UnicodeDecodeError as e:
         raise ParserError(f"printed invalid JSON: not UTF-8 ({e.reason} at byte {e.start})") from None
     except _Bad as e:
