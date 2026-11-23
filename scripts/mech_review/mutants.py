@@ -2047,6 +2047,9 @@ def read_pit(raw):
     """the mutants of PIT's mutations.xml. A DTD or an entity declaration is refused before parsing (no XXE, no entity
     expansion). PIT names a file by its package and file name: the path is that tail (suffix), matched to the diff."""
     import xml.etree.ElementTree as ET
+    _text(raw)  # UTF-8 only: a wide encoding (UTF-16, UTF-32) would hide a declaration from the byte check below
+    if b"\x00" in raw:
+        raise ReportError("not UTF-8 (a NUL byte: a wide encoding)")
     if XML_DECL.search(raw):
         raise ReportError("has a DTD or an entity declaration: refused")
     try:

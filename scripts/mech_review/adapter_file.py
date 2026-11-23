@@ -329,7 +329,9 @@ def _tool(d, config_files, run):
     elif "mutate" in used:
         _err(f + ".mutate", "missing: an arg uses `{mutate}`, the changed line ranges")
     _str(d.get("mutate_join", ","), f + ".mutate_join")
-    version = _strs(d["version"], f + ".version") if "version" in d else None
+    version = _strs(d["version"], f + ".version", nonempty=True) if "version" in d else None
+    if "runners" in d:
+        _tool_runners(d["runners"], f + ".runners", config_files, run)
     tool = dict(d, args=list(args), mutate_join=d.get("mutate_join", ","), version=version,
                 timeout=d.get("timeout", DEFAULT_TOOL_TIMEOUT), runners=dict(d.get("runners", {})))
     tool["version_rx"] = None
@@ -355,8 +357,6 @@ def _tool(d, config_files, run):
         for k, what in (("pattern", "no pattern"), ("status", "no status lists")):
             if k in d:
                 _err(f"{f}.{k}", f"format {fmt} has {what} (lines only)")
-    if "runners" in d:
-        _tool_runners(d["runners"], f + ".runners", config_files, run)
     return tool
 
 
@@ -386,10 +386,11 @@ def _lines_format(d, f):
 def _tool_runners(d, f, config_files, run):
     """mutation.tool.runners.<[[run.runner]] name>: needs (a file the tool needs in the project dir: the runner's
     binary), and for a project with none of [mutation].config_files the args added and the config file written."""
+    if not isinstance(d, dict):
+        _err(f, "want a table")
     if run is None:
         _err(f, "needs [run]: a runner is one of [[run.runner]]")
-    names = [r["name"] for r in run.get("runner", [])]
-    _table(d, f, tuple(d))
+    names = [r["name"] for r in run.get("runner", []) if isinstance(r, dict) and isinstance(r.get("name"), str)]
     for name, r in d.items():
         rf = f"{f}.{name}"
         if name not in names:

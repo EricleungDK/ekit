@@ -118,6 +118,13 @@ class Pit(unittest.TestCase):
                     M.read_pit(x)
                 self.assertIn("a DTD or an entity declaration: refused", str(cm.exception))
 
+    def test_a_report_in_a_wide_encoding_is_refused_so_no_declaration_hides_from_the_check(self):
+        x = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE m [<!ENTITY a "b">]><mutations>&a;</mutations>'
+        for raw in (x.encode("utf-16"), x.encode("utf-16-be"), x.encode("utf-32")):
+            with self.assertRaises(M.ReportError) as cm:
+                M.read_pit(raw)
+            self.assertIn("not UTF-8", str(cm.exception))
+
     def test_malformed_reports_are_refused_with_the_reason(self):
         ok = b"<sourceFile>A.java</sourceFile><mutatedClass>p.A</mutatedClass><lineNumber>3</lineNumber>"
         cases = {b"<mutations>": "not XML", b"<report/>": "root is <report>, not <mutations>",

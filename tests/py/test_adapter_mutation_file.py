@@ -139,6 +139,14 @@ class Declared(unittest.TestCase):
         self.assertIn("matches empty text", self.err(with_tool(changed(version=["-V"], version_pattern="(?=x)"))))
         self.assertIn("bad regex", self.err(with_tool(changed(version=["-V"], version_pattern="("))))
 
+    def test_an_empty_version_probe_is_refused(self):
+        self.assertEqual(self.err(with_tool(changed(version=[]))), "mutation.tool.version: want at least one entry")
+
+    def test_runners_that_are_not_a_table(self):
+        for bad in (3, "fast", ["fast"], True):
+            with self.subTest(bad):
+                self.assertEqual(self.err(with_tool(changed(runners=bad), **RUN)), "mutation.tool.runners: want a table")
+
     def test_baseline_failed_is_a_pattern_that_needs_output(self):
         self.assertIn("mutation.tool.baseline_failed: `x*` matches empty text",
                       self.err(with_tool(changed(baseline_failed="x*"))))
