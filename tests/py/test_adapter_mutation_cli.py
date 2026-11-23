@@ -147,6 +147,16 @@ class Case(unittest.TestCase):
             return f.read()
 
 
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def write(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
 def ents(env):
     return [(e["severity"], e["file"], e["line"], e["problem"]) for e in env["entries"]]
 
@@ -328,17 +338,17 @@ class NotRun(Case):
 
     def test_a_covered_mutant_no_test_completed_is_n_a(self):
         self.pr()
-        doc = json.load(open(os.path.join(FX, "elements.json")))
+        doc = json.loads(read(os.path.join(FX, "elements.json")))
         doc["files"]["src/calc.mini"]["mutants"][0]["testsCompleted"] = 0
         silent = os.path.join(self.tmp, "silent.json")
-        json.dump(doc, open(silent, "w"))
+        write(silent, json.dumps(doc))
         _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_REPORT": silent,
                                                                                "STUB_TO": "out/report.json"})
         self.assertEqual(env["checks"]["R3"]["status"], "n/a")
         self.assertIn("completed no test for 1 covered mutant(s) (env)", env["checks"]["R3"]["note"])
 
     def test_a_committed_report_is_never_read_as_the_runs(self):
-        self.pr(head={"src/calc.mini": HEAD_SRC, "out/report.json": open(os.path.join(FX, "elements.json")).read()})
+        self.pr(head={"src/calc.mini": HEAD_SRC, "out/report.json": read(os.path.join(FX, "elements.json"))})
         _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)))
         self.assertEqual(env["checks"]["R3"]["status"], "n/a")
         self.assertTrue(env["checks"]["R3"]["note"].startswith("no mut report at out/report.json (env)"))
@@ -416,12 +426,12 @@ class ShardsBudgetPartial(Case):
 
     def test_pending_mutants_with_nothing_missed_are_partial(self):
         self.pr()
-        doc = json.load(open(os.path.join(FX, "elements.json")))
+        doc = json.loads(read(os.path.join(FX, "elements.json")))
         for m in doc["files"]["src/calc.mini"]["mutants"]:
             if m["status"] in ("Survived", "NoCoverage"):
                 m["status"] = "Killed"
         p = os.path.join(self.tmp, "killed.json")
-        json.dump(doc, open(p, "w"))
+        write(p, json.dumps(doc))
         r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_REPORT": p,
                                                                                "STUB_TO": "out/report.json"})
         self.assertEqual((r.returncode, env["checks"]["R3"]["status"], env["checks"]["R3"]["tested"],
