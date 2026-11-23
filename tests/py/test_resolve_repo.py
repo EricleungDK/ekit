@@ -257,21 +257,131 @@ class RepoAdapterByName(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("adapter file .ekit/adapters/mini.toml: format: `2`: want 1", r.stderr)
 
-    def test_the_run_side_checks_do_not_take_a_repo_adapter_yet(self):
-        # an adapter file's run side (R1, R3, R4) is not built: red, mutants and baseline know the built-ins only
-        base = self.repo.commit({"tests/calc.mini": CALC, ".ekit/adapters/mini.toml": mini()})
-        for check in ("red", "mutants", "baseline"):
-            with self.subTest(check):
-                r = _kit.run_cli([check, "--repo", self.repo.path, "--base", base, "--head", base, "--stack", "mini",
-                                  "--test-paths", "tests/**"])
-                self.assertEqual((r.returncode, r.stdout), (2, ""))
-                self.assertIn("argument --stack: invalid choice: 'mini'", r.stderr)
-
     def test_an_unknown_name_is_still_a_usage_error(self):
         base = self.repo.commit({"tests/calc.mini": CALC})
         r = r2(self.repo, base, base, "mini")
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("argument --stack: invalid choice: 'mini'", r.stderr)
+
+
+BOGUS = "bogus = 1\n"  # an unknown top-level key: the plan does not read
+
+
+class BadBasePlan(unittest.TestCase):
+    """Review round 1, finding 1 (S6): stacks and adapters come only from a base plan that reads. When the base plan does
+    not read, auto detects on the base tree with the base's adapter files; the PR's own plan never picks the stack or
+    the adapter (it may still set target_os, as #56 has it, for the PR that fixes the plan)."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+
+    def test_a_pr_that_rewrites_a_bad_base_plan_does_not_pick_its_stack(self):
+        base = self.repo.commit({"api/pyproject.toml": "", "api/package.json": "{}",
+                                 PLAN: BOGUS + plan(("api", "api", "python", "current"))})
+        head = self.repo.commit({PLAN: plan(("api", "api", "ts", "current"))})
+        r, got = resolve(self.repo, base, head)
+        self.assertEqual((r.returncode, got), (1, {
+            "stack": None, "project_dir": ".", "target_os": None,
+            "error": "stack auto, base: several projects: python in api, ts in api; set the stack and project-dir inputs "
+                     "in the mech-review caller"}), r.stderr)
+
+    def test_a_pr_cannot_bring_its_own_adapter_file_through_a_fixed_plan(self):
+        base = self.repo.commit({"pyproject.toml": "", "lib/mini.json": "{}", PLAN: BOGUS})
+        head = self.repo.commit({".ekit/x/evil.toml": mini("windows"),
+                                 PLAN: plan(("lib", "lib", ".ekit/x/evil.toml", "current"))})
+        r, got = resolve(self.repo, base, head)
+        self.assertEqual((r.returncode, got), (0, {"stack": "python", "project_dir": ".", "error": None,
+                                                   "target_os": "linux"}), r.stderr)
+
+
+class BadAdapterNames(unittest.TestCase):
+    """Review round 1, findings 2 and 6: a repo adapter's name is a stack name (letters, digits, _ or -), checked one
+    way everywhere; a bad one is a named error, never a traceback."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+
+    def test_a_dotted_file_name_is_no_stack_an_explicit_stack_can_name(self):
+        sha = self.repo.commit({"pyproject.toml": "", ".ekit/adapters/a.b.toml": mini().replace('"mini"', '"a.b"')})
+        r, got = resolve(self.repo, sha, sha, "--stack", "a.b")
+        self.assertEqual((r.returncode, got), (1, {"stack": None, "project_dir": ".", "target_os": None,
+                                                   "error": "stack a.b: want auto, python, rust or ts"}), r.stderr)
+        r = r2(self.repo, sha, sha, "a.b")
+        self.assertEqual((r.returncode, r.stdout), (2, ""))
+        self.assertIn("argument --stack: invalid choice: 'a.b'", r.stderr)
+
+    def test_auto_names_a_file_whose_name_is_no_stack_name(self):
+        for file, why in (("a.b.toml", "file name `a.b.toml`: want <stack>.toml, the stack letters, digits, _ or -"),
+                          (".toml", "file name `.toml`: want <stack>.toml, the stack letters, digits, _ or -")):
+            with self.subTest(file):
+                repo = Repo(self)
+                sha = repo.commit({"pyproject.toml": "", f".ekit/adapters/{file}": mini()})
+                r, got = resolve(repo, sha, sha)
+                self.assertEqual((r.returncode, got), (1, {
+                    "stack": None, "project_dir": ".", "target_os": None,
+                    "error": f"stack auto: adapter file .ekit/adapters/{file}: {why}; set the stack and project-dir "
+                             f"inputs in the mech-review caller"}), r.stderr)
+
+
+NOT_BUILT = "stack `mini` is the repo's adapter file: {} through an adapter file is not built yet (#18, #19)"
+
+
+class RunSideNotBuilt(unittest.TestCase):
+    """Review round 1, finding 3: red, mutants and baseline on a stack the repo's adapter file describes (by name, or
+    the plan's entry) report their checks n/a with the reason, never a usage error or a silent built-in run."""
+
+    def setUp(self):
+        self.repo = Repo(self)
+        self.base = self.repo.commit({"tests/calc.mini": CALC, "src/calc.mini": "fn add(a, b) { a + b }\n",
+                                      ".ekit/adapters/mini.toml": mini()})
+        self.head = self.repo.commit({"src/calc.mini": "fn add(a, b) { a - b }\n"})
+
+    def cli(self, check, stack="mini", *extra):
+        r = _kit.run_cli([check, "--repo", self.repo.path, "--base", self.base, "--head", self.head, "--stack", stack,
+                          "--test-paths", "tests/**", *extra])
+        return r, (json.loads(r.stdout) if r.stdout else None)
+
+    def test_red_reports_r1_and_r4_n_a(self):
+        r, env = self.cli("red")
+        self.assertEqual((r.returncode, env["entries"]), (0, []), r.stderr)
+        self.assertEqual({c: env["checks"][c] for c in ("R1", "R4")},
+                         {"R1": {"status": "n/a", "note": NOT_BUILT.format("R1")},
+                          "R4": {"status": "n/a", "note": NOT_BUILT.format("R4")}})
+        self.assertEqual(env["summary"], f"pass {self.head} (0 fail, 0 confirm; ran: none; skipped: R2 R3; n/a: R1 R4)")
+
+    def test_all_runs_r2_through_the_file_and_r1_r4_n_a(self):
+        r, env = self.cli("all")
+        self.assertEqual((r.returncode, env["checks"]["R2"]["status"], env["checks"]["R1"]["status"],
+                          env["checks"]["R4"]["status"]), (0, "pass", "n/a", "n/a"), r.stderr)
+
+    def test_mutants_reports_r3_n_a(self):
+        r, env = self.cli("mutants")
+        self.assertEqual((r.returncode, env["checks"]["R3"], env["entries"]),
+                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, []), r.stderr)
+        self.assertEqual(env["shard"], {"k": 0, "n": 1, "max_mutants": 40})
+
+    def test_baseline_reports_r3_n_a_and_runs_no_shard(self):
+        r, env = self.cli("baseline")
+        self.assertEqual((r.returncode, env["checks"]["R3"], env["run"], env["count"]),
+                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, False, 0), r.stderr)
+
+    def test_plan_lets_the_baseline_say_why(self):
+        r, env = self.cli("plan")
+        self.assertEqual((r.returncode, env), (0, {"run": True}), r.stderr)
+
+    def test_a_repo_file_named_like_a_built_in_is_not_run_as_the_built_in(self):
+        base = self.repo.commit({".ekit/adapters/ts.toml": adapter("ts", ["package.json"])})
+        self.base, self.head = base, self.repo.commit({"src/calc.mini": "fn add(a, b) { a * b }\n"})
+        r, env = self.cli("red", "ts")
+        self.assertEqual((r.returncode, env["checks"]["R1"]["status"]), (0, "n/a"), r.stderr)
+        self.assertEqual(env["checks"]["R1"]["note"], NOT_BUILT.format("R1").replace("`mini`", "`ts`"))
+
+    def test_the_plans_adapter_file_is_not_run_either(self):
+        base = self.repo.commit({"lib/mini.json": "{}", "build/m.toml": mini(), ".ekit/adapters/mini.toml": None,
+                                 PLAN: plan(("lib", "lib", "build/m.toml", "current"))})
+        self.base, self.head = base, self.repo.commit({"src/calc.mini": "fn add(a, b) { b }\n"})
+        r, env = self.cli("red", "mini", "--project-dir", "lib")
+        self.assertEqual((r.returncode, env["checks"]["R1"]["status"]), (0, "n/a"), r.stderr)
 
 
 if __name__ == "__main__":

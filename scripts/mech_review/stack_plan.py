@@ -430,6 +430,11 @@ def entry_for(plan, stack, folder):
     return min(mine, key=lambda e: RANK.index(e.status), default=None)
 
 
+def valid_name(name):
+    """a stack name, as an adapter file's `name` and a plan entry's take it: letters, digits, _ or -, not empty."""
+    return bool(name) and all(ch.isalnum() or ch in "_-" for ch in name)
+
+
 def repo_adapters(repo, sha, paths):
     """{name: Adapter} of the repo's adapter files at sha (#17): `.ekit/adapters/<name>.toml` (paths: the tracked
     paths there), each named for its stack. adapter_file.AdapterFileError: one that does not read, or whose `name` is
@@ -439,6 +444,9 @@ def repo_adapters(repo, sha, paths):
         folder, _, file = path.rpartition("/")
         if folder != ADAPTERS_DIR or not file.endswith(".toml"):
             continue
+        if not valid_name(file[:-len(".toml")]):
+            raise adapter_file.AdapterFileError(f"adapter file {path}: file name `{file}`: want <stack>.toml, the stack "
+                                                f"letters, digits, _ or -")
         raw = _blob(repo, sha, path)
         if raw is None:
             raise adapter_file.AdapterFileError(f"adapter file {path}: not a file")
@@ -455,7 +463,7 @@ def repo_adapter(repo, sha, stack, folder="."):
     applies, if any): the plan's entry for the stack and folder (entry_for) when it names an adapter file, else
     `.ekit/adapters/<stack>.toml`. A plan entry naming a built-in keeps the built-in; a plan that does not read lends
     none (its drift check fails D). adapter_file.AdapterFileError: that file does not read, or is named otherwise."""
-    if not stack or not all(ch.isalnum() or ch in "_-" for ch in stack):
+    if not valid_name(stack):
         return None
     try:
         plan = at(repo, sha)
@@ -465,7 +473,11 @@ def repo_adapter(repo, sha, stack, folder="."):
     if entry is not None:
         return None if entry.adapter_ref in ADAPTERS else entry.adapter
     path = f"{ADAPTERS_DIR}/{stack}.toml"
-    return repo_adapters(repo, sha, [path]).get(stack) if _blob(repo, sha, path) is not None else None
+    try:
+        gitio.git(repo, "cat-file", "-e", f"{sha}:{path}")
+    except gitio.Die:
+        return None  # nothing there: the built-in, if any
+    return repo_adapters(repo, sha, [path])[stack]  # a file that is not one, or does not read, is named
 
 
 def to_run(plan, paths):

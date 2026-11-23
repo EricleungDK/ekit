@@ -6,7 +6,7 @@ import re
 import signal
 import sys
 
-from . import adapter_file, doctor, engine, gitio, merge, red, resolve, stack_plan
+from . import adapter_file, doctor, engine, gitio, merge, red, report, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -332,8 +332,45 @@ def _named(args):
         return {"stack": None, "project_dir": args.project_dir, "error": f"stack {args.stack}: {e}"}, {}
     repo = {args.stack: found} if found is not None else {}
     names = {p.rpartition("/")[2][:-len(".toml")]: None for p in _tracked(args.repo, base)
-             if p.rpartition("/")[0] == stack_plan.ADAPTERS_DIR and p.endswith(".toml")}
+             if p.rpartition("/")[0] == stack_plan.ADAPTERS_DIR and p.endswith(".toml")
+             and stack_plan.valid_name(p.rpartition("/")[2][:-len(".toml")])}
     return resolve.pick_pr([], [], args.stack, args.project_dir, {**ADAPTERS, **names, **repo}), repo
+
+
+RUN_SIDE = {"red": ("R1", "R4"), "all": ("R1", "R4"), "mutants": ("R3",), "baseline": ("R3",)}
+
+
+def _not_built(args, adapter=None):
+    """A run-side check on a stack the repo's adapter file describes (#17): the run side of an adapter file (#18, #19)
+    is not built, so its checks are n/a with the reason, never a usage error or the built-in of that name run in its
+    place. plan says run, so the baseline step reports R3's n/a; baseline runs no shard; all still runs R2 (adapter)."""
+    if args.check == "plan":
+        print(json.dumps({"run": True}))
+        return 0
+    try:
+        base, head, _ = gitio.merge_base(args.repo, args.base, args.head)
+        if args.check == "all":
+            env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
+                             which="r2", project_dir=args.project_dir, adapter=adapter)
+            checks, entries = env["checks"], env["entries"]
+            checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job "
+                                                         "mutants)"}
+        else:
+            checks, entries = {c: {"status": "skipped", "note": f"not run by {args.check}"} for c in report.CHECKS}, []
+    except gitio.Die as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    for c in RUN_SIDE[args.check]:
+        checks[c] = {"status": "n/a", "note": f"stack `{args.stack}` is the repo's adapter file: {c} through an adapter "
+                                              f"file is not built yet (#18, #19)"}
+    env = report.envelope(base, head, entries, checks)
+    if args.check == "mutants":
+        k, _, n = (args.shard or "0/1").partition("/")
+        env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
+    if args.check == "baseline":
+        env.update({"run": False, "count": 0, "mutants": 0, "timeout": None})
+    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
+    return 1 if any(e["severity"] == "fail" for e in entries) else 0
 
 
 def _resolve(argv):
@@ -368,7 +405,9 @@ def _resolve(argv):
             plan, bad = stack_plan.target_plan(args.repo, args.base, args.head)
         if adapter is not None:
             got = {"stack": adapter.name, "project_dir": args.project_dir, "error": None}
-        elif args.stack == resolve.AUTO and plan is not None:
+        elif args.stack == resolve.AUTO and plan is not None and bad is None:
+            # only a base plan that reads picks stacks and adapters: the head plan of a PR that fixes a bad one sets
+            # target_os at most (#56), and the PR is detected on its base tree with the base's adapter files
             got = resolve.from_plan(stack_plan.to_run(plan, _tracked(args.repo, args.base) + _tracked(args.repo, args.head)),
                                     args.project_dir)
         elif args.stack == resolve.AUTO:
@@ -432,7 +471,7 @@ def main(argv):
     parser = build_parser()
     args = parser.parse_args(argv)
     adapter = None
-    if args.adapter is None and args.check == "r2":
+    if args.adapter is None and args.check != "merge":
         try:  # #17: the repo's adapter file for this stack at the base, in place of a built-in of that name
             adapter = stack_plan.repo_adapter(args.repo, gitio.resolve(args.repo, args.base), args.stack, args.project_dir)
         except (gitio.Die, adapter_file.AdapterFileError) as e:
@@ -455,6 +494,8 @@ def main(argv):
             return 2
     if args.check == "merge":
         return _merge(parser, args)
+    if adapter is not None and args.adapter is None and args.check in ("plan", "baseline"):
+        return _not_built(args)
     if args.check == "plan":
         return _plan(args)
     if args.check == "baseline":
@@ -465,6 +506,8 @@ def main(argv):
             parser.error("--shard applies to the mutants check only")
         if not m or int(m.group(1)) >= int(m.group(2)) or int(m.group(2)) < 1:
             parser.error(f"--shard {args.shard}: want K/N with 0 <= K < N")
+    if adapter is not None and args.adapter is None and args.check != "r2":
+        return _not_built(args, adapter)
     try:
         env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
