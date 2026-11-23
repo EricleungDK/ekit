@@ -394,21 +394,49 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
           order == ["extra apt packages", "setup command", run_name], str(names))
 
 # ---- #18 trust: an adapter file's commands ([commands], [run]) run only through the subcommands that run tests (red,
-# all, mutants, baseline), and those run only in the jobs that already run PR code with a read-only token. The workflow
-# passes no adapter file yet: these hold the rule for when it does ----
+# all, mutants, baseline), and those run only in red-first, baseline and mutants (their contents: read token is checked
+# above). Workflow values (inputs, an adapter's, any job's or step's output) reach a step's run: body only through
+# env: no `${{ }}` in any run: body. The workflow passes no adapter file yet: these hold the rule for when it does ----
 RUNS_PR_CODE = ("red-first", "baseline", "mutants")
 for job_name in sorted(child_keys(jobs)):
     subs = re.findall(r'mech-review\.py"?\s+(\w+)', text(block(jobs, job_name) or []))
     if job_name not in RUNS_PR_CODE:
         check(f"{job_name}: runs no subcommand that runs an adapter's commands (red, all, mutants, baseline)",
               not {"red", "all", "mutants", "baseline"} & set(subs), str(subs))
-for job_name in RUNS_PR_CODE:
-    jperm = block(block(jobs, job_name) or [], "permissions") or []
-    check(f"{job_name}: runs PR code (and an adapter's commands) with contents: read only",
-          {k: value(jperm, k) for k in child_keys(jperm)} == {"contents": "read"}, str(jperm))
-check("adapter values: reach a run: step only through env (an env value or an if:, never a run: line)",
-      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:)", l) for l in W if "${{" in l and re.search(r"adapter|commands", l, re.I)),
-      str([l for l in W if "${{" in l and re.search(r"adapter|commands", l, re.I)]))
+
+
+def run_interpolations(lines):
+    """the `${{ }}` lines inside a step's run: (the key's own line and its block). A job's `outputs: run:` is no step."""
+    out = []
+    for n, line in enumerate(lines):
+        m = re.match(r"(\s*)(- )?run:(.*)$", line)
+        if not m:
+            continue
+        key_at = len(m.group(1)) + (2 if m.group(2) else 0)
+        parent = next((l for l in reversed(lines[:n]) if meaningful(l) and indent(l) < key_at), "")
+        if not m.group(2) and parent.strip() == "outputs:":
+            continue
+        body = [m.group(3)]
+        for later in lines[n + 1:]:
+            if meaningful(later) and indent(later) <= key_at:
+                break
+            body.append(later)
+        out += [b.strip() for b in body if "${{" in b]
+    return out
+
+
+check("workflow values: reach a run: body only through env (no ${{ }} in any step's run:)",
+      run_interpolations(W) == [], str(run_interpolations(W)))
+# live: the check catches an input or an adapter value interpolated into a run: body, on a line or in a block
+red_line = next(l for l in W if 'mech-review.py" red' in l)
+for name, bad in (("an input on the red line", red_line + ' --test-command "${{ inputs.test-command }}"'),
+                  ("an undeclared input inside the red command", red_line.replace("red", "red --stack ${{ inputs.stack-def }}", 1))):
+    mutated = [bad if l == red_line else l for l in W]
+    check(f"workflow values check is live: {name} is caught", len(run_interpolations(mutated)) == 1,
+          str(run_interpolations(mutated)))
+one_line = ["      - name: x", "        run: echo ${{ inputs.adapter }}"]
+check("workflow values check is live: a one-line run: is caught", run_interpolations(one_line) == ["echo ${{ inputs.adapter }}"],
+      str(run_interpolations(one_line)))
 
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"
