@@ -57,7 +57,10 @@ class CoChange(unittest.TestCase):
         self.assertEqual(e["problem"], "co-change rule `changelog`: `src/a.py` and 1 more changed, and none of "
                                        "`CHANGELOG.md`, `docs/*.md` did: a behaviour change updates the changelog or "
                                        "the docs")
-        self.assertIn("`CHANGELOG.md`, `docs/*.md`", e["hint"])
+        self.assertEqual(e["hint"], "change one of `CHANGELOG.md`, `docs/*.md` in this range as the rule asks (it came "
+                                    "from #83); a rule that misfires is changed in a PR of its own")
+        self.assertEqual(e["forbidden"], "editing the co-change rule file to silence the rule that fires")
+        self.assertEqual(e["id"], "R2-3ec3a5e8")  # the rule id's, as finalize derives it: what a waiver names
         self.assertTrue(env["summary"].startswith("pass "), env["summary"])
         self.assertEqual(env["checks"]["R2"], {"status": "pass", "note": "0 fail, 1 confirm"})
 
@@ -92,8 +95,9 @@ class CoChange(unittest.TestCase):
         self.assertEqual(env["checks"]["R2"]["status"], "fail")
 
     def test_one_entry_per_broken_rule_with_an_id_that_stays_across_heads(self):
-        two = RULES + ('\n[[rule]]\nid = "readme"\ntrigger = ["src/b.py"]\nrequire = ["README.md"]\n'
-                       'reason = "b is documented"\nincident = "abc1234"\n')
+        # the second rule is listed first: a rule that does not fire leaves the next one checked
+        two = ('format = 1\n\n[[rule]]\nid = "read-me_b.1"\ntrigger = ["src/b.py"]\nrequire = ["README.md"]\n'
+               'reason = "b is documented"\nincident = "abc1234"\n' + RULES.replace("format = 1\n", ""))
         base = self.base(two)
         h1 = self.repo.commit({"src/a.py": "X = 2\n"}, "one")
         first = json.loads(r2(self.repo, base, h1).stdout)["entries"]
@@ -101,10 +105,10 @@ class CoChange(unittest.TestCase):
         second = json.loads(r2(self.repo, base, h2).stdout)["entries"]
         self.assertEqual([e["problem"].split(":")[0] for e in first], ["co-change rule `changelog`"])
         self.assertEqual(sorted(e["problem"].split(":")[0] for e in second),
-                         ["co-change rule `changelog`", "co-change rule `readme`"])
+                         ["co-change rule `changelog`", "co-change rule `read-me_b.1`"])
         self.assertIn(first[0]["id"], [e["id"] for e in second])
         self.assertEqual(len({e["id"] for e in second}), 2)
-        self.assertIn("abc1234", [e for e in second if "readme" in e["problem"]][0]["hint"])
+        self.assertIn("abc1234", [e for e in second if "read-me" in e["problem"]][0]["hint"])
 
     def test_a_rule_the_pr_adds_does_not_judge_its_own_pr(self):
         r, env = self.run_r2({"src/a.py": "X = 2\n", ".ekit/co-change.toml": RULES}, rules=None)
@@ -222,7 +226,8 @@ class MalformedRuleFile(unittest.TestCase):
             head = repo.commit({"src/a.py": "X = 2\n"}, "head")
             r = r2(repo, base, head)
         self.assertEqual(r.returncode, 2)
-        self.assertTrue(r.stderr.rstrip().endswith(": not a file"), r.stderr)
+        self.assertRegex(r.stderr, r"^mech-review: co-change rule file \.ekit/co-change\.toml at [0-9a-f]{12}: not a "
+                                   r"file\n$")
 
 
 if __name__ == "__main__":

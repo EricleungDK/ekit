@@ -2,9 +2,9 @@
 
 R2's path rules read the file at the base branch (a PR is judged by the rules it starts from, as by the base's adapter
 file) and give one entry per broken rule. Format: docs/mech-review-ci.md#co-change-rules. Every problem with the file is
-a RuleFileError that names the field (`rule[1].trigger: want a list of non-empty strings`), as for an adapter file.
+a RuleFileError that names the field (`rule[1].trigger[0]: want a glob, a non-empty string`), as for an adapter file.
 tomllib (python 3.11+) is imported only when the file exists, so a repo without one runs on older pythons."""
-from collections import namedtuple
+from typing import NamedTuple, Tuple
 
 from . import gitio
 from .globs import any_glob
@@ -17,9 +17,15 @@ TOP_KEYS = ("format", "rule")
 RULE_KEYS = ("id", "trigger", "require", "reason", "severity", "incident")
 RULE_REQUIRED = ("id", "trigger", "require", "reason", "incident")
 
-# trigger: globs whose change triggers the rule; require: globs of which at least one must change in the same range;
-# incident: the commit or PR of the mistake the rule came from
-Rule = namedtuple("Rule", "id trigger require reason severity incident")
+class Rule(NamedTuple):
+    """one rule. trigger: globs whose change triggers it; require: globs of which at least one must change in the same
+    range; incident: the commit or PR of the mistake it came from."""
+    id: str
+    trigger: Tuple[str, ...]
+    require: Tuple[str, ...]
+    reason: str
+    severity: str
+    incident: str
 
 
 class RuleFileError(gitio.Die):
