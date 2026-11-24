@@ -83,6 +83,7 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 - **Scenario runner and Python bytecode** (#43): `__pycache__/` and `*.pyc` no longer count as a scenario writing into the repo, and scenarios run with `PYTHONDONTWRITEBYTECODE=1`, so `mech-review-python/real-mutmut/untracked` passes on a plain run.
 - **Scenario runner keeps a failed transcript** (#44): a failure is copied to `<git dir>/ekit/failed/<id>.log` (results.json: `failed_transcript`) and stays there until the same scenario fails again, whatever runs in between.
 - **ekit's own suites** (#46 items 1–3): `.gitattributes` checks every file out with LF; `tests/lib.sh` has a python `sha1` helper in place of `sha1sum`; a symlink test skips with the reason when the OS refuses links.
+- **ekit's own Python suite is green as root** (#80): the two read-only git dir tests of task verification and doctor's unreadable-directory test injected their refusal with a mode change, which root ignores; they now get the OS's `PermissionError` at the point where ekit writes (task-verify's `open`) or reads (the copy's `os.scandir`), so they prove the same reaction for any user. No production behaviour changes.
 
 ## 0.5.0
 
