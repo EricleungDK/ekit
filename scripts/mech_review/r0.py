@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 from collections import namedtuple
 
-from . import adapter_file, gitio, stack_plan
+from . import adapter_file, gitio, mutants, stack_plan
 from .gitio import Review
 from .r2 import r2, r2_file
 from .report import entry
@@ -679,6 +679,43 @@ def _workflow_items(repo, mb, head):
     return out
 
 
+ACCEPTED = ".ekit/r0-accepted.json"  # the tests a person accepted with no recognised assert (#21), per stack
+ACCEPTED_SHAPE = '{"assert-density": {"<stack>": ["<path>::<test>", ...]}}'
+
+
+def accepted(raw):
+    """({stack: [`path::test`]} of the accepted list's bytes ({} for none), None) or (None, why it does not read). JSON
+    nesting is limited by the engine (mutants.MAX_JSON_DEPTH), never by the interpreter's recursion."""
+    if raw is None:
+        return {}, None
+    try:
+        text = raw.decode("utf-8")
+        if mutants._too_deep(text):
+            return None, f"nested too deep (more than {mutants.MAX_JSON_DEPTH} levels)"
+        doc = json.loads(text)
+    except (UnicodeDecodeError, ValueError) as e:
+        return None, f"not JSON: {e}"
+    table = doc.get("assert-density") if isinstance(doc, dict) else None
+    if not isinstance(table, dict) or not all(
+            isinstance(v, list) and all(isinstance(n, str) for n in v) for v in table.values()):
+        return None, f"want {ACCEPTED_SHAPE}"
+    return {k: list(v) for k, v in table.items()}, None
+
+
+def _accepted_items(repo, mb, head):
+    """[item] for each name the PR adds to the accepted list (accepting is a person's call); one item when the head's
+    list does not read."""
+    b_raw, h_raw = _blob(repo, mb, ACCEPTED), _blob(repo, head, ACCEPTED)
+    if b_raw == h_raw:
+        return []
+    h, why = accepted(h_raw)
+    if h is None:
+        return [f"{ACCEPTED} changed and does not read (want {ACCEPTED_SHAPE}): {why}"]
+    b = accepted(b_raw)[0] or {}
+    return [f"`assert-density.{stack}` accepts `{n}` in {ACCEPTED}" for stack in sorted(h)
+            for n in dict.fromkeys(h[stack]) if n not in b.get(stack, [])]
+
+
 def _raw_differs(b, h, key):
     """True when the lines naming key differ between the two texts (an UNSURE value that changed)."""
     pick = lambda t: [ln.strip() for ln in t.splitlines() if re.match(rf"""\s*["']?{re.escape(key)}["']?\s*:""", ln)]
@@ -736,12 +773,13 @@ def editing(repo, mb, head, adapter_paths=()):
                 add([f"adapter file {p}: [mutation.tool] changed"], p)
     for path, wf in _workflow_items(repo, mb, head):
         add(wf, path)
+    add(_accepted_items(repo, mb, head), ACCEPTED)
     if not items:
         return []
     return [entry("R0", files[0] if files else PLAN, 0, "loosened:" + "\0".join(items), "needs-human", "fail",
                   "a person decides: " + "; ".join(items),
-                  "a looser limit, a new target OS or a changed mutation tool is a person's call: move it to a PR of "
-                  "its own for them to approve "
+                  "a looser limit, a new target OS, a changed mutation tool or an accepted assert-less test is a "
+                  "person's call: move it to a PR of its own for them to approve "
                   "(a tighter limit needs no one)", "loosening a check's limit or moving its runner to pass the gate")]
 
 

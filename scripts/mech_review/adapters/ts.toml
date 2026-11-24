@@ -173,6 +173,14 @@ name = "vitest"
 subcommand = { word = "run", after = "vitest" }
 separator = " > "
 
+# R0's census (#21): `vitest list` prints `<file> > <Describe> > <test>` per test it collects (skipped ones are not
+# listed); jest lists files only, so a jest checkout has no census
+[run.list]
+command = "node_modules/.bin/vitest list"
+pattern = '^(?P<file>\S+\.[cm]?[jt]sx?) > (?P<name>.+?)\s*$'
+separator = " > "
+runner = "vitest"
+
 # the counts come from the last `Tests` summary line of a vitest or jest run; a file that did not load is build
 [run.outcome]
 summary = '^\s*Tests\b:?(.*)$'

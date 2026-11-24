@@ -425,3 +425,64 @@ class NoFlag(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AcceptedListEdits(Case):
+    """accepting assert-less tests is a person's call: a PR that adds names to the accepted list is one needs-human
+    entry of R0's editing rules (the guard's `r0`); removing names needs no one."""
+
+    def r0(self, head):
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.base, "--head", head, "--stack", "python"])
+        return json.loads(r.stdout)
+
+    def test_a_pr_that_accepts_a_name_needs_a_person(self):
+        head = self.commit({".ekit/r0-accepted.json": json.dumps(
+            {"assert-density": {"minirun": ["tests/calc.mini::sums"]}})})
+        env = self.r0(head)
+        es = [e for e in env["entries"] if e["class"] == "needs-human"]
+        self.assertEqual([e["problem"] for e in es], [
+            "a person decides: `assert-density.minirun` accepts `tests/calc.mini::sums` in .ekit/r0-accepted.json"])
+        self.assertEqual(es[0]["file"], ".ekit/r0-accepted.json")
+
+    def test_removing_a_name_needs_no_one(self):
+        self.base = self.commit({".ekit/r0-accepted.json": json.dumps(
+            {"assert-density": {"minirun": ["tests/calc.mini::sums"]}})})
+        head = self.commit({".ekit/r0-accepted.json": json.dumps({"assert-density": {"minirun": []}})})
+        self.assertEqual([e for e in self.r0(head)["entries"] if e["class"] == "needs-human"], [])
+
+    def test_a_list_that_does_not_read_at_head_is_named(self):
+        head = self.commit({".ekit/r0-accepted.json": "[" * 100})
+        es = [e for e in self.r0(head)["entries"] if e["class"] == "needs-human"]
+        self.assertEqual([e["problem"] for e in es], [
+            "a person decides: .ekit/r0-accepted.json changed and does not read (want {\"assert-density\": {\"<stack>\": "
+            "[\"<path>::<test>\", ...]}}): nested too deep (more than 64 levels)"])
+
+
+class Probes(Case):
+    """the version probes keep #19's program rules: never a program in the reviewed checkout, never a launcher an
+    adapter file names; a refused one is named, not run."""
+
+    def probes(self, test_cmd):
+        text = adapter_text(lambda t: t.replace('test = "mini test"', f'test = "{test_cmd}"'))
+        r, env = self.red(self.adapter(text))
+        return env["checks"]["R0"]["probes"]
+
+    def test_a_path_in_the_project_dir_is_not_run(self):
+        self.assertEqual(self.probes("tools/mini test"), ["tools/mini --version: not probed (a path in the project "
+                                                          "dir, which the PR under review can change)",
+                                                          "mini --version: mini 1.0.0"])  # [run.list]'s program
+
+    def test_a_launcher_is_not_run(self):
+        self.assertEqual(self.probes("python3 -m mini test"),
+                         ["python3 --version: not probed (an interpreter, shell or launcher)",
+                          "mini --version: mini 1.0.0"])
+
+    def test_a_program_in_the_checkout_is_not_run(self):
+        os.makedirs(os.path.join(self.repo, "bin"))
+        prog = os.path.join(self.repo, "bin", "mini")
+        os.symlink(os.path.join(self.tmp, "stub.py"), prog)
+        with mock.patch.dict(os.environ, {"PATH": os.path.join(self.repo, "bin") + os.pathsep + os.environ["PATH"]}):
+            got = self.probes("mini test")
+        self.assertEqual(len(got), 1)
+        self.assertTrue(got[0].startswith("mini --version: not probed (in the reviewed checkout: "), got)
+        self.assertEqual([x for x in self.calls() if x.startswith("--version")], [])

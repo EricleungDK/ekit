@@ -48,7 +48,7 @@ from .report import entry
 PARTS = ("run", "r3")
 BLOCKS = {"run": ("R1", "R2", "R4"), "r3": ("R3",)}  # the checks a failed part leaves unproven: n/a (blocked)
 CONTROLS = {"pass": "pass", "fail": "fail", "skipped": "none", "build": "build", "no-such-test": "none"}
-ACCEPTED = ".ekit/r0-accepted.json"  # {"assert-density": {"<stack>": ["<path>::<test name>", ...]}}, read at the base
+ACCEPTED = r0.ACCEPTED  # {"assert-density": {"<stack>": ["<path>::<test name>", ...]}}, read at the base
 TEST_GLOBS = ("tests/**",)
 PROBE_TIMEOUT = 60
 DENSITY = r0.LIMITS["assert-density"][1]
@@ -192,6 +192,8 @@ def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
     refuse it (not found, in the reviewed checkout, a launcher an adapter file names). Runs in an empty temp dir."""
     label = " ".join(argv)
+    if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
+        return f"{label}: not probed (a path in the project dir, which the PR under review can change)"
     prog = mutants._program_path(argv[0])
     if prog is None:
         return f"{label}: not probed (not found on PATH)"
@@ -343,16 +345,11 @@ def asserting(adapter, text):
 
 
 def accepted_list(repo, sha, stack):
-    """the names a person accepted as tests with no recognised assert, at sha (the base): [`path::name`]."""
+    """(the names a person accepted as tests with no recognised assert, at sha (the base): [`path::name`], the list's
+    bytes for the fingerprint). A list that does not read accepts none (R0's editing rules name it in its PR)."""
     raw = r0._blob(repo, sha, ACCEPTED)
-    if raw is None:
-        return [], b""
-    try:
-        doc = loads(raw.decode("utf-8"))
-        names = doc["assert-density"][stack]
-    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
-        return [], raw
-    return ([n for n in names if isinstance(n, str)] if isinstance(names, list) else []), raw
+    table = r0.accepted(raw)[0] or {}
+    return list(table.get(stack, [])), raw or b""
 
 
 def density(adapter, files, accepted):
