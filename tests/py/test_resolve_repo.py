@@ -330,7 +330,8 @@ class BadAdapterNames(unittest.TestCase):
                              f"inputs in the mech-review caller"}), r.stderr)
 
 
-NOT_BUILT = "stack `mini` is the repo's adapter file: {} through an adapter file is not built yet (#19)"
+# #19: R3 runs through the repo's adapter file when it declares [mutation.tool]; mini declares none, so R3 is n/a
+NO_TOOL = "stack `mini`: the adapter file declares no mutation tool ([mutation.tool]): R3 not run"
 NO_RUN = "stack `mini` is the repo's adapter file, which has no [run] table: {} runs through [run] (#18)"
 
 
@@ -374,13 +375,13 @@ class RunSideNotBuilt(unittest.TestCase):
     def test_mutants_reports_r3_n_a(self):
         r, env = self.cli("mutants")
         self.assertEqual((r.returncode, env["checks"]["R3"], env["entries"]),
-                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, []), r.stderr)
+                         (0, {"status": "n/a", "note": NO_TOOL}, []), r.stderr)
         self.assertEqual(env["shard"], {"k": 0, "n": 1, "max_mutants": 40})
 
     def test_baseline_reports_r3_n_a_and_runs_no_shard(self):
         r, env = self.cli("baseline")
         self.assertEqual((r.returncode, env["checks"]["R3"], env["run"], env["count"]),
-                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, False, 0), r.stderr)
+                         (0, {"status": "n/a", "note": NO_TOOL}, False, 0), r.stderr)
 
     def test_plan_lets_the_baseline_say_why(self):
         r, env = self.cli("plan")
@@ -462,7 +463,7 @@ class MergeOnARepoStack(unittest.TestCase):
                           "--shards", "0", "--baseline", path])
         env = json.loads(r.stdout) if r.stdout else None
         self.assertEqual((r.returncode, env and env["checks"]["R3"], env and env["entries"]),
-                         (0, {"status": "n/a", "note": NOT_BUILT.format("R3")}, []), r.stderr)
+                         (0, {"status": "n/a", "note": NO_TOOL}, []), r.stderr)
 
     def test_a_name_that_is_no_stack_name_is_still_a_usage_error(self):
         r = _kit.run_cli(["merge", "--base", "a" * 40, "--head", "b" * 40, "--stack", "a.b", "--shards", "0"])

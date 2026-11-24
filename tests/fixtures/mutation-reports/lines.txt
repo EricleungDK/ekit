@@ -1,0 +1,7 @@
+mut 0.1: 5 mutants
+src/calc.mini:2 SURVIVED replace + with -
+src/calc.mini:6 SURVIVED replace > with >=
+src/calc.mini:6 KILLED replace > with <
+src/calc.mini:1 SLOW empty body
+src/calc.mini:1 BROKEN drop fn
+done

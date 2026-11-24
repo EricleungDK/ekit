@@ -1,7 +1,7 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
 scanner (scan.py). R2 side: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
 Run side (#18, [run] and [commands]): the test command for a checkout, one named test's argv, the verdict of a run.
-R3 through a file (the [mutation] tool and its report) is #19.
+R3 side (#19): mutation_tool, the validated [mutation.tool] (mutation_tool.DeclaredTool runs it), or None (R3 n/a).
 ParserAdapter (#27): the same interface from the facts a parser command prints (parser_cmd.py), for a file with
 [parser] in place of the pattern tables; its run side is DataAdapter's."""
 import collections
@@ -39,6 +39,7 @@ class DataAdapter(Adapter):
         self.fn_shapes = fn_shapes
         self.sups = cfg.get("suppressions", [])
         self.mutation = cfg.get("mutation", {})
+        self.mutation_tool = None  # adapter_file.parse sets the validated [mutation.tool]: R3 through it (#19)
         self._skip_res = [re.compile(r"\s*" + r"\s+".join(re.escape(w) for w in phrase.split()) + r"(?![\w])")
                           for phrase in self.mutation.get("skip_comments", [])]
         self.commands = dict(cfg.get("commands", {}))  # install, build, lint, test ("" = none): ci-doctor reads them
@@ -298,11 +299,16 @@ class DataAdapter(Adapter):
         """[run].links: each directory (project-dir relative, an install the checkout does not track: node_modules) is
         linked from the caller's checkout into the worktree, when the caller has it as a directory (as the built-in ts
         does) and the worktree does not."""
-        for rel in self.run.get("links", []):
+        for rel in (self.run or {}).get("links", []):
             src = os.path.join(repo, project_dir, rel)
             dst = os.path.join(wt, project_dir, rel)
             if os.path.isdir(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
                 os.symlink(os.path.abspath(src), dst)
+
+    def runner_name(self, crate):
+        """the name of the [[run.runner]] the crate's test command picks (mutation.tool.runners), or None."""
+        r = self._runner(shlex.split(self.test_cmd_in(crate)))
+        return r["name"] if r else None
 
     def _runner(self, argv):
         """the first [[run.runner]] whose match is in one of the command's words (one with no match takes any), or None."""

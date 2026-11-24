@@ -379,8 +379,9 @@ class AdapterFileUsage(unittest.TestCase):
     def test_usage_errors_name_the_choices_and_what_is_not_built(self):
         r = r2(self.repo, self.base, self.base, adapter=None)
         self.assertIn("error: argument --stack: invalid choice: 'mini' (choose from 'python', 'rust', 'ts')\n", r.stderr)
-        r = r2(self.repo, self.base, self.base, check="mutants")
-        self.assertIn("error: --adapter applies to r2, red and all (R3 through an adapter file is not built yet)\n",
+        # #19: mutants, baseline and plan take --adapter (R3 through its [mutation.tool]); merge reads no tree
+        r = r2(self.repo, self.base, self.base, check="merge")
+        self.assertIn("error: --adapter applies to r2, red, all, mutants, baseline and plan (merge reads no tree)\n",
                       r.stderr)
 
     def test_stack_is_still_required(self):

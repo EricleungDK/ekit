@@ -534,18 +534,26 @@ def _toml(raw):
 
 
 def _adapter_side(repo, sha, ref):
-    """(target OS, {limit: n}, path or None, load error or None) of a plan `adapter` value at sha. A built-in or a
-    file that is not there reads linux and the defaults."""
+    """(target OS, {limit: n}, path or None, load error or None, [mutation.tool] or None) of a plan `adapter` value at
+    sha. A built-in or a file that is not there reads linux, the defaults and no tool."""
     if not isinstance(ref, str) or ref in BUILTIN_STACKS or not ("/" in ref or ref.endswith(".toml")):
-        return "linux", {}, None, None
+        return "linux", {}, None, None, None
     raw = _blob(repo, sha, ref)
     if raw is None:
-        return "linux", {}, ref, None
+        return "linux", {}, ref, None, None
     try:
         a = adapter_file.loads(raw, ref)
     except adapter_file.AdapterFileError as e:
-        return "linux", {}, ref, str(e)
-    return a.target_os, getattr(a, "limits", {}), ref, None
+        return "linux", {}, ref, str(e), None
+    return a.target_os, getattr(a, "limits", {}), ref, None, _tool_key(getattr(a, "mutation_tool", None))
+
+
+def _tool_key(tool):
+    """an adapter file's [mutation.tool] as compared across a PR (#19): its validated values, the patterns as their
+    text (a compiled pattern is the same text); None for no tool."""
+    if tool is None:
+        return None
+    return {k: (v.pattern if hasattr(v, "pattern") else v) for k, v in tool.items()}
 
 
 def _norm(folder):
@@ -678,7 +686,8 @@ def _raw_differs(b, h, key):
 
 
 def editing(repo, mb, head, adapter_paths=()):
-    """The editing rules: [one needs-human entry] when mb..head loosens a limit or changes a target OS, else []. Read
+    """The editing rules: [one needs-human entry] when mb..head loosens a limit, changes a target OS or changes an
+    adapter file's [mutation.tool] (#19: R3 then runs another tool, or none), else []. Read
     where they are defined: the plan (`ignore`; each stack, matched by folder, its target-os and its adapter's, each
     side's adapter read through that side's plan, so a new adapter file or a renamed stack is still compared; a file
     missing on one side reads the defaults), each adapter file's [limits] (one that does not load at head is named),
@@ -705,8 +714,8 @@ def editing(repo, mb, head, adapter_paths=()):
                    for side, other in (("base", "head"), ("head", "base"))}
         bf, hf = _by_folder(repo, mb, entries["base"]), _by_folder(repo, head, entries["head"])
         for folder in sorted(hf):  # a head stack with no base match compares with the defaults (linux, LIMITS)
-            bst, (b_os, b_lim, _, _) = bf.get(folder, ({}, ("linux", {}, None, None)))
-            hst, (h_os, h_lim, h_path, h_err) = hf[folder]
+            bst, (b_os, b_lim, _, _, b_tool) = bf.get(folder, ({}, ("linux", {}, None, None, None)))
+            hst, (h_os, h_lim, h_path, h_err, h_tool) = hf[folder]
             b_os, h_os = bst.get("target-os") or b_os, hst.get("target-os") or h_os
             if b_os != h_os:
                 where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
@@ -714,6 +723,8 @@ def editing(repo, mb, head, adapter_paths=()):
             if h_err:
                 add([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
             add(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"), h_path or PLAN)
+            if b_tool != h_tool and not h_err:  # R3's tool: added, removed or changed, a person's call (#19)
+                add([f"[mutation.tool] of the stack in folder `{folder}` changed ({h_path})"], h_path or PLAN)
         for p in adapter_paths:
             b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
             if h[3]:
@@ -721,13 +732,16 @@ def editing(repo, mb, head, adapter_paths=()):
             if b[0] != h[0]:
                 add([f"adapter file {p} target-os {b[0]} -> {h[0]}"], p)
             add(_looser(b[1], h[1], "limits.", f"in {p}"), p)
+            if b[4] != h[4] and not h[3]:
+                add([f"adapter file {p}: [mutation.tool] changed"], p)
     for path, wf in _workflow_items(repo, mb, head):
         add(wf, path)
     if not items:
         return []
     return [entry("R0", files[0] if files else PLAN, 0, "loosened:" + "\0".join(items), "needs-human", "fail",
                   "a person decides: " + "; ".join(items),
-                  "a looser limit or a new target OS is a person's call: move it to a PR of its own for them to approve "
+                  "a looser limit, a new target OS or a changed mutation tool is a person's call: move it to a PR of "
+                  "its own for them to approve "
                   "(a tighter limit needs no one)", "loosening a check's limit or moving its runner to pass the gate")]
 
 

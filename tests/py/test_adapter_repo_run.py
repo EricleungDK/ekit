@@ -90,8 +90,9 @@ class RepoAdapterRunSide(Fixture):
         base, head = self.mini_pr(MINI_R2 + MINI_RUN)
         rc, env = self.run_check("mutants", base, head)
         self.assertEqual((rc, env["checks"]["R3"]), (0, {
-            "status": "n/a", "note": "stack `mini` is the repo's adapter file: R3 through an adapter file is not built "
-                                     "yet (#19)"}))
+            # #19: R3 runs through the file's [mutation.tool]; this file declares none, so R3 is n/a, named
+            "status": "n/a", "note": "stack `mini`: the adapter file declares no mutation tool ([mutation.tool]): R3 "
+                                     "not run"}))
 
 
 class OverrideWithRun(Fixture):
