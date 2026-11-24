@@ -1,6 +1,7 @@
 """task-verify.py in-process: `run -- CMD` records a result for the tree, the TaskCreated/TaskCompleted hook reads it.
 The repos are real: the tree hash is the scenario runner's own."""
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -14,19 +15,22 @@ import _kit
 
 tv = _kit.load("task-verify")
 launcher = _kit.load("launcher")
-WIN = os.name == "nt"
 TOOL = launcher.shown(os.path.join(_kit.SCRIPTS, "task-verify.py"))
 
 
 def readonly(path):
-    """Make the dir `path` one this user cannot write into, as a sandbox keeps the git dir; returns the undo.
-    Windows ignores a dir's mode bits: a deny entry in its ACL does the same."""
-    if not WIN:
-        os.chmod(path, 0o500)
-        return lambda: os.chmod(path, 0o700)
-    user = os.environ.get("USERNAME") or "*S-1-1-0"
-    subprocess.run(["icacls", path, "/deny", f"{user}:(W,AD,WD)"], check=True, capture_output=True)
-    return lambda: subprocess.run(["icacls", path, "/remove:d", user], check=True, capture_output=True)
+    """Refuse every write into the dir `path`, as a sandbox that keeps the git dir read-only does: task-verify's own
+    open() for writing there raises the OS's PermissionError (a mode change would not stop root); returns the undo."""
+    real = open
+
+    def refusing(file, mode="r", *a, **kw):
+        if any(c in mode for c in "wax+") and os.path.normcase(os.path.dirname(os.path.abspath(file))) == \
+                os.path.normcase(path):
+            raise PermissionError(errno.EACCES, "Permission denied", file)
+        return real(file, mode, *a, **kw)
+    patch = mock.patch.object(tv, "open", refusing, create=True)
+    patch.start()
+    return patch.stop
 
 
 def git(repo, *args):
