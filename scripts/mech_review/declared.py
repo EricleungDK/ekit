@@ -7,7 +7,11 @@ A marker is the prefix, then a word, dotted or not (`@Test`, `@org.junit.jupiter
 then optionally a bracket group (`@Disabled("later")`). The markers of a declaration are those right before its first
 word, with plain words (modifiers: `public static`) between them; anything else ends them. Everything is read from the
 masked text (scan.Lexer.mask): a marker in a string or a comment never counts."""
-from .scan import Call, line_of
+from collections import namedtuple
+
+from .scan import line_of
+
+Span = namedtuple("Span", "start end")  # a test function's text: what DataAdapter reads of a test
 
 
 def _open_of(lx, m, j):
@@ -83,7 +87,7 @@ def _groups(lx, cfg, m):
 
 
 def tests(lx, cfg, m, fns):
-    """[(qualified name, Call, markers)] of the functions (fns: find_shapes' [(name, start, end)]) with a case marker:
+    """[(qualified name, Span, markers)] of the functions (fns: find_shapes' [(name, start, end)]) with a case marker:
     the name joined with its enclosing groups' names by tests.separator; markers `ignore` (a skip marker on the test
     or a group around it) and `only`."""
     cases, skip, only = set(cfg["cases"]), set(cfg.get("skip", [])), set(cfg.get("only", []))
@@ -97,14 +101,13 @@ def tests(lx, cfg, m, fns):
         encl = sorted((g for g in groups if g[1] < start and end <= g[2]), key=lambda g: g[1])
         marks = [g[3] for g in encl] + [own]
         flags = [f for f, words in (("ignore", skip), ("only", only)) if any(words.intersection(x) for x in marks)]
-        call = Call("test", name, start, end, "ignore" in flags, "only" in flags, ())
-        out.append((sep.join([g[0] for g in encl] + [name]), call, flags))
+        out.append((sep.join([g[0] for g in encl] + [name]), Span(start, end), flags))
     return out
 
 
-def body(text, m, lx, call):
+def body(text, m, lx, span):
     """(first, last) lines strictly inside the test function's closing block, or None (a body on one or two lines)."""
-    close = call.end - 1  # a shape ends after its block: end >= 1
+    close = span.end - 1  # a shape ends after its block: end >= 1
     open_ = _open_of(lx, m, close) if m[close] == "}" else None
     if open_ is None:
         return None

@@ -177,7 +177,7 @@ def _lexer(d):
     return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx)
 
 
-def _tests(d, lexer, functions=False):
+def _tests(d, lexer, functions):
     f = "tests"
     style = _str(_table(d, f, TEST_KEYS + ("prefix",), ("style", "cases")).get("style"), f + ".style")
     if style not in ("calls", "declared"):
@@ -219,7 +219,7 @@ def _declared(d, lexer, functions):
     if "prefix" not in d:
         _err(f + ".prefix", "missing: style declared needs what starts a marker, e.g. \"@\"")
     prefix = _str(d["prefix"], f + ".prefix")
-    if any(lexer.is_ident(ch) or ch.isspace() or ch in lexer.opens + lexer.closes + (lexer.member or "") for ch in prefix):
+    if any(lexer.is_ident(ch) or ch.isspace() or ch in lexer.opens + lexer.closes + lexer.member for ch in prefix):
         _err(f + ".prefix", f"`{prefix}`: want punctuation that is no word character, bracket or member character")
     _idents(d["cases"], f + ".cases", lexer, True)
     for k in ("groups", "skip", "only"):

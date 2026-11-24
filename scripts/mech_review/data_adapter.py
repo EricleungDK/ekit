@@ -146,7 +146,8 @@ class DataAdapter(Adapter):
         return declared.body(text, m, self.lexer, t) if self._declared else _callback_inner(text, m, t.start, t.end)
 
     def test_bodies(self, text):
-        """a declared test keeps its body when skipped; a skipped call (`xit("x")`) has one only with a callback."""
+        """a declared test (declared.Span) keeps its body when skipped; a skipped call (`xit("x")`) has one only with
+        a callback."""
         _, _, _, _, tests, _ = self._parse(text)
         return {name: (line_of(text, t.start), norm(text[t.start:t.end])) for name, t, _ in tests
                 if self._declared or not t.skip or t.args[1:]}

@@ -103,8 +103,24 @@ class DeclaredTests(unittest.TestCase):
         self.assertEqual([t.name for t in self.a.test_fns(src)], ["T.b"])
 
     def test_a_group_word_with_no_name_or_block_is_no_group(self):
-        src = "@Test void top() {\n}\nclass\nclass 9x {\n}\n"
-        self.assertEqual([t.name for t in self.a.test_fns(src)], ["top"])
+        self.assertEqual([t.name for t in self.a.test_fns("@Test void top() {\n}\nclass")], ["top"])
+        self.assertEqual([t.name for t in self.a.test_fns("@Test void top() {\n}\nclass A\n")], ["top"])
+        src = "class 9x {\n    @Test void a() {\n    }\n}\nclass B {\n    @Test void b() {\n    }\n}\n"
+        self.assertEqual([t.name for t in self.a.test_fns(src)], ["a", "B.b"])
+
+    def test_groups_nest_in_source_order_and_hold_a_test_that_ends_at_their_brace(self):
+        src = "class Z {\n    class A {\n        @Test void t() {\n        }\n    }\n}\nclass C {@Test void c() {\n}}\n"
+        self.assertEqual([t.name for t in self.a.test_fns(src)], ["Z.A.t", "C.c"])
+
+    def test_markers_side_by_side_or_with_a_space_before_their_group(self):
+        for src in ("class T {\n    @Disabled@Test void a() {\n    }\n}\n",
+                    'class T {\n    @Disabled ("x") @Test void a() {\n    }\n}\n'):
+            with self.subTest(src):
+                self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(src)], [("T.a", ["ignore"])])
+
+    def test_a_file_with_no_group_words(self):
+        a = parse(adapter_file_dict())
+        self.assertEqual([t.name for t in a.test_fns("class A {\n    @Test void a() {\n    }\n}\n")], ["a"])
 
     def test_a_dotted_marker_with_no_word_before_its_dot_is_no_marker(self):
         self.assertEqual(self.a.test_fns("class T {\n    @.Test void a() {\n    }\n}\n"), [])
