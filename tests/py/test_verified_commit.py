@@ -219,6 +219,13 @@ class Refusals(Repos):
         self.commit("work")
         self.refused(os.path.join(self.tmp, "nope.json"), "refused: cannot read the result")
 
+    def test_result_that_is_not_text(self):
+        self.commit("work")
+        path = os.path.join(self.tmp, "bin.json")
+        with open(path, "wb") as f:
+            f.write(b'{"head": "\xff\xfe"}')
+        self.refused(path, "refused: cannot read the result")
+
     def test_result_that_is_not_json(self):
         self.commit("work")
         self.refused(self.raw("pass abc (0 fail)\n"), "refused: the result is not JSON")
@@ -254,6 +261,14 @@ class Refusals(Repos):
         plain = os.path.join(self.tmp, "plain")
         os.makedirs(plain)
         self.refused(self.result(head), f"refused: {plain} is not a git worktree", wt=plain)
+
+    def test_no_git_on_path(self):
+        from unittest import mock
+        head = self.commit("work")
+        empty = os.path.join(self.tmp, "empty-bin")
+        os.makedirs(empty)
+        with mock.patch.dict(os.environ, {"PATH": empty}):
+            self.refused(self.result(head), f"refused: {self.wt} is not a git worktree (git: ")
 
     def test_remote_that_cannot_be_asked(self):
         head = self.commit("work")

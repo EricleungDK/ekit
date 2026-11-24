@@ -65,14 +65,14 @@ def remote_tip(git):
     _, remote, _ = git("config", f"branch.{branch}.remote")
     _, ref, _ = git("config", f"branch.{branch}.merge")
     remote, ref = remote or "origin", ref or f"refs/heads/{branch}"
-    short = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+    short = ref.removeprefix("refs/heads/")
     name = f"{remote}/{short}"
     _, remotes, _ = git("remote")
-    if remote != "." and remote not in remotes.split():
+    if remote not in remotes.split():
         return f"no remote {remote}", None
     rc, out, err = git("ls-remote", remote, ref)
     if rc != 0:
-        raise Refusal(f"cannot ask {remote} for {short}'s tip: {err or f'git ls-remote exit {rc}'}")
+        raise Refusal(f"cannot ask {remote} for {short}'s tip: {err}")
     tips = [line.split("\t")[0] for line in out.splitlines() if line.endswith("\t" + ref)]
     return (name, tips[0]) if tips else (f"{remote} has no {short}", None)
 
