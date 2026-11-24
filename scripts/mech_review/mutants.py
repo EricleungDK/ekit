@@ -2007,11 +2007,31 @@ def _line(v):
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else None
 
 
+MAX_JSON_DEPTH = 64  # the elements report nests about 6 deep; deeper is refused by the reader, not by the interpreter
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+JSON_BRACKET = re.compile(r"[\[\]{}]")
+
+
+def _too_deep(text):
+    """True when the JSON text's arrays and objects nest more than MAX_JSON_DEPTH deep (brackets in strings are text).
+    Python's own limit depends on the interpreter and its stack (3.14 parses 100000 levels on one runner and raises
+    RecursionError on another), so the reader keeps its own: the same answer on every machine."""
+    depth = 0
+    for m in JSON_BRACKET.finditer(JSON_STRING.sub("", text)):
+        depth += 1 if m.group() in "[{" else -1
+        if depth > MAX_JSON_DEPTH:
+            return True
+    return False
+
+
 def read_elements(raw, crate):
     """(mutants, silent) of a mutation-testing-elements JSON report (Stryker, Stryker.NET, mull). silent: Survived
     mutants a test covers that completed no test (the runner never ran them: not a result)."""
+    text = _text(raw)
+    if _too_deep(text):
+        raise ReportError(f"not JSON: nested too deep (more than {MAX_JSON_DEPTH} levels)")
     try:
-        doc = json.loads(_text(raw))
+        doc = json.loads(text)
     except RecursionError:
         raise ReportError("not JSON: nested too deep") from None
     except ValueError as e:
