@@ -46,3 +46,9 @@ _Avoid_: host, local, client
 **Target OS**:
 The operating system a stack's tests must run on to mean anything (Windows for a WPF app); it decides the CI runner for that stack, whatever the developer machine is.
 _Avoid_: runner OS, platform
+
+### Checks
+
+**Co-change rule**:
+A rule kept as data in the repo (`.ekit/co-change.toml`): when a path matching its triggers changes, at least one path matching its required globs must change in the same range; R2 reports each broken one, at `confirm` until promoted to `fail`.
+_Avoid_: doc rule, update rule, path lint
