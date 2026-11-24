@@ -104,8 +104,8 @@ def tests(lx, cfg, m, fns):
 
 def body(text, m, lx, call):
     """(first, last) lines strictly inside the test function's closing block, or None (a body on one or two lines)."""
-    close = call.end - 1
-    open_ = _open_of(lx, m, close) if 0 <= close < len(m) and m[close] == "}" else None
+    close = call.end - 1  # a shape ends after its block: end >= 1
+    open_ = _open_of(lx, m, close) if m[close] == "}" else None
     if open_ is None:
         return None
     first, last = line_of(text, open_) + 1, line_of(text, close) - 1

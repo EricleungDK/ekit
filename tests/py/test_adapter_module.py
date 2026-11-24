@@ -62,7 +62,7 @@ name = "pit"
 command = "mvn"
 args = ["pit", "-DtargetClasses={mutate}"]
 mutate = "{module},{module}$*"
-module_roots = ["src/main/java"]
+module_roots = ["src/main/java", "gen"]
 report = "target/pit-reports/mutations.xml"
 format = "pit-xml"
 os = ["linux", "macos", "windows"]
@@ -91,7 +91,7 @@ class ModuleRun(Case):
         r, env = self.cli("mutants", self.adapter_java())
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(env["checks"]["R3"], {
-            "status": "n/a", "note": f"{other}: under none of mutation.tool.module_roots (src/main/java), so it has no "
+            "status": "n/a", "note": f"{other}: under none of mutation.tool.module_roots (src/main/java, gen), so it has no "
                                      "`{module}` to pass to pit (env)"})
         self.assertNotIn("| pit", self.calls())
 
@@ -106,8 +106,9 @@ class RuntimeTestPaths(unittest.TestCase):
         return tmp.name
 
     def test_controls_json_names_the_fixture_projects_test_paths(self):
-        rt = r0_runtime.load_runtime(self.runtime({"test-paths": ["src/test/**", "it/**"]}))
-        self.assertEqual(rt.globs, ("src/test/**", "it/**"))
+        d = self.runtime({"test-paths": ["src/test/**", "it/**"]})
+        rt = r0_runtime.load_runtime(d)
+        self.assertEqual((rt.globs, rt.where), (("src/test/**", "it/**"), os.path.join(d, "runtime")))
 
     def test_without_test_paths_the_tests_sit_under_tests(self):
         self.assertEqual(r0_runtime.load_runtime(self.runtime({})).globs, ("tests/**",))
@@ -119,8 +120,8 @@ class RuntimeTestPaths(unittest.TestCase):
                 d = self.runtime({"test-paths": bad})
                 with self.assertRaises(r0.FixtureError) as cm:
                     r0_runtime.load_runtime(d)
-                self.assertTrue(str(cm.exception).endswith(
-                    '`test-paths`: want a list of globs, such as ["src/test/**"]'), cm.exception)
+                self.assertEqual(str(cm.exception), f"R0 runtime fixture {os.path.join(d, 'runtime', 'controls.json')}: "
+                                                    '`test-paths`: want a list of globs, such as ["src/test/**"]')
 
 
 if __name__ == "__main__":

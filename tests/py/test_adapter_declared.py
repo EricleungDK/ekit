@@ -109,6 +109,21 @@ class DeclaredTests(unittest.TestCase):
     def test_a_dotted_marker_with_no_word_before_its_dot_is_no_marker(self):
         self.assertEqual(self.a.test_fns("class T {\n    @.Test void a() {\n    }\n}\n"), [])
         self.assertEqual(self.a.test_fns("class T {\n    ) void a() {\n    }\n}\n"), [])
+        self.assertEqual(self.a.test_fns("class T {\n    @ .Test void a() {\n    }\n}\n"), [])
+
+    def test_a_word_at_the_start_of_the_text_ends_the_markers(self):
+        """the walk back stops at the text's start: a modifier there is read whole, once."""
+        self.assertEqual([t.name for t in self.a.test_fns("public @Test void a() {\n}\n")], ["a"])
+        self.assertEqual([t.name for t in self.a.test_fns("Test void a() {\n}\n")], [])
+
+    def test_a_marker_group_with_a_group_inside_it(self):
+        src = "class T {\n    @Test @ValueSource(ints = f(1)) void a() {\n    }\n}\n"
+        self.assertEqual([t.name for t in self.a.test_fns(src)], ["T.a"])
+
+    def test_a_block_that_never_closes_has_no_body(self):
+        """close_of gives the text's last char for a block that never closes: no `}` there, no body."""
+        src = "@Test void a() {\n    f(\n    1,\n    2,\n    3)"
+        self.assertEqual([(t.name, t.body) for t in self.a.test_fns(src)], [("a", None)])
 
     def test_only_markers_and_the_default_separator(self):
         cfg = copy.deepcopy(adapter_file_dict())
