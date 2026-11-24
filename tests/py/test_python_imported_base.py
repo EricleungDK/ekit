@@ -99,11 +99,55 @@ class OnlyInTestFiles(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.r2({path: FAKE}, {path: FAKE.replace("test_connection", "ping")}), [])
 
+    def test_removing_a_test_of_a_class_on_a_helper_base_is_an_r2_fail(self):
+        text = ("from _kit import Fixture\n\n\nclass _Base(Fixture):\n    pass\n\n\nclass X(_Base):\n"
+                "    def test_a(self):\n        self.assertEqual(1, 1)\n\n    def test_b(self):\n"
+                "        self.assertEqual(2, 2)\n")
+        got = self.r2({"tests/test_x.py": text}, {"tests/test_x.py": text.split("\n    def test_b")[0] + "\n"})
+        self.assertEqual([(e["severity"], e["problem"][:30]) for e in got], [("fail", "test fn `X::test_b` removed")])
+
     def test_removing_a_test_of_a_class_on_an_imported_base_in_a_test_file_is_an_r2_fail(self):
         text = ("from _kit import Fixture\n\n\nclass X(Fixture):\n    def test_a(self):\n        self.assertEqual(1, 1)\n"
                 "\n    def test_b(self):\n        self.assertEqual(2, 2)\n")
         got = self.r2({"tests/test_x.py": text}, {"tests/test_x.py": text.split("\n    def test_b")[0] + "\n"})
         self.assertEqual([(e["severity"], e["problem"][:30]) for e in got], [("fail", "test fn `X::test_b` removed")])
+
+
+class HelperChains(unittest.TestCase):
+    """CI's census on #76: `class _RepoAdapter(Case)` (an imported base, no tests), then `class RepoAdapterFile(
+    _RepoAdapter)` with tests: a test class reached through a same-file helper base. The helper does not count itself,
+    but passes its imported (or TestCase) root on to its subclasses, at any depth; one pass in source order, so a cycle
+    or a self-reference ends."""
+
+    def test_two_levels_through_a_helper_without_tests(self):
+        text = ("from test_r0_runtime import Case\n\n\nclass _Base(Case):\n    def setUp(self):\n        pass\n\n\n"
+                "class Real(_Base):\n    def test_a(self):\n        pass\n")
+        self.assertEqual(names(text), ["Real::test_a"])
+
+    def test_three_levels(self):
+        text = ("import kit\n\n\nclass A(kit.Case):\n    pass\n\n\nclass B(A):\n    def helper(self):\n        pass\n"
+                "\n\nclass C(B):\n    def test_c(self):\n        pass\n")
+        self.assertEqual(names(text), ["C::test_c"])
+
+    def test_an_explicit_testcase_helper_chain(self):
+        text = ("import unittest\n\n\nclass A(unittest.TestCase):\n    pass\n\n\nclass B(A):\n    def test_b(self):\n"
+                "        pass\n")
+        self.assertEqual(names(text), ["B::test_b"])
+
+    def test_a_chain_ending_at_object_or_no_base_is_no_test(self):
+        text = ("class A(object):\n    pass\n\n\nclass B:\n    pass\n\n\nclass C(A):\n    def test_c(self):\n"
+                "        pass\n\n\nclass D(B):\n    def test_d(self):\n        pass\n")
+        self.assertEqual(names(text), [])
+
+    def test_a_cycle_or_self_reference_ends(self):
+        text = ("class A(A):\n    def test_a(self):\n        pass\n\n\nclass B(C):\n    pass\n\n\nclass C(B):\n"
+                "    def test_c(self):\n        pass\n")
+        self.assertEqual(names(text), ["A::test_a", "C::test_c"])  # a name not yet defined reads as imported
+
+    def test_conftest_helpers_stay_excluded(self):
+        text = ("from base import BaseDB\n\n\nclass _Fake(BaseDB):\n    pass\n\n\nclass FakeDB(_Fake):\n"
+                "    def test_connection(self):\n        return True\n")
+        self.assertEqual(names(text, "tests/conftest.py"), [])
 
 
 if __name__ == "__main__":

@@ -520,6 +520,7 @@ class _Scan(ast.NodeVisitor):
         self.imported_bases = imported_bases  # the imported-base rule applies (a file pytest collects tests from)
         self.known = set()  # TestCase-derived class names seen so far (a subclass in the same file counts)
         self.defined = set()  # every class name this file defined so far
+        self.rooted = set()  # same-file classes whose base chain reaches a base the file does not define
         self.scope = []
         self.tests = []
         self.bodies = {}
@@ -551,8 +552,12 @@ class _Scan(ast.NodeVisitor):
         pytest collect it through that base, so it is a test class (#21: R0's census found the scanner blind to it).
         `object`, and a non-test class of this file, are no such base."""
         bases = [_last(b) for b in node.bases]
-        if not self.imported_bases or not any(n and n != "object" and n not in self.defined for n in bases):
+        # rooted: a base not defined in this file (imported), or a same-file class already rooted (a helper with no
+        # tests passes its root on). One pass in source order: a name not yet defined reads as imported, so a cycle ends
+        if not self.imported_bases or not any(n and n != "object" and (n not in self.defined or n in self.rooted)
+                                              for n in bases):
             return False
+        self.rooted.add(node.name)
         return any(isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name.startswith("test") for s in node.body)
 
     def _func(self, node):
