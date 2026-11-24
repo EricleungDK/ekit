@@ -516,3 +516,28 @@ class FingerprintCommand(Case):
             f.write("Name: mini\nVersion: 2.0.1\n")
         r, env = self.red()
         self.assertEqual(env["checks"]["R0"]["probes"], ["mini --version: Version: 2.0.1"])
+
+
+class RepoCensus(Case):
+    """the census on the repo at head: a test style the adapter does not know, which the runner lists, is named."""
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.commit({"tests/spec.mini": 'spec("in a new style", {\n  assertEquals(2, add(1, 1))\n})\n'})
+        styles = mock.patch.dict(os.environ, {"STUB_STYLES": "test it xtest spec"})
+        styles.start()
+        self.addCleanup(styles.stop)
+
+    def test_a_listed_test_the_scanner_misses_fails_r0(self):
+        r, env = self.red()
+        c = env["checks"]["R0"]
+        self.assertEqual(c["census"]["repo"], {"found": 2, "listed": 3, "misses": ["tests/spec.mini :: in a new style"]})
+        self.assertEqual([k for k, v in self.cases(c).items() if v == "fail"], ["census-repo"])
+        self.assertIn("census: 2/3 listed tests found (missed: `tests/spec.mini :: in a new style`)", c["note"])
+
+    def test_the_census_limit_comes_from_the_adapters_limits(self):
+        text = adapter_text(lambda t: t.replace("[commands]", "[limits]\ncensus = 50\n\n[commands]"))
+        r, env = self.red(self.adapter(text))
+        c = env["checks"]["R0"]
+        self.assertEqual(c["status"], "pass", c)
+        self.assertEqual(c["census"]["repo"]["misses"], ["tests/spec.mini :: in a new style"])
