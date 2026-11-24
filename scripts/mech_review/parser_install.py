@@ -26,16 +26,13 @@ def steps(repo, base, stack, folder, at):
 
 def main(argv, dir_arg):
     """the subcommand: dir_arg is the CLI's --project-dir rule (under the repo root)."""
-    p = argparse.ArgumentParser(prog="mech-review.py parser-install",
-                                description="print, as json argv lists, the steps that install the parser the base "
-                                            "branch's adapter file declares for the stack (none for a built-in or a "
-                                            "file without [parser]); git only, runs nothing")
-    p.add_argument("--repo", default=".", help="git repo (default .)")
-    p.add_argument("--base", required=True, help="base ref: the adapter file is read there, never at head")
-    p.add_argument("--stack", required=True, help="the stack (a built-in or an adapter file's name)")
-    p.add_argument("--project-dir", type=dir_arg, default=".", help="the stack's dir: its plan entry (default .)")
-    p.add_argument("--home", help=f"the dir the parser prefixes sit under (default ${parser_cmd.HOME_VAR}, else "
-                                  "~/.cache/ekit/parsers); absolute")
+    # no help text of its own, as resolve (#29): the main --help describes parser-install
+    p = argparse.ArgumentParser(prog="mech-review.py parser-install")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--base", required=True)  # the adapter file is read there, never at head
+    p.add_argument("--stack", required=True)
+    p.add_argument("--project-dir", type=dir_arg, default=".")
+    p.add_argument("--home")  # the dir the parser prefixes sit under: default parser_cmd.home(); absolute
     args = p.parse_args(argv)
     at = args.home or parser_cmd.home()
     if not os.path.isabs(at):

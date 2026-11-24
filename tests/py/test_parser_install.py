@@ -98,6 +98,17 @@ class ParserInstall(unittest.TestCase):
         got = self.printed(base, "--project-dir", "m/")
         self.assertEqual((got["adapter"], got["steps"]), (".ekit/adapters/m.toml", pip_steps(self.home)))
 
+    def test_the_repo_defaults_to_the_cwd_and_the_project_dir_to_the_root(self):
+        plan = '[[stack]]\nname = "mini"\nfolder = "."\nadapter = ".ekit/adapters/m.toml"\nstatus = "current"\n'
+        base = self.repo.commit({**self.src, ".ekit/stack-plan.toml": plan, ".ekit/adapters/m.toml": toml(),
+                                 "mini.json": "{}\n"}, "base")
+        old = os.getcwd()
+        os.chdir(self.repo.path)
+        self.addCleanup(os.chdir, old)
+        r = _kit.run_cli(["parser-install", "--base", base, "--stack", "mini", "--home", self.home])
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(json.loads(r.stdout)["adapter"], ".ekit/adapters/m.toml")
+
     def test_the_home_defaults_to_the_env_var(self):
         base = self.repo.commit({**self.src, AD: toml()}, "base")
         old = os.environ.get(HOME_VAR)
@@ -116,11 +127,12 @@ class ParserInstall(unittest.TestCase):
                 self.assertTrue(r.stderr.startswith(want), r.stderr)
                 self.assertNotIn("Traceback", r.stderr)
 
-    def test_help_names_the_subcommand_and_says_it_reads_the_base(self):
+    def test_help_names_the_subcommand_and_its_options(self):
         r = _kit.run_cli(["parser-install", "--help"])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(r.stdout.startswith("usage: mech-review.py parser-install "), r.stdout)
-        self.assertIn("install the parser the base branch's adapter file declares", " ".join(r.stdout.split()))
+        for opt in ("--base BASE", "--stack STACK", "--project-dir PROJECT_DIR", "--home HOME"):
+            self.assertIn(opt, r.stdout)
 
     def test_base_and_stack_are_required(self):
         for argv, flag in ((["--stack", "mini"], "--base"), (["--base", "HEAD"], "--stack")):
