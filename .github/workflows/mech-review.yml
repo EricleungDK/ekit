@@ -348,6 +348,9 @@ jobs:
           with open(sys.argv[1], "a") as f:
               f.write(f"key={key}\n")
           PY
+      - name: R0 runtime cache dir cleared (run)
+        # nothing a setup command or an install script planted there survives: the dir holds what the cache restores
+        run: rm -rf "$HOME/.cache/ekit-r0"
       - name: R0 runtime cache (run)
         # a hit skips the proof (the engine re-checks the file names its own fingerprint); a miss only re-runs it.
         # The engine writes the file only when the proof passes, so only a pass is ever saved
@@ -695,6 +698,9 @@ jobs:
           with open(sys.argv[1], "a") as f:
               f.write(f"key={key}\n")
           PY
+      - name: R0 runtime cache dir cleared (r3)
+        if: matrix.shard == 0
+        run: rm -rf "$HOME/.cache/ekit-r0"
       - name: R0 runtime cache (r3)
         if: matrix.shard == 0 && steps.r0fp.outputs.key != ''
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

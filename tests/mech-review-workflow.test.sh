@@ -325,8 +325,14 @@ for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", m
           "uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache and "key: ${{ steps.r0fp.outputs.key }}" in cache
           and "path: ~/.cache/ekit-r0" in cache and any(l.startswith("if:") and "steps.r0fp.outputs.key != ''" in l
                                                         for l in cache), str(cache))
-    check(f"{job}: fingerprint, then cache, then the run that passes --r0", names.index(f"R0 runtime fingerprint ({part})")
-          < names.index(f"R0 runtime cache ({part})") < names.index(run_name), str(names))
+    clear = step(lines, f"R0 runtime cache dir cleared ({part})")
+    check(f"{job}: fingerprint, cleared dir, cache, then the run that passes --r0 (review B1: nothing a setup command "
+          "or install script planted survives a miss)",
+          f"R0 runtime cache dir cleared ({part})" in names
+          and names.index(f"R0 runtime fingerprint ({part})") < names.index(f"R0 runtime cache dir cleared ({part})")
+          == names.index(f"R0 runtime cache ({part})") - 1 < names.index(run_name)
+          and 'rm -rf "$HOME/.cache/ekit-r0"' in text(clear)
+          and (not shard0 or any(l == "if: matrix.shard == 0" for l in clear)), str(names) + text(clear))
     check(f"{job}: the run passes the cache dir as --r0" + (" on shard 0 only" if shard0 else ""),
           f"--r0 {R0_DIR}" in run and (not shard0 or 'if [ "$SHARD" = "0" ]' in run), run)
     # review S3: the fingerprint takes the stack and project dir from the same expressions as the run (#74 moves the
