@@ -204,6 +204,15 @@ def probe(argv, from_file, roots):
     inside = mutants._in_checkout(prog, roots)
     if inside:
         return f"{label}: not probed (in the reviewed checkout: {inside})"
+    if os.path.basename(argv[0]) == "cargo" and len(argv) > 1 and not argv[1].startswith("-"):
+        # `cargo mutants` runs `cargo-mutants` from PATH: that binary keeps the same rules (#21 review N2)
+        sub = f"cargo-{argv[1]}"
+        sub_prog = mutants._program_path(sub)
+        if sub_prog is None:
+            return f"{label}: not probed (`{sub}` not found on PATH)"
+        inside = mutants._in_checkout(sub_prog, roots)
+        if inside:
+            return f"{label}: not probed (`{sub}` in the reviewed checkout: {inside})"
     with tempfile.TemporaryDirectory(prefix="ekit-r0-probe-") as tmp:
         try:
             r = subprocess.run(red.stubbed([prog] + list(argv[1:]), os.environ.get("MECH_TEST_STUB")), cwd=tmp,

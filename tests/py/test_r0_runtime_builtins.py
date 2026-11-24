@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import _kit
 
@@ -120,6 +121,22 @@ class Builtin(unittest.TestCase):
         if not CARGO:
             return self.check_env(c)
         self.assertEqual(c["census"]["repo"], {"found": 1, "listed": 2, "misses": ["bar::tests::x"]}, c)
+
+
+    def test_cargo_subcommand_probe_keeps_the_program_rules_for_its_binary(self):
+        """review N2: `cargo mutants --version` runs `cargo-mutants` from PATH: that binary is resolved by the same
+        rules as cargo (on PATH's absolute entries, never in the reviewed checkout)."""
+        repo = self.repo({"Cargo.toml": '[package]\nname = "cr"\nversion = "0.1.0"\nedition = "2021"\n',
+                          "src/lib.rs": "pub fn inc(x: i32) -> i32 { x + 1 }\n", "bin/cargo-mutants": "#!/bin/sh\necho x\n"})
+        os.chmod(os.path.join(repo, "bin", "cargo-mutants"), 0o755)
+        with unittest.mock.patch.dict(os.environ, {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
+            r = _kit.run_cli(["r0", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", "rust",
+                              "--fingerprint", "r3"])
+        line = json.loads(r.stdout)["probes"][0]
+        if not CARGO:
+            return self.assertEqual(line, "cargo mutants --version: not probed (not found on PATH)")
+        self.assertTrue(line.startswith("cargo mutants --version: not probed (`cargo-mutants` in the reviewed checkout: "),
+                        line)
 
 
 if __name__ == "__main__":
