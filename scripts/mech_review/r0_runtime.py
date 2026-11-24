@@ -60,7 +60,8 @@ ENGINE = os.path.dirname(os.path.abspath(__file__))
 BUILTIN_PROBES = {
     "rust": {"run": (("cargo", "--version"), ("rustc", "--version")), "r3": (("cargo", "mutants", "--version"),)},
     "python": {"run": (("python3", "--version"), ("python3", "-m", "pytest", "--version")),
-               "r3": (("mutmut", "--version"),)},
+               # mutmut 3.8.1 reads its config as it starts, so `mutmut --version` fails outside a project: pip says
+               "r3": (("python3", "-m", "pip", "show", "mutmut"),)},
     "ts": {"run": (("node", "--version"),), "r3": (("node", "--version"),)},
 }
 
@@ -190,7 +191,8 @@ def _probe_env():
 
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
-    refuse it (not found, in the reviewed checkout, a launcher an adapter file names). Runs in an empty temp dir."""
+    refuse it (not found, in the reviewed checkout, a launcher an adapter file names). Runs in an empty temp dir. The
+    line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else the first."""
     label = " ".join(argv)
     if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
         return f"{label}: not probed (a path in the project dir, which the PR under review can change)"
@@ -209,7 +211,8 @@ def probe(argv, from_file, roots):
         except (OSError, subprocess.TimeoutExpired) as e:
             return f"{label}: did not answer ({type(e).__name__})"
     lines = [ln.strip() for ln in (r.stdout + r.stderr).decode("utf-8", "replace").splitlines() if ln.strip()]
-    return f"{label}: {lines[0][:200] if lines else 'no output'}" + (f" (exit {r.returncode})" if r.returncode else "")
+    line = next((ln for ln in lines if re.match(r"version\b", ln, re.I)), lines[0] if lines else "no output")
+    return f"{label}: {line[:200]}" + (f" (exit {r.returncode})" if r.returncode else "")
 
 
 def fingerprint(part, adapter, adapter_raw, fixtures_dir, target_os, cmds, lines, extra=b""):

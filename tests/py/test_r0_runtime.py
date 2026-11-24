@@ -510,3 +510,9 @@ class FingerprintCommand(Case):
         head = self.commit({"src/calc.mini": "fn add(a, b) { a + b + 0 }\n"})
         r, env = self.mutants(None, head)
         self.assertEqual(got["key"], "ekit-r0-r3-" + env["checks"]["R0"]["fingerprint"])
+
+    def test_the_version_line_is_the_one_that_says_version(self):
+        with open(os.path.join(self.tmp, "version"), "w") as f:
+            f.write("Name: mini\nVersion: 2.0.1\n")
+        r, env = self.red()
+        self.assertEqual(env["checks"]["R0"]["probes"], ["mini --version: Version: 2.0.1"])
