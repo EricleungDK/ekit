@@ -39,7 +39,7 @@ import tempfile
 import time
 from collections import namedtuple
 
-from . import red
+from . import adapter_file, red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
 from .stack import ts_runner
@@ -2192,6 +2192,15 @@ class DeclaredTool:
                 return bad
             if not files:
                 return _check("pass", "0 mutants in the diff (no changed production file in this shard)", 0, 0), []
+            word = shlex.split(cmd)[0]
+            if any(adapter_file.launcher(w) for w in (word, prog, os.path.realpath(prog))):
+                problem = (f"the mutation tool `{word}` ({os.path.realpath(prog)}) is an interpreter, shell or launcher: "
+                           "mutants not run")
+                return _check("fail", problem), finalize([entry(
+                    "R3", "", 0, "tool-launcher", "needs-human", "fail", problem,
+                    "install the tool as a program of its own on PATH (setup-command) or pass mutants-cmd: a launcher "
+                    "runs what it is given, which can be a file the PR under review changes",
+                    "running a mutation tool through an interpreter, shell or launcher")])
             inside = _in_checkout(prog, (repo, wt))
             if inside:
                 problem = (f"the mutation tool `{shlex.split(cmd)[0]}` resolves to {prog} ({inside}), in the reviewed "
@@ -2342,7 +2351,9 @@ def _program_path(word):
     if "/" in word or "\\" in word:
         return None
     dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and os.path.isabs(d)]
-    return shutil.which(word, path=os.pathsep.join(dirs)) if dirs else None
+    found = shutil.which(word, path=os.pathsep.join(dirs)) if dirs else None
+    # Windows' lookup may answer from the current dir (`.\\mut.exe`): only an absolute answer is a program on PATH
+    return found if found and os.path.isabs(found) else None
 
 
 def _in_checkout(prog, roots):

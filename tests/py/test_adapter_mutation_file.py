@@ -111,6 +111,21 @@ class Declared(unittest.TestCase):
             with self.subTest(good):
                 self.assertEqual(parse(with_tool(changed(command=good))).mutation_tool["command"], good)
 
+    def test_an_interpreter_shell_or_launcher_is_no_program(self):  # review round 2, R2-1
+        for bad, word in (("python3 tools/mut", "python3"), ("/usr/bin/env tools/mut", "/usr/bin/env"),
+                          ("sh ./gradlew pitest", "sh"), ("npx stryker run", "npx"), ("NODE.EXE x", "NODE.EXE"),
+                          ("npx.cmd stryker", "npx.cmd"), ("/usr/bin/python3.12 -m mut", "/usr/bin/python3.12"),
+                          ("java -jar pit.jar", "java"), ("'C:\\Tools\\pwsh.exe' x", "C:\\Tools\\pwsh.exe")):
+            with self.subTest(bad):
+                self.assertEqual(self.err(with_tool(changed(command=bad))),
+                                 f"mutation.tool.command: `{word}` is an interpreter, shell or launcher: it runs what it "
+                                 "is given, which can be a file the PR under review changes; install the tool as a "
+                                 "program on PATH (setup-command) or pass mutants-cmd")
+        # a later word naming a repo file (the tool's own config) is the tool's business
+        tool = parse(with_tool(changed(command="stryker run --configFile stryker.conf.json"))).mutation_tool
+        self.assertEqual(tool["command"], "stryker run --configFile stryker.conf.json")
+        self.assertEqual(parse(with_tool(changed(command="mvn -q"))).mutation_tool["command"], "mvn -q")
+
     def test_args_placeholders_are_the_tools_only(self):
         self.assertEqual(self.err(with_tool(changed(args=["{path}"]))),
                          "mutation.tool.args[0]: unknown placeholder `{path}`: want `{mutate}` or `{timeout_ms}` or "

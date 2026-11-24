@@ -371,7 +371,17 @@ def _program(word, field):
     if ("/" in word or "\\" in word) and not ABSOLUTE.match(word):
         _err(field, f"`{word}` is a path in the project dir, which the PR under review can change: want a program on "
                     "PATH or an absolute path outside it (install the tool with setup-command, or pass mutants-cmd)")
+    if launcher(word):
+        _err(field, f"`{word}` is an interpreter, shell or launcher: it runs what it is given, which can be a file the PR "
+                    "under review changes; install the tool as a program on PATH (setup-command) or pass mutants-cmd")
     return word
+
+
+def launcher(word):
+    """True when a program word (a bare name or a path, any case, `.exe` `.cmd` `.bat` `.com` or not) is one of
+    INTERPRETERS (#27's list, the shells in it): a program that runs the code it is given, never a tool's program."""
+    name = re.split(r"[\\/]", word)[-1].lower()
+    return bool(INTERPRETERS.fullmatch(re.sub(r"\.(?:exe|cmd|bat|com)$", "", name)))
 
 
 def _lines_format(d, f):

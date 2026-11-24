@@ -452,6 +452,28 @@ class ProgramOutsideTheCheckout(Case):
                                                "(mutation.tool.command); install it (setup-command) or set mutants-cmd"})
         self.assertEqual(self.calls(), "")
 
+    def test_a_launcher_is_not_run_whatever_the_name_it_is_found_by(self):  # review round 2, R2-1
+        self.pr()
+        env_prog = os.path.realpath(shutil.which("env"))
+        os.remove(os.path.join(self.bin, "mut"))
+        os.symlink(env_prog, os.path.join(self.bin, "mut"))  # `mut` on PATH is env in disguise
+        for extra in ((), ("--mutants-cmd", "python3 tools/mut")):
+            with self.subTest(extra):
+                r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), *extra)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual([(e["class"], e["severity"]) for e in env["entries"]], [("needs-human", "fail")])
+                self.assertIn("is an interpreter, shell or launcher: mutants not run", env["entries"][0]["problem"])
+                self.assertEqual(self.calls(), "")
+
+    def test_a_lookup_that_answers_a_relative_path_is_not_found(self):  # review round 2, R2-2 (Windows `.\\mut.exe`)
+        self.pr()
+        with mock.patch("scripts.mech_review.mutants.shutil.which", return_value=".\\mut.exe"):
+            _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)))
+        self.assertEqual(env["checks"]["R3"]["note"], "mut not installed (env): `mut` not runnable "
+                                                      "(mutation.tool.command); install it (setup-command) or set "
+                                                      "mutants-cmd")
+        self.assertEqual(self.calls(), "")
+
     def test_a_relative_mutants_cmd_is_not_run_from_the_checkout(self):
         self.pr()
         _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), "--mutants-cmd", "bin/mut")
