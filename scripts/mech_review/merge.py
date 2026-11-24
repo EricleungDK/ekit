@@ -5,12 +5,12 @@ has a stack plan, so a drift result without it adds nothing), r0 owns R0 (#20: a
 n/a; their entries stay, marked `blocked`, and still count); a CI entry in a job's result is kept too. A job with no usable result (missing,
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
-checks stay skipped.
+checks stay skipped. Several stacks (#17): each stack's results merge apart, then combine_stacks reports them as one.
 """
 import hashlib
 import json
 
-from .report import CHECKS, entry, envelope, finalize
+from .report import ALL, CHECKS, entry, envelope, finalize
 from .mutants import partial_entry
 from .r0 import blocked, mark
 
@@ -268,3 +268,76 @@ def combine_mutants(base, head, n, shards, reasons, baseline=None, baseline_reas
         return envelope(base, head, sorted(ents, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"])), checks)
     timing = (baseline["checks"]["R3"].get("timing") or {}) if isinstance(baseline.get("checks"), dict) else {}
     return combine_shards(base, head, n, shards, reasons, baseline_timing=timing)
+
+
+def _stack_id(e, leg):
+    """An entry's id in a result of several stacks (#17): derived from its own id and its stack's adapter and project
+    dir (one plan entry each), so the same rule broken in two stacks keeps two ids, each stable across runs."""
+    seed = f"{leg['stack']}|{leg['project_dir']}|{e['id']}"
+    return f"{e['check']}-" + hashlib.sha1(seed.encode("utf-8", "surrogateescape")).hexdigest()[:8]
+
+
+def label_stack(env, leg):
+    """The stack's envelope with each entry labelled `stack: <name>` and its id made distinct by stack (_stack_id), so
+    a waiver names one stack's entry."""
+    return dict(env, entries=[dict(e, id=_stack_id(e, leg), stack=leg["name"]) for e in env["entries"]])
+
+
+# the worst first: a check of several stacks reads the worst of theirs, so a stack that failed or could not run is never
+# hidden by one that passed; skipped only when no stack ran it
+WORST = ("fail", "n/a", "unproven", "partial", "waived", "pass", "skipped")
+
+
+def _no_stack_result(leg, head, base):
+    """The result of a stack whose jobs left nothing (not even a CI entry): every check fails, one CI entry names it."""
+    what = f"stack {leg['name']} ({leg['stack']} in {leg['project_dir']})"
+    checks = {c: {"status": "fail", "note": f"no result from {what}"} for c in CHECKS}
+    ci = entry("CI", "", 0, f"no-result:stack:{leg['name']}", "env", "fail", f"{what} produced no result",
+               "see the logs of its jobs; its checks did not run", "a merged result without that stack")
+    return envelope(base, head, finalize([ci]), checks)
+
+
+def _worst(named):
+    """One check from [(stack name, check)]: the worst status; the note names each stack's status (and note). A status
+    this engine does not know fails the check, named: it never reads as a pass."""
+    unknown = [f"{name}: unknown status `{c.get('status')}`" for name, c in named if c.get("status") not in WORST]
+    status = "fail" if unknown else min((c["status"] for _, c in named), key=WORST.index)
+    note = "; ".join(unknown + [f"{name}: {c.get('status')}" + (f" ({c['note']})" if c.get("note") else "")
+                                for name, c in named if c.get("status") in WORST])
+    return {"status": status, "note": note}
+
+
+def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
+    """One result from the results of several stacks (#17). legs: [(leg {name, stack, project_dir}, envelope or None)]
+    in the plan's order, at least one envelope present; None is a stack with no result at all (it fails, named). Each
+    envelope is labelled (label_stack), then waive(envelope) applies the PR's waivers to it, so each stack's own checks
+    read them too. drift: the repo's drift result (D is one for the repo, not per stack), waived the same way; with
+    none, drift_reason (why there is none) fails D with a CI entry, as merge does for a job with no result.
+    The whole: `stacks` [{name, stack, project_dir, summary, checks}], every entry, and per check the worst of the
+    stacks that report it (R0 only where it ran); the summary from those."""
+    present = [env for _, env in legs if env is not None] + ([drift] if drift is not None else [])
+    if not present:
+        raise ValueError("combine_stacks needs at least one envelope")
+    base, head = present[0]["base"], present[0]["head"]
+    waive = waive or (lambda env: env)
+    envs = [waive(label_stack(env if env is not None else _no_stack_result(leg, head, base), leg)) for leg, env in legs]
+    stacks = [{"name": leg["name"], "stack": leg["stack"], "project_dir": leg["project_dir"], "summary": env["summary"],
+               "checks": env["checks"]} for (leg, _), env in zip(legs, envs)]
+    checks = {}
+    for c in ALL:
+        named = [(s["name"], s["checks"][c]) for s in stacks if c in s["checks"]]
+        if named:
+            checks[c] = _worst(named)
+    entries = [e for env in envs for e in env["entries"]]
+    if drift is not None:
+        drift = waive(drift)
+        if "D" in drift["checks"]:
+            checks["D"] = drift["checks"]["D"]
+        entries += [e for e in drift["entries"] if e["check"] in ("D", "CI")]
+    elif drift_reason is not None:
+        checks["D"] = {"status": "fail", "note": f"no result from drift job: {drift_reason}"}
+        entries += finalize([entry("CI", "", 0, "no-result:drift", "env", "fail",
+                                   f"drift job produced no result: {drift_reason}",
+                                   "see the job log; the checks it owns did not run", "a merged result without that job")])
+    entries = sorted(entries, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
+    return dict(envelope(base, head, entries, checks), stacks=stacks)

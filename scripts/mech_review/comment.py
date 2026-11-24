@@ -106,15 +106,36 @@ def _timing_lines(env):
     return lines
 
 
-def _table(entries):
+def _table(entries, by_stack=False):
+    """The entries table; with several stacks (#17) a stack column names each entry's stack."""
     rows = [
+        "| id | stack | severity | file:line | problem | forbidden |" if by_stack else
         "| id | severity | file:line | problem | forbidden |",
-        "|---|---|---|---|---|",
+        "|---|---|---|---|---|---|" if by_stack else "|---|---|---|---|---|",
     ]
     for e in entries:
-        rows.append(f"| {_cell(e['id'])} | {_cell(_label(e))} | {_cell(e['file'])}:{e['line']} | "
+        stack = f" {_cell(e.get('stack', ''))} |" if by_stack else ""
+        rows.append(f"| {_cell(e['id'])} |{stack} {_cell(_label(e))} | {_cell(e['file'])}:{e['line']} | "
                     f"{_cell(e['problem'])} | {_cell(e['forbidden'])} |")
     return "\n".join(rows)
+
+
+def _stack_rows(env):
+    """Several stacks (#17): a row per stack, its name, adapter, project dir and its own result. None for one stack."""
+    stacks = env.get("stacks") or []
+    if not stacks:
+        return []
+    return (["| stack | adapter | project dir | result |", "|---|---|---|---|"]
+            + [f"| {_cell(s['name'])} | {_cell(s['stack'])} | {_cell(s['project_dir'])} | {_cell(s['summary'])} |"
+               for s in stacks])
+
+
+def _each_stack(env, lines_of):
+    """lines_of(env), or with several stacks (#17) lines_of each stack's own checks, each line named by its stack."""
+    stacks = env.get("stacks") or []
+    if not stacks:
+        return lines_of(env)
+    return [f"{_cell(s['name'])}: {line}" for s in stacks for line in lines_of({"checks": s["checks"]})]
 
 
 CHECK_ORDER = ("R0", "R1", "R2", "R3", "R4", "D")
@@ -190,10 +211,13 @@ def _ready_made(waivable):
 def _body(env, shown, json_text, omit_lines=False):
     entries = env["entries"]
     lines = [MARKER, "## mech-review", "", f"**{headline(env)}**", ""]
-    not_run = _not_run_lines(env)
+    stacks = _stack_rows(env)
+    if stacks:
+        lines += stacks + [""]
+    not_run = _each_stack(env, _not_run_lines)
     if not_run:
         lines += not_run + [""]
-    r0 = _r0_lines(env)
+    r0 = _each_stack(env, _r0_lines)
     if r0:
         lines += r0 + [""]
     waived = _waiver_lines(env)
@@ -202,14 +226,14 @@ def _body(env, shown, json_text, omit_lines=False):
     plan = _plan_lines(env)
     if plan:
         lines += plan + [""]
-    timing = _timing_lines(env)
+    timing = _each_stack(env, _timing_lines)
     if timing:
         lines += timing + [""]
     lines += [f"head `{env['head']}`", ""]
     if not entries:
         lines.append("No entries.")
     else:
-        lines.append(_table(shown))
+        lines.append(_table(shown, by_stack=bool(env.get("stacks"))))
         if len(shown) < len(entries):
             lines += ["", f"_showing first {len(shown)} of {len(entries)} entries_"]
         waivable = [e for e in entries if e["severity"] == "fail" and e.get("check") in CHECK_ORDER]  # never CI

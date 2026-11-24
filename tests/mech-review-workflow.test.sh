@@ -3,9 +3,11 @@
 # Stdlib line-based parse (no PyYAML): top-level blocks, child keys, scalar values.
 source "$(dirname "$0")/lib.sh"
 python3 -I - "$ROOT" <<'PY'
+import json
 import os
 import re
 import sys
+import tempfile
 
 ROOT = sys.argv[1]
 FAILS = 0
@@ -113,8 +115,9 @@ mut_has_perm = any(l.strip() == "permissions:" for l in mut_job)
 base_has_perm = any(l.strip() == "permissions:" for l in (block(jobs, "baseline") or []))
 check("reusable: job-level permissions only on red-first, baseline and mutants (PR code jobs; guard, plan, report inherit top-level)",
       red_has_perm and mut_has_perm and base_has_perm and len(job_perm_lines) == 3, f"job-level permissions lines: {job_perm_lines}")
-check("reusable: jobs are exactly stack + guard + red-first + report + plan + baseline + mutants (#46)",
-      child_keys(jobs) == {"stack", "guard", "red-first", "report", "plan", "baseline", "mutants"}, str(child_keys(jobs)))
+check("reusable: jobs are exactly stack + guard + red-first + report + plan + baseline + shards + mutants (#46, #17)",
+      child_keys(jobs) == {"stack", "guard", "red-first", "report", "plan", "baseline", "shards", "mutants"},
+      str(child_keys(jobs)))
 guard = block(jobs, "guard") or []
 red = block(jobs, "red-first") or []
 report = block(jobs, "report") or []
@@ -136,8 +139,8 @@ check("guard: uploads the JSON artifact", "upload-artifact" in gt)
 check("guard: artifact overwrites on re-run", re.search(r"overwrite:\s*true", gt) is not None)
 check("report: downloads the JSON artifact", "download-artifact" in text(report))
 check("report: posts via mech-comment.py", "mech-comment.py" in text(report))
-check("report: downloads the guard, drift, red-first, baseline and mutants artifacts (#46, #56)",
-      text(report).count("download-artifact@v4") == 5 and "mech-review-red-json" in text(report)
+check("report: downloads the guard, drift, red-first, baseline and mutants artifacts (#46, #56), and every stack's (#17)",
+      text(report).count("download-artifact@v4") == 6 and "mech-review-red-json" in text(report)
       and "mech-review-baseline-json" in text(report) and "mech-review-drift-json" in text(report), text(report))
 check("report: named envelopes, guard as r2 and red-first as red",
       "--envelope r2=" in text(report) and "--envelope red=" in text(report), text(report))
@@ -155,7 +158,7 @@ check("red-first: one --agent-prefix per line of the input", 'args+=(--agent-pre
 _pref = " ".join(block(inputs, "agent-branch-prefix") or [])
 check("inputs: agent-branch-prefix defaults to the harness prefixes",
       all(p in _pref for p in ("agent/", "claude/", "codex/", "copilot/", "cursor/")), _pref)
-check("red-first: toolchain set up for the rust stack", "rust-toolchain" in rt and "needs.stack.outputs.stack == 'rust'" in rt)
+check("red-first: toolchain set up for the rust stack", "rust-toolchain" in rt and "matrix.stack == 'rust'" in rt)
 # the step is a list item: its lines run from "- name: Rust toolchain" to the next "- name:"
 _i = next((n for n, l in enumerate(red) if l.strip() == "- name: Rust toolchain"), None)
 tc = []
@@ -220,7 +223,7 @@ check("baseline: outputs run, count, shards and timeout",
       all(re.search(rf"^\s+{k}:\s*\$\{{\{{\s*steps\.\w+\.outputs\.{k}\s*\}}\}}", bt, re.M)
           for k in ("run", "count", "shards", "timeout")), bt)
 check("baseline: rust toolchain pinned to a full SHA, for the rust stack",
-      "dtolnay/rust-toolchain@" in bt and "needs.stack.outputs.stack == 'rust'" in bt, bt)
+      "dtolnay/rust-toolchain@" in bt and "matrix.stack == 'rust'" in bt, bt)
 check("baseline: cargo-mutants pinned to 27.1.0, install failure is not a stop", "cargo-mutants@27.1.0" in bt
       and "continue-on-error: true" in bt, bt)
 check("baseline: uploads its JSON artifact", "mech-review-baseline-json" in bt and "upload-artifact" in bt, bt)
@@ -231,7 +234,8 @@ check("mutants: needs plan and baseline", {"plan", "baseline"} <= set(re.split(r
 check("mutants: runs only when the baseline says shards run (#46)", "needs.baseline.outputs.run == 'true'" in (value(mu, "if") or ""),
       str(value(mu, "if")))
 strategy = block(mu, "strategy") or []
-check("mutants: shard matrix from the baseline output", "fromJSON(needs.baseline.outputs.shards)" in text(strategy), text(strategy))
+check("mutants: shard matrix from the shards job (several stacks), else the baseline's output (#17)",
+      "include: ${{ fromJSON(needs.shards.outputs.include || needs.baseline.outputs.include) }}" in text(strategy), text(strategy))
 check("mutants: fail-fast off (one shard's failure does not cancel the others)", value(strategy, "fail-fast") == "false",
       str(value(strategy, "fail-fast")))
 mperm = block(mu, "permissions") or []
@@ -257,13 +261,13 @@ def step(lines, name):
 
 py_bl = text(step(bl, "Python toolchain"))
 check("baseline: python venv with pytest and mutmut pinned, for the python stack (#64)",
-      py_bl.startswith("if: needs.stack.outputs.stack == 'python'") and '"pytest==9.2.0" "mutmut==3.8.1"' in py_bl
+      py_bl.startswith("if: matrix.stack == 'python'") and '"pytest==9.2.0" "mutmut==3.8.1"' in py_bl
       and 'echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"' in py_bl, py_bl)
 bl_names = [l.strip()[len("- name: "):] for l in bl if l.strip().startswith("- name: ")]
 check("baseline: the python venv after the checkouts, before the baseline runs (#64)",
       "Python toolchain" in bl_names and bl_names.index("Python toolchain") == 2
       and bl_names.index("Python toolchain") < bl_names.index("R3 baseline (once; shard count, derived timeout)"), str(bl_names))
-RUST_OR_PY = "(needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python')"
+RUST_OR_PY = "(matrix.stack == 'rust' || matrix.stack == 'python')"
 check("baseline: extra apt packages and setup command run for rust and python (#64)",
       RUST_OR_PY in text(step(bl, "extra apt packages")) and RUST_OR_PY in text(step(bl, "setup command")),
       text(step(bl, "extra apt packages")) + " | " + text(step(bl, "setup command")))
@@ -287,17 +291,17 @@ check("mutants: install failure does not stop the run (engine reports n/a env)",
 run_step = step(mu, "R3 mutation on the diff (shard)")
 rs = "\n".join(run_step)
 check("mutants: runs mech-review.py mutants", "mech-review.py" in rs and " mutants" in rs, rs)
-check("mutants: shard flag from the matrix and the baseline's shard count",
-      "matrix.shard" in rs and "needs.baseline.outputs.count" in rs, rs)
+check("mutants: shard flag from the matrix and its stack's shard count (#17: the count rides in the matrix)",
+      "SHARD: ${{ matrix.shard }}" in rs and "SHARD_COUNT: ${{ matrix.count }}" in rs, rs)
 check("mutants: budget from the mutation-budget input", "inputs.mutation-budget" in mt and "--mutation-budget" in rs, rs)
 check("mutants: mutant-timeout from the input, else the baseline's derived one (#46), via env, passed only when set",
-      "MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || needs.baseline.outputs.timeout }}" in mt
+      "MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || matrix.timeout }}" in mt
       and '--mutant-timeout "$MUTANT_TIMEOUT"' in rs and 'if [ -n "$MUTANT_TIMEOUT" ]' in rs, rs)
 check("mutants: the cap from the max-mutants input, via env (#26)",
       "MAX_MUTANTS: ${{ inputs.max-mutants }}" in rs and '--max-mutants "$MAX_MUTANTS"' in rs, rs)
 check("mutants: rc above 1 is no result (crash surfaces at report)", "rc -gt 1" in rs or "-gt 1" in rs, rs)
 up = step(mu, "upload mutants result")
-check("mutants: uploads its JSON artifact per shard", "mech-review-mutants-${{ matrix.shard }}" in "\n".join(up)
+check("mutants: uploads its JSON artifact per stack and shard", "mech-review-mutants${{ matrix.key }}-${{ matrix.shard }}" in "\n".join(up)
       and "upload-artifact" in mt and any(l == "if: always()" for l in up), str(up))
 
 check("mutation-budget: used by the mutants job, not UNUSED",
@@ -337,12 +341,12 @@ check("stack: runs mech-review.py resolve with the stack and project-dir inputs 
 check("stack: no language toolchain, no PR code (git only)", re.search(r"setup-|toolchain|cargo|rustup|\bnpm\b|\bpip\b", stt) is None, stt)
 check("stack: caller checkout for every stack (a plan's target-os reaches explicit-stack callers, #58)",
       "inputs.stack == 'auto'" not in stt and "caller checkout (full history, PR head)" in stt, stt)
-check("stack: exposes stack, project-dir, target-os and error outputs",
-      child_keys(block(st, "outputs")) == {"stack", "project-dir", "target-os", "error"}, str(block(st, "outputs")))
+check("stack: exposes stack, project-dir, target-os, error and legs (#17) outputs",
+      child_keys(block(st, "outputs")) == {"stack", "project-dir", "target-os", "error", "legs"}, str(block(st, "outputs")))
 check("stack: target-os from resolve's target_os",
       "target-os: ${{ steps.resolve.outputs.target-os }}" in stt and '"target-os": r.get("target_os") or ""' in stt, stt)
 RUNS_ON_OS = ("runs-on: ${{ fromJSON('{\"linux\":\"ubuntu-latest\",\"macos\":\"macos-latest\","
-              "\"windows\":\"windows-latest\"}')[needs.stack.outputs.target-os] }}")
+              "\"windows\":\"windows-latest\"}')[matrix.target-os] }}")
 for job_name in ("red-first", "baseline", "mutants"):
     check(f"{job_name}: runs on the target OS (#58)", value(block(jobs, job_name) or [], "runs-on") == RUNS_ON_OS[len("runs-on: "):],
           str(value(block(jobs, job_name) or [], "runs-on")))
@@ -366,7 +370,7 @@ check("guard: R0's static half right after R2 guard, before the upload (#20)",
       g_names[4:7] == ["R2 guard", "R0 static half (adapter proof)", "upload result"], str(g_names))
 r0t = text(step(block(jobs, "guard") or [], "R0 static half (adapter proof)"))
 check("guard: R0 runs mech-review.py r0 on the settled stack and the test paths, git only",
-      "mech-review.py\" r0 \"${args[@]}\" > mech-review-r0.json" in r0t and "STACK: ${{ needs.stack.outputs.stack }}" in r0t
+      "mech-review.py\" r0 \"${args[@]}\" > mech-review-r0.json" in r0t and "STACK: ${{ matrix.stack }}" in r0t
       and "TEST_PATHS: ${{ inputs.test-paths }}" in r0t and "--test-cmd" not in r0t, r0t)
 check("guard: an R0 usage or git error, or an empty result, leaves no result and stops the job",
       'if [ "$rc" -gt 1 ] || [ ! -s mech-review-r0.json ]; then' in r0t and "rm -f mech-review-r0.json" in r0t
@@ -379,8 +383,8 @@ check("report: always names the R0 result, so a missing one fails R0 with a CI e
 check("stack: an error fails the job", "steps.resolve.outputs.error != ''" in stt and "exit 1" in stt, stt)
 for step_name in ("R2 guard", "R0 static half (adapter proof)"):  # #17: the plan entry for the stack's own folder
     gs = text(step(block(jobs, "guard") or [], step_name))
-    check(f"guard: {step_name} gets the stack job's project-dir through env",
-          "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in gs and '--project-dir "$PROJECT_DIR"' in gs, gs)
+    check(f"guard: {step_name} gets its leg's project-dir through env",
+          "PROJECT_DIR: ${{ matrix.project-dir }}" in gs and '--project-dir "$PROJECT_DIR"' in gs, gs)
 
 
 def stack_outputs(result):
@@ -407,16 +411,26 @@ def stack_outputs(result):
 
 
 one = stack_outputs({"stack": "python", "project_dir": "api", "error": None, "target_os": "macos"})
-check("stack: one stack gives its outputs as before",
-      one == {"stack": "python", "project-dir": "api", "error": "", "target-os": "macos"}, str(one))
+ONE_LEG = [{"key": "", "label": "", "name": "python", "stack": "python", "project-dir": "api", "target-os": "macos",
+            "drift": True}]
+check("stack: one stack gives its outputs as before, and one leg with no key or label (names unchanged)",
+      isinstance(one, dict) and {k: v for k, v in one.items() if k != "legs"}
+      == {"stack": "python", "project-dir": "api", "error": "", "target-os": "macos"}
+      and json.loads(one.get("legs", "null")) == ONE_LEG, str(one))
 several = stack_outputs({"stack": None, "project_dir": ".", "error": None, "target_os": None, "stacks": [
     {"name": "api", "stack": "python", "project_dir": "api", "adapter": "python", "target_os": "linux"},
-    {"name": "web", "stack": "ts", "project_dir": "web", "adapter": "ts", "target_os": "linux"}]})
-check("stack: several stacks from the plan (#17) stop the job, named, never run as no stack",
-      several == {"stack": "", "project-dir": ".", "target-os": "",
-                  "error": "stack auto: the stack plan has several stacks to run (api: python in api, web: ts in web); "
-                           "this workflow runs one stack: set the stack and project-dir inputs to the one to check"},
-      str(several))
+    {"name": "web", "stack": "ts", "project_dir": "web", "adapter": "ts", "target_os": "windows"}]})
+check("stack: several stacks from the plan (#17) give one leg each: key and label by stack, drift on the first only",
+      isinstance(several, dict) and {k: v for k, v in several.items() if k != "legs"}
+      == {"stack": "", "project-dir": ".", "target-os": "", "error": ""}
+      and json.loads(several.get("legs", "null")) == [
+          {"key": "-0-api", "label": " [api]", "name": "api", "stack": "python", "project-dir": "api",
+           "target-os": "linux", "drift": True},
+          {"key": "-1-web", "label": " [web]", "name": "web", "stack": "ts", "project-dir": "web",
+           "target-os": "windows", "drift": False}], str(several))
+none = stack_outputs({"stack": None, "project_dir": ".", "error": "stack auto: no project found", "target_os": None})
+check("stack: no stack gives no leg and the error", isinstance(none, dict) and none.get("legs") == "[]"
+      and none.get("error") == "stack auto: no project found", str(none))
 check("stack: inputs.stack and inputs.project-dir are read in the stack job only",
       "inputs.stack" not in text(W[W.index("  guard:"):]) and "inputs.project-dir" not in text(W[W.index("  guard:"):]))
 for job_name in ("guard", "red-first", "plan", "baseline", "mutants", "report"):
@@ -424,6 +438,7 @@ for job_name in ("guard", "red-first", "plan", "baseline", "mutants", "report"):
           str(value(block(jobs, job_name) or [], "needs")))
 check("stack outputs: only in env values or if: conditions, never interpolated into a run: line",
       all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:|\w[\w-]*: \$\{\{ steps\.resolve)", l) or l.strip() == RUNS_ON_OS
+          or l.strip() == "include: ${{ fromJSON(needs.stack.outputs.legs) }}"  # the legs matrix (#17)
           for l in W if "needs.stack.outputs" in l
           or "steps.resolve.outputs" in l),
       str([l for l in W if "needs.stack.outputs" in l or "steps.resolve.outputs" in l]))
@@ -436,7 +451,7 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
     names = [l.strip()[len("- name: "):] for l in jl if l.strip().startswith("- name: ")]
     run_st = step(jl, run_name)
     check(f"{job_name}: passes --project-dir from the input via env",
-          '--project-dir "$PROJECT_DIR"' in text(run_st) and "PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}" in text(run_st),
+          '--project-dir "$PROJECT_DIR"' in text(run_st) and "PROJECT_DIR: ${{ matrix.project-dir }}" in text(run_st),
           str(run_st))
     sc = step(jl, "setup command")
     check(f"{job_name}: setup-command step runs only when set", "if: inputs.setup-command != ''" in sc, str(sc))
@@ -446,6 +461,219 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
     order = [n for n in names if n in ("extra apt packages", "setup command", run_name)]
     check(f"{job_name}: setup-command after extra apt packages, before the tests",
           order == ["extra apt packages", "setup command", run_name], str(names))
+
+# ---- #17: one set of checks per stack (a matrix over the stack job's legs), one report ----
+
+
+def heredoc(lines, from_line=None, nth=0):
+    """the python of a run: heredoc (<<'PY' ... PY) in lines, dedented: the nth one after the line holding from_line."""
+    import textwrap
+    start = 0 if from_line is None else next((i for i, l in enumerate(lines) if from_line in l), None)
+    if start is None:
+        return None
+    marks = [i for i in range(start, len(lines)) if "<<'PY'" in lines[i]]
+    if len(marks) <= nth:
+        return None
+    a = marks[nth]
+    b = next(i for i in range(a + 1, len(lines)) if lines[i].strip() == "PY")
+    return textwrap.dedent("\n".join(lines[a + 1:b]))
+
+
+def run_py(code, cwd, env, *argv):
+    import subprocess
+    return subprocess.run([sys.executable, "-I", "-c", code or "raise SystemExit('no heredoc')", *argv], cwd=cwd,
+                          env=dict(os.environ, **env), capture_output=True, text=True)
+
+
+def outputs(path):
+    with open(path) as f:
+        return dict(l.split("=", 1) for l in f.read().splitlines())
+
+
+LEG_API = {"key": "-0-api", "label": " [api]", "name": "api", "stack": "python", "project-dir": "api",
+           "target-os": "linux", "drift": True}
+LEG_WEB = {"key": "-1-web", "label": " [web]", "name": "web", "stack": "ts", "project-dir": "web",
+           "target-os": "windows", "drift": False}
+OLD_NAMES = {"guard": "mech-review guard (R2)", "red-first": "mech-review red-first (R1, R4)",
+             "baseline": "mech-review baseline (R3, once)", "mutants": "mech-review mutants (R3 shard ${{ matrix.shard }})"}
+for job_name, old in OLD_NAMES.items():
+    jl = block(jobs, job_name) or []
+    check(f"{job_name}: one leg per stack, its name the old one plus the leg's label (empty for one stack, #17)",
+          value(jl, "name") == old + "${{ matrix.label }}", str(value(jl, "name")))
+    stg = block(jl, "strategy") or []
+    check(f"{job_name}: fail-fast off (one stack's crash never cancels another's)", value(stg, "fail-fast") == "false",
+          text(stg))
+for job_name, source in (("guard", "needs.stack.outputs.legs"), ("red-first", "needs.stack.outputs.legs"),
+                         ("baseline", "needs.plan.outputs.legs")):
+    stg = text(block(block(jobs, job_name) or [], "strategy") or [])
+    check(f"{job_name}: the matrix is the legs ({source})", f"include: ${{{{ fromJSON({source}) }}}}" in stg, stg)
+for job_name, art in (("guard", "mech-review-json"), ("red-first", "mech-review-red-json"),
+                      ("baseline", "mech-review-baseline-json")):
+    jt = text(block(jobs, job_name) or [])
+    check(f"{job_name}: its artifact is named per stack (the leg's key, empty for one stack)",
+          f"name: {art}${{{{ matrix.key }}}}" in jt, jt)
+gj = block(jobs, "guard") or []
+check("guard: the drift check (the repo's) runs in the first leg only, its artifact name unchanged",
+      step(gj, "drift check (stack plan, D)")[1:2] == ["if: matrix.drift"]
+      and "if: always() && matrix.drift" in step(gj, "upload drift result")
+      and "name: mech-review-drift-json" in step(gj, "upload drift result"), str(step(gj, "upload drift result")))
+check("no ${{ }} inside any run: line (matrix and stack values reach run: only through env)",
+      not any(l.strip().startswith("run:") and "${{" in l and not re.fullmatch(r"run: \$\{\{ steps\.\w+\.outputs\.run \}\}", l.strip())
+              for l in W), str([l for l in W if "run:" in l and "${{" in l]))
+check("matrix values only in env, if:, name:, runs-on: and with: values, never a run: body",
+      all(re.match(r"\s*(-\s+)?(if:|[A-Z_]+:|name:|runs-on:|include:)", l) for l in W if "matrix." in l and "${{" in l
+          or l.strip().startswith("if:") and "matrix." in l), str([l for l in W if "matrix." in l]))
+
+with tempfile.TemporaryDirectory() as d:  # the plan job: one plan per leg
+    stub = os.path.join(d, "ekit", "scripts")
+    os.makedirs(stub)
+    os.makedirs(os.path.join(d, "caller"))
+    with open(os.path.join(stub, "mech-review.py"), "w") as f:
+        # each stack is planned in its own folder (its adapter file is found by it); a stack `mini` fails, as an
+        # engine error (exit 2) would
+        f.write("import json, sys\na = sys.argv\nstack, folder = a[a.index('--stack') + 1], a[a.index('--project-dir') + 1]\n"
+                "if stack == 'mini':\n    sys.exit(2)\nprint(json.dumps({'run': stack == 'python' and folder == 'api'}))\n")
+    out = os.path.join(d, "out")
+    plan_py = heredoc(block(jobs, "plan") or [], "R3 plan")
+    plan_env = {"GITHUB_WORKSPACE": d, "BASE_SHA": "b", "HEAD_SHA": "h", "TEST_PATHS": "tests/**\n"}
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([LEG_API, LEG_WEB])), out)
+    got = outputs(out) if r.returncode == 0 else r.stderr
+    check("plan: one plan per stack in its project dir; run when any runs, the baseline's legs are those whose R3 runs (#17)",
+          isinstance(got, dict) and got.get("run") == "true" and json.loads(got.get("legs", "null")) == [LEG_API]
+          and json.loads(got.get("runs", "null")) == {"-0-api": True, "-1-web": False}, str(got))
+    LEG_MINI = dict(LEG_WEB, key="-1-lib", name="lib", stack="mini", **{"project-dir": "lib"})
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([LEG_API, LEG_MINI])), out + "2")
+    got = outputs(out + "2") if r.returncode == 0 else r.stderr
+    check("plan: a stack whose plan fails reads unknown (its R3 a CI entry); the other stacks keep theirs (review 1)",
+          isinstance(got, dict) and got.get("run") == "true" and json.loads(got.get("legs", "null")) == [LEG_API]
+          and json.loads(got.get("runs", "null")) == {"-0-api": True, "-1-lib": None}
+          and "::error::" in r.stdout, str((got, r.stdout)))
+    r = run_py(plan_py, d, dict(plan_env, LEGS=json.dumps([dict(LEG_MINI, key="", label="")])), out + "3")
+    check("plan: no stack planned at all fails the job, as a failed plan did for one stack", r.returncode != 0,
+          str((r.returncode, r.stdout)))
+pl_out = child_keys(block(block(jobs, "plan") or [], "outputs"))
+check("plan: outputs run, legs and runs", pl_out == {"run", "legs", "runs"}, str(pl_out))
+
+with tempfile.TemporaryDirectory() as d:  # the baseline step's outputs: one stack's mutants matrix
+    with open(os.path.join(d, "mech-review-baseline.json"), "w") as f:
+        json.dump({"run": True, "count": 2, "timeout": 30}, f)
+    out = os.path.join(d, "out")
+    one_leg = dict(LEG_API, key="", label="")
+    r = run_py(heredoc(bl, "R3 baseline (once"), d, {"LEG": json.dumps(one_leg)}, out)
+    got = outputs(out) if r.returncode == 0 else r.stderr
+    check("baseline: outputs as before, and include: the leg with each shard, its count and timeout",
+          isinstance(got, dict) and {k: got[k] for k in ("run", "count", "shards", "timeout")}
+          == {"run": "true", "count": "2", "shards": "[0, 1]", "timeout": "30"}
+          and json.loads(got["include"]) == [dict(one_leg, shard=0, count=2, timeout="30"),
+                                             dict(one_leg, shard=1, count=2, timeout="30")], str(got))
+check("baseline: the leg reaches the step through env", "LEG: ${{ toJSON(matrix) }}" in bt, bt)
+
+sh = block(jobs, "shards", 2) or []  # at the jobs' indent: baseline has a shards output
+sht = text(sh)
+check("shards: several stacks only, after every baseline leg, even when one failed",
+      value(sh, "if") == "${{ !cancelled() && needs.stack.result == 'success' && needs.stack.outputs.stack == '' "
+                         "&& needs.plan.outputs.run == 'true' }}" and value(sh, "needs") == "[stack, plan, baseline]",
+      str((value(sh, "if"), value(sh, "needs"))))
+check("shards: git and JSON only, on ubuntu, no checkout of PR code",
+      value(sh, "runs-on") == "ubuntu-latest" and "actions/checkout" not in sht and "mech-review.py" not in sht, sht)
+check("shards: reads every baseline leg's artifact", 'pattern: "mech-review-baseline-json-*"' in sht, sht)
+with tempfile.TemporaryDirectory() as d:
+    for leg, b in ((LEG_API, {"head": "h", "run": True, "count": 2, "timeout": 12.5}),
+                   (LEG_WEB, {"head": "h", "run": True, "count": 1, "timeout": None}),
+                   (dict(LEG_WEB, key="-2-old"), {"head": "old", "run": True, "count": 3, "timeout": None}),
+                   (dict(LEG_WEB, key="-3-cli"), {"head": "h", "run": True, "count": True, "timeout": None})):
+        os.makedirs(os.path.join(d, "baseline-result", f"mech-review-baseline-json{leg['key']}"))
+        with open(os.path.join(d, "baseline-result", f"mech-review-baseline-json{leg['key']}",
+                               "mech-review-baseline.json"), "w") as f:
+            json.dump(b, f)
+    out = os.path.join(d, "out")
+    legs = [LEG_API, LEG_WEB, dict(LEG_WEB, key="-2-old"), dict(LEG_WEB, key="-3-cli"), dict(LEG_WEB, key="-4-gone")]
+    r = run_py(heredoc(sh), d, {"LEGS": json.dumps(legs), "HEAD_SHA": "h"}, out)
+    got = outputs(out) if r.returncode == 0 else r.stderr
+    check("shards: each stack's shards from its own baseline; an old, malformed or missing one runs none",
+          isinstance(got, dict) and got.get("run") == "true" and json.loads(got.get("include", "null")) == [
+              dict(LEG_API, shard=0, count=2, timeout="12.5"), dict(LEG_API, shard=1, count=2, timeout="12.5"),
+              dict(LEG_WEB, shard=0, count=1, timeout="")], str(got))
+    r = run_py(heredoc(sh), d, {"LEGS": json.dumps([dict(LEG_WEB, key="-4-gone")]), "HEAD_SHA": "h"}, out + "2")
+    got = outputs(out + "2") if r.returncode == 0 else r.stderr
+    check("shards: no shard to run reads run false", got == {"run": "false", "include": "[]"}, str(got))
+check("mutants: several stacks from the shards job, one stack from the baseline, never both",
+      value(mu, "if") == "${{ !cancelled() && ((needs.shards.result == 'success' && needs.shards.outputs.run == 'true') "
+                         "|| (needs.shards.result == 'skipped' && needs.baseline.result == 'success' "
+                         "&& needs.baseline.outputs.run == 'true')) }}"
+      and value(mu, "needs") == "[stack, plan, baseline, shards]", str(value(mu, "if")))
+check("report: needs the shards job", "shards" in re.split(r"[\s,\[\]]+", needs), needs)
+
+rp = text(report)
+check("report: several stacks fetch every artifact, one stack's fetches are skipped then",
+      'pattern: "mech-review-*"' in rp and rp.count("if: needs.stack.outputs.stack != ''") == 4, rp)
+check("report: several stacks post one comment with --stacks, the drift result the repo's",
+      'if [ -z "$STACK" ]; then' in rp and "--stacks stacks.json" in rp
+      and "STACK: ${{ needs.stack.outputs.stack }}" in rp, rp)
+with tempfile.TemporaryDirectory() as d:  # the report's per-stack merge, on the real engine
+    os.symlink(ROOT, os.path.join(d, "ekit"))
+    R = os.path.join(d, "stacks-result")
+    head, base = "a" * 40, "b" * 40
+    env_r3 = {"ekit": "0", "base": base, "head": head, "entries": [], "summary": "",
+              "checks": {"R3": {"status": "pass", "note": "1/1 tested", "tested": 1, "total": 1}},
+              "shard": {"k": 0, "n": 1, "max_mutants": 40}}
+    baseline = {"ekit": "0", "base": base, "head": head, "entries": [], "summary": "", "run": True, "count": 1,
+                "mutants": 1, "timeout": None, "checks": {"R3": {"status": "pass", "note": ""}}}
+    for rel, obj in ((f"mech-review-baseline-json-0-api/mech-review-baseline.json", baseline),
+                     (f"mech-review-mutants-0-api-0/mech-review-mutants.json", env_r3)):
+        os.makedirs(os.path.dirname(os.path.join(R, rel)), exist_ok=True)
+        with open(os.path.join(R, rel), "w") as f:
+            json.dump(obj, f)
+    r = run_py(heredoc(report, "merge each stack's mutants"), d,
+               {"LEGS": json.dumps([LEG_API, LEG_WEB]), "RUNS": json.dumps({"-0-api": True, "-1-web": False}),
+                "PLAN_RESULT": "success", "BASE_SHA": base, "HEAD_SHA": head})
+    try:
+        with open(os.path.join(d, "stacks.json")) as f:
+            got = json.load(f)
+        with open(os.path.join(d, "mutants-merged-0-api.json")) as f:
+            merged_r3 = json.load(f)["checks"]["R3"]
+    except (OSError, ValueError) as e:
+        got, merged_r3 = f"{e}: {r.stderr}", None
+    S = "stacks-result"
+    check("report: each stack's results by its key, R3 merged where the plan ran it (#17)",
+          got == [{"name": "api", "stack": "python", "project_dir": "api", "envelopes": {
+                       "r2": f"{S}/mech-review-json-0-api/mech-review.json",
+                       "r0": f"{S}/mech-review-json-0-api/mech-review-r0.json",
+                       "red": f"{S}/mech-review-red-json-0-api/mech-review-red.json",
+                       "mutants": "mutants-merged-0-api.json"}},
+                  {"name": "web", "stack": "ts", "project_dir": "web", "envelopes": {
+                       "r2": f"{S}/mech-review-json-1-web/mech-review.json",
+                       "r0": f"{S}/mech-review-json-1-web/mech-review-r0.json",
+                       "red": f"{S}/mech-review-red-json-1-web/mech-review-red.json"}}]
+          and (merged_r3 or {}).get("status") == "pass" and (merged_r3 or {}).get("tested") == 1, str((got, merged_r3)))
+    r = run_py(heredoc(report, "merge each stack's mutants"), d,
+               {"LEGS": json.dumps([LEG_WEB]), "RUNS": "", "PLAN_RESULT": "failure", "BASE_SHA": base, "HEAD_SHA": head})
+    try:
+        with open(os.path.join(d, "mutants-merged-1-web.json")) as f:
+            web_r3 = json.load(f)
+    except (OSError, ValueError) as e:
+        web_r3 = f"{e}: {r.stderr}"
+    check("report: a plan job with no answer still merges R3, a missing baseline fails it with a CI entry",
+          isinstance(web_r3, dict) and web_r3["checks"]["R3"]["status"] == "fail"
+          and [e["problem"] for e in web_r3["entries"]]
+          == ["baseline job produced no result: no JSON from the baseline job (see its log)"], str(web_r3))
+    for runs, why in (("{not json", "the plan job's answers do not read (see its log)"),
+                      (json.dumps({"-1-web": None}), "the plan job could not plan this stack (see its log)"),
+                      (json.dumps({"-0-api": True}), "the plan job gave no answer for this stack (see its log)")):
+        if os.path.exists(os.path.join(d, "mutants-merged-1-web.json")):
+            os.remove(os.path.join(d, "mutants-merged-1-web.json"))
+        r = run_py(heredoc(report, "merge each stack's mutants"), d,
+                   {"LEGS": json.dumps([LEG_WEB]), "RUNS": runs, "PLAN_RESULT": "success", "BASE_SHA": base,
+                    "HEAD_SHA": head})
+        try:
+            with open(os.path.join(d, "mutants-merged-1-web.json")) as f:
+                web_r3 = json.load(f)
+        except (OSError, ValueError) as e:
+            web_r3 = f"{e}: {r.stderr}"
+        check(f"report: a plan answer that is not true or false fails that stack's R3, named (review 1: {runs})",
+              isinstance(web_r3, dict) and web_r3["checks"]["R3"]["status"] == "fail"
+              and [e["problem"] for e in web_r3["entries"]] == [f"baseline job produced no result: {why}"], str(web_r3))
+
 
 # ---- #18 trust: an adapter file's commands ([commands], [run]) run only through the subcommands that run tests (red,
 # all, mutants, baseline), and those run only in red-first, baseline and mutants (their contents: read token is checked
@@ -468,7 +696,10 @@ WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 WF_ALLOWED = {
     "env": WF_ENV,                                                          # an env var: the only way into a shell
     "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
-    "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout"},  # job outputs
+    "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout",  # job outputs
+                "legs",     # #17: the stack job's one leg per stack, and the plan job's legs whose R3 runs: matrix input
+                "runs",     # #17: the plan job's answer per stack (key -> true, false or null), read by the report
+                "include"},  # #17: the baseline's (one stack) and the shards job's (several) mutants matrix
     "matrix": {"shard", "include"},  # include: only a whole `${{ fromJSON(...) }}` (WF_INCLUDE; #17's multi-stack legs)
     "concurrency": {"group"},
     None: {"if", "runs-on", "name", "timeout-minutes"},  # job and step keys; timeout-minutes: #17's follow-up job limits
@@ -563,6 +794,12 @@ check("workflow values check is live: an anchored env value aliased into run: is
 alias_only = interpolations(W[:at] + ["      - name: a", "        run: *cmd"] + W[at:])
 check("workflow values check names an alias with no ${{ on its line", [r[1:] for r in alias_only] == [
     ("a YAML anchor, alias or merge key", "run: *cmd")], str(alias_only))
+# #17 review 1: a ${{ }} inside a run: body's heredoc (the shards job's python) is caught as inside a block scalar
+_sh_at = next(n for n, l in enumerate(W) if l.strip() == "import json" and n > W.index("  shards:"))
+_probe = interpolations(W[:_sh_at] + [W[_sh_at].replace("import json", 'print("${{ needs.plan.outputs.legs }}")')]
+                        + W[_sh_at:])
+check("workflow values check is live: a ${{ }} in the shards job's python heredoc is caught",
+      [r[1:] for r in _probe] == [("inside a block scalar", 'print("${{ needs.plan.outputs.legs }}")')], str(_probe))
 # allowed on purpose: the #17 follow-up's matrix include and timeout-minutes (and && in an if:, a glob in quotes)
 fine = ["      - name: ok", "        if: ${{ a && !b }}", "        timeout-minutes: 30", "        strategy:", "          matrix:",
         "            include: ${{ fromJSON(needs.shards.outputs.include || needs.baseline.outputs.include) }}",
