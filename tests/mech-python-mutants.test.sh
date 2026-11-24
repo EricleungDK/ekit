@@ -206,7 +206,7 @@ eq "$rc" 0 "python partial: exit 0 (does not block)"
 eq "$(jq -r .checks.R3.status <<<"$out")" partial "python partial: R3 partial"
 has "$(jq -r .checks.R3.note <<<"$out")" "2/3 tested" "python partial: note tested/total"
 eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 1 confirm; ran: R3; partial: R3 (2/3); skipped: R1 R2 R4)" "python partial: summary"
-eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].problem' <<<"$out")" "R3 partial: 1/3 mutants untested at budget" "python partial: confirm names untested"
+eq "$(jq -r '[.entries[] | select(.severity=="confirm")][0].problem' <<<"$out")" "R3 partial: 1/3 mutants untested: budget hit" "python partial: confirm names untested"
 [[ $SECONDS -lt 15 ]] && ok "python partial: budget kill is prompt" || fail "python partial: budget kill took ${SECONDS}s"
 
 # not installed: n/a (env), never a pass

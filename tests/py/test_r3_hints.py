@@ -115,9 +115,9 @@ class TestTypeScript(Repo):
 
 class TestPartial(unittest.TestCase):
     def test_the_partial_hint_names_no_stacks_tool_since_every_stack_gets_it(self):
-        self.assertEqual(mutants.partial_entry({"tested": 7, "total": 15})["hint"],
+        self.assertEqual(mutants.partial_entry({"tested": 7, "total": 15, "note": "7/15 tested: budget hit"})["hint"],
                          "read checks.R3.timing (wall, phase seconds, slowest mutants): shrink the diff first, then narrow "
-                         "the tests the mutation tool runs, then raise mutation-budget")
+                         "the tests the mutation tool runs, then raise mutation-budget.")
 
 
 if __name__ == "__main__":
