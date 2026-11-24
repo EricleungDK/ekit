@@ -493,9 +493,40 @@ def _repo_of(root, *trees):
     return _git(root, "rev-parse", "HEAD").strip()
 
 
+def _control(adapter, rt, runner, use, name, tmp, proj):
+    """one runner control's case: the fixture test, run by name as R1 and R4 run one, reads its verdict (CONTROLS)."""
+    case, want = f"control-{name}", CONTROLS[name]
+    if name not in rt.controls:
+        return _case(case, "control", "unproven", want, "no such control in controls.json")
+    path, test = rt.controls[name]
+    cwd = proj
+    if name == "build":  # the build overlay on a copy of the project, for this control only
+        cwd = os.path.join(tmp, "build")
+        shutil.copytree(proj, cwd, symlinks=True)
+        _write_tree(cwd, rt.build)
+    verdict, first = red.run_named(runner, adapter, use, cwd, path, test)
+    if verdict == "env":
+        return _case(case, "control", "n/a", want, f"env: {first}")
+    return _case(case, "control", "pass" if verdict == want else "fail", want,
+                 f"{verdict}: {first}" if verdict != want else verdict)
+
+
+def _skip_idiom(rt, scan):
+    """the skip idiom's case: the skipped control carries the adapter's skip marker."""
+    path, test = rt.controls["skipped"]
+    marks = scan.get(path, {}).get(test)
+    if marks is None:
+        got, ok = f"the adapter finds no test `{test}` in {path}", False
+    else:
+        ok = "ignore" in marks
+        got = "the adapter marks it skipped" if ok else (
+            f"`{test}` runs as skipped (none), but the adapter sees no skip marker on it: it misses this skip idiom")
+    return _case("skip-idiom", "control", "pass" if ok else "fail", "the skip marker found", got)
+
+
 def controls(adapter, rt, runner, cmd, src, results):
-    """the runner controls and the skip idiom on the fixture project: results gets one case each; returns the fixture
-    census (found, listed, misses) or None. src: the reviewed project dir (worktree_setup links its installs)."""
+    """the fixture census, the runner controls and the skip idiom on the fixture project: results gets one case each;
+    returns the fixture Census or None. src: the reviewed project dir (worktree_setup links its installs)."""
     found = None
     with tempfile.TemporaryDirectory(prefix="ekit-r0-run-") as tmp:
         proj = os.path.join(tmp, "project")
@@ -511,36 +542,9 @@ def controls(adapter, rt, runner, cmd, src, results):
         else:
             found = census(adapter, listed, scan)
             results.append(census_case("census-fixtures", adapter, found, 100, "every listed test found"))
-        build_dir = None
-        for name, want in CONTROLS.items():
-            case = f"control-{name}"
-            if name not in rt.controls:
-                results.append(_case(case, "control", "unproven", want, "no such control in controls.json"))
-                continue
-            path, test = rt.controls[name]
-            cwd = proj
-            if name == "build":
-                build_dir = os.path.join(tmp, "build")
-                shutil.copytree(proj, build_dir, symlinks=True)
-                _write_tree(build_dir, rt.build)
-                cwd = build_dir
-            verdict, first = red.run_named(runner, adapter, use, cwd, path, test)
-            if verdict == "env":
-                results.append(_case(case, "control", "n/a", want, f"env: {first}"))
-                continue
-            results.append(_case(case, "control", "pass" if verdict == want else "fail", want,
-                                 f"{verdict}: {first}" if verdict != want else verdict))
+        results += [_control(adapter, rt, runner, use, name, tmp, proj) for name in CONTROLS]
         if "skipped" in rt.controls:
-            path, test = rt.controls["skipped"]
-            marks = scan.get(path, {}).get(test)
-            if marks is None:
-                got, ok = f"the adapter finds no test `{test}` in {path}", False
-            else:
-                ok = "ignore" in marks
-                got = "the adapter marks it skipped" if ok else (
-                    f"`{test}` runs as skipped (none), but the adapter sees no skip marker on it: it misses this skip "
-                    "idiom")
-            results.append(_case("skip-idiom", "control", "pass" if ok else "fail", "the skip marker found", got))
+            results.append(_skip_idiom(rt, scan))
     return found
 
 
@@ -726,77 +730,89 @@ def _density(adapter, files, accepted):
         "adding a dummy assert, or accepting the list in the PR it judges")]
 
 
+def _pr_census(adapter, listed, why, st, scan, changed, limit, project_dir):
+    """(the census-pr case, its census fields, its note) on a cache hit: the PR's changed test files only."""
+    want = f"at least {limit}% of the listed tests in the changed test files found"
+    if listed is None:
+        return _case("census-pr", "census", st, want, why), {}, f"; census of the changed test files: not read ({why})"
+    c = census(adapter, listed, scan, set(changed), project_dir)
+    tied = any(p is not None for p, _ in listed)
+    note = (f"; census of the {len(changed)} changed test file(s): {c.found}/{c.listed} listed tests found" if tied
+            or not listed else f"; census on {len(changed)} changed test file(s): {c.found}/{c.listed} listed tests "
+                               f"found (the `{adapter.name}` listing names no file: the whole listing is counted)")
+    return census_case("census-pr", adapter, c, limit, want), {"pr": {"found": c.found, "listed": c.listed,
+                                                                       "misses": c.misses}}, note
+
+
+def _repo_census(adapter, listed, why, st, scan, limit, project_dir):
+    """(the census-repo case, its census fields, its note): the whole listing at head."""
+    if listed is None:
+        return (_case("census-repo", "census", st, f"at least {limit}% of the listed tests found", why), {},
+                f"census: not read ({why})")
+    c = census(adapter, listed, scan, None, project_dir)
+    note = f"census: {c.found}/{c.listed} listed tests found" + (f" (missed: {_shown(c.misses)})" if c.misses else "")
+    return census_case("census-repo", adapter, c, limit), {"repo": {"found": c.found, "listed": c.listed,
+                                                                     "misses": c.misses}}, note
+
+
+def _controls_note(results, fx):
+    ctl = [r for r in results if r["kind"] == "control" and r["case"].startswith("control-")]
+    return ((f"; fixtures census: {fx.found}/{fx.listed}" if fx else "") + "; controls: "
+            f"{sum(1 for r in ctl if r['status'] == 'pass')} of {len(CONTROLS)} read right")
+
+
+def _fixture_cases(adapter, runner, cmd, fixtures_dir, src, results, census_out):
+    """the fixture census and the runner controls into results; the fixture Census or None."""
+    rt = load_runtime(fixtures_dir)
+    if rt is None:
+        results.append(_case("controls", "control", "unproven", "the runner controls", "no runtime/ fixtures"))
+        return None
+    fx = controls(adapter, rt, runner, cmd, src, results)
+    if fx is not None:
+        census_out["fixtures"] = {"found": fx.found, "listed": fx.listed, "misses": fx.misses}
+    return fx
+
+
 def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, prepared=None, adapter_path=None):
     """(R0 check, raw entries) of the run part in `red`. Assert density (scanner only) on every run. On a cache hit
     (prepared.hit, read before any PR code ran) the runner-dependent cases (the repo census, the fixture census, the
-    controls) are skipped and only the census of the PR's changed test files runs; else all of them. A pass is kept
-    in prepared.cache, which the engine closes when the run ends."""
+    controls) are skipped and only the census of the PR's changed test files runs; else all of them. A pass of every
+    runner-dependent case is kept in prepared.cache (a density fail does not stop it: density runs every time)."""
     repo, mb, head, adapter, globs, project_dir = rv
     wrong = _wrong_os("run", adapter)
     if wrong or prepared is None:
         return wrong or _wrong_os("run", adapter)
     fp, lines, hit = prepared.fp, prepared.lines, prepared.hit
-    where = _where(adapter_path, fixtures_dir)
-    accepted = accepted_list(repo, mb, adapter.name)[0]
     files = _test_files(rv, head)
-    dens, dens_note, extra = _density(adapter, files, accepted)
-    changed = _changed_tests(rv)
-    results, census_out = [], {}
-    limit = _limit(adapter, "census")
+    dens, dens_note, extra = _density(adapter, files, accepted_list(repo, mb, adapter.name)[0])
+    changed, limit, results, census_out = _changed_tests(rv), _limit(adapter, "census"), [], {}
     with red.worktree(repo, head) as wt:
         crate = os.path.join(wt, project_dir)
         if not os.path.isdir(crate):
             return {"status": "n/a", "half": "runtime", "part": "run", "adapter": adapter.name,
                     "note": f"runtime half (run): n/a: project dir {project_dir} not in this commit"}, []
         adapter.worktree_setup(repo, wt, project_dir)
-        use = cmd or adapter.test_cmd_in(crate)
-        need_list = not hit or changed
-        listed, why, st = listing(adapter, runner, use, crate, project_dir) if need_list else (None, None, None)
-        scan = found_tests(adapter, files) if need_list else {}
+        need = not hit or changed
+        listed, why, st = listing(adapter, runner, cmd or adapter.test_cmd_in(crate), crate, project_dir) if need \
+            else (None, None, None)
+        scan = found_tests(adapter, files) if need else {}
         if hit:
-            head_note = f"fingerprint {fp[:12]} passed before (cache): runner controls and censuses not re-run"
+            note = f"fingerprint {fp[:12]} passed before (cache): runner controls and censuses not re-run"
             if changed:
-                tied = any(p is not None for p, _ in (listed or []))
-                want = f"at least {limit}% of the listed tests in the changed test files found"
-                if listed is None:
-                    results.append(_case("census-pr", "census", st, want, why))
-                    head_note += f"; census of the changed test files: not read ({why})"
-                else:
-                    c = census(adapter, listed, scan, set(changed), project_dir)
-                    census_out["pr"] = {"found": c.found, "listed": c.listed, "misses": c.misses}
-                    results.append(census_case("census-pr", adapter, c, limit, want))
-                    head_note += (f"; census of the {len(changed)} changed test file(s): {c.found}/{c.listed} listed "
-                                  "tests found" if tied or not listed else
-                                  f"; census on {len(changed)} changed test file(s): {c.found}/{c.listed} listed "
-                                  f"tests found (the `{adapter.name}` listing names no file: the whole listing is "
-                                  "counted)")
+                case, census_out, more = _pr_census(adapter, listed, why, st, scan, changed, limit, project_dir)
+                results.append(case)
+                note += more
             else:
-                head_note += "; no test file changed"
-            return _result("run", adapter, results, fp, lines, where, f"{head_note}; {dens_note}", extra,
-                           census=census_out, density=dens, ran=False)
-        if listed is None:
-            results.append(_case("census-repo", "census", st, f"at least {limit}% of the listed tests found", why))
-            repo_note = f"census: not read ({why})"
-        else:
-            c = census(adapter, listed, scan, None, project_dir)
-            census_out["repo"] = {"found": c.found, "listed": c.listed, "misses": c.misses}
-            results.append(census_case("census-repo", adapter, c, limit))
-            repo_note = f"census: {c.found}/{c.listed} listed tests found" + (
-                f" (missed: {_shown(c.misses)})" if c.misses else "")
-        rt = load_runtime(fixtures_dir)
-        fx = None
-        if rt is None:
-            results.append(_case("controls", "control", "unproven", "the runner controls", "no runtime/ fixtures"))
-        else:
-            fx = controls(adapter, rt, runner, cmd, os.path.join(repo, project_dir), results)
-        if fx is not None:
-            census_out["fixtures"] = {"found": fx.found, "listed": fx.listed, "misses": fx.misses}
-    ctl = [r for r in results if r["kind"] == "control" and r["case"].startswith("control-")]
-    head_note = (f"fingerprint {fp[:12]} (ran); {repo_note}"
-                 + (f"; fixtures census: {fx.found}/{fx.listed}" if fx else "") + f"; {dens_note}; controls: "
-                 + f"{sum(1 for r in ctl if r['status'] == 'pass')} of {len(CONTROLS)} read right")
-    check, entries = _result("run", adapter, results, fp, lines, where, head_note, extra, census=census_out,
-                             density=dens, ran=True)
+                note += "; no test file changed"
+            return _result("run", adapter, results, fp, lines, _where(adapter_path, fixtures_dir),
+                           f"{note}; {dens_note}", extra, census=census_out, density=dens, ran=False)
+        case, census_out, repo_note = _repo_census(adapter, listed, why, st, scan, limit, project_dir)
+        results.append(case)
+        fx = _fixture_cases(adapter, runner, cmd, fixtures_dir, os.path.join(repo, project_dir), results, census_out)
+    note = f"fingerprint {fp[:12]} (ran); {repo_note}" + _controls_note(results, fx).replace(
+        "; controls:", f"; {dens_note}; controls:", 1)
+    check, entries = _result("run", adapter, results, fp, lines, _where(adapter_path, fixtures_dir), note, extra,
+                             census=census_out, density=dens, ran=True)
     if results and all(r["status"] == "pass" for r in results):  # the runner's cases: density is measured every run
         prepared.cache.passed("run", fp, lines)
     return check, entries
