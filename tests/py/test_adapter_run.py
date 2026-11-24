@@ -418,7 +418,9 @@ class RunUsage(Fixture):
         # production change it is skipped, as the built-in's is (tests/py/test_adapter_mutation_ts.py runs it)
         for check in ("mutants", "baseline"):
             r = self.red(head, head, check=check)
-            self.assertEqual((r.returncode, json.loads(r.stdout)["checks"]["R3"]["status"]), (0, "skipped"), r.stderr)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["checks"]["R3"], {"status": "skipped",
+                                                                   "note": "no production file changed"})
 
     def test_all_runs_r0_r1_r2_and_r4_through_the_file(self):
         base, head = self.ts_repo("fresh fail pass\n")
