@@ -705,11 +705,15 @@ class PythonAdapter(Adapter):
         return argv + ["-q", f"{path}::{name}"]
 
     def list_argv(self, cmd):
-        """pytest's collection, no test run (`path::Class::test` per line); a unittest command has no listing."""
+        """pytest's collection, no test run (`path::Class::test` per line); the project's addopts cleared (`-o addopts=`:
+        an `addopts = "-q"` would make it `-qq`, one line per file); a unittest command has no listing."""
         argv = shlex.split(cmd)
         if "unittest" in argv:
             return None
-        return argv + ["--collect-only", "-q", "-p", "no:cacheprovider"]
+        return argv + ["--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"]
+
+    def no_listing(self, cmd):
+        return "a unittest command lists no tests by name without running them: no census"
 
     def listed(self, rc, out, crate):
         """the collected node ids, a parametrized test once (its `[...]` ids dropped); None on a collection error (exit
@@ -1280,6 +1284,9 @@ class TsAdapter(Adapter):
         if rc != 0:
             return None
         return [(m.group(1), m.group(2)) for m in TS_LISTED.finditer(out)]
+
+    def no_listing(self, cmd):
+        return "jest lists test files, not tests (`--listTests`): no census"
 
     def outcome(self, rc, out):
         """verdict of one run of vitest or jest. Results come from the Tests summary line; a file that did not load

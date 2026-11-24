@@ -608,3 +608,24 @@ class ReviewRound1(Case):
         got = {x["case"]: x for x in c["cases"]}
         self.assertEqual(got["census-repo"]["status"], "fail", got["census-repo"])
         self.assertIn("the runner listed no test, the adapter finds 2", got["census-repo"]["got"])
+
+    def test_b3_jest_lists_files_not_tests_n_a(self):
+        repo = os.path.join(self.tmp, "jest")
+        os.makedirs(os.path.join(repo, "tests"))
+        with open(os.path.join(repo, "package.json"), "w") as f:
+            f.write('{"name": "j", "devDependencies": {"jest": "29.7.0"}}\n')
+        with open(os.path.join(repo, "tests", "a.test.js"), "w") as f:
+            f.write('test("adds", () => {\n  expect(1 + 1).toBe(2);\n});\n')
+        g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        subprocess.run(g[:3] + ["init", "-q", "-b", "main"], check=True)
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "b"], check=True)
+        with mock.patch.dict(os.environ):
+            os.environ.pop("MECH_TEST_STUB")  # the real runners: none installed here, so env (n/a)
+            r = _kit.run_cli(["red", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts",
+                              "--test-paths", "tests/**", "--r0", self.cache])
+        env = json.loads(r.stdout)
+        got = {x["case"]: x for x in env["checks"]["R0"]["cases"]}
+        self.assertEqual((got["census-repo"]["status"], got["census-repo"]["got"]),
+                         ("n/a", "jest lists test files, not tests (`--listTests`): no census"))
+        self.assertEqual([e for e in env["entries"] if e["check"] == "R0" and e["class"] == "adapter-fix"], [])

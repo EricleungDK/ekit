@@ -68,6 +68,17 @@ class Builtin(unittest.TestCase):
         self.check_pass(c, 6)
         self.assertTrue(c["probes"][1].startswith("python3 -m pytest --version: pytest "), c["probes"])
 
+    def test_python_addopts_in_the_project_config_does_not_change_the_listing(self):
+        """review S1: `addopts = "-q"` made the listing `-qq` (one line per file, no test ids): 0/0 read pass."""
+        repo = self.repo({"pyproject.toml": '[project]\nname = "x"\nversion = "0"\n\n[tool.pytest.ini_options]\n'
+                                            'pythonpath = ["."]\naddopts = "-q"\n',
+                          "lib.py": "def inc(n):\n    return n + 1\n",
+                          "tests/test_lib.py": "from lib import inc\n\n\ndef test_inc():\n    assert inc(1) == 2\n"})
+        c = self.r0(repo, "python")
+        if not PY3_PYTEST:
+            return self.check_env(c)
+        self.check_pass(c, 6)
+
     def test_rust(self):
         repo = self.repo({"Cargo.toml": '[package]\nname = "x"\nversion = "0.0.0"\nedition = "2021"\n',
                           "src/lib.rs": "pub fn inc(n: i32) -> i32 {\n    n + 1\n}\n\n#[cfg(test)]\nmod tests {\n"
