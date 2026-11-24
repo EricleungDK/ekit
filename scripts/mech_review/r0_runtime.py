@@ -16,7 +16,7 @@ every run. The hit is read (prepare) before any PR code runs, and Cache rewrites
 verdicts that run decided: no sandbox (the job runs PR code), but a file planted during the run does not outlive it.
 A part runs only on the stack's target OS (n/a elsewhere).
 
-Version probes run programs, so they keep #19's program rules (mutants._program_path, mutants._in_checkout,
+Version probes run programs, so they keep #19's program rules (mutation_tool._program_path, mutation_tool._in_checkout,
 adapter_file.launcher): a program on PATH's absolute entries or an absolute path, never one in the reviewed checkout,
 and for an adapter file's programs never an interpreter, shell or launcher. A probe runs `<program> --version` (the
 built-ins: ekit's own fixed argv) in an empty temp dir with a minimal environment. A program not probed is named in the
@@ -43,7 +43,7 @@ import sys
 import tempfile
 from collections import namedtuple
 
-from . import adapter_file, gitio, mutants, r0, red, report
+from . import adapter_file, gitio, mutants, mutation_tool, r0, red, report
 from .gitio import Review, blob, changes
 from .report import entry
 
@@ -71,10 +71,10 @@ Runtime = namedtuple("Runtime", "controls project build r3_base weak strong wher
 
 
 def loads(text):
-    """json.loads with the engine's own nesting limit (mutants.MAX_JSON_DEPTH), never Python's RecursionError, whose
+    """json.loads with the engine's own nesting limit (mutation_tool.MAX_JSON_DEPTH), never Python's RecursionError, whose
     depth differs between interpreters: ValueError when it nests deeper."""
-    if mutants._too_deep(text):
-        raise ValueError(f"nested too deep (more than {mutants.MAX_JSON_DEPTH} levels)")
+    if mutation_tool._too_deep(text):
+        raise ValueError(f"nested too deep (more than {mutation_tool.MAX_JSON_DEPTH} levels)")
     return json.loads(text)
 
 
@@ -198,21 +198,21 @@ def probe(argv, from_file, roots):
     label = " ".join(argv)
     if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
         return f"{label}: not probed (a path in the project dir, which the PR under review can change)"
-    prog = mutants._program_path(argv[0])
+    prog = mutation_tool._program_path(argv[0])
     if prog is None:
         return f"{label}: not probed (not found on PATH)"
     if from_file and any(adapter_file.launcher(w) for w in (argv[0], prog, os.path.realpath(prog))):
         return f"{label}: not probed (an interpreter, shell or launcher)"
-    inside = mutants._in_checkout(prog, roots)
+    inside = mutation_tool._in_checkout(prog, roots)
     if inside:
         return f"{label}: not probed (in the reviewed checkout: {inside})"
     if os.path.basename(argv[0]) == "cargo" and len(argv) > 1 and not argv[1].startswith("-"):
         # `cargo mutants` runs `cargo-mutants` from PATH: that binary keeps the same rules (#21 review N2)
         sub = f"cargo-{argv[1]}"
-        sub_prog = mutants._program_path(sub)
+        sub_prog = mutation_tool._program_path(sub)
         if sub_prog is None:
             return f"{label}: not probed (`{sub}` not found on PATH)"
-        inside = mutants._in_checkout(sub_prog, roots)
+        inside = mutation_tool._in_checkout(sub_prog, roots)
         if inside:
             return f"{label}: not probed (`{sub}` in the reviewed checkout: {inside})"
     with tempfile.TemporaryDirectory(prefix="ekit-r0-probe-") as tmp:
@@ -576,7 +576,8 @@ def r3_control(adapter, rt, src, mutants_cmd, budget_min, results):
             adapter.worktree_setup(src, tmp, ".")  # an install link (node_modules) stays untracked
             rv = Review(tmp, base, head, adapter, list(TEST_GLOBS) + [r0.FIXTURE_DIR + "/**"], ".")
             try:
-                check, ents = mutants.run(rv, mutants_cmd, budget_min)
+                tool = mutation_tool if getattr(adapter, "from_file", False) else mutants  # #19: a file's declared tool
+                check, ents = tool.run(rv, mutants_cmd, budget_min)
             except gitio.Die:
                 raise
             except Exception as e:

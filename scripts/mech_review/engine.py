@@ -3,7 +3,7 @@ import os
 
 import copy
 
-from . import mutants, r0 as r0_mod, r0_runtime, red, report, stack_plan
+from . import mutants, mutation_tool, r0 as r0_mod, r0_runtime, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
@@ -157,6 +157,27 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
         k, _, n = (shard or "0/1").partition("/")
         env["shard"] = {"k": int(k), "n": int(n), "max_mutants": max_mutants}
     return env
+
+
+def mutants_file(rv, mutants_cmd, budget, shard, mutant_timeout, max_mutants, r0=None):
+    """R3 through an adapter file (#19, mutation_tool.run) and, with r0 on shard 0, R0's R3 control (#21): its cache hit
+    read before the tool runs PR code, a failed control blocking R3. ({check: result}, finalized entries)."""
+    cache = r0_runtime.Cache(r0["dir"] if r0 else None)
+    try:
+        own = r0 is not None and mutants.shard_index(shard)[0] == 0
+        rt_rv = rv._replace(adapter=_on_os(rv.adapter, r0["target_os"])) if own else None
+        prepared = r0_runtime.prepare(rt_rv, "r3", cache, None, mutants_cmd, r0["fixtures"], r0["raw"]) if own else None
+        check, ents = mutation_tool.run(rv, mutants_cmd, budget, shard, mutant_timeout, max_mutants=max_mutants)
+        checks = {"R3": check}
+        if own:
+            checks["R0"], more = r0_runtime.r3_part(rt_rv, mutants_cmd, budget, r0["fixtures"], r0["raw"], prepared,
+                                                    r0["path"])
+            stop = r0_mod.blocked(checks["R0"], checks)
+            checks.update(stop)
+            ents = r0_mod.mark(ents + finalize(more), stop)
+        return checks, ents
+    finally:
+        cache.close()
 
 
 def _on_os(adapter, target_os):

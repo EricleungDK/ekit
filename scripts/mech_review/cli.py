@@ -10,7 +10,8 @@ import signal
 import sys
 import tempfile
 
-from . import adapter_file, doctor, engine, gitio, merge, mutants, r0, r0_runtime, red, report, resolve, stack_plan
+from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, r0_runtime, red, report, resolve,
+               stack_plan)
 from .stack import ADAPTERS
 
 
@@ -276,6 +277,27 @@ def _review(args, adapter):
     return base, head, gitio.Review(args.repo, mb, head, adapter, engine.test_paths(args.test_paths), args.project_dir)
 
 
+def _mutants_file(args, adapter):
+    """R3 through an adapter file (#19): mutation_tool.run (its declared tool, or n/a) in the envelope engine.run gives
+    the built-ins' mutants: the other checks skipped, the shard and its cap. Exit 1 on a fail entry, 2 on a git error."""
+    try:
+        base, head, rv = _review(args, adapter)
+        with contextlib.ExitStack() as keep:  # --r0 (#21): R0's R3 control on shard 0
+            got, ents = engine.mutants_file(rv, args.mutants_cmd, args.mutation_budget, args.shard,
+                                            args.mutant_timeout, args.max_mutants,
+                                            _r0_inputs(args, adapter, args.stack, keep))
+    except (gitio.Die, r0.FixtureError) as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in report.CHECKS}
+    checks.update(got)
+    env = report.envelope(base, head, sorted(ents, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"])), checks)
+    k, _, n = (args.shard or "0/1").partition("/")
+    env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
+    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
+    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+
+
 def _plan(args, adapter=None):
     """Print {run}: whether the mutants job runs (the baseline step sets the shard count, #46). Exit 0 (2 on a git error).
     adapter: an adapter file's (#19), whose test paths and extensions say what a production change is."""
@@ -305,7 +327,7 @@ def _baseline(parser, args, adapter=None):
                                   args.mutation_budget, shards, project_dir=args.project_dir, max_mutants=args.max_mutants)
         else:  # an adapter file's (#19): its declared tool's baseline, or n/a with no tool
             base, head, rv = _review(args, adapter)
-            p = mutants.baseline(rv, args.mutants_cmd, args.mutation_budget, shards, max_mutants=args.max_mutants)
+            p = mutation_tool.baseline(rv, args.mutants_cmd, args.mutation_budget, shards, max_mutants=args.max_mutants)
             checks = {c: {"status": "skipped", "note": "not run by baseline"} for c in report.CHECKS}
             checks["R3"] = p["check"]
             env = report.envelope(base, head, p["entries"], checks)
@@ -752,6 +774,8 @@ def main(argv):
             parser.error(f"--shard {args.shard}: want K/N with 0 <= K < N")
     if adapter is not None and args.adapter is None and args.check in ("red", "all"):
         return _not_built(args, adapter)
+    if adapter is not None and args.check == "mutants":
+        return _mutants_file(args, adapter)
     try:
         with contextlib.ExitStack() as keep:
             env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,

@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 from collections import namedtuple
 
-from . import adapter_file, gitio, mutants, stack_plan
+from . import adapter_file, gitio, mutation_tool, stack_plan
 from .gitio import Review
 from .r2 import r2, r2_file
 from .report import entry
@@ -685,13 +685,13 @@ ACCEPTED_SHAPE = '{"assert-density": {"<stack>": ["<path>::<test>", ...]}}'
 
 def accepted(raw):
     """({stack: [`path::test`]} of the accepted list's bytes ({} for none), None) or (None, why it does not read). JSON
-    nesting is limited by the engine (mutants.MAX_JSON_DEPTH), never by the interpreter's recursion."""
+    nesting is limited by the engine (mutation_tool.MAX_JSON_DEPTH), never by the interpreter's recursion."""
     if raw is None:
         return {}, None
     try:
         text = raw.decode("utf-8")
-        if mutants._too_deep(text):
-            return None, f"nested too deep (more than {mutants.MAX_JSON_DEPTH} levels)"
+        if mutation_tool._too_deep(text):
+            return None, f"nested too deep (more than {mutation_tool.MAX_JSON_DEPTH} levels)"
         doc = json.loads(text)
     except (UnicodeDecodeError, ValueError) as e:
         return None, f"not JSON: {e}"
