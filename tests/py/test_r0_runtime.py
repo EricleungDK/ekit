@@ -638,3 +638,15 @@ class ReviewRound1(Case):
                               "--adapter", MINIRUN, "--fixtures", MINIRUN_FX, "--project-dir", pd, "--fingerprint", "run"])
             keys.add(json.loads(r.stdout)["key"])
         self.assertEqual(len(keys), 2)
+
+    def test_n3_the_census_of_the_changed_files_keeps_the_census_limit(self):
+        text = adapter_text(lambda t: t.replace("[commands]", "[limits]\ncensus = 50\n\n[commands]"))
+        adapter = self.adapter(text)
+        self.red(adapter)
+        head = self.commit({"tests/more.mini": 'spec("new style", {\n  assertEquals(2, add(1, 1))\n})\n\n'
+                                               'test("old style", {\n  assertEquals(2, add(1, 1))\n})\n'})
+        with mock.patch.dict(os.environ, {"STUB_STYLES": "test it xtest spec"}):
+            r, env = self.red(adapter, head)
+        c = env["checks"]["R0"]
+        self.assertEqual((c["ran"], c["status"]), (False, "pass"), c)
+        self.assertEqual(c["census"]["pr"], {"found": 1, "listed": 2, "misses": ["tests/more.mini :: new style"]})
