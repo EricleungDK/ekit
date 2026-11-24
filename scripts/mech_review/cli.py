@@ -25,7 +25,10 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       assert replaced in place, any kind (confirm); changed expected value (confirm); added
       #[allow]/#[expect] without a non-empty reason= or same-line comment; change under protected
       paths (needs-human); a broken co-change rule of .ekit/co-change.toml at the base (#83: a trigger
-      path changed, no required path did; the rule's severity, confirm by default).
+      path changed, no required path did; the rule's severity, confirm by default); when the range
+      changes that file (#85): a head file that does not read, a new rule whose incident resolves to
+      no commit or PR or that lacks a case (fail), a rule that fires and is weakened or removed
+      (fail, needs-human).
       Test fns are keyed by mod-qualified name (m1::works). A test that loses asserts is exempt
       only up to the asserts gained by a helper it calls by name (call-site, each gain used once).
   R1  red-first (red subcommand): the tests base..head adds or changes, run on the base's production
@@ -57,6 +60,8 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       empty diff of every fixture) none; an adapter file with a bad ident_chars, no assert shape or an unbalanced
       bracket pair must fail to load cleanly. A failed case: one `fail` entry of class adapter-fix, and R1 R2 R4 are
       n/a (blocked; their entries kept and still counted). A case with no fixture: R0 unproven (never all pass).
+      Each co-change rule at the head (#85) against its `flagged` and `control` cases: a rule missing one, or
+      whose case reads wrong, is one `fail` entry (agent-fixable) that blocks nothing.
   R0  runtime half (#21; `red`, `all` and `mutants` with --r0 DIR): run part (red, all): the census (every test the
       runner lists is found by the scanner, found/listed, misses named), assert density (tests with no recognised
       assert over [limits] assert-density, default 10%: needs-human until a person accepts them in

@@ -34,7 +34,8 @@ def r2(rv, protected_globs, rules=()):
     entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
     changed = changes(repo, mb, head)
-    entries += cochange.check(rules, [p for ch in changed for p in (ch.old, ch.new) if p])
+    paths = [p for ch in changed for p in (ch.old, ch.new) if p]
+    entries += cochange.check(rules, paths) + cochange.guards(repo, mb, head, rules, paths)
     for ch in changed:
         if any_glob(ch.old or "", protected_globs) or any_glob(ch.new or "", protected_globs):
             entries.append(entry("R2", ch.new or ch.old, 0, "protected-path", "needs-human", "fail",
