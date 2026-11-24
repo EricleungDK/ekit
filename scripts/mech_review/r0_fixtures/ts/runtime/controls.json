@@ -1,0 +1,7 @@
+{
+  "pass": {"file": "tests/ctl.test.ts", "name": "Controls > passes"},
+  "fail": {"file": "tests/ctl.test.ts", "name": "Controls > fails"},
+  "skipped": {"file": "tests/ctl.test.ts", "name": "Controls > skipped"},
+  "build": {"file": "tests/build.test.ts", "name": "builds"},
+  "no-such-test": {"file": "tests/ctl.test.ts", "name": "Controls > r0 no such test"}
+}

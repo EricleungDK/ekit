@@ -1,0 +1,6 @@
+// R0 R3 control (ts, jest): a weak assert, a MISSED mutant.
+const { twice } = require("../src/twice");
+
+test("twice", () => {
+  expect(twice(2)).toBeGreaterThanOrEqual(0);
+});

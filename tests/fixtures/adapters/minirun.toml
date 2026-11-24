@@ -1,0 +1,67 @@
+# mini with a run side, a listing and a mutation tool: the R0 runtime half's fixture adapter (#21). The runner `mini`
+# and the tool `mut` are the test stub (tests/py/test_r0_runtime.py) on PATH.
+format = 1
+name = "minirun"
+manifests = ["mini.json"]
+extensions = [".mini"]
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+line_comments = ["#"]
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[tests]
+style = "calls"
+groups = ["suite"]
+cases = ["test", "it", "xtest"]
+skip = ["xtest"]
+separator = " / "
+skipped_text = "test `{name}` marked xtest"
+
+[[asserts.call]]
+names = ["assertEquals"]
+kind = "eq"
+operands = [0, 1]
+
+[[asserts.call]]
+names = ["assertTrue"]
+kind = "other"
+
+[[suppressions]]
+directives = ["lint-off"]
+covers = { "lint-off" = "next-line" }
+lints = "rules"
+reason_after = "--"
+
+[commands]
+install = ""
+build = ""
+lint = ""
+test = "mini test"
+
+[run]
+test = ["{path}", "--name", "{name}"]
+
+[run.list]
+command = "mini list"
+pattern = '^(?P<file>\S+) :: (?P<name>.+)$'
+
+[run.outcome]
+passed = '(\d+) passed'
+failed = '(\d+) failed'
+skipped = '(\d+) skipped'
+build = '^build error'
+
+[mutation.tool]
+name = "mut"
+command = "mut"
+args = ["run", "--mutate", "{mutate}", "--report", "{report}"]
+mutate = "{file}:{first}-{last}"
+version = ["--version"]
+report = "out/report.json"
+format = "mutation-testing-elements"
+os = ["linux", "macos", "windows"]

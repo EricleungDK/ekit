@@ -139,7 +139,7 @@ class TsRunThroughTheFile(Fixture):
         self.assertEqual(checks["R1"], {"status": "pass",
                                         "note": "1 of 1 new or changed test(s) fail on the base's production code"})
         self.assertEqual(checks["R4"], {"status": "pass", "note": "1 new or changed test(s) run 5x at head"})
-        self.assertEqual(calls, ["run tests/calc.test.ts -t ^Calc > fresh$"] * 6)
+        self.assertEqual(calls, ["run tests/calc.test.ts -t ^Calc fresh$"] * 6)
 
     def test_a_new_test_that_does_not_build_on_the_base_counts_as_red(self):
         rc, checks, entries, _ = self.both(*self.ts_repo("fresh build pass\n"))
@@ -184,8 +184,8 @@ class TsRunThroughTheFile(Fixture):
                                           '    expect(a).toBe(b);\n  });\n});')
         base, head = self.ts_repo("x fail pass\n", files={"tests/calc.test.ts": test})
         _, _, _, calls = self.both(base, head)
-        self.assertEqual(calls[:2], ["run tests/calc.test.ts -t ^Calc > adds \\(1\\) \\[x\\] .*$",
-                                     "run tests/calc.test.ts -t ^Calc > sums .* and .*$"])
+        self.assertEqual(calls[:2], ["run tests/calc.test.ts -t ^Calc adds \\(1\\) \\[x\\] .*$",
+                                     "run tests/calc.test.ts -t ^Calc sums .* and .*$"])
 
     def test_a_missing_runner_is_na_env_naming_the_runner_and_the_adapters_install_command(self):
         base, head = self.ts_repo("fresh fail pass\n")
@@ -221,7 +221,7 @@ class TsRunThroughTheFile(Fixture):
     def test_a_custom_vitest_command_gets_run_after_the_vitest_word(self):
         base, head = self.ts_repo("fresh fail pass\n")
         _, _, _, calls = self.both(base, head, "--test-cmd", "npx vitest --silent")
-        self.assertEqual(calls[0], "vitest run --silent tests/calc.test.ts -t ^Calc > fresh$")
+        self.assertEqual(calls[0], "vitest run --silent tests/calc.test.ts -t ^Calc fresh$")
 
 
 MINI_RUN = '''

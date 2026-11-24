@@ -1,0 +1,7 @@
+{
+  "pass": {"file": "tests/test_ctl.py", "name": "test_passes"},
+  "fail": {"file": "tests/test_ctl.py", "name": "test_fails"},
+  "skipped": {"file": "tests/test_ctl.py", "name": "test_skipped"},
+  "build": {"file": "tests/test_build.py", "name": "test_builds"},
+  "no-such-test": {"file": "tests/test_ctl.py", "name": "test_r0_no_such_test"}
+}

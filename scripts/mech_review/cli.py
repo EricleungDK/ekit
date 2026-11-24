@@ -1,5 +1,6 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
+import contextlib
 import copy
 import json
 import math
@@ -9,7 +10,8 @@ import signal
 import sys
 import tempfile
 
-from . import adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, red, report, resolve, stack_plan
+from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, r0_runtime, red, report, resolve,
+               stack_plan)
 from .stack import ADAPTERS
 
 
@@ -54,6 +56,16 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       empty diff of every fixture) none; an adapter file with a bad ident_chars, no assert shape or an unbalanced
       bracket pair must fail to load cleanly. A failed case: one `fail` entry of class adapter-fix, and R1 R2 R4 are
       n/a (blocked; their entries kept and still counted). A case with no fixture: R0 unproven (never all pass).
+  R0  runtime half (#21; `red`, `all` and `mutants` with --r0 DIR): run part (red, all): the census (every test the
+      runner lists is found by the scanner, found/listed, misses named), assert density (tests with no recognised
+      assert over [limits] assert-density, default 10%: needs-human until a person accepts them in
+      .ekit/r0-accepted.json at the base) and the runner controls (fixture tests read pass, fail, none, build, none;
+      the skipped one carries the skip marker); r3 part (mutants, shard 0): a weak-assert fixture gives a MISSED
+      mutant, the strong one none. The runner-dependent cases run only when DIR holds no pass for the part's
+      fingerprint (stack, project dir, adapter, fixtures, ekit, target OS, toolchain version lines); density and, in
+      red, the census of the changed test files run every time. The hit is read before PR code runs; DIR then holds
+      only the verdicts this run decided. A failed case: one adapter-fix entry; run blocks R1 R2 R4, r3 blocks R3
+      (a density fail is needs-human and blocks nothing). `r0 --fingerprint run|r3` prints the cache key.
   `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4, after R0's static half (R3 is not in `all`: run `baseline`,
   then `mutants`). `.ekit/scenarios/**` is a test path for every stack, beside --test-paths.
   `mutants` runs R3; `baseline` prints the R3 baseline step: {run, count, mutants, timeout, checks, entries}. A check a subcommand does not run
@@ -163,7 +175,11 @@ def build_parser():
                         "--stack, in place of a built-in; red and all need its [run] table, R3 runs its [mutation.tool] "
                         "(none: n/a) (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
-    p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
+    p.add_argument("--fixtures", metavar="DIR", help="all, and red or mutants with --r0: R0's fixture dir (default: the "
+                                                     "built-in stack's, or the adapter file's)")
+    p.add_argument("--r0", metavar="DIR", help="red, all, mutants (#21): run R0's runtime half (red, all: census, assert "
+                                               "density, runner controls; mutants, shard 0: the R3 control) unless DIR "
+                                               "holds a pass for its fingerprint; a pass is written there")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text (summary + entries)")
@@ -210,6 +226,7 @@ SHARD = re.compile(r"^(\d+)/(\d+)$")
 
 
 R3_SIDE = ("mutants", "baseline", "plan")
+R0_SIDE = ("red", "all", "mutants")  # the subcommands that run R0's runtime half with --r0 (#21)
 
 
 def _with_plan_os(args, adapter):
@@ -224,6 +241,17 @@ def _with_plan_os(args, adapter):
     return adapter
 
 
+def _r0_inputs(args, adapter, stack, keep=None):
+    """the runtime half's inputs (#21) for `--r0`, or None without it: r0_runtime.sources and the cache dir. adapter:
+    an adapter file's, or None for the built-in of that name. keep: the ExitStack that removes the base copy of the
+    repo's own adapter file (only _not_built and _mutants_file read one)."""
+    if args.r0 is None:
+        return None
+    got = r0_runtime.sources(args.repo, args.base, args.head, stack, args.project_dir, adapter or ADAPTERS[stack](),
+                             args.adapter, args.fixtures, keep)
+    return dict(got, dir=os.path.abspath(args.r0))
+
+
 def _review(args, adapter):
     """(base, head, Review) of the PR with an adapter file's adapter (engine.plan and engine.baseline take a built-in)."""
     base, head, mb = gitio.merge_base(args.repo, args.base, args.head)
@@ -235,13 +263,14 @@ def _mutants_file(args, adapter):
     the built-ins' mutants: the other checks skipped, the shard and its cap. Exit 1 on a fail entry, 2 on a git error."""
     try:
         base, head, rv = _review(args, adapter)
-        check, ents = mutation_tool.run(rv, args.mutants_cmd, args.mutation_budget, args.shard, args.mutant_timeout,
-                                        max_mutants=args.max_mutants)
-    except gitio.Die as e:
+        with contextlib.ExitStack() as keep:  # --r0 (#21): R0's R3 control on shard 0
+            got, ents = engine.mutants_file(rv, args.mutants_cmd, args.mutation_budget, args.shard,
+                                            args.mutant_timeout, _r0_inputs(args, adapter, args.stack, keep))
+    except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in report.CHECKS}
-    checks["R3"] = check
+    checks.update(got)
     env = report.envelope(base, head, sorted(ents, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"])), checks)
     k, _, n = (args.shard or "0/1").partition("/")
     env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
@@ -425,12 +454,15 @@ def _not_built(args, adapter):
         else:
             checks, entries = {c: {"status": "skipped", "note": f"not run by {args.check}"} for c in report.CHECKS}, []
         if runs:
-            red_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, which="red",
-                                 agent_prefix=args.agent_prefix, head_branch=args.head_branch, test_cmd=args.test_cmd,
-                                 project_dir=args.project_dir, adapter=adapter)
-            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check]})
+            with contextlib.ExitStack() as keep:
+                red_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, which="red",
+                                     agent_prefix=args.agent_prefix, head_branch=args.head_branch,
+                                     test_cmd=args.test_cmd, project_dir=args.project_dir, adapter=adapter,
+                                     r0=_r0_inputs(args, adapter, args.stack, keep))
+            # R0 only when --r0 ran red's runtime half (#21): red's envelope has no R0 otherwise
+            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check] + ("R0",) if c in red_env["checks"]})
             entries = sorted(entries + red_env["entries"], key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
-    except gitio.Die as e:
+    except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     for c in () if runs else RUN_SIDE[args.check]:
@@ -564,6 +596,36 @@ def _r0_repo(args, adapter, path):
     return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
 
 
+def _fingerprint(p, args):
+    """`r0 --fingerprint PART`: the part's fingerprint with the adapter, fixtures and target OS red and mutants use."""
+    try:
+        if args.adapter is not None:
+            adapter, err = _load_adapter(args.adapter, args.stack)
+            if err:
+                print(f"mech-review: {err}", file=sys.stderr)
+                return 2
+        else:
+            adapter = stack_plan.repo_adapter(args.repo, gitio.resolve(args.repo, args.base), args.stack, args.project_dir)
+            if adapter is None and args.stack not in ADAPTERS:
+                p.error(f"argument --stack: invalid choice: {args.stack!r}")
+        with contextlib.ExitStack() as keep:
+            adapter = adapter or ADAPTERS[args.stack]()
+            inputs = r0_runtime.sources(args.repo, args.base, args.head, args.stack, args.project_dir, adapter,
+                                        args.adapter, args.fixtures, keep)
+            _, head, mb = gitio.merge_base(args.repo, args.base, args.head)
+            # the fingerprint reads no test path: Review's default for them
+            built = engine._on_os(adapter, inputs["target_os"])
+            rv = gitio.Review(args.repo, mb, head, built, project_dir=args.project_dir)
+            fp, lines = r0_runtime.part_fingerprint(rv, args.fingerprint, args.test_cmd, args.mutants_cmd,
+                                                    inputs["fixtures"], inputs["raw"])
+    except (gitio.Die, adapter_file.AdapterFileError, r0.FixtureError) as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps({"part": args.fingerprint, "fingerprint": fp, "key": f"ekit-r0-{args.fingerprint}-{fp}",
+                      "probes": lines}))
+    return 0
+
+
 def _r0(argv):
     """R0's static half (#20): the adapter against the cheat suite and the controls, git and adapter only. Exit 0 pass
     or unproven, 1 a fail entry, 2 usage or git error."""
@@ -583,7 +645,14 @@ def _r0(argv):
     p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
                    help="the stack's dir (default .): the plan entry whose adapter file r0 proves (#17)")
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
+    p.add_argument("--fingerprint", choices=r0_runtime.PARTS,
+                   help="print the fingerprint of the runtime half's part (#21: run, as red --r0 computes it; r3, as "
+                        "mutants --r0 does) and its cache key, {part, fingerprint, key, probes}; nothing is proved")
+    p.add_argument("--test-cmd", metavar="CMD", help="--fingerprint run: the test command red is given")
+    p.add_argument("--mutants-cmd", metavar="CMD", help="--fingerprint r3: the mutation tool mutants is given")
     args = p.parse_args(argv)
+    if args.fingerprint:
+        return _fingerprint(p, args)
     adapter = None
     if args.adapter is not None:
         adapter, err = _load_adapter(args.adapter, args.stack)
@@ -653,8 +722,10 @@ def main(argv):
             print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
                   file=sys.stderr)
             return 2
-    if args.fixtures is not None and args.check != "all":
-        parser.error("--fixtures applies to all and r0 only (R0's fixture dir)")
+    if args.fixtures is not None and args.check != "all" and not (args.r0 and args.check in R0_SIDE):
+        parser.error("--fixtures applies to all and r0, and to red and mutants with --r0 (R0's fixture dir)")
+    if args.r0 is not None and args.check not in R0_SIDE:
+        parser.error("--r0 applies to red, all and mutants (R0's runtime half)")
     if args.check == "merge":
         return _merge(parser, args)
     if (adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS
@@ -686,13 +757,13 @@ def main(argv):
         return _not_built(args, adapter)
     if adapter is not None and args.check == "mutants":
         return _mutants_file(args, adapter)
-    try:
+    try:  # a built-in or an --adapter file here: no repo adapter file to write out (_not_built, _mutants_file do)
         env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
                          test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
                          mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
                          project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
-                         fixtures_dir=args.fixtures)
+                         fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack))
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2

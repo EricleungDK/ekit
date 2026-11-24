@@ -187,6 +187,8 @@ def broken_python_fixtures(case):
     tmp = tempfile.TemporaryDirectory()
     case.addCleanup(tmp.cleanup)
     for fn in os.listdir(BUILTIN_PY):
+        if os.path.isdir(os.path.join(BUILTIN_PY, fn)):  # runtime/: the runtime half's fixtures (#21), not read here
+            continue
         with open(os.path.join(BUILTIN_PY, "seed.py.r0" if fn == "skip.py.r0" else fn)) as src:
             text = src.read()
         with open(os.path.join(tmp.name, fn), "w") as dst:
@@ -472,6 +474,8 @@ def fixture_copy(case, src, replace):
     tmp = tempfile.TemporaryDirectory()
     case.addCleanup(tmp.cleanup)
     for fn in os.listdir(src):
+        if os.path.isdir(os.path.join(src, fn)):  # runtime/: the runtime half's fixtures (#21), not read here
+            continue
         with open(os.path.join(src, fn)) as f, open(os.path.join(tmp.name, fn), "w") as dst:
             dst.write(f.read())
     for fn, text in replace.items():

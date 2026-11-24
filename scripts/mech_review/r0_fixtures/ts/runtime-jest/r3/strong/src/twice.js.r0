@@ -1,0 +1,5 @@
+function twice(n) {
+  return n + n;
+}
+
+module.exports = { twice };

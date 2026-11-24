@@ -1,0 +1,6 @@
+// R0 R3 control (ts, jest): a strong assert, no MISSED mutant.
+const { twice } = require("../src/twice");
+
+test("twice", () => {
+  expect(twice(2)).toBe(4);
+});

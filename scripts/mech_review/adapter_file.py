@@ -531,7 +531,7 @@ def _relpath(v, field):
 def _run(d):
     """[run]: how R1 and R4 run one test and read the result. Returns the compiled patterns (outcome, name)."""
     f = "run"
-    _table(d, f, ("test", "name", "runner", "outcome", "links"), ("test", "outcome"))
+    _table(d, f, ("test", "name", "runner", "outcome", "links", "list"), ("test", "outcome"))
     words = _strs(d["test"], f + ".test", nonempty=True)
     used = set()
     for i, w in enumerate(words):
@@ -585,6 +585,8 @@ def _run(d):
                 _str(sc["after"], rf + ".subcommand.after")
         if "separator" in r:
             _str(r["separator"], rf + ".separator")
+    if "list" in d:
+        compiled["list"] = _list(d["list"], f + ".list", seen)
     of = f + ".outcome"
     out = _table(d["outcome"], of, ("summary", "passed", "failed", "skipped", "build", "no_test", "env"),
                  ("passed", "failed"))
@@ -597,6 +599,32 @@ def _run(d):
         if k in out:
             compiled[k] = _regex(out[k], f"{of}.{k}")
     return compiled
+
+
+LIST_GROUPS = ("file", "name")  # [run.list].pattern's named groups: name required, file optional
+
+
+def _list(d, field, runners):
+    """[run.list] (#21): the command that lists every test the runner collects (R0's census), and how a line of its
+    output reads: `pattern`, a regex with a named group `name` (the runner's full name for the test) and optionally
+    `file` (its file, project-dir relative); `separator`: how the listing joins group and test names (default the
+    runner's, else tests.separator); `runner`: the [[run.runner]] whose listing this is (another runner: no census).
+    Returns the compiled pattern."""
+    _table(d, field, ("command", "pattern", "separator", "runner"), ("command", "pattern"))
+    _command(d["command"], field + ".command")
+    rx = _regex(d["pattern"], field + ".pattern")
+    if "name" not in rx.groupindex:
+        _err(field + ".pattern", f"`{d['pattern']}` has no named group `name`: want (?P<name>...) for the test's name")
+    extra = sorted(set(rx.groupindex) - set(LIST_GROUPS))
+    if extra:
+        _err(field + ".pattern", f"`{d['pattern']}` has the group `{extra[0]}`: want only `name` and `file`")
+    if "separator" in d:
+        _str(d["separator"], field + ".separator")
+    if "runner" in d:
+        _str(d["runner"], field + ".runner")
+        if d["runner"] not in runners:
+            _err(field + ".runner", f"`{d['runner']}` is no [[run.runner]] name")
+    return rx
 
 
 # [limits] (#20): the check limits a stack sets; R0's editing rules need a person for a looser one. Range per key.

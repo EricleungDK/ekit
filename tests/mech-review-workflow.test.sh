@@ -304,6 +304,59 @@ up = step(mu, "upload mutants result")
 check("mutants: uploads its JSON artifact per stack and shard", "mech-review-mutants${{ matrix.key }}-${{ matrix.shard }}" in "\n".join(up)
       and "upload-artifact" in mt and any(l == "if: always()" for l in up), str(up))
 
+# ---- R0's runtime half (#21): red-first runs its run part, mutants shard 0 its R3 control, each skipped by a
+# passed fingerprint the workflow cache remembers. A miss only re-runs the proof; the engine writes the pass file
+# only on a pass and reads it only when it names the fingerprint it computed itself, so a hit never turns fail to pass
+R0_DIR = '"$HOME/.cache/ekit-r0"'
+_at = next(i for i, l in enumerate(red) if l.strip() == "- name: R1 red-first, R4 determinism")
+red_run_at = next(i for i in range(_at, len(red)) if red[i].strip().startswith("STACK:"))  # the run step's STACK line
+
+
+def stack_env(lines):
+    """{STACK, PROJECT_DIR: expression} of a step's env lines."""
+    return {l.split(":", 1)[0]: l.split(":", 1)[1].strip() for l in lines if l.startswith(("STACK:", "PROJECT_DIR:"))}
+
+for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", mu, "r3", True)):
+    fp = step(lines, f"R0 runtime fingerprint ({part})")
+    cache = step(lines, f"R0 runtime cache ({part})")
+    names = [l.strip()[len("- name: "):] for l in lines if l.strip().startswith("- name: ")]
+    run_name = "R1 red-first, R4 determinism" if job == "red-first" else "R3 mutation on the diff (shard)"
+    run = text(step(lines, run_name))
+    check(f"{job}: the R0 {part} fingerprint step prints the cache key (r0 --fingerprint {part}), never stops the job",
+          "id: r0fp" in fp and f"--fingerprint {part}" in text(fp) and "|| exit 0" in text(fp)
+          and 'key={key}' in text(fp), text(fp))
+    check(f"{job}: the R0 {part} cache is actions/cache, keyed by the fingerprint step, at the dir the engine gets",
+          "uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache and "key: ${{ steps.r0fp.outputs.key }}" in cache
+          and "path: ~/.cache/ekit-r0" in cache and any(l.startswith("if:") and "steps.r0fp.outputs.key != ''" in l
+                                                        for l in cache), str(cache))
+    clear = step(lines, f"R0 runtime cache dir cleared ({part})")
+    check(f"{job}: fingerprint, cleared dir, cache, then the run that passes --r0 (review B1: nothing a setup command "
+          "or install script planted survives a miss)",
+          f"R0 runtime cache dir cleared ({part})" in names
+          and names.index(f"R0 runtime fingerprint ({part})") < names.index(f"R0 runtime cache dir cleared ({part})")
+          == names.index(f"R0 runtime cache ({part})") - 1 < names.index(run_name)
+          and 'rm -rf "$HOME/.cache/ekit-r0"' in text(clear)
+          and (not shard0 or any(l == "if: matrix.shard == 0" for l in clear)), str(names) + text(clear))
+    check(f"{job}: the run passes the cache dir as --r0" + (" on shard 0 only" if shard0 else ""),
+          f"--r0 {R0_DIR}" in run and (not shard0 or 'if [ "$SHARD" = "0" ]' in run), run)
+    # review S3: the fingerprint takes the stack and project dir from the same expressions as the run (#74 moves the
+    # run to matrix legs: a fingerprint step left on needs.stack.* would key every leg's cache wrongly)
+    check(f"{job}: the R0 {part} fingerprint reads STACK and PROJECT_DIR as the run step does",
+          set(stack_env(fp)) == {"STACK", "PROJECT_DIR"} and stack_env(fp) == stack_env(step(lines, run_name)),
+          f"{stack_env(fp)} vs {stack_env(step(lines, run_name))}")
+    if shard0:
+        check("mutants: the R0 r3 fingerprint and cache steps run on shard 0 only",
+              all(any(l == "if: matrix.shard == 0" or (l.startswith("if:") and "matrix.shard == 0" in l) for l in st)
+                  for st in (fp, cache)), str(fp) + str(cache))
+        check("mutants: the r3 fingerprint probes the tool the shard runs (ts: the pinned Stryker)",
+              '--mutants-cmd "$STRYKER_BIN"' in text(fp), text(fp))
+
+# live: a run step moved to matrix legs while its fingerprint step is not fails that check
+_moved = [l.split("STACK:")[0] + "STACK: ${{ matrix.moved }}" if i == red_run_at else l for i, l in enumerate(red)]
+check("R0 fingerprint expressions check is live: a run step's STACK that moved alone is caught",
+      _moved != red and stack_env(step(_moved, "R0 runtime fingerprint (run)"))
+      != stack_env(step(_moved, "R1 red-first, R4 determinism")))
+
 check("mutation-budget: used by the mutants job, not UNUSED",
       "UNUSED" not in " ".join(block(inputs, "mutation-budget") or []) and value(block(inputs, "mutation-budget") or [], "default") == "10",
       str(block(inputs, "mutation-budget")))
@@ -695,7 +748,9 @@ WF_BLOCK = re.compile(r"^[|>][-+0-9]*\s*(#.*)?$")
 WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 WF_ALLOWED = {
     "env": WF_ENV,                                                          # an env var: the only way into a shell
-    "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
+    # action inputs (checkout, toolchain, artifacts); key: actions/cache's key, the R0 fingerprint step's output (#21),
+    # read by the cache action only, never a shell
+    "with": {"ref", "repository", "toolchain", "name", "key"},
     "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout",  # job outputs
                 "legs",     # #17: the stack job's one leg per stack, and the plan job's legs whose R3 runs: matrix input
                 "runs",     # #17: the plan job's answer per stack (key -> true, false or null), read by the report

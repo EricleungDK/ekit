@@ -1,0 +1,7 @@
+{
+  "pass": {"file": "tests/ctl.rs", "name": "passes"},
+  "fail": {"file": "tests/ctl.rs", "name": "fails"},
+  "skipped": {"file": "tests/ctl.rs", "name": "skipped"},
+  "build": {"file": "tests/build.rs", "name": "builds"},
+  "no-such-test": {"file": "tests/ctl.rs", "name": "r0_no_such_test"}
+}

@@ -1,0 +1,6 @@
+// R0 runtime build control (rust): this test does not compile.
+#[test]
+fn builds() {
+    let x: i32 = "not a number";
+    assert_eq!(x, 1);
+}
