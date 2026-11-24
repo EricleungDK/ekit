@@ -72,6 +72,19 @@ class Elements(unittest.TestCase):
                 rows, _ = M.read_elements(json.dumps({"files": {"a.mini": {"mutants": [m]}}}).encode(), CRATE)
                 self.assertEqual(rows[0].line, None)
 
+    def test_nesting_deeper_than_the_readers_limit_is_refused_on_every_python(self):  # CI: the runner's python
+        # parsed 100000 nested arrays where this machine's raised RecursionError: the limit is the reader's own
+        for text in (b"[" * 65 + b"]" * 65, b'{"files": {"a": {"mutants": [' + b"[" * 70 + b"]" * 70 + b"]}}}",
+                     b'{"files": {}, "x": "' + b"[" * 100 + b'"}'):
+            with self.subTest(text[:20]):
+                if b'"x"' in text:  # brackets inside a string are text, not nesting
+                    self.assertEqual(M.read_elements(text, CRATE), ([], 0))
+                    continue
+                with self.assertRaises(M.ReportError) as cm:
+                    M.read_elements(text, CRATE)
+                self.assertEqual(str(cm.exception), f"not JSON: nested too deep (more than {M.MAX_JSON_DEPTH} levels)")
+        self.assertEqual(M.read_elements(b'{"files": {}, "a": ' + b"[" * 60 + b"]" * 60 + b"}", CRATE), ([], 0))
+
     def test_no_files_is_no_mutant(self):
         self.assertEqual(M.read_elements(b'{"schemaVersion": "2", "files": {}}', CRATE), ([], 0))
 
