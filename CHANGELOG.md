@@ -61,6 +61,8 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Fixed
 
+- **python: R2 was blind to tests of a class whose TestCase base comes from another module** (found by #21's census: `class RepoAdapterRunSide(Fixture)` with `from test_adapter_run import Fixture`, 9 tests on ekit's own suite): the python scanner now counts a class with `test*` methods as a test class when one of its bases is a name that is not `object` and not a non-test class of the same file (an imported base, `base.Shared` too); a mixin with `test*` methods on such a base is guarded as well. A class with `test*` methods and no base, or only `object`, stays a non-test unless it is named `Test*`, as pytest treats it. Statically, in the file alone (no import is followed).
+
 - **ts: R1 and R4 found no test inside a `describe` under real vitest** (#21's runtime half found it): the one-test pattern joined describe and test names with ` > ` (`-t '^Calc > adds$'`), but vitest (2.1.9 and 3.2.7) matches `-t` against the names joined with a space, as jest (29.7.0) does, so the run selected nothing: R1 read `none` (cannot be proven red) and R4 `did not run at head` for every such test. The built-in ts adapter and `ts.toml`'s vitest runner (`separator = " "`) now join with a space; regex characters stay escaped, so the pattern still selects that one test. Test names in entries keep ` > `.
 
 - **`mech-review.py resolve` from a subdir** (#29): with `--repo` (or the current dir) inside a repo's subdir, auto read the tree relative to that subdir and printed a wrong `project_dir`; it now reads the tree from the repo root. `resolve --help` lists the options only, with no text of its own: the main `--help` describes `resolve`.

@@ -516,6 +516,7 @@ class _Scan(ast.NodeVisitor):
 
     def __init__(self):
         self.known = set()  # TestCase-derived class names seen so far (a subclass in the same file counts)
+        self.defined = set()  # every class name this file defined so far
         self.scope = []
         self.tests = []
         self.bodies = {}
@@ -533,13 +534,23 @@ class _Scan(ast.NodeVisitor):
         self.asserts.append(Assertion(node.lineno, test, scope, kind, left, right, text, owner))
 
     def visit_ClassDef(self, node):
-        tc = any(_last(b) == "TestCase" or _last(b) in self.known for b in node.bases)
+        tc = any(_last(b) == "TestCase" or _last(b) in self.known for b in node.bases) or self._imported_base(node)
         if tc:
             self.known.add(node.name)
+        self.defined.add(node.name)
         self.scope.append(("class", node.name, tc or node.name.startswith("Test"), _skip_decorated(node.decorator_list), None))
         for stmt in node.body:
             self.visit(stmt)
         self.scope.pop()
+
+    def _imported_base(self, node):
+        """a class with test* methods on a base this file does not define (`from _kit import Fixture`): unittest and
+        pytest collect it through that base, so it is a test class (#21: R0's census found the scanner blind to it).
+        `object`, and a non-test class of this file, are no such base."""
+        bases = [_last(b) for b in node.bases]
+        if not any(n and n != "object" and n not in self.defined for n in bases):
+            return False
+        return any(isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name.startswith("test") for s in node.body)
 
     def _func(self, node):
         qname = "::".join(self._chain() + [node.name])
@@ -603,7 +614,8 @@ def mutmut_section(text):
     return "\n".join(out) or None
 
 class PythonAdapter(Adapter):
-    """Python: pytest functions and `Test*` classes, unittest TestCase methods (test_* / test* prefix, as both runners collect).
+    """Python: pytest functions and `Test*` classes, unittest TestCase methods (test_* / test* prefix, as both runners collect),
+    and a class with test* methods on a base the file does not define (an imported TestCase subclass).
     Names: `test_fn`, `Class::test_method` (Class nested in another class: `Outer::Class::test_method`)."""
     name = "python"
     default_test_cmd = "python3 -m pytest"
