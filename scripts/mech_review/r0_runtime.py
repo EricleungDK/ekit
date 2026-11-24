@@ -215,10 +215,12 @@ def probe(argv, from_file, roots):
     return f"{label}: {line[:200]}" + (f" (exit {r.returncode})" if r.returncode else "")
 
 
-def fingerprint(part, adapter, adapter_raw, fixtures_dir, target_os, cmds, lines, extra=b""):
-    """the part's fingerprint (hex) over everything that can change what it proves."""
+def fingerprint(part, adapter, adapter_raw, fixtures_dir, target_os, cmds, lines, extra=b"", project_dir="."):
+    """the part's fingerprint (hex) over everything that can change what it proves; the stack's name and project dir
+    too, so two stacks of one repo (#74's legs) never share a key."""
     h = hashlib.sha256()
-    for piece in (b"ekit-r0-runtime-1", part, adapter.name, report.ekit_version(), engine_digest(), target_os):
+    for piece in (b"ekit-r0-runtime-2", part, adapter.name, project_dir, report.ekit_version(), engine_digest(),
+                  target_os):
         h.update((piece if isinstance(piece, bytes) else str(piece).encode()) + b"\0")
     h.update(hashlib.sha256(adapter_raw or b"built-in").digest())
     _digest_dir(h, fixtures_dir)
@@ -241,10 +243,48 @@ def cached(cache_dir, part, fp):
         return False
 
 
-def remember(cache_dir, part, fp, lines):
-    os.makedirs(cache_dir, exist_ok=True)
-    with open(_pass_file(cache_dir, part, fp), "w", encoding="utf-8") as f:
-        json.dump({"part": part, "fingerprint": fp, "probes": list(lines)}, f)
+def _clear(path):
+    """remove the cache dir and all in it, never following a link (a link in its place is removed, not its target)."""
+    try:
+        if os.path.islink(path) or (os.path.lexists(path) and not os.path.isdir(path)):
+            os.unlink(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+class Cache:
+    """One run's view of the cache dir (#21 review B1). open() reads this part's hit before any PR code runs (R1, R4,
+    the census and the controls all run later) and empties the dir at once; close() empties it again and writes back
+    only the verdicts this run decided: the hit it read, or the pass it proved. So a file that PR code, a setup command
+    or an install script planted does not outlive the run; a detached process that writes after the engine exits is
+    the residue no engine can stop (the job runs PR code: it is no sandbox)."""
+
+    def __init__(self, cache_dir):
+        self.dir = cache_dir
+        self.keep = {}  # (part, fp): probe lines
+
+    def open(self, part, fp, lines):
+        hit = bool(self.dir) and cached(self.dir, part, fp)
+        if self.dir:
+            _clear(self.dir)
+        if hit:
+            self.keep[(part, fp)] = list(lines)
+        return hit
+
+    def passed(self, part, fp, lines):
+        self.keep[(part, fp)] = list(lines)
+
+    def close(self):
+        if not self.dir:
+            return
+        _clear(self.dir)
+        if self.keep:
+            os.makedirs(self.dir, exist_ok=True)
+        for (part, fp), lines in self.keep.items():
+            with open(_pass_file(self.dir, part, fp), "w", encoding="utf-8") as f:
+                json.dump({"part": part, "fingerprint": fp, "probes": lines}, f)
 
 
 # ---- the census ----
@@ -263,57 +303,103 @@ def found_tests(adapter, files):
     return out
 
 
-def _same(adapter, listed, name, by_suffix):
+def _placeholder_rx(adapter, name):
+    ph = getattr(adapter, "name_placeholders", None)
+    if ph is None or not any(m.end() > m.start() for m in ph.finditer(name)):
+        return None
+    parts, at = [], 0
+    for m in ph.finditer(name):
+        if m.end() > m.start():
+            parts.append(re.escape(name[at:m.start()]))
+            at = m.end()
+    return re.compile(".+".join(parts + [re.escape(name[at:])]))
+
+
+def _same(adapter, listed, name):
     if listed == name:
         return True
-    sep = getattr(adapter, "list_separator", None) or "::"
-    if by_suffix and listed.endswith(sep + name):
-        return True
-    ph = getattr(adapter, "name_placeholders", None)
-    if ph is not None and ph.search(name):
-        parts, at = [], 0
-        for m in ph.finditer(name):
-            if m.end() > m.start():
-                parts.append(re.escape(name[at:m.start()]))
-                at = m.end()
-        return re.fullmatch(".+".join(parts + [re.escape(name[at:])]), listed) is not None
-    return False
+    rx = _placeholder_rx(adapter, name)
+    return rx is not None and rx.fullmatch(listed) is not None
 
 
-def census(adapter, listed, found, paths=None):
-    """(found, listed, misses) of the runner's listing against the scanner's tests. listed: [(path or None, name)];
-    found: found_tests(); paths: count only listed tests in these files (a listing with no file: all of them)."""
-    misses, n = [], 0
-    for path, name in listed:
-        if paths is not None and path is not None and path not in paths:
-            continue
-        n += 1
-        if path is not None:
-            ok = any(_same(adapter, name, f, False) for f in found.get(path, {}))
-        else:
-            ok = any(_same(adapter, name, f, True) for names in found.values() for f in names)
-        if not ok:
-            misses.append(f"{path} :: {name}" if path else name)
-    return n - len(misses), n, misses
+def _crate_rel(path, project_dir):
+    pre = "" if project_dir in (".", "") else project_dir + "/"
+    return path[len(pre):] if pre and path.startswith(pre) else path
+
+
+Census = namedtuple("Census", "found listed misses scanned")
+
+
+def census(adapter, listed, found, paths=None, project_dir="."):
+    """Census of the runner's listing against the scanner's tests. listed: [(path or None, name)]; found:
+    found_tests(); paths: only listed tests in these files (a listing with no file: all of it). scanned: the scanner's
+    tests in scope that are not marked skipped (an empty listing beside them is a failed census, never 0/0).
+    A listing with a file matches a test of that file (it.each placeholders match any value). A listing with no file
+    (rust) matches each scanner test once, by its listed name (adapter.listed_name: the module path from its file),
+    exact matches first, then by suffix (`#[path]`, a mod the path does not show)."""
+    scope = {p: names for p, names in found.items() if paths is None or p in paths}
+    scanned = sum(1 for names in scope.values() for m in names.values() if "ignore" not in m)
+    tied = [(p, n) for p, n in listed if p is not None and (paths is None or p in paths)]
+    loose = [n for p, n in listed if p is None]
+    misses = [f"{p} :: {n}" for p, n in tied if not any(_same(adapter, n, f) for f in found.get(p, {}))]
+    if loose:
+        named = getattr(adapter, "listed_name", lambda path, name: name)
+        pool = {}
+        for p, names in found.items():
+            for f in names:
+                key = named(_crate_rel(p, project_dir), f)
+                pool[key] = pool.get(key, 0) + 1
+        left = []
+        for n in loose:
+            if pool.get(n):
+                pool[n] -= 1
+            else:
+                left.append(n)
+        sep = getattr(adapter, "list_separator", None) or "::"
+        for n in left:
+            key = next((k for k, c in pool.items() if c and n.endswith(sep + k)), None)
+            if key is None:
+                misses.append(n)
+            else:
+                pool[key] -= 1
+    n = len(tied) + len(loose)
+    return Census(n - len(misses), n, misses, scanned)
 
 
 def listing(adapter, runner, cmd, crate, project_dir="."):
-    """([(repo path or None, name)], None) of the tests the runner lists in crate, or (None, why not)."""
+    """([(repo path or None, name)], None, None) of the tests the runner lists in crate, or (None, why not, status):
+    status n/a when the runner has no listing or its toolchain is missing, fail when the listing failed."""
     argv = adapter.list_argv(cmd) if hasattr(adapter, "list_argv") else None
     if argv is None:
-        return None, f"the `{adapter.name}` adapter names no command that lists the runner's tests"
+        why = getattr(adapter, "no_listing", None)
+        return None, (why(cmd) if why else f"the `{adapter.name}` adapter names no command that lists the runner's "
+                                            "tests ([run.list])"), "n/a"
     rc, out = runner(argv, crate)
     if rc is None:
-        return None, f"env: `{argv[0]}` not found"
+        return None, f"env: `{argv[0]}` not found", "n/a"
+    first = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()), f"exit {rc}")[:200]
     if adapter.outcome(rc, out) == "env":  # the runner started, its toolchain is missing (`No module named pytest`)
-        first = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()), f"exit {rc}")
-        return None, f"env: {first[:200]}"
+        return None, f"env: {first}", "n/a"
     got = adapter.listed(rc, out, crate)
     if got is None:
-        first = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()), f"exit {rc}")
-        return None, f"the listing failed (exit {rc}): {first[:200]}"
+        return None, f"the listing failed (exit {rc}): {first}", "fail"
     pre = "" if project_dir in (".", "") else project_dir + "/"
-    return [(None if p is None else pre + p, n) for p, n in got], None
+    return [(None if p is None else pre + p, n) for p, n in got], None, None
+
+
+def census_case(case, adapter, c, limit, want=None):
+    """the census case of a Census: pass at `limit` percent found; an empty listing beside scanner tests fails."""
+    want = want or f"at least {limit}% of the listed tests found"
+    if c.listed == 0:
+        if c.scanned:
+            return _case(case, "census", "fail", want, f"the runner listed no test, the adapter finds {c.scanned}: "
+                                                      "the listing is not read (its output shape, or its options)",
+                         found=0, listed=0, misses=[])
+        return _case(case, "census", "pass", want, "0/0 found: no test listed or found", found=0, listed=0, misses=[])
+    ok = c.found * 100 >= limit * c.listed
+    return _case(case, "census", "pass" if ok else "fail", want,
+                 f"{c.found}/{c.listed} found" + (f"; missed: {_shown(c.misses)}" if c.misses else ""),
+                 found=c.found, listed=c.listed, misses=c.misses)
 
 
 def _shown(items):
@@ -408,17 +494,12 @@ def controls(adapter, rt, runner, cmd, src, results):
         use = cmd or adapter.test_cmd_in(proj)
         texts = {p: raw.decode("utf-8", "surrogateescape") for p, raw in rt.project.items()}
         scan = found_tests(adapter, {p: t for p, t in texts.items() if adapter.classify(p, list(TEST_GLOBS)) is not None})
-        listed, why = listing(adapter, runner, use, proj)
+        listed, why, st = listing(adapter, runner, use, proj)
         if listed is None:
-            results.append(_case("census-fixtures", "census", "n/a" if why.startswith("env") else "fail",
-                                 "every listed test found", why))
+            results.append(_case("census-fixtures", "census", st, "every listed test found", why))
         else:
             found = census(adapter, listed, scan)
-            results.append(_case("census-fixtures", "census", "pass" if not found[2] and found[1] else "fail",
-                                 "every listed test found", f"{found[0]}/{found[1]} found" +
-                                 (f"; missed: {_shown(found[2])}" if found[2] else "") +
-                                 ("; the runner listed no test" if not found[1] else ""),
-                                 found=found[0], listed=found[1], misses=found[2]))
+            results.append(census_case("census-fixtures", adapter, found, 100, "every listed test found"))
         build_dir = None
         for name, want in CONTROLS.items():
             case = f"control-{name}"
@@ -564,7 +645,8 @@ def run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate):
     adapter = rv.adapter
     cmds = run_cmds(adapter, cmd, crate)
     lines = [probe(a, f, (rv.repo,)) for a, f in probes(adapter, "run", cmds)]
-    return fingerprint("run", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines, accepted_raw), lines
+    return fingerprint("run", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines, accepted_raw,
+                       rv.project_dir), lines
 
 
 def r3_cmds(adapter, mutants_cmd):
@@ -580,12 +662,14 @@ def r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw):
     adapter = rv.adapter
     cmds = r3_cmds(adapter, mutants_cmd)
     lines = [probe(a, f, (rv.repo,)) for a, f in probes(adapter, "r3", cmds)]
-    return fingerprint("r3", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines), lines
+    return fingerprint("r3", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines,
+                       project_dir=rv.project_dir), lines
 
 
 def part_fingerprint(rv, part, cmd=None, mutants_cmd=None, fixtures_dir=None, adapter_raw=None):
     """(fingerprint, probe lines) of a part as `red --r0` (run) or `mutants --r0` (r3) computes it: the key the
-    workflow's cache step restores before the run."""
+    workflow's cache step restores before the run. The head's checkout is read (the test command a checkout picks),
+    never run."""
     if part == "r3":
         return r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw)
     accepted_raw = accepted_list(rv.repo, rv.mb, rv.adapter.name)[1]
@@ -595,79 +679,98 @@ def part_fingerprint(rv, part, cmd=None, mutants_cmd=None, fixtures_dir=None, ad
         return run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate)
 
 
-def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, cache_dir=None, adapter_path=None):
-    """(R0 check, raw entries) of the run part in `red`: the census, assert density and the runner controls when the
-    fingerprint has no pass in cache_dir; else only the census of the PR's changed test files."""
+Prepared = namedtuple("Prepared", "part fp lines hit cache")
+
+
+def prepare(rv, part, cache, cmd=None, mutants_cmd=None, fixtures_dir=None, adapter_raw=None):
+    """the part's fingerprint and its cache hit, read before any PR code runs (#21 review B1): the engine calls it
+    before R1, R4 and R3, and before the part's own census and controls. None on another OS (the part is n/a)."""
+    if rv.adapter.target_os != host_os():
+        return None
+    fp, lines = part_fingerprint(rv, part, cmd, mutants_cmd, fixtures_dir, adapter_raw)
+    return Prepared(part, fp, lines, cache.open(part, fp, lines), cache)
+
+
+def _density(adapter, files, accepted):
+    """(density fields, note, [the needs-human entry when over the limit]): scanner only, so measured on every run."""
+    total, bare, ok_bare = density(adapter, files, accepted)
+    limit = _limit(adapter, "assert-density")
+    left = [b for b in bare if b not in ok_bare]
+    pct = (100.0 * len(left) / total) if total else 0.0
+    dens = {"tests": total, "no_assert": bare, "accepted": ok_bare, "limit": limit, "percent": round(pct, 1)}
+    note = (f"assert density: {len(bare)} of {total} tests with no recognised assert"
+            + (f" ({len(ok_bare)} accepted)" if ok_bare else "") + f", {pct:.0f}% (limit {limit}%)")
+    if pct <= limit:
+        return dens, note, []
+    note += f": {_shown(left)}"
+    return dens, note, [entry(
+        "R0", ACCEPTED, 0, f"assert-density:{adapter.name}", "needs-human", "fail",
+        f"R0 assert density for the `{adapter.name}` adapter: {len(left)} of {total} tests ({pct:.0f}%) have "
+        f"no assert the adapter recognises, over the {limit}% limit: {_shown(left)}",
+        f"a person decides: if these tests use an assert the adapter does not know, repair the adapter in a PR "
+        f"of its own (ci-doctor repair mode); if they are meant to have none, a person accepts the list: add "
+        f"each name to {ACCEPTED} under assert-density.{adapter.name} in a PR of its own (R0's editing rules "
+        f"make that PR needs-human); it counts from the base branch",
+        "adding a dummy assert, or accepting the list in the PR it judges")]
+
+
+def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, prepared=None, adapter_path=None):
+    """(R0 check, raw entries) of the run part in `red`. Assert density (scanner only) on every run. On a cache hit
+    (prepared.hit, read before any PR code ran) the runner-dependent cases (the repo census, the fixture census, the
+    controls) are skipped and only the census of the PR's changed test files runs; else all of them. A pass is kept
+    in prepared.cache, which the engine closes when the run ends."""
     repo, mb, head, adapter, globs, project_dir = rv
     wrong = _wrong_os("run", adapter)
-    if wrong:
-        return wrong
+    if wrong or prepared is None:
+        return wrong or _wrong_os("run", adapter)
+    fp, lines, hit = prepared.fp, prepared.lines, prepared.hit
     where = _where(adapter_path, fixtures_dir)
-    accepted, accepted_raw = accepted_list(repo, mb, adapter.name)
+    accepted = accepted_list(repo, mb, adapter.name)[0]
+    files = _test_files(rv, head)
+    dens, dens_note, extra = _density(adapter, files, accepted)
+    changed = _changed_tests(rv)
+    results, census_out = [], {}
+    limit = _limit(adapter, "census")
     with red.worktree(repo, head) as wt:
         crate = os.path.join(wt, project_dir)
         if not os.path.isdir(crate):
             return {"status": "n/a", "half": "runtime", "part": "run", "adapter": adapter.name,
                     "note": f"runtime half (run): n/a: project dir {project_dir} not in this commit"}, []
         adapter.worktree_setup(repo, wt, project_dir)
-        fp, lines = run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate)
         use = cmd or adapter.test_cmd_in(crate)
-        hit = bool(cache_dir) and cached(cache_dir, "run", fp)
-        changed = _changed_tests(rv)
-        files = _test_files(rv, head)
-        results = []
-        listed, why = (listing(adapter, runner, use, crate, project_dir) if (not hit or changed) else (None, None))
-        scan = found_tests(adapter, files) if (not hit or changed) else {}
-        census_out = {}
+        need_list = not hit or changed
+        listed, why, st = listing(adapter, runner, use, crate, project_dir) if need_list else (None, None, None)
+        scan = found_tests(adapter, files) if need_list else {}
         if hit:
-            head_note = f"fingerprint {fp[:12]} passed before (cache): not re-run"
+            head_note = f"fingerprint {fp[:12]} passed before (cache): runner controls and censuses not re-run"
             if changed:
+                tied = any(p is not None for p, _ in (listed or []))
+                want = f"at least {limit}% of the listed tests in the changed test files found"
                 if listed is None:
-                    results.append(_case("census-pr", "census", "n/a" if why.startswith("env") else "fail",
-                                         "every listed test in the changed test files found", why))
+                    results.append(_case("census-pr", "census", st, want, why))
+                    head_note += f"; census of the changed test files: not read ({why})"
                 else:
-                    f, n, miss = census(adapter, listed, scan, set(changed))
-                    census_out["pr"] = {"found": f, "listed": n, "misses": miss}
-                    results.append(_case("census-pr", "census", "fail" if miss else "pass",
-                                         "every listed test in the changed test files found",
-                                         f"{f}/{n} found" + (f"; missed: {_shown(miss)}" if miss else "")))
-                    head_note += f"; census of the {len(changed)} changed test file(s): {f}/{n} listed tests found"
+                    c = census(adapter, listed, scan, set(changed), project_dir)
+                    census_out["pr"] = {"found": c.found, "listed": c.listed, "misses": c.misses}
+                    results.append(census_case("census-pr", adapter, c, limit, want))
+                    head_note += (f"; census of the {len(changed)} changed test file(s): {c.found}/{c.listed} listed "
+                                  "tests found" if tied or not listed else
+                                  f"; census on {len(changed)} changed test file(s): {c.found}/{c.listed} listed "
+                                  f"tests found (the `{adapter.name}` listing names no file: the whole listing is "
+                                  "counted)")
             else:
                 head_note += "; no test file changed"
-            return _result("run", adapter, results, fp, lines, where, head_note, census=census_out, ran=False)
-        # the full part
+            return _result("run", adapter, results, fp, lines, where, f"{head_note}; {dens_note}", extra,
+                           census=census_out, density=dens, ran=False)
         if listed is None:
-            results.append(_case("census-repo", "census", "n/a" if why.startswith("env") else "fail",
-                                 "every listed test found", why))
+            results.append(_case("census-repo", "census", st, f"at least {limit}% of the listed tests found", why))
             repo_note = f"census: not read ({why})"
         else:
-            f, n, miss = census(adapter, listed, scan)
-            limit = _limit(adapter, "census")
-            ok = n == 0 or f * 100 >= limit * n
-            census_out["repo"] = {"found": f, "listed": n, "misses": miss}
-            results.append(_case("census-repo", "census", "pass" if ok else "fail",
-                                 f"at least {limit}% of the listed tests found",
-                                 f"{f}/{n} found" + (f"; missed: {_shown(miss)}" if miss else "")))
-            repo_note = f"census: {f}/{n} listed tests found" + (f" (missed: {_shown(miss)})" if miss else "")
-        total, bare, ok_bare = density(adapter, files, accepted)
-        limit = _limit(adapter, "assert-density")
-        left = [b for b in bare if b not in ok_bare]
-        pct = (100.0 * len(left) / total) if total else 0.0
-        dens = {"tests": total, "no_assert": bare, "accepted": ok_bare, "limit": limit, "percent": round(pct, 1)}
-        dens_note = (f"assert density: {len(bare)} of {total} tests with no recognised assert"
-                     + (f" ({len(ok_bare)} accepted)" if ok_bare else "") + f", {pct:.0f}% (limit {limit}%)")
-        extra = []
-        if pct > limit:
-            dens_note += f": {_shown(left)}"
-            extra.append(entry(
-                "R0", ACCEPTED, 0, f"assert-density:{adapter.name}", "needs-human", "fail",
-                f"R0 assert density for the `{adapter.name}` adapter: {len(left)} of {total} tests ({pct:.0f}%) have "
-                f"no assert the adapter recognises, over the {limit}% limit: {_shown(left)}",
-                f"a person decides: if these tests use an assert the adapter does not know, repair the adapter in a PR "
-                f"of its own (ci-doctor repair mode); if they are meant to have none, a person accepts the list: add "
-                f"each name to {ACCEPTED} under assert-density.{adapter.name} in a PR of its own (R0's editing rules "
-                f"make that PR needs-human); it counts from the base branch",
-                "adding a dummy assert, or accepting the list in the PR it judges"))
+            c = census(adapter, listed, scan, None, project_dir)
+            census_out["repo"] = {"found": c.found, "listed": c.listed, "misses": c.misses}
+            results.append(census_case("census-repo", adapter, c, limit))
+            repo_note = f"census: {c.found}/{c.listed} listed tests found" + (
+                f" (missed: {_shown(c.misses)})" if c.misses else "")
         rt = load_runtime(fixtures_dir)
         fx = None
         if rt is None:
@@ -675,27 +778,27 @@ def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, cache_dir=None, ad
         else:
             fx = controls(adapter, rt, runner, cmd, os.path.join(repo, project_dir), results)
         if fx is not None:
-            census_out["fixtures"] = {"found": fx[0], "listed": fx[1], "misses": fx[2]}
+            census_out["fixtures"] = {"found": fx.found, "listed": fx.listed, "misses": fx.misses}
     ctl = [r for r in results if r["kind"] == "control" and r["case"].startswith("control-")]
     head_note = (f"fingerprint {fp[:12]} (ran); {repo_note}"
-                 + (f"; fixtures census: {fx[0]}/{fx[1]}" if fx else "") + f"; {dens_note}; controls: "
+                 + (f"; fixtures census: {fx.found}/{fx.listed}" if fx else "") + f"; {dens_note}; controls: "
                  + f"{sum(1 for r in ctl if r['status'] == 'pass')} of {len(CONTROLS)} read right")
     check, entries = _result("run", adapter, results, fp, lines, where, head_note, extra, census=census_out,
                              density=dens, ran=True)
-    if check["status"] == "pass" and cache_dir:
-        remember(cache_dir, "run", fp, lines)
+    if results and all(r["status"] == "pass" for r in results):  # the runner's cases: density is measured every run
+        prepared.cache.passed("run", fp, lines)
     return check, entries
 
 
-def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, cache_dir=None, adapter_path=None):
-    """(R0 check, raw entries) of the R3 control in `mutants`, when its fingerprint has no pass in cache_dir."""
+def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, prepared=None, adapter_path=None):
+    """(R0 check, raw entries) of the R3 control in `mutants`, unless prepared.hit (read before R3 ran)."""
     repo, mb, head, adapter, globs, project_dir = rv
     wrong = _wrong_os("r3", adapter)
-    if wrong:
-        return wrong
+    if wrong or prepared is None:
+        return wrong or _wrong_os("r3", adapter)
+    fp, lines = prepared.fp, prepared.lines
     where = _where(adapter_path, fixtures_dir)
-    fp, lines = r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw)
-    if cache_dir and cached(cache_dir, "r3", fp):
+    if prepared.hit:
         return _result("r3", adapter, [], fp, lines, where, f"fingerprint {fp[:12]} passed before (cache): not re-run",
                        ran=False)
     rt = load_runtime(fixtures_dir)
@@ -708,6 +811,6 @@ def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, cache_d
     head_note = f"fingerprint {fp[:12]} (ran); R3 control: " + ", ".join(
         f"{c} {got[c]['status']}" for c in ("r3-weak", "r3-strong") if c in got)
     check, entries = _result("r3", adapter, results, fp, lines, where, head_note, ran=True)
-    if check["status"] == "pass" and cache_dir:
-        remember(cache_dir, "r3", fp, lines)
+    if check["status"] == "pass":
+        prepared.cache.passed("r3", fp, lines)
     return check, entries

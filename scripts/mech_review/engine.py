@@ -93,9 +93,27 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     entries kept, marked `blocked`). r0 (#21, `--r0`): {dir, fixtures, raw, path, target_os}: red and all also run the
     runtime half's run part, mutants (shard 0) its R3 control, each unless dir holds a pass for its fingerprint; a
     failed part blocks the checks it proves (r0_runtime.BLOCKS) as the static half does."""
+    cache = r0_runtime.Cache(r0["dir"] if r0 else None)
+    try:
+        return _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, agent_prefix, head_branch,
+                    test_cmd, runner, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner, project_dir,
+                    adapter, max_mutants, fixtures_dir, r0, cache)
+    finally:
+        cache.close()  # only the verdicts this run decided stay in the cache dir (#21 review B1)
+
+
+def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, agent_prefix, head_branch, test_cmd,
+         runner, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner, project_dir, adapter, max_mutants,
+         fixtures_dir, r0, cache):
     base, head, mb = merge_base(repo, base_ref, head_ref)
     rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_paths(test_globs), project_dir)
     want = WHICH[which]
+    rt_part = None
+    if r0 is not None and (which in ("red", "all") or (which == "mutants" and mutants.shard_index(shard)[0] == 0)):
+        # the part's cache hit is read here, before R1, R4 or R3 run any PR code (#21 review B1)
+        rt_rv = rv._replace(adapter=_on_os(rv.adapter, r0["target_os"]))
+        rt_part = "r3" if which == "mutants" else "run"
+        prepared = r0_runtime.prepare(rt_rv, rt_part, cache, test_cmd, mutants_cmd, r0["fixtures"], r0["raw"])
     checks = {c: {"status": "skipped", "note": f"not run by {which}"} for c in CHECKS}
     raw = []
     if "R0" in want:
@@ -120,14 +138,13 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     if "R3" in want:
         checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
                                        max_mutants=max_mutants)
-    if r0 is not None and (which in ("red", "all") or (which == "mutants" and mutants.shard_index(shard)[0] == 0)):
-        rt_rv = rv._replace(adapter=_on_os(rv.adapter, r0["target_os"]))
-        if which == "mutants":
-            part, more = r0_runtime.r3_part(rt_rv, mutants_cmd, mutation_budget, r0["fixtures"], r0["raw"], r0["dir"],
+    if rt_part is not None:
+        if rt_part == "r3":
+            part, more = r0_runtime.r3_part(rt_rv, mutants_cmd, mutation_budget, r0["fixtures"], r0["raw"], prepared,
                                             r0["path"])
         else:
             part, more = r0_runtime.run_part(rt_rv, runner or red.default_runner(), test_cmd, r0["fixtures"],
-                                             r0["raw"], r0["dir"], r0["path"])
+                                             r0["raw"], prepared, r0["path"])
         checks["R0"] = r0_mod.combine([checks["R0"], part]) if "R0" in want else part
         raw += more
     entries = sorted(finalize(raw) + r3, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))

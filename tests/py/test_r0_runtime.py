@@ -93,6 +93,12 @@ if args[:1] == ["list"]:
     sys.exit(0)
 if args[:1] == ["test"]:
     path, name = args[1], args[args.index("--name") + 1]
+    if name == "poison" and os.environ.get("POISON_DIR"):  # a PR test that forges R0's cache while R4 runs it
+        os.makedirs(os.environ["POISON_DIR"], exist_ok=True)
+        with open(os.path.join(os.environ["POISON_DIR"], "run-" + os.environ["POISON_FP"] + ".pass"), "w") as f:
+            json.dump({"fingerprint": os.environ["POISON_FP"]}, f)
+        with open(os.path.join(os.environ["POISON_DIR"], "planted"), "w") as f:
+            f.write("x")
     hit = [t for t in tests() if t[0] == path and t[2] == name]
     if not hit:
         print("0 passed, 0 failed")
@@ -350,8 +356,9 @@ class Fingerprint(Case):
         r, env = self.red()
         c = env["checks"]["R0"]
         self.assertEqual((c["status"], c["ran"], c["fingerprint"]), ("pass", False, fp), c)
-        self.assertEqual(c["note"], f"runtime half (run): fingerprint {fp[:12]} passed before (cache): not re-run; no "
-                                    "test file changed")
+        self.assertEqual(c["note"], f"runtime half (run): fingerprint {fp[:12]} passed before (cache): runner controls "
+                                    "and censuses not re-run; no test file changed; assert density: 0 of 2 tests with "
+                                    "no recognised assert, 0% (limit 10%)")
         self.assertEqual([x for x in self.calls() if not x.startswith("--version")], [])  # nothing but the probe ran
         with open(os.path.join(self.tmp, "version"), "w") as f:
             f.write("mini 1.1.0\n")
@@ -541,3 +548,63 @@ class RepoCensus(Case):
         c = env["checks"]["R0"]
         self.assertEqual(c["status"], "pass", c)
         self.assertEqual(c["census"]["repo"]["misses"], ["tests/spec.mini :: in a new style"])
+
+
+class ReviewRound1(Case):
+    """review round 1 of #21: B1 a PR test cannot forge the cache; B2 density runs on a hit; B3 no listing is n/a; S1
+    an empty listing while the scanner finds tests is a fail."""
+
+    def fp(self, head):
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.base, "--head", head, "--stack", "minirun",
+                          "--adapter", MINIRUN, "--fixtures", MINIRUN_FX, "--fingerprint", "run"])
+        return json.loads(r.stdout)["fingerprint"]
+
+    def test_b1_a_pass_file_a_pr_test_writes_is_no_hit_and_does_not_survive(self):
+        head = self.commit({"tests/poison.mini": 'test("poison", {\n  assertEquals(2, add(1, 1))\n})\n'})
+        fp = self.fp(head)
+        with mock.patch.dict(os.environ, {"POISON_DIR": self.cache, "POISON_FP": fp}):
+            r, env = self.red(None, head)
+        c = env["checks"]["R0"]
+        self.assertTrue(any("--name poison" in x for x in self.calls()), self.calls())  # R4 ran the forging test
+        self.assertEqual((c["ran"], c["fingerprint"]), (True, fp), c)  # read before any PR code ran: no hit
+        self.assertEqual(c["status"], "pass", c)
+        self.assertEqual(os.listdir(self.cache), [f"run-{fp}.pass"])  # only the verdict this run decided
+        with open(os.path.join(self.cache, f"run-{fp}.pass")) as f:
+            self.assertEqual(json.load(f)["probes"], ["mini --version: mini 1.0.0"])  # the engine's own file
+
+    def test_b1_a_failed_run_leaves_no_file_a_pr_test_wrote(self):
+        text = adapter_text(lambda t: t.replace("passed = '(\\d+) passed'", "passed = '(\\d+) ok'"))
+        head = self.commit({"tests/poison.mini": 'test("poison", {\n  assertEquals(2, add(1, 1))\n})\n'})
+        with mock.patch.dict(os.environ, {"POISON_DIR": self.cache, "POISON_FP": "f" * 64}):
+            r, env = self.red(self.adapter(text), head)
+        self.assertEqual(env["checks"]["R0"]["status"], "fail")
+        self.assertEqual(os.listdir(self.cache) if os.path.isdir(self.cache) else [], [])
+
+    def test_b2_a_hit_still_measures_assert_density(self):
+        self.red()
+        bare = 'test("a", {\n  check(add(1, 1))\n})\n\ntest("b", {\n  check(add(1, 2))\n})\n'
+        head = self.commit({"tests/bare.mini": bare})
+        r, env = self.red(None, head)
+        c = env["checks"]["R0"]
+        self.assertEqual((c["ran"], c["status"]), (False, "fail"), c)
+        self.assertEqual(c["density"]["no_assert"], ["tests/bare.mini::a", "tests/bare.mini::b"])
+        self.assertEqual([e["class"] for e in env["entries"] if e["check"] == "R0"], ["needs-human"])
+
+    def test_b3_an_adapter_with_no_listing_is_na_not_a_fail(self):
+        text = adapter_text(lambda t: re.sub(r"\[run\.list\]\n(?:[^\n]+\n)+\n", "", t))
+        self.assertNotIn("[run.list]", text)
+        r, env = self.red(self.adapter(text))
+        c = env["checks"]["R0"]
+        self.assertEqual(c["status"], "n/a", c)
+        self.assertEqual({k: v for k, v in self.cases(c).items() if k.startswith("census")},
+                         {"census-repo": "n/a", "census-fixtures": "n/a"})
+        self.assertEqual([e for e in env["entries"] if e["check"] == "R0"], [])
+        self.assertNotIn("R4", [k for k, v in env["checks"].items() if v["status"] == "n/a"])  # blocks nothing
+
+    def test_s1_an_empty_listing_while_the_scanner_finds_tests_fails(self):
+        with mock.patch.dict(os.environ, {"STUB_STYLES": "nothing"}):
+            r, env = self.red()
+        c = env["checks"]["R0"]
+        got = {x["case"]: x for x in c["cases"]}
+        self.assertEqual(got["census-repo"]["status"], "fail", got["census-repo"])
+        self.assertIn("the runner listed no test, the adapter finds 2", got["census-repo"]["got"])
