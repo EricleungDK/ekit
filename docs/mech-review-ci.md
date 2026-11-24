@@ -153,7 +153,7 @@ python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 't
 
 `scripts/mech-summary.py <run-id | PR number | #N | PR URL> [--repo OWNER/NAME]` downloads a run's artifacts (`gh run download`; a PR resolves to the run of its newest `mech-review report` check) and prints the summary line, each check's status and note, each shard's note, and the fail entries grouped by file, merged as the report job merges them. Waivers are not applied. `--dir DIR` reads artifacts already downloaded. Artifacts: `mech-review-json` (R2), `mech-review-red-json` (R1, R4), `mech-review-baseline-json`, `mech-review-mutants-K` (one per shard); a `mech-review-mutants-merged-json` (the merged R3) is used when the run has one. A run still in progress is a note (exit 2), not a result. The job list (`gh run view`) tells a baseline job that was skipped (the plan found no production change: R3 skipped) from one that ran and left no JSON (R3 fails, as in the comment).
 
-The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38; not yet in the workflow: an owner edit):
+The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38). It uploads the single-stack `mutants-merged.json`; a run with several stacks writes one `mutants-merged<key>.json` per stack, which it leaves out:
 
 ```yaml
       - name: upload merged mutants result
