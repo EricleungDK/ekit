@@ -75,5 +75,17 @@ class Merged(unittest.TestCase):
         self.assertEqual((whole["checks"]["R0"]["status"], whole["checks"]["R3"]["status"]), ("fail", "n/a"))
 
 
+    def test_several_stacks_a_failed_run_part_in_one_stacks_red_fails_r0_for_the_whole(self):
+        """#74 (several stacks, #17): each stack's jobs merge apart, then combine_stacks takes the worst per check."""
+        good = merge.merge({"r0": env({"R0": STATIC}), "red": env({"R0": RUN_PASS})}, {})
+        bad = merge.merge({"r0": env({"R0": STATIC}), "red": env({"R0": RUN_FAIL}, [r0_entry()])}, {})
+        legs = [({"name": "py", "stack": "python", "project_dir": "py"}, good),
+                ({"name": "web", "stack": "ts", "project_dir": "web"}, bad)]
+        got = merge.combine_stacks(legs)
+        self.assertEqual(got["checks"]["R0"]["status"], "fail")
+        self.assertEqual([s["checks"]["R0"]["status"] for s in got["stacks"]], ["pass", "fail"])
+        self.assertEqual([e["check"] for e in got["entries"]], ["R0"])
+
+
 if __name__ == "__main__":
     unittest.main()

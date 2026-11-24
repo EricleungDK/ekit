@@ -214,8 +214,18 @@ class Output(Run):
     def test_job_names_are_the_workflows(self):
         with open(os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml"), encoding="utf-8") as f:
             wf = f.read()
-        for name in (ms.BASELINE_JOB, ms.PLAN_JOB, ms.REPORT):
+        for name in (ms.PLAN_JOB, ms.REPORT):
             self.assertIn(f"    name: {name}\n", wf)
+        # #17: the baseline is a matrix over the stacks; its leg's label is empty for one stack
+        self.assertIn(f"    name: {ms.BASELINE_JOB}${{{{ matrix.label }}}}\n", wf)
+
+    def test_a_skipped_baseline_job_named_by_its_unexpanded_matrix_label_is_r3_not_planned(self):
+        # a skipped matrix job is listed under its name template: the label expression unexpanded (#17)
+        self.no_r3_artifacts()
+        self.jobs[0].update(conclusion="skipped", name="mech-review / " + ms.BASELINE_JOB + "${{ matrix.label }}")
+        r = self.main("44583031414")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("R3 skipped: not run: the plan found no production file changed", r.stdout.splitlines())
 
     def test_a_run_view_that_is_not_json_is_exit_2(self):
         def run(argv, env=None, cwd=None):

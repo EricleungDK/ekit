@@ -70,11 +70,14 @@ jobs:
     runs-on: ubuntu-latest
     # git only, no PR code: settles stack and project-dir once. Every later job reads them from these outputs, through
     # env or an if: condition, never interpolated into a run: line (the values come from the PR's tree).
+    # legs (#17): one per stack to check, the matrix of guard, red-first, baseline and mutants; each leg's values reach
+    # its steps as matrix.* through env or an if: condition the same way. stack is empty when a plan gives several.
     outputs:
       stack: ${{ steps.resolve.outputs.stack }}
       project-dir: ${{ steps.resolve.outputs.project-dir }}
       error: ${{ steps.resolve.outputs.error }}
       target-os: ${{ steps.resolve.outputs.target-os }}
+      legs: ${{ steps.resolve.outputs.legs }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -113,13 +116,20 @@ jobs:
 
           r = json.load(open("stack.json"))
           error = r["error"] or ""
-          stacks = r.get("stacks") or []  # #17: a plan with several stacks to run; one set of checks per stack is not
-          if len(stacks) > 1 and not error:  # wired yet (the report merges one stack's results), so stop, named
-              found = ", ".join(f"{s['name']}: {s['stack']} in {s['project_dir']}" for s in stacks)
-              error = (f"stack auto: the stack plan has several stacks to run ({found}); this workflow runs one stack: "
-                       "set the stack and project-dir inputs to the one to check")
+          # #17: one leg per stack, one set of checks each. One stack: one leg with no key or label, so its job and
+          # artifact names stay as they were. Several (the plan's): key and label by stack (names are letters, digits,
+          # _ or -, unique in the plan); the drift check, the repo's, runs in the first leg's guard only
+          if r.get("stacks") and not error:
+              legs = [{"key": f"-{i}-{s['name']}", "label": f" [{s['name']}]", "name": s["name"], "stack": s["stack"],
+                       "project-dir": s["project_dir"], "target-os": s["target_os"] or "", "drift": i == 0}
+                      for i, s in enumerate(r["stacks"])]
+          elif r["stack"] and not error:
+              legs = [{"key": "", "label": "", "name": r["stack"], "stack": r["stack"], "project-dir": r["project_dir"],
+                       "target-os": r.get("target_os") or "", "drift": True}]
+          else:
+              legs = []
           values = {"stack": r["stack"] or "", "project-dir": r["project_dir"], "error": error,
-                    "target-os": r.get("target_os") or ""}
+                    "target-os": r.get("target_os") or "", "legs": json.dumps(legs)}
           assert not any(c in v for v in values.values() for c in "\r\n"), values  # one line each: an output per line
           with open(sys.argv[1], "a") as out:
               for k, v in values.items():
@@ -134,9 +144,14 @@ jobs:
           exit 1
 
   guard:
-    name: mech-review guard (R2)
+    name: mech-review guard (R2)${{ matrix.label }}
     needs: [stack]
     runs-on: ubuntu-latest
+    strategy:
+      # one stack's crash never cancels another stack's checks
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.stack.outputs.legs) }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -153,6 +168,8 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: drift check (stack plan, D)
+        # the repo's check, not a stack's: in the first leg only (#17)
+        if: matrix.drift
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -174,7 +191,7 @@ jobs:
             echo "::error::the stack plan does not read: D fails (the error is above)"
           fi
       - name: upload drift result
-        if: always()
+        if: always() && matrix.drift
         uses: actions/upload-artifact@v4
         with:
           name: mech-review-drift-json
@@ -185,8 +202,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
           PROTECTED_PATHS: ${{ inputs.protected-paths }}
         run: |
@@ -212,8 +229,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -uo pipefail
@@ -236,7 +253,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mech-review-json
+          name: mech-review-json${{ matrix.key }}
           path: |
             mech-review.json
             mech-review-r0.json
@@ -244,12 +261,17 @@ jobs:
           overwrite: true
 
   red-first:
-    name: mech-review red-first (R1, R4)
+    name: mech-review red-first (R1, R4)${{ matrix.label }}
     needs: [stack]
-    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[matrix.target-os] }}
     # runs PR code (cargo test): read-only token, so a PR test cannot edit the comment or PR content
     permissions:
       contents: read
+    strategy:
+      # one stack's crash never cancels another stack's checks
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.stack.outputs.legs) }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -266,14 +288,14 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Rust toolchain
-        if: needs.stack.outputs.stack == 'rust'
+        if: matrix.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: Python toolchain
-        if: needs.stack.outputs.stack == 'python'
+        if: matrix.stack == 'python'
         env:
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -290,16 +312,16 @@ jobs:
           done
           echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: TypeScript toolchain
-        if: needs.stack.outputs.stack == 'ts'
+        if: matrix.stack == 'ts'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: TypeScript dependencies
         # lockfile-aware: npm ci for package-lock.json, the repo's own pnpm or yarn (pinned) for theirs. The install runs
         # the dependencies' install scripts, like the test code does: the job's token is read-only. No lockfile is a stop.
-        if: needs.stack.outputs.stack == 'ts'
+        if: matrix.stack == 'ts'
         env:
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -336,8 +358,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -uo pipefail
           python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 --repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" \
@@ -365,9 +387,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.head_ref }}
           AGENT_PREFIX: ${{ inputs.agent-branch-prefix }}
-          STACK: ${{ needs.stack.outputs.stack }}
+          STACK: ${{ matrix.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -uo pipefail
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK"
@@ -392,7 +414,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mech-review-red-json
+          name: mech-review-red-json${{ matrix.key }}
           path: mech-review-red.json
           if-no-files-found: ignore
           overwrite: true
@@ -401,9 +423,14 @@ jobs:
     name: mech-review plan (R3 runs?)
     needs: [stack]
     runs-on: ubuntu-latest
-    # git only, no PR code: the write token stays here, away from the jobs that run PR code (#46)
+    # git only, no PR code: the write token stays here, away from the jobs that run PR code (#46). One job for every leg
+    # (#17): run is true when any stack's R3 runs; legs, the baseline's matrix, are the stacks whose R3 runs; runs maps
+    # each leg's key to its own answer (the report reads it): null for a stack whose plan failed, so its R3 alone
+    # fails with a CI entry. No stack planned at all fails the job, as a failed plan did for one stack.
     outputs:
       run: ${{ steps.plan.outputs.run }}
+      legs: ${{ steps.plan.outputs.legs }}
+      runs: ${{ steps.plan.outputs.runs }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -424,38 +451,62 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
+          LEGS: ${{ needs.stack.outputs.legs }}
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -eu
-          args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK")
-          while IFS= read -r g; do
-            if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
-          done <<< "$TEST_PATHS"
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" plan "${args[@]}" > mech-plan.json
           python3 -I - "$GITHUB_OUTPUT" <<'PY'
           import json
+          import os
+          import subprocess
           import sys
 
-          p = json.load(open("mech-plan.json"))
+          ws = os.environ["GITHUB_WORKSPACE"]
+          tests = [a for g in os.environ["TEST_PATHS"].splitlines() if g for a in ("--test-paths", g)]
+          legs = json.loads(os.environ["LEGS"])
+          runs = {}
+          for leg in legs:  # each stack in its own folder: the plan entry, and a repo adapter file, are found by it
+              p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "plan", "--repo",
+                                  f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--head", os.environ["HEAD_SHA"],
+                                  "--stack", leg["stack"], "--project-dir", leg["project-dir"], *tests],
+                                 stdout=subprocess.PIPE)
+              try:
+                  if p.returncode:
+                      raise ValueError(f"exit {p.returncode}")
+                  runs[leg["key"]] = bool(json.loads(p.stdout)["run"])
+              except (ValueError, KeyError, TypeError) as e:
+                  runs[leg["key"]] = None
+                  print(f"::error::mech-review plan for stack {leg['name']}: {e}: its R3 fails with a CI entry")
           with open(sys.argv[1], "a") as out:
-              out.write(f"run={str(p['run']).lower()}\n")
+              out.write(f"run={str(any(runs.values())).lower()}\n")
+              out.write(f"legs={json.dumps([leg for leg in legs if runs[leg['key']]])}\n")
+              out.write(f"runs={json.dumps(runs)}\n")
+          if legs and all(v is None for v in runs.values()):
+              sys.exit(1)
           PY
 
   baseline:
-    name: mech-review baseline (R3, once)
+    name: mech-review baseline (R3, once)${{ matrix.label }}
     needs: [stack, plan]
     if: ${{ needs.plan.outputs.run == 'true' }}
-    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[matrix.target-os] }}
     # rust and python: runs PR code (the unmutated tests once, and the mutation tool's listing): read-only token, as the
     # other PR-code jobs. Sets the shard count and the per-mutant timeout the mutants shards use (#46).
     permissions:
       contents: read
+    # one stack: its outputs are the mutants matrix (include: one entry per shard). Several stacks (#17): a matrix job's
+    # outputs are one leg's, so the shards job reads each leg's artifact instead
     outputs:
       run: ${{ steps.baseline.outputs.run }}
       count: ${{ steps.baseline.outputs.count }}
       shards: ${{ steps.baseline.outputs.shards }}
       timeout: ${{ steps.baseline.outputs.timeout }}
+      include: ${{ steps.baseline.outputs.include }}
+    strategy:
+      # one stack's crash never cancels another stack's baseline
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.legs) }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -472,9 +523,9 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Python toolchain
-        if: needs.stack.outputs.stack == 'python'
+        if: matrix.stack == 'python'
         env:
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -eu
           case "$PROJECT_DIR" in /*|..|../*|*/..|*/../*) echo "::error::project-dir $PROJECT_DIR: want a dir under the repo root"; exit 2 ;; esac
@@ -488,12 +539,12 @@ jobs:
           done
           echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: Rust toolchain
-        if: needs.stack.outputs.stack == 'rust'
+        if: matrix.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: extra apt packages
-        if: runner.os == 'Linux' && (needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python') && inputs.extra-apt-packages != ''
+        if: runner.os == 'Linux' && (matrix.stack == 'rust' || matrix.stack == 'python') && inputs.extra-apt-packages != ''
         env:
           EXTRA_APT: ${{ inputs.extra-apt-packages }}
         run: |
@@ -502,14 +553,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq "${pkgs[@]}"
       - name: setup command
-        if: (needs.stack.outputs.stack == 'rust' || needs.stack.outputs.stack == 'python') && inputs.setup-command != ''
+        if: (matrix.stack == 'rust' || matrix.stack == 'python') && inputs.setup-command != ''
         env:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         shell: bash
         run: bash -c "$SETUP_COMMAND"
       - name: install cargo-mutants (pinned)
         # a failed install is not a stop: the engine reports n/a (env) when the tool is missing
-        if: needs.stack.outputs.stack == 'rust'
+        if: matrix.stack == 'rust'
         continue-on-error: true
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
         with:
@@ -520,11 +571,12 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
+          STACK: ${{ matrix.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           MUTATION_BUDGET: ${{ inputs.mutation-budget }}
           MAX_MUTANTS: ${{ inputs.max-mutants }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
+          LEG: ${{ toJSON(matrix) }}
         run: |
           set -uo pipefail
           # rust: the toolchain action exports CARGO_INCREMENTAL=0, so each mutant rebuilt the whole crate from scratch.
@@ -551,36 +603,94 @@ jobs:
           fi
           python3 -I - "$GITHUB_OUTPUT" <<'PY'
           import json
+          import os
           import sys
 
           b = json.load(open("mech-review-baseline.json"))
+          leg = json.loads(os.environ["LEG"])
+          timeout = "" if b["timeout"] is None else str(b["timeout"])
+          # the mutants matrix: this leg with each shard, its count and derived timeout
+          include = [dict(leg, shard=k, count=b["count"], timeout=timeout) for k in range(b["count"])]
           with open(sys.argv[1], "a") as out:
               out.write(f"run={str(b['run']).lower()}\n")
               out.write(f"count={b['count']}\n")
               out.write(f"shards={json.dumps(list(range(b['count'])))}\n")
-              out.write(f"timeout={'' if b['timeout'] is None else b['timeout']}\n")
+              out.write(f"timeout={timeout}\n")
+              out.write(f"include={json.dumps(include)}\n")
           PY
       - name: upload baseline result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mech-review-baseline-json
+          name: mech-review-baseline-json${{ matrix.key }}
           path: mech-review-baseline.json
           if-no-files-found: ignore
           overwrite: true
 
-  mutants:
-    name: mech-review mutants (R3 shard ${{ matrix.shard }})
+  shards:
+    name: mech-review shards (R3, several stacks)
     needs: [stack, plan, baseline]
-    if: ${{ needs.baseline.outputs.run == 'true' }}
-    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[needs.stack.outputs.target-os] }}
+    # several stacks only (#17; the stack output is empty then): the baseline legs' outputs are one leg's, so each leg's
+    # shard count and timeout come from its artifact. Git and JSON only, no PR code. One stack: skipped, the mutants
+    # matrix is the baseline's own output
+    if: ${{ !cancelled() && needs.stack.result == 'success' && needs.stack.outputs.stack == '' && needs.plan.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.shards.outputs.run }}
+      include: ${{ steps.shards.outputs.include }}
+    steps:
+      - name: fetch the baseline results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "mech-review-baseline-json-*"
+          path: baseline-result
+      - name: the mutants matrix (each stack's shards)
+        id: shards
+        env:
+          LEGS: ${{ needs.plan.outputs.legs }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          import sys
+
+          include = []
+          for leg in json.loads(os.environ["LEGS"]):
+              # no usable baseline result (its leg crashed): no shard runs, and the report fails that stack's R3 on it
+              try:
+                  b = json.load(open(f"baseline-result/mech-review-baseline-json{leg['key']}/mech-review-baseline.json"))
+              except (OSError, ValueError):
+                  continue
+              if not isinstance(b, dict) or b.get("head") != os.environ["HEAD_SHA"] or b.get("run") is not True:
+                  continue
+              count, timeout = b.get("count"), b.get("timeout")
+              if not (isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 4):
+                  continue  # the report's merge names it: the shards do not match the baseline
+              if timeout is not None and not (isinstance(timeout, (int, float)) and not isinstance(timeout, bool)):
+                  timeout = None
+              include += [dict(leg, shard=k, count=count, timeout="" if timeout is None else str(timeout))
+                          for k in range(count)]
+          with open(sys.argv[1], "a") as out:
+              out.write(f"run={str(bool(include)).lower()}\n")
+              out.write(f"include={json.dumps(include)}\n")
+          PY
+
+  mutants:
+    name: mech-review mutants (R3 shard ${{ matrix.shard }})${{ matrix.label }}
+    needs: [stack, plan, baseline, shards]
+    # one stack: the baseline's outputs (shards skipped); several (#17): the shards job's, one entry per stack and shard
+    if: ${{ !cancelled() && ((needs.shards.result == 'success' && needs.shards.outputs.run == 'true') || (needs.shards.result == 'skipped' && needs.baseline.result == 'success' && needs.baseline.outputs.run == 'true')) }}
+    runs-on: ${{ fromJSON('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[matrix.target-os] }}
     # runs PR code (cargo mutants runs its tests): read-only token, same as red-first
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.baseline.outputs.shards) }}
+        include: ${{ fromJSON(needs.shards.outputs.include || needs.baseline.outputs.include) }}
     steps:
       - name: caller checkout (full history, PR head)
         uses: actions/checkout@v4
@@ -597,14 +707,14 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: Rust toolchain
-        if: needs.stack.outputs.stack == 'rust'
+        if: matrix.stack == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: ${{ inputs.rust-toolchain }}
       - name: Python toolchain
-        if: needs.stack.outputs.stack == 'python'
+        if: matrix.stack == 'python'
         env:
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -621,16 +731,16 @@ jobs:
           done
           echo "$RUNNER_TEMP/py-venv/bin" >> "$GITHUB_PATH"
       - name: TypeScript toolchain
-        if: needs.stack.outputs.stack == 'ts'
+        if: matrix.stack == 'ts'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
       - name: TypeScript dependencies
         # lockfile-aware: npm ci for package-lock.json, the repo's own pnpm or yarn (pinned) for theirs. The install runs
         # the dependencies' install scripts, like the test code does: the job's token is read-only. No lockfile is a stop.
-        if: needs.stack.outputs.stack == 'ts'
+        if: matrix.stack == 'ts'
         env:
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -eu
           # project-dir stays under the repo root; a value that escapes it is a hard stop, not a silent path
@@ -664,14 +774,14 @@ jobs:
       - name: Stryker (pinned)
         # isolated from the repo's node_modules: its own prefix in the runner temp dir. A failed install is not a stop:
         # the engine reports n/a (env) when the binary is missing. The test runner plugin is loaded from the project.
-        if: needs.stack.outputs.stack == 'ts'
+        if: matrix.stack == 'ts'
         continue-on-error: true
         run: |
           set -u
           npm install --prefix "$RUNNER_TEMP/stryker" --no-audit --no-fund --legacy-peer-deps "@stryker-mutator/core@10.0.0" "@stryker-mutator/jest-runner@10.0.0"
       - name: install cargo-mutants (pinned)
         # a failed install is not a stop: the engine reports n/a (env) when the tool is missing
-        if: needs.stack.outputs.stack == 'rust'
+        if: matrix.stack == 'rust'
         id: install
         continue-on-error: true
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2
@@ -684,8 +794,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
           STRYKER_BIN: ${{ runner.temp }}/stryker/node_modules/.bin/stryker
         run: |
           set -uo pipefail
@@ -711,14 +821,14 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STACK: ${{ needs.stack.outputs.stack }}
+          STACK: ${{ matrix.stack }}
           TEST_PATHS: ${{ inputs.test-paths }}
           MUTATION_BUDGET: ${{ inputs.mutation-budget }}
-          MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || needs.baseline.outputs.timeout }}
+          MUTANT_TIMEOUT: ${{ inputs.mutant-timeout || matrix.timeout }}
           SHARD: ${{ matrix.shard }}
-          SHARD_COUNT: ${{ needs.baseline.outputs.count }}
+          SHARD_COUNT: ${{ matrix.count }}
           MAX_MUTANTS: ${{ inputs.max-mutants }}
-          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
           STRYKER_BIN: ${{ runner.temp }}/stryker/node_modules/.bin/stryker
         run: |
           set -uo pipefail
@@ -750,14 +860,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mech-review-mutants-${{ matrix.shard }}
+          name: mech-review-mutants${{ matrix.key }}-${{ matrix.shard }}
           path: mech-review-mutants.json
           if-no-files-found: ignore
           overwrite: true
 
   report:
     name: mech-review report
-    needs: [stack, guard, red-first, plan, baseline, mutants]
+    needs: [stack, guard, red-first, plan, baseline, shards, mutants]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -769,6 +879,8 @@ jobs:
           path: ekit
           persist-credentials: false
       - name: fetch guard result
+        # one stack; several (#17) are fetched at once below
+        if: needs.stack.outputs.stack != ''
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -781,25 +893,31 @@ jobs:
           name: mech-review-drift-json
           path: drift-result
       - name: fetch red-first result
+        # one stack; several (#17) are fetched at once below
+        if: needs.stack.outputs.stack != ''
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: mech-review-red-json
           path: red-result
       - name: fetch baseline result
+        # one stack; several (#17) are fetched at once below
+        if: needs.stack.outputs.stack != ''
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: mech-review-baseline-json
           path: baseline-result
       - name: fetch mutants shard results
+        # one stack; several (#17) are fetched at once below
+        if: needs.stack.outputs.stack != ''
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           pattern: "mech-review-mutants-*"
           path: mutants-result
       - name: merge mutants (R3, baseline and shards)
-        if: ${{ needs.stack.result == 'success' && (needs.plan.outputs.run == 'true' || needs.plan.result != 'success') }}
+        if: ${{ needs.stack.result == 'success' && needs.stack.outputs.stack != '' && (needs.plan.outputs.run == 'true' || needs.plan.result != 'success') }}
         env:
           COUNT: ${{ needs.baseline.outputs.count }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -825,6 +943,80 @@ jobs:
             rm -f mutants-merged.json
             echo "::error::mech-review merge exit $rc (usage error): no mutants result"
           fi
+      - name: fetch every stack's results (several stacks)
+        if: ${{ needs.stack.result == 'success' && needs.stack.outputs.stack == '' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: "mech-review-*"
+          path: stacks-result
+      - name: merge each stack's mutants, list the stacks (several stacks)
+        # #17: one set of results per stack, kept apart by the leg's key in the artifact names; the poster merges each
+        # stack's, then reports them as one comment and one check result
+        if: ${{ needs.stack.result == 'success' && needs.stack.outputs.stack == '' }}
+        env:
+          LEGS: ${{ needs.stack.outputs.legs }}
+          RUNS: ${{ needs.plan.outputs.runs }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          python3 -I - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          R = "stacks-result"
+          planned = os.environ["PLAN_RESULT"] == "success"
+          try:
+              runs = json.loads(os.environ.get("RUNS") or "{}")
+              unread = None if isinstance(runs, dict) else "the plan job's answers do not read (see its log)"
+          except ValueError:
+              runs, unread = {}, "the plan job's answers do not read (see its log)"
+          runs = runs if isinstance(runs, dict) else {}
+          stacks = []
+          for leg in json.loads(os.environ["LEGS"]):
+              key = leg["key"]
+              envs = {"r2": f"{R}/mech-review-json{key}/mech-review.json", "r0": f"{R}/mech-review-json{key}/mech-review-r0.json",
+                      "red": f"{R}/mech-review-red-json{key}/mech-review-red.json"}
+              # R3 as for one stack: when the plan ran it for this stack, or the plan job gave no answer (no baseline
+              # result fails R3 with a CI entry; a missing shard file is one too). Only a plain false skips R3: an
+              # answer that is missing, null (that stack's plan failed) or unreadable fails it, named
+              answer = runs.get(key, "missing")
+              why = "no JSON from the baseline job (see its log)"
+              if planned and answer is not True:
+                  why = (unread or ("the plan job could not plan this stack (see its log)" if answer is None else
+                                    "the plan job gave no answer for this stack (see its log)"))
+              if answer is not False or not planned:
+                  base = f"{R}/mech-review-baseline-json{key}/mech-review-baseline.json"
+                  try:
+                      count = json.load(open(base))["count"]
+                  except (OSError, ValueError, TypeError, KeyError):
+                      count = 0
+                  count = count if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 4 else 0
+                  args = [sys.executable, "-I", "ekit/scripts/mech-review.py", "merge", "--base", os.environ["BASE_SHA"],
+                          "--head", os.environ["HEAD_SHA"], "--stack", leg["stack"], "--shards", str(count)]
+                  if os.path.isfile(base):
+                      args += ["--baseline", base]
+                  else:
+                      args += ["--baseline-reason", why]
+                  for k in range(count):
+                      f = f"{R}/mech-review-mutants{key}-{k}/mech-review-mutants.json"
+                      if os.path.isfile(f):
+                          args += ["--envelope", f"{k}={f}"]
+                  out = f"mutants-merged{key}.json"
+                  with open(out, "w") as fh:
+                      rc = subprocess.run(args, stdout=fh).returncode
+                  if rc > 1:
+                      os.remove(out)
+                      print(f"::error::mech-review merge exit {rc} (usage error): no mutants result for stack {leg['name']}")
+                  envs["mutants"] = out
+              stacks.append({"name": leg["name"], "stack": leg["stack"], "project_dir": leg["project-dir"], "envelopes": envs})
+          with open("stacks.json", "w") as fh:
+              json.dump(stacks, fh)
+          PY
       - name: post or edit the sticky comment, set the check result
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -834,11 +1026,27 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           STACK_RESULT: ${{ needs.stack.result }}
           STACK_ERROR: ${{ needs.stack.outputs.error }}
+          STACK: ${{ needs.stack.outputs.stack }}
         run: |
           # no stack: no check ran; the comment says why (the projects found and the inputs to set)
           if [ "$STACK_RESULT" != "success" ]; then
             python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
               --reason "${STACK_ERROR:-the stack job produced no stack (see its log)}"
+            exit $?
+          fi
+          # several stacks (#17): one comment, a row per stack; the drift result is the repo's
+          if [ -z "$STACK" ]; then
+            if [ ! -f stacks.json ]; then
+              python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+                --reason "the report could not list the stacks' results (see its log)"
+              exit $?
+            fi
+            extra=()
+            if [ -f drift-result/mech-review-drift.json ]; then
+              extra+=(--envelope drift=drift-result/mech-review-drift.json)
+            fi
+            python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" --stacks stacks.json \
+              "${extra[@]}" --reason "no JSON from the job (see its log)"
             exit $?
           fi
           extra=()
