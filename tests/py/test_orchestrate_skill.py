@@ -231,3 +231,25 @@ class TestAgentsMdPreReviewChecks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVerifiedCommit(unittest.TestCase):
+    """#81: the review relay checks that the mech result's head is the worktree's head and the pushed tip."""
+
+    def relay(self):
+        return flat(section(read("SKILL.md"), "Review relay"))
+
+    def test_relay_runs_verified_commit_before_the_review(self):
+        s = self.relay()
+        call = "`<py> -I <kit>/scripts/verified-commit.py --allow-behind <result> <worktree>`"
+        self.assertIn(call, s)
+        self.assertLess(s.index(call), s.index("Then run the code review"))
+
+    def test_relay_runs_verified_commit_before_a_push_and_after_it(self):
+        s = self.relay()
+        self.assertIn("Before a push", s)
+        self.assertIn("the same call without `--allow-behind`", s)
+
+    def test_a_refusal_goes_back_to_the_agent(self):
+        s = self.relay()
+        self.assertIn("a refusal goes back to the agent verbatim with SendMessage", s)
