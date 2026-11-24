@@ -1,8 +1,18 @@
 # shared setup for the real-mutmut scenarios (sourced after lib.sh; not a scenario). cwd = the scenario's temp dir.
 MR="$EKIT_REPO/scripts/mech-review.py"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
-# the user's CI install: a fresh venv with the pinned tools; real mutmut and pytest resolve from it
-python3 -m venv v && v/bin/pip install -q pytest==9.2.0 mutmut==3.8.1 || fail "pip install pytest mutmut failed"
+# the user's CI install: a fresh venv with the pinned tools; real mutmut and pytest resolve from it.
+# Installed with no index from wheels built once per machine and Python (outside the temp dir; HOME is the temp dir's):
+# a run reads no network, so pip's read timeout on a loaded machine cannot fail it (#44: 4 of 8 loaded runs did).
+PINS=(pytest==9.2.0 mutmut==3.8.1)
+WHEELS="${XDG_CACHE_HOME:-$OLDHOME/.cache}/ekit-scenarios/wheels-$(python3 -c 'import sys, sysconfig; print(sys.implementation.cache_tag + "-" + sysconfig.get_platform())')-$(IFS=-; echo "${PINS[*]}")"
+python3 -m venv v || fail "python3 -m venv failed"
+if [[ ! -d $WHEELS ]]; then  # filled whole or not at all: built aside, then renamed (a parallel fill loses the rename)
+  mkdir -p "${WHEELS%/*}"; w=$(mktemp -d "$WHEELS.XXXXXX")
+  v/bin/pip wheel -q -w "$w" "${PINS[@]}" && python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$w" "$WHEELS" 2>/dev/null
+  rm -rf "$w"
+fi
+v/bin/pip install -q --no-index --find-links "$WHEELS" "${PINS[@]}" || fail "pip install pytest mutmut failed (wheels: $WHEELS)"
 export PATH="$PWD/v/bin:$PATH"
 [[ "$(command -v mutmut)" == "$PWD/v/bin/mutmut" ]] || fail "mutmut does not resolve to the venv"
 
