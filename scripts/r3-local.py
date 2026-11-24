@@ -8,13 +8,15 @@ usage: python3 -I scripts/r3-local.py --base REF [--head REF] --stack {python,ru
 Steps, as .github/workflows/mech-review.yml runs them: set up the stack's R3 tool with the workflow's pins (the adapter's
 r3_tool: python a venv with pytest and mutmut plus the project dir's requirements*.txt at head, ts Stryker in its own
 npm prefix, rust cargo-mutants), then the engine's plan, baseline (shard count, per-mutant timeout), every shard at the
-same time with the CI budget each, and the merge. Prints the merged summary, R3's status, each shard's note and the fail
-entries. Defaults are the workflow's (test-paths tests/**, budget 10, max-mutants 40); pass your caller's inputs (ekit:
---test-paths 'tests/**' --test-paths '.ekit/scenarios/**' --mutation-budget 20). The run tests the head commit:
-uncommitted changes are not in it. The shards share this machine's CPUs (CI gives each its own runner), so wall times
-and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
+same time with the CI budget each, and the merge. Prints the merged summary, R3's status, each shard's note, the fail
+entries and the unconfirmed survivors (#79: a mutant mutmut reports surviving whose whole-suite retry the budget did
+not reach; a missed mutant until a test kills it). Defaults are the workflow's (test-paths tests/**, budget 10,
+max-mutants 40); pass your caller's inputs (ekit: --test-paths 'tests/**' --test-paths '.ekit/scenarios/**'
+--mutation-budget 20). The run tests the head commit: uncommitted changes are not in it. The shards share this
+machine's CPUs (CI gives each its own runner), so wall times and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
 --env-dir keeps the tool and the results (reused while the pins and requirements match); default: a temp dir, removed.
-exit: 0 no fail entry; 1 a fail entry; 2 setup failed, usage, git error, a step produced no usable result, or Windows.
+exit: 0 no fail entry and no unconfirmed survivor; 1 a fail entry or an unconfirmed survivor; 2 setup failed,
+usage, git error, a step produced no usable result, or Windows.
 """
 import argparse
 import concurrent.futures
@@ -33,7 +35,10 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
-from mech_review.stack import ADAPTERS  # noqa: E402 - imported after the sys.path line above
+from mech_review.mutants import is_unconfirmed  # noqa: E402 - imported after the sys.path line above
+from mech_review.stack import ADAPTERS  # noqa: E402
+
+EXIT = __doc__[__doc__.index("exit: "):].strip()  # the exit codes above, also in --help
 
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-review.py")
 MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up with
@@ -261,16 +266,20 @@ def r3(run, a, keep):
     print(_r3_line(c) if n else f"R3 {c['status']}: {c['note']}")
     for line in lines:
         print(line)
+    # a waived one (severity waived) is let through, as a waived fail is
+    unconfirmed = [e for e in m["entries"] if e["severity"] == "confirm" and is_unconfirmed(e)]
     for e in m["entries"]:
         if e["severity"] == "fail":
             print(f"fail {e['id']} {e['file']}:{e['line']} {e['problem']}")
+    for e in unconfirmed:
+        print(f"unconfirmed {e['id']} {e['file']}:{e['line']} {e['problem']}")
     print(f"merged: {merged_file}" if keep else "merged: not kept (temp dir removed; pass --env-dir to keep it)")
-    return rc
+    return 1 if unconfirmed else rc
 
 
 def parse(argv):
     p = argparse.ArgumentParser(prog="r3-local.py", description="the workflow's R3 jobs, locally (#35). POSIX only: "
-                                "on Windows run it in WSL.")
+                                "on Windows run it in WSL.", epilog=EXIT)
     p.add_argument("--repo", default=".", help="git repo (default .)")
     p.add_argument("--base", required=True, help="base ref (the PR's base: origin/main)")
     p.add_argument("--head", default="HEAD", help="head ref (default HEAD; a commit: uncommitted changes are not in it)")

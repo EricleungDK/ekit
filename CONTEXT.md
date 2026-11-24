@@ -52,3 +52,9 @@ _Avoid_: runner OS, platform
 **Co-change rule**:
 A rule kept as data in the repo (`.ekit/co-change.toml`): when a path matching its triggers changes, at least one path matching its required globs must change in the same range; R2 reports each broken one, at `confirm` until promoted to `fail`.
 _Avoid_: doc rule, update rule, path lint
+
+### Mutation (R3)
+
+**Unconfirmed survivor**:
+A mutant mutmut reports surviving on a changed line whose whole-suite retry the budget did not reach or cut short: one R3 `confirm` entry naming its file, line and mutation, out of the tested count, and a missed mutant until a test kills it.
+_Avoid_: untested mutant, unreached mutant
