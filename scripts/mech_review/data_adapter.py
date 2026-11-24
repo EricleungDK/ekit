@@ -1,7 +1,7 @@
 """DataAdapter (#16): the Adapter interface (stack.py) implemented from a validated adapter file, through the generic
 scanner (scan.py). R2 side: test files, test fns, asserts, calls, suppressions, parse errors, mutation markers.
 Run side (#18, [run] and [commands]): the test command for a checkout, one named test's argv, the verdict of a run.
-R3 side (#19): mutation_tool, the validated [mutation.tool] (mutants.DeclaredTool runs it), or None (R3 n/a).
+R3 side (#19): mutation_tool, the validated [mutation.tool] (mutation_tool.DeclaredTool runs it), or None (R3 n/a).
 ParserAdapter (#27): the same interface from the facts a parser command prints (parser_cmd.py), for a file with
 [parser] in place of the pattern tables; its run side is DataAdapter's."""
 import collections

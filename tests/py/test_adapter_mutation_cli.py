@@ -467,7 +467,7 @@ class ProgramOutsideTheCheckout(Case):
 
     def test_a_lookup_that_answers_a_relative_path_is_not_found(self):  # review round 2, R2-2 (Windows `.\\mut.exe`)
         self.pr()
-        with mock.patch("scripts.mech_review.mutants.shutil.which", return_value=".\\mut.exe"):
+        with mock.patch("scripts.mech_review.mutation_tool.shutil.which", return_value=".\\mut.exe"):
             _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)))
         self.assertEqual(env["checks"]["R3"]["note"], "mut not installed (env): `mut` not runnable "
                                                       "(mutation.tool.command); install it (setup-command) or set "

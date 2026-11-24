@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 
 import _kit
-from scripts.mech_review import mutants as M
+from scripts.mech_review import mutation_tool as M
 from scripts.mech_review.adapter_file import parse
 
 FX = os.path.join(_kit.ROOT, "tests", "fixtures", "mutation-reports")
@@ -228,16 +228,25 @@ class Lines(unittest.TestCase):
             self.assertEqual(str(cm.exception), f"line 1: line `{ln}` is not a whole number >= 1")
 
     def test_a_large_report_reads_in_linear_time_with_its_line_numbers(self):
-        n = 80000
-        raw = "".join(f"src/a.mini:{i % 500 + 1} KILLED mutant {i}\n" for i in range(n)).encode()
-        t0 = time.monotonic()
-        rows = M.read_lines(raw, lines_tool(), CRATE)
-        self.assertEqual(len(rows), n)
-        self.assertLess(time.monotonic() - t0, 5.0)  # quadratic line counting took 32 s here
-        bad = raw + b"src/a.mini:1 ODD x\n"
+        def report(n):
+            return "".join(f"src/a.mini:{i % 500 + 1} KILLED mutant {i}\n" for i in range(n)).encode()
+
+        def best(raw, n):  # the fastest of three reads: one slow read (another process on the machine) is not the reader
+            times = []
+            for _ in range(3):
+                t0 = time.monotonic()
+                rows = M.read_lines(raw, lines_tool(), CRATE)
+                times.append(time.monotonic() - t0)
+                self.assertEqual(len(rows), n)
+            return min(times)
+
+        small, large = 2000, 8000
+        ratio = best(report(large), large) / max(best(report(small), small), 1e-6)
+        self.assertLess(ratio, 8.0)  # 4x the lines: about 4x linear, 16x quadratic (counting lines anew per match)
+        bad = report(large) + b"src/a.mini:1 ODD x\n"
         with self.assertRaises(M.ReportError) as cm:
             M.read_lines(bad, lines_tool(), CRATE)
-        self.assertEqual(str(cm.exception), f"line {n + 1}: status `ODD` is in no mutation.tool.status list")
+        self.assertEqual(str(cm.exception), f"line {large + 1}: status `ODD` is in no mutation.tool.status list")
 
     def test_not_utf8_is_refused(self):
         with self.assertRaises(M.ReportError):
