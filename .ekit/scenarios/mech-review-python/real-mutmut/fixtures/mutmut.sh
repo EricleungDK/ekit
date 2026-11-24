@@ -3,7 +3,7 @@ MR="$EKIT_REPO/scripts/mech-review.py"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 # the user's CI install: a fresh venv with the pinned tools; real mutmut and pytest resolve from it.
 # Installed with no index from wheels built once per machine and Python (outside the temp dir; HOME is the temp dir's):
-# a run reads no network, so pip's read timeout on a loaded machine cannot fail it (#44: 4 of 8 loaded runs did).
+# a run reads no network, so pip's read timeout on a loaded machine cannot fail it (#44: 4 of 240 loaded runs did, all cold first-round downloads).
 PINS=(pytest==9.2.0 mutmut==3.8.1)
 WHEELS="${XDG_CACHE_HOME:-$OLDHOME/.cache}/ekit-scenarios/wheels-$(python3 -c 'import sys, sysconfig; print(sys.implementation.cache_tag + "-" + sysconfig.get_platform())')-$(IFS=-; echo "${PINS[*]}")"
 python3 -m venv v || fail "python3 -m venv failed"
