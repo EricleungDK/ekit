@@ -629,3 +629,12 @@ class ReviewRound1(Case):
         self.assertEqual((got["census-repo"]["status"], got["census-repo"]["got"]),
                          ("n/a", "jest lists test files, not tests (`--listTests`): no census"))
         self.assertEqual([e for e in env["entries"] if e["check"] == "R0" and e["class"] == "adapter-fix"], [])
+
+    def test_s3_two_stacks_of_one_repo_never_share_a_key(self):
+        head = self.commit({"sub/mini.json": "{}\n", "sub/tests/calc.mini": TESTS})
+        keys = set()
+        for pd in (".", "sub"):
+            r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.base, "--head", head, "--stack", "minirun",
+                              "--adapter", MINIRUN, "--fixtures", MINIRUN_FX, "--project-dir", pd, "--fingerprint", "run"])
+            keys.add(json.loads(r.stdout)["key"])
+        self.assertEqual(len(keys), 2)
