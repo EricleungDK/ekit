@@ -116,11 +116,18 @@ class ParserInstall(unittest.TestCase):
                 self.assertTrue(r.stderr.startswith(want), r.stderr)
                 self.assertNotIn("Traceback", r.stderr)
 
+    def test_help_names_the_subcommand_and_says_it_reads_the_base(self):
+        r = _kit.run_cli(["parser-install", "--help"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(r.stdout.startswith("usage: mech-review.py parser-install "), r.stdout)
+        self.assertIn("install the parser the base branch's adapter file declares", " ".join(r.stdout.split()))
+
     def test_a_project_dir_outside_the_repo_is_refused(self):
         base = self.repo.commit(self.src, "base")
         r = self.run_cli(base, "--project-dir", "../x")
         self.assertEqual((r.returncode, r.stdout), (2, ""))
         self.assertIn("want a directory under the repo root", r.stderr)
+        self.assertTrue(r.stderr.startswith("usage: mech-review.py parser-install "), r.stderr)
 
 
 if __name__ == "__main__":
