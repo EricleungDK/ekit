@@ -24,7 +24,8 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       existing test (confirm); fewer asserts in a surviving test fn, or helper asserts per file;
       assert replaced in place, any kind (confirm); changed expected value (confirm); added
       #[allow]/#[expect] without a non-empty reason= or same-line comment; change under protected
-      paths (needs-human).
+      paths (needs-human); a broken co-change rule of .ekit/co-change.toml at the base (#83: a trigger
+      path changed, no required path did; the rule's severity, confirm by default).
       Test fns are keyed by mod-qualified name (m1::works). A test that loses asserts is exempt
       only up to the asserts gained by a helper it calls by name (call-site, each gain used once).
   R1  red-first (red subcommand): the tests base..head adds or changes, run on the base's production
