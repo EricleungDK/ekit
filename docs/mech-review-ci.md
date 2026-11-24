@@ -4,7 +4,7 @@ Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each
 
 - Skipped matrix jobs: GitHub lists a skipped matrix job under its name template, the expression unexpanded. So a one-stack repo whose baseline is skipped (no production file changed) shows `mech-review baseline (R3, once)${{ matrix.label }}`, and every one-stack run shows a skipped `mech-review shards (R3, several stacks)`; a job that ran reads as before. Branch protection: a required check named after a job that can be skipped may read differently from the name you set; require `mech-review report`, which never is.
 - `stack`: settles `stack` and `project-dir` once (`scripts/mech-review.py resolve`), git only. With `stack: auto` (the default) it takes the stack from the base branch's [stack plan](#stack-plan), else finds the one project from the tracked manifests (the built-ins' and the repo's [adapter files](#stack-resolution)'); a set stack is passed through as is. It also prints the stack's target OS (`target_os`: `linux`, `macos` or `windows`; #58): the base branch's [stack plan](#stack-plan) entry for it, else an adapter file's [`target-os`](#keys) (`resolve --adapter FILE`), else `linux`, as every built-in stack is. Every later job reads the result from this job's outputs: `legs`, one per stack to check (`key`, `label`, `name`, `stack`, `project-dir`, `target-os`, `drift`), is the matrix of the jobs after it. The jobs that run the user's tests (`red-first`, `baseline`, `mutants`) run on the target OS through a fixed map (`linux` → `ubuntu-latest`, `macos` → `macos-latest`, `windows` → `windows-latest`), never the raw value; `stack`, `guard`, `plan` and `report` stay on `ubuntu-latest`. On a runner that is not Linux the `extra-apt-packages` step is skipped.
-- `guard`: R2 test-diff guard (`scripts/mech-review.py r2`), git diffs only, no toolchain. The [drift check](#stack-plan) (`scripts/mech-review.py drift`, check `D`) runs here too, as its own step before `R2 guard` and its own artifact (`mech-review-drift-json`). [R0's static half](#r0-adapter-proof) (`scripts/mech-review.py r0`, check `R0`) runs right after `R2 guard`, git and adapter only, in seconds; its result rides in the guard's artifact (`mech-review-r0.json` beside `mech-review.json`). For a [parser-backed](#parser) adapter file, the step before `R2 guard` installs the parser the base's copy declares.
+- `guard`: R2 test-diff guard and the repo's [co-change rules](#co-change-rules) (`scripts/mech-review.py r2`), git diffs only, no toolchain. The [drift check](#stack-plan) (`scripts/mech-review.py drift`, check `D`) runs here too, as its own step before `R2 guard` and its own artifact (`mech-review-drift-json`). [R0's static half](#r0-adapter-proof) (`scripts/mech-review.py r0`, check `R0`) runs right after `R2 guard`, git and adapter only, in seconds; its result rides in the guard's artifact (`mech-review-r0.json` beside `mech-review.json`). For a [parser-backed](#parser) adapter file, the step before `R2 guard` installs the parser the base's copy declares.
 - `red-first`: R1 red-first and R4 determinism (`scripts/mech-review.py red`). Compiles and runs the PR's new or changed tests, so it needs the stack toolchain (rust: stable; python: a venv with pytest; ts: node 22 and the repo's installed dependencies). For a [parser-backed](#parser) adapter file it installs the base's parser after `setup-command`.
 - `plan`: decides whether R3 runs (a production file changed), per stack, in one job. Git only.
 - `baseline`: the R3 baseline, once per PR (`scripts/mech-review.py baseline`). Rust: runs cargo-mutants 27.1.0's unmutated baseline (the tests once) and lists the mutants; sets the shard count (`min(4, mutants, ceil(estimated minutes / (budget / 2)))`, see [R3 cap, risk order and shards](#r3-cap-risk-order-and-shards)) and the per-mutant timeout the shards use. Python (#64): runs the whole suite once and mutmut's listing step, and sets the shard count by the same rule from the suite's measured time (each run within `mutation-budget`, so the step can take about twice it); a baseline that measured nothing keeps one shard per changed production file, at most 4, and says why. ts: the shard count from the changed production files, at most 4 (git only). A baseline that fails or times out is R3's result: the shards do not run. Skipped when `plan` says no production file changed.
@@ -155,7 +155,7 @@ python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 't
 
 `scripts/verified-commit.py [--allow-behind] RESULT WORKTREE` (#81) checks that a result describes the commit you act on: its `head` must be the worktree's HEAD and, when the branch is pushed, the branch's tip on its remote (its upstream, else `origin/<branch>`, asked with `git ls-remote`: a remote-tracking ref may be stale). `RESULT` is the envelope `mech-review.py` prints (`-` reads stdin). A detached HEAD, a missing remote or a branch the remote lacks is not pushed. `--allow-behind` also accepts a remote tip that is an ancestor of the result's head (verified fixes not pushed yet); a tip this clone lacks is refused (fetch, then rerun). Exit 0 the same commit; 1 another commit, both named; 2 no answer, with its reason: a result that cannot be read or has no commit SHA `head`, a path that is not a git worktree, a remote that cannot be asked. The orchestrate-agent skill runs it before the review and before a push.
 
-The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38; not yet in the workflow: an owner edit):
+The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38). It uploads the single-stack `mutants-merged.json`; a run with several stacks writes one `mutants-merged<key>.json` per stack, which it leaves out:
 
 ```yaml
       - name: upload merged mutants result
@@ -793,6 +793,39 @@ python3 -I scripts/mech-review.py r0 --repo . --base main --head HEAD --stack py
 - **Target OS.** A part runs only on the stack's target OS (the plan entry's `target-os`, else the adapter's): elsewhere it is `n/a`, named.
 - **Results.** The part's check is `checks.R0` in `red`'s and `mutants`' result (`half: runtime`, `part`, `ran`, `fingerprint`, `probes`, `cases`, `census`, `density`), with a note of numbers, e.g. `runtime half (run): fingerprint 1a2b3c4d5e6f (ran); census: 12/12 listed tests found; fixtures census: 6/6; assert density: 1 of 12 tests with no recognised assert, 8% (limit 10%); controls: 5 of 5 read right`. A failed case is one `fail` entry of class `adapter-fix` naming each cause (``census `census-fixtures`: 2/3 found; missed: `tests/ctl.mini :: also passes` ``, ``control `pass` read error: 1 passed (want pass)``, ``skip idiom: `skipped` runs as skipped (none), but the adapter sees no skip marker on it``, ``R3 control `r3-weak` gave R3 n/a, 0 MISSED: … (want a MISSED mutant)``); the checks the part proves are then `n/a` (blocked): `run` blocks R1, R2 and R4, `r3` blocks R3. A missing toolchain is `n/a`, a case with no fixture `unproven`: neither is remembered. The report job's merge combines the guard's static half and both parts into one R0 (the worst status; each part kept under `checks.R0.parts`).
 - **In the workflow.** `red-first` and `mutants` (shard 0) each compute the part's fingerprint (`r0 --fingerprint`, its stack and project dir from the same expressions as the run step's: the workflow test checks it), remove `~/.cache/ekit-r0`, restore it from `actions/cache` under `ekit-r0-<part>-<fingerprint>`, and pass it as `--r0`; the cache action saves the dir at the end of the job only when the key had no hit and the dir exists. A cache miss only means the part runs again. Cache scope (accepted for now): GitHub scopes a cache written by a `pull_request` run to that PR, and mech-review runs on `pull_request` only, so a cache hit needs the same PR re-running at the same fingerprint, and each new PR runs the runtime half once. Warming the cache from the default branch (a cache there reaches every PR) would need a push-triggered run of the proof: a follow-up.
+
+## Co-change rules
+
+A co-change rule says "when these paths change, at least one of those must change too" (a behaviour change updates the changelog; a new module goes in a list). A linter reads code, not diffs, so it cannot see such a rule; R2 can. The rules live in `.ekit/co-change.toml`, read from the **base** branch (as the repo's adapter file is): a PR is judged by the rules it starts from, never by rules it writes, and a rule a PR adds judges the PRs after it.
+
+```toml
+format = 1
+
+[[rule]]
+id = "behaviour-docs"
+trigger = ["scripts/mech_review/**"]
+require = ["CHANGELOG.md", "docs/mech-review-ci.md"]
+reason = "a behaviour change updates the changelog's Unreleased section and the CI doc"
+incident = "#76"
+# severity = "confirm"   # the default; "fail" once promoted
+```
+
+Keys (top level: `format`, required, `1`; `rule`, an array of tables, may be empty or absent). Per `[[rule]]`:
+
+- `id` (required): the rule's name, letters, digits, `_`, `-` or `.`, unique in the file.
+- `trigger` (required): globs, at least one; a change to a matching path triggers the rule.
+- `require` (required): globs, at least one; the rule holds when any changed path matches one.
+- `reason` (required): why the rule exists; the entry quotes it.
+- `incident` (required): the commit or PR of the mistake the rule came from.
+- `severity`: `confirm` (default: listed, never blocking) or `fail` (a promoted rule: the check fails).
+
+Globs are repo-root paths (`**` any depth, `*` one segment, `?` one character), as for `protected-paths`. A changed path is either side of a change over `merge-base..head`: a renamed file counts under its old and its new path, a deleted one under its old.
+
+Each broken rule (a changed path matches `trigger`, none matches `require`) is one R2 entry: class `agent-fixable`, the rule's severity, file `.ekit/co-change.toml`, line 0, problem ``co-change rule `behaviour-docs`: `scripts/mech_review/r2.py` and 2 more changed, and none of `CHANGELOG.md`, `docs/mech-review-ci.md` did: <reason>``; the hint names the required paths and the incident. The id comes from the rule id, so it stays the same across heads whichever trigger paths changed (a waiver keeps applying). A `confirm` rule never makes the summary `fail`.
+
+- A repo without the file runs exactly as before; the file is read only when it exists, so `tomllib` is needed only then.
+- A file that is unreadable, not TOML or invalid is a usage error (exit 2, nothing on stdout) that names the field, as for an adapter file: ``co-change rule file .ekit/co-change.toml at 1a2b3c4d5e6f: rule[1].trigger[0]: want a glob, a non-empty string``. An unknown key, a missing required key, a glob that is not text, an empty list and a duplicate `id` are each such an error. Reading it needs python 3.11 or newer (`tomllib`); on an older python a repo with the file gets that usage error, named.
+- `r2` and `all` run the rules (the `guard` job). Proof cases per rule and guards on editing the rule file are a follow-up (#85).
 
 ## Limits
 

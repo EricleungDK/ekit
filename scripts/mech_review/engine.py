@@ -3,7 +3,7 @@ import os
 
 import copy
 
-from . import mutants, mutation_tool, r0 as r0_mod, r0_runtime, red, report, stack_plan
+from . import cochange, mutants, mutation_tool, r0 as r0_mod, r0_runtime, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
@@ -122,7 +122,7 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
         checks["R0"], more = prove(stack, test_globs, adapter, None, fixtures_dir)
         raw += more + _edit_rules(repo, mb, head, checks["R0"], [])
     if "R2" in want:
-        raw += r2(rv, list(protected_globs))
+        raw += r2(rv, list(protected_globs), cochange.at(repo, base))  # the base branch's rules judge the PR (#83)
         fails = sum(1 for e in raw if e["severity"] == "fail")
         checks["R2"] = {"status": "fail" if fails else "pass", "note": f"{fails} fail, {len(raw) - fails} confirm"}
     if "R1" in want or "R4" in want:

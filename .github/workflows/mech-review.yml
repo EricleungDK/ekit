@@ -1053,6 +1053,14 @@ jobs:
             rm -f mutants-merged.json
             echo "::error::mech-review merge exit $rc (usage error): no mutants result"
           fi
+      - name: upload merged mutants result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mech-review-mutants-merged-json
+          path: mutants-merged.json
+          if-no-files-found: ignore
+          overwrite: true
       - name: fetch every stack's results (several stacks)
         if: ${{ needs.stack.result == 'success' && needs.stack.outputs.stack == '' }}
         uses: actions/download-artifact@v4
