@@ -7,12 +7,14 @@ against itself. Two parts, each with its own fingerprint, run where their tools 
        the fixture tests read pass, fail, none (skipped), build and none (no such test), and the skipped one carries
        the adapter's skip marker (the skip idiom)
   r3   (in `mutants`, shard 0)  the R3 control: the weak-assert fixture gives a MISSED mutant, the strong one none
-A part runs only when its fingerprint is not in the cache dir (`--r0 DIR`) as passed: a hash of the part, the adapter
-(an adapter file's bytes, a built-in's name), the fixture dir, the ekit version (the plugin version and the engine's own
-source), the target OS, the commands the part runs and the version lines of the toolchain programs the adapter names.
-A part that passes writes `<part>-<fingerprint>.pass` there; nothing else does, so a cache hit never turns a fail into a
-pass. With a cache hit, `red` still runs the census on the PR's changed test files (one listing at head): a miss there
-is an `adapter-fix` entry. A part runs only on the stack's target OS (n/a elsewhere).
+A part's runner-dependent cases run only when its fingerprint is not in the cache dir (`--r0 DIR`) as passed: a
+hash of the part, the stack's name and project dir, the adapter (an adapter file's bytes, a built-in's name), the
+fixture dir, the ekit version (the plugin version and the engine's own source), the target OS, the commands the part
+runs and the version lines of the toolchain programs the adapter names. A hit skips the repo and fixture census and the
+controls (run) or the R3 control (r3); assert density, and in `red` the census of the PR's changed test files, run on
+every run. The hit is read (prepare) before any PR code runs, and Cache rewrites the dir at the end with only the
+verdicts that run decided: no sandbox (the job runs PR code), but a file planted during the run does not outlive it.
+A part runs only on the stack's target OS (n/a elsewhere).
 
 Version probes run programs, so they keep #19's program rules (mutants._program_path, mutants._in_checkout,
 adapter_file.launcher): a program on PATH's absolute entries or an absolute path, never one in the reviewed checkout,

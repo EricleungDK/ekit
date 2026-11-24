@@ -60,9 +60,11 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       assert over [limits] assert-density, default 10%: needs-human until a person accepts them in
       .ekit/r0-accepted.json at the base) and the runner controls (fixture tests read pass, fail, none, build, none;
       the skipped one carries the skip marker); r3 part (mutants, shard 0): a weak-assert fixture gives a MISSED
-      mutant, the strong one none. Each runs only when DIR holds no pass for its fingerprint (adapter, fixtures, ekit,
-      target OS, toolchain version lines); on a hit, red still runs the census of the changed test files. A failed
-      case: one adapter-fix entry; run blocks R1 R2 R4, r3 blocks R3. `r0 --fingerprint run|r3` prints the key.
+      mutant, the strong one none. The runner-dependent cases run only when DIR holds no pass for the part's
+      fingerprint (stack, project dir, adapter, fixtures, ekit, target OS, toolchain version lines); density and, in
+      red, the census of the changed test files run every time. The hit is read before PR code runs; DIR then holds
+      only the verdicts this run decided. A failed case: one adapter-fix entry; run blocks R1 R2 R4, r3 blocks R3
+      (a density fail is needs-human and blocks nothing). `r0 --fingerprint run|r3` prints the cache key.
   `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4, after R0's static half (R3 is not in `all`: run `baseline`,
   then `mutants`). `.ekit/scenarios/**` is a test path for every stack, beside --test-paths.
   `mutants` runs R3; `baseline` prints the R3 baseline step: {run, count, mutants, timeout, checks, entries}. A check a subcommand does not run
