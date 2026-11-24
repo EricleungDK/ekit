@@ -122,6 +122,13 @@ class ParserInstall(unittest.TestCase):
         self.assertTrue(r.stdout.startswith("usage: mech-review.py parser-install "), r.stdout)
         self.assertIn("install the parser the base branch's adapter file declares", " ".join(r.stdout.split()))
 
+    def test_base_and_stack_are_required(self):
+        for argv, flag in ((["--stack", "mini"], "--base"), (["--base", "HEAD"], "--stack")):
+            with self.subTest(flag=flag):
+                r = _kit.run_cli(["parser-install", "--repo", self.repo.path, *argv])
+                self.assertEqual((r.returncode, r.stdout), (2, ""))
+                self.assertIn(f"the following arguments are required: {flag}", r.stderr)
+
     def test_a_project_dir_outside_the_repo_is_refused(self):
         base = self.repo.commit(self.src, "base")
         r = self.run_cli(base, "--project-dir", "../x")

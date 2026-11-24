@@ -27,7 +27,7 @@ def steps(repo, base, stack, folder, at):
 def main(argv, dir_arg):
     """the subcommand: dir_arg is the CLI's --project-dir rule (under the repo root)."""
     p = argparse.ArgumentParser(prog="mech-review.py parser-install",
-                                description="print, as JSON argv lists, the steps that install the parser the base "
+                                description="print, as json argv lists, the steps that install the parser the base "
                                             "branch's adapter file declares for the stack (none for a built-in or a "
                                             "file without [parser]); git only, runs nothing")
     p.add_argument("--repo", default=".", help="git repo (default .)")
