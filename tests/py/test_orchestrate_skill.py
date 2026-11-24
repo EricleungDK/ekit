@@ -166,7 +166,7 @@ class TestRoundsPerSource(unittest.TestCase):
 class TestLocalTools(unittest.TestCase):
     """#35 #38: local R3 before review; status from one script call."""
 
-    def test_brief_runs_r3_local_once_after_review_is_clean_not_each_fix_round(self):
+    def test_brief_verify_runs_r3_local_before_the_review_request(self):
         # owner, 2026-11-24: a local R3 is ~20-30 min; run it once, before the final review request
         t = flat(read("brief-template.md"))
         self.assertIn("scripts/r3-local.py", t)
