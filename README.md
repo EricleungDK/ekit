@@ -272,7 +272,7 @@ in PowerShell or Git Bash. `python tests/windows-smoke.py` (run by `tests/run.sh
 (every hook in plain PowerShell with no Git Bash on PATH, verify commands in their own shells, a scenario timeout);
 the unit tests fake those shells and run on every OS.
 
-ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml`, python stack): a change to `scripts/` needs a test in `tests/py` that fails without it.
+ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml`, python stack): a change to `scripts/` needs a test in `tests/py` that fails without it. `python3 scripts/ci-local.py --base origin/main` runs those checks here (needs `uv`; POSIX or WSL): see [the CI doc](docs/mech-review-ci.md#developer-machine).
 
 Skill evals (kit dev only):
 
