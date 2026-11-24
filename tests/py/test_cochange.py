@@ -201,6 +201,9 @@ class MalformedRuleFile(unittest.TestCase):
             ("format = 1\n[[rule]]\n" + RULE.replace('"#1"', '""'), "rule[0].incident: want a non-empty string"),
             ("format = 1\n[[rule]]\n" + RULE + 'severity = "block"\n',
              "rule[0].severity: `block`: want confirm or fail"),
+            ("format = 1\n[[rule]]\n" + RULE + 'flagged = "src/a.py"\n',
+             "rule[0].flagged: want a list of paths (non-empty strings), at least one"),
+            ("format = 1\n[[rule]]\n" + RULE + 'control = ["a", ""]\n', "rule[0].control[1]: want a path, a non-empty string"),
             ("format = 1\nrule = 1\n", "rule: want an array of tables ([[rule]])"),
             ("format = 1\nrule = [1]\n", "rule: want an array of tables ([[rule]])"),
         ]
@@ -253,7 +256,7 @@ class Proof(unittest.TestCase):
     """R0's static half runs each rule's two cases (#85): the rules at the head, each case a PR in a throwaway repo.
     A rule missing a case, or whose case reads wrong, fails R0 and is named; it blocks nothing."""
 
-    def r0(self, head_rules, base_rules=None, check="r0"):
+    def r0(self, head_rules, base_rules=None, check="r0", extra=()):
         """r0 (or check) on a fresh repo: base_rules on base, head_rules (None: no commit) on head."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -264,7 +267,7 @@ class Proof(unittest.TestCase):
         base = self.repo.commit(files, "base")
         head = self.repo.commit({".ekit/co-change.toml": head_rules}, "head") if head_rules is not None else base
         r = _kit.run_cli([check, "--repo", self.repo.path, "--base", base, "--head", head, "--stack", "python",
-                          "--test-paths", "tests/**"])
+                          "--test-paths", "tests/**", *extra])
         return r, (json.loads(r.stdout) if r.stdout else None)
 
     def test_both_cases_reading_right_prove_the_rule(self):
@@ -333,6 +336,13 @@ class Proof(unittest.TestCase):
                                     r"[0-9a-f]{12}: rule\[0\]\.id: want a non-empty string$")
         self.assertIn("unproven: R0", env["summary"])
 
+    def test_proved_rules_never_lift_an_unproven_adapter(self):
+        with tempfile.TemporaryDirectory() as empty:
+            r, env = self.r0(rules(rule()), extra=("--fixtures", empty))
+        c = env["checks"]["R0"]
+        self.assertEqual((r.returncode, c["status"]), (0, "unproven"), r.stderr)
+        self.assertTrue(c["note"].endswith("; co-change rules: 1 of 1 proved"), c["note"])
+
     def test_no_rule_file_or_no_rules_leaves_r0_as_before(self):
         for head in (None, "format = 1\n"):
             with self.subTest(head=head):
@@ -363,7 +373,7 @@ class Guards(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Repo(self.tmp.name)
-        self.repo.commit({"src/a.py": "X = 1\n", "CHANGELOG.md": "# log\n", "README.md": "hi\n"}, "seed (#70, #123)")
+        self.repo.commit({"src/a.py": "X = 1\n", "CHANGELOG.md": "# log\n", "README.md": "hi\n"}, "seed (#70, #123, #0)")
         self.seed = self.repo.commit({"src/b.py": "Y = 1\n"}, "Merge pull request #7 from someone/branch")
 
     def tearDown(self):
@@ -379,8 +389,10 @@ class Guards(unittest.TestCase):
         return r, [e for e in env["entries"] if "fires" in e["problem"] or not e["problem"].startswith("co-change rule")]
 
     def test_a_new_rule_whose_incident_resolves_to_no_commit_or_pr_is_a_fail(self):
-        side = self.repo.git("commit-tree", "-m", "elsewhere", self.repo.git("rev-parse", "HEAD^{tree}").strip()).strip()
-        bad = ["#8", "#0", "#12", "deadbeef", side[:10], "the doc PR", "#7 and more"]
+        tree = self.repo.git("rev-parse", "HEAD^{tree}").strip()
+        side = self.repo.git("commit-tree", "-m", "Merge pull request #9 from a/b", tree).strip()
+        self.repo.git("update-ref", "refs/heads/elsewhere", side)  # a branch the head does not reach
+        bad = ["#8", "#0", "#9", "#12", side[:10], "the doc PR", "#7 and more"]
         _, got = self.r2({".ekit/co-change.toml": rules(*(rule(f"r{i}", incident=x) for i, x in enumerate(bad)))})
         self.assertEqual(sorted(e["problem"] for e in got),
                          [f"new co-change rule `r{i}`: incident `{x}` resolves to no commit or PR (want a commit the "
@@ -478,6 +490,17 @@ class Guards(unittest.TestCase):
                          ("agent-fixable", "fail", ".ekit/co-change.toml"))
         self.assertEqual(got[0]["hint"], "fix the field it names; the rule file is read at the base for every PR after "
                                          "this one")
+
+    def test_a_rule_file_the_range_leaves_alone_is_not_read_at_the_head(self):
+        mb = self.repo.commit({".ekit/co-change.toml": "not toml ["}, "a broken rule file")
+        self.repo.git("checkout", "-q", "-b", "pr")
+        head = self.repo.commit({"src/a.py": "X = 2\n"}, "pr")
+        self.repo.git("checkout", "-q", "main")
+        self.repo.git("rm", "-q", ".ekit/co-change.toml")
+        base = self.repo.commit({}, "main drops it")
+        r = r2(self.repo, base, head)
+        self.assertEqual((r.returncode, json.loads(r.stdout)["entries"]), (0, []), r.stderr)
+        self.assertNotEqual(mb, base)
 
     def test_the_rules_the_base_tip_adds_after_the_merge_base_are_not_removed_by_the_pr(self):
         self.repo.git("checkout", "-q", "-b", "pr")
