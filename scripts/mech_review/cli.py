@@ -241,9 +241,10 @@ def _with_plan_os(args, adapter):
     return adapter
 
 
-def _r0_inputs(args, adapter, stack, keep):
+def _r0_inputs(args, adapter, stack, keep=None):
     """the runtime half's inputs (#21) for `--r0`, or None without it: r0_runtime.sources and the cache dir. adapter:
-    an adapter file's, or None for the built-in of that name."""
+    an adapter file's, or None for the built-in of that name. keep: the ExitStack that removes the base copy of the
+    repo's own adapter file (only _not_built and _mutants_file read one)."""
     if args.r0 is None:
         return None
     got = r0_runtime.sources(args.repo, args.base, args.head, stack, args.project_dir, adapter or ADAPTERS[stack](),
@@ -754,14 +755,13 @@ def main(argv):
         return _not_built(args, adapter)
     if adapter is not None and args.check == "mutants":
         return _mutants_file(args, adapter)
-    try:
-        with contextlib.ExitStack() as keep:
-            env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
-                             which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
-                             test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
-                             mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
-                             project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
-                             fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack, keep))
+    try:  # a built-in or an --adapter file here: no repo adapter file to write out (_not_built, _mutants_file do)
+        env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
+                         which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
+                         test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
+                         mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
+                         project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
+                         fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack))
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2

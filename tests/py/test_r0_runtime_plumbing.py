@@ -6,8 +6,13 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
 
 import _kit
+from test_r3_cap import LISTED, STUB as CARGO_STUB, git
 from test_r0_runtime import HOST, MINIRUN, MINIRUN_FX, TESTS, SRC, Case, adapter_text, host_plan
 
 OTHER = "linux" if HOST != "linux" else "macos"
@@ -171,6 +176,67 @@ class RepoAdapterInAProjectDir(Case):
         env = self.cli("mutants", head, "--r0", self.cache)
         c = env["checks"]["R0"]
         self.assertEqual((c["part"], c["status"]), ("r3", "pass"), c)
+
+
+
+class UsageErrors(Case):
+    def usage(self, *argv):
+        r = _kit.run_cli([argv[0], "--repo", self.repo, "--base", self.base, "--head", self.base, "--stack", "minirun",
+                          "--adapter", MINIRUN, *argv[1:]])
+        self.assertEqual(r.returncode, 2, r.stdout)
+        return r.stderr.strip().splitlines()[-1]
+
+    def test_fixtures_without_r0_on_red_or_mutants_is_a_usage_error(self):
+        want = "mech-review.py: error: --fixtures applies to all and r0, and to red and mutants with --r0 (R0's fixture dir)"
+        self.assertEqual(self.usage("red", "--fixtures", MINIRUN_FX), want)
+        self.assertEqual(self.usage("r2", "--fixtures", MINIRUN_FX, "--r0", self.cache), want)
+
+    def test_r0_on_another_subcommand_is_a_usage_error(self):
+        self.assertEqual(self.usage("r2", "--r0", self.cache),
+                         "mech-review.py: error: --r0 applies to red, all and mutants (R0's runtime half)")
+
+
+class BuiltinMutants(unittest.TestCase):
+    """main's engine.run for a built-in's R3 (#21 moved the call into a with block): the mutation command, the
+    per-mutant timeout and the project dir reach the tool. cargo-mutants is test_r3_cap's stub, in process."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = os.path.join(tmp.name, "repo")
+        os.makedirs(os.path.join(self.repo, "crate", "src"))
+        with open(os.path.join(self.repo, "crate", "Cargo.toml"), "w") as f:
+            f.write('[package]\nname = "x"\nversion = "0.1.0"\n')
+        lib = os.path.join(self.repo, "crate", "src", "lib.rs")
+        with open(lib, "w") as f:
+            f.write("pub fn add(a: i32, b: i32) -> i32 { a + b }\n")
+        git(self.repo, "init", "-q")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "base")
+        with open(lib, "a") as f:
+            f.write("// head\n")
+        git(self.repo, "commit", "-q", "-am", "head")
+        self.log, stub, listing = (os.path.join(tmp.name, n) for n in ("calls.log", "stub.py", "list.json"))
+        with open(stub, "w") as f:
+            f.write(CARGO_STUB.replace('args[:2] == ["mutants", "--version"]', '"--version" in args'))
+        with open(listing, "w") as f:
+            json.dump(LISTED, f)
+        env = mock.patch.dict(os.environ, {"MECH_TEST_STUB": stub, "STUB_LOG": self.log, "STUB_LIST": listing})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_the_command_timeout_and_project_dir_reach_the_tool(self):
+        r = _kit.run_cli(["mutants", "--repo", self.repo, "--base", "HEAD~1", "--head", "HEAD", "--stack", "rust",
+                          "--project-dir", "crate", "--mutants-cmd", "cargo mutants --no-shuffle",
+                          "--mutant-timeout", "7"])
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        with open(self.log) as f:
+            runs = [a for a in map(json.loads, f) if "--output" in a]
+        self.assertEqual(len(runs), 1, runs)
+        argv = runs[0]
+        self.assertIn("--no-shuffle", argv)
+        self.assertEqual(argv[argv.index("--timeout") + 1], "7")
+        self.assertNotEqual(json.loads(r.stdout)["checks"]["R3"]["status"], "n/a", r.stdout)  # the crate dir was found
 
 
 del Case
