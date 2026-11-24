@@ -1,0 +1,4 @@
+# R0 runtime build control (mini): this file does not build.
+test("builds", {
+  assertEquals(3, add(1, 2)
+})

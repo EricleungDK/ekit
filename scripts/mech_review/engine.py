@@ -1,7 +1,9 @@
 """Mechanical review engine: runs the checks a subcommand asks for and builds the contract envelope."""
 import os
 
-from . import mutants, r0 as r0_mod, red, report, stack_plan
+import copy
+
+from . import mutants, r0 as r0_mod, r0_runtime, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
@@ -85,10 +87,12 @@ WHICH = {"r2": ("R2",), "red": ("R1", "R4"), "all": ("R0", "R1", "R2", "R4"), "m
 def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="r2", agent_prefix=None,
         head_branch=None, test_cmd=None, runner=None, mutants_cmd=None, mutation_budget=None, shard=None,
         mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None,
-        max_mutants=mutants.DEFAULT_MAX_MUTANTS, fixtures_dir=None):
+        max_mutants=mutants.DEFAULT_MAX_MUTANTS, fixtures_dir=None, r0=None):
     """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack].
     `all` runs R0's static half first (#20); when it fails, the checks it blocks (r0.BLOCKS) that ran are n/a (their
-    entries kept, marked `blocked`)."""
+    entries kept, marked `blocked`). r0 (#21, `--r0`): {dir, fixtures, raw, path, target_os}: red and all also run the
+    runtime half's run part, mutants (shard 0) its R3 control, each unless dir holds a pass for its fingerprint; a
+    failed part blocks the checks it proves (r0_runtime.BLOCKS) as the static half does."""
     base, head, mb = merge_base(repo, base_ref, head_ref)
     rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_paths(test_globs), project_dir)
     want = WHICH[which]
@@ -116,8 +120,18 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     if "R3" in want:
         checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
                                        max_mutants=max_mutants)
+    if r0 is not None and (which in ("red", "all") or (which == "mutants" and mutants.shard_index(shard)[0] == 0)):
+        rt_rv = rv._replace(adapter=_on_os(rv.adapter, r0["target_os"]))
+        if which == "mutants":
+            part, more = r0_runtime.r3_part(rt_rv, mutants_cmd, mutation_budget, r0["fixtures"], r0["raw"], r0["dir"],
+                                            r0["path"])
+        else:
+            part, more = r0_runtime.run_part(rt_rv, runner or red.default_runner(), test_cmd, r0["fixtures"],
+                                             r0["raw"], r0["dir"], r0["path"])
+        checks["R0"] = r0_mod.combine([checks["R0"], part]) if "R0" in want else part
+        raw += more
     entries = sorted(finalize(raw) + r3, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
-    if "R0" in want:  # a failed R0 makes the checks it blocks n/a; their entries stay, marked, and still count
+    if "R0" in checks:  # a failed R0 makes the checks it blocks n/a; their entries stay, marked, and still count
         stop = r0_mod.blocked(checks["R0"], checks)
         checks.update(stop)
         entries = r0_mod.mark(entries, stop)
@@ -126,6 +140,16 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
         k, _, n = (shard or "0/1").partition("/")
         env["shard"] = {"k": int(k), "n": int(n), "max_mutants": max_mutants}
     return env
+
+
+def _on_os(adapter, target_os):
+    """the adapter with the stack's target OS as resolve settles it (the plan entry's first): R0's runtime half runs
+    only there (#21)."""
+    if not target_os or adapter.target_os == target_os:
+        return adapter
+    adapter = copy.copy(adapter)
+    adapter.target_os = target_os
+    return adapter
 
 
 def drift(repo, base_ref, head_ref, now=None):

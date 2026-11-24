@@ -1,5 +1,6 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
+import contextlib
 import copy
 import json
 import math
@@ -163,7 +164,11 @@ def build_parser():
                         "--stack, in place of a built-in; red and all need its [run] table, R3 runs its [mutation.tool] "
                         "(none: n/a) (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
-    p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
+    p.add_argument("--fixtures", metavar="DIR", help="all, and red or mutants with --r0: R0's fixture dir (default: the "
+                                                     "built-in stack's, or the adapter file's)")
+    p.add_argument("--r0", metavar="DIR", help="red, all, mutants (#21): run R0's runtime half (red, all: census, assert "
+                                               "density, runner controls; mutants, shard 0: the R3 control) unless DIR "
+                                               "holds a pass for its fingerprint; a pass is written there")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
     p.add_argument("--pr-body", nargs="?", action=Removed, help=argparse.SUPPRESS)
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text (summary + entries)")
@@ -210,6 +215,7 @@ SHARD = re.compile(r"^(\d+)/(\d+)$")
 
 
 R3_SIDE = ("mutants", "baseline", "plan")
+R0_SIDE = ("red", "all", "mutants")  # the subcommands that run R0's runtime half with --r0 (#21)
 
 
 def _with_plan_os(args, adapter):
@@ -222,6 +228,36 @@ def _with_plan_os(args, adapter):
     adapter = copy.copy(adapter)
     adapter.target_os = entry.target_os
     return adapter
+
+
+def _r0_inputs(args, adapter, stack, keep):
+    """the runtime half's inputs (#21) for `--r0`, or None without it: {dir, fixtures, raw, path, target_os}. An
+    adapter file given with --adapter is read as given, beside its fixtures; the repo's own adapter file and its
+    fixtures are read at the base (written to a dir that keep, an ExitStack, removes), so the PR cannot change what
+    judges it; a built-in uses ekit's fixtures. target_os: the stack's, the plan entry's first (#58)."""
+    if args.r0 is None:
+        return None
+    base = gitio.resolve(args.repo, args.base)
+    raw = path = None
+    fixtures = os.path.abspath(args.fixtures) if args.fixtures else None
+    if args.adapter is not None:
+        with open(args.adapter, "rb") as f:
+            raw = f.read()
+        fixtures = fixtures or r0.adapter_fixtures(args.adapter)
+    elif adapter is not None:
+        _, path = stack_plan.repo_adapter_at(args.repo, base, stack, args.project_dir)
+        tmp = keep.enter_context(tempfile.TemporaryDirectory(prefix="ekit-r0-base-"))
+        stack_plan.write_adapter(args.repo, base, path, tmp)
+        raw = r0._blob(args.repo, base, path)
+        fixtures = fixtures or r0.adapter_fixtures(os.path.join(tmp, *path.split("/")))
+    else:
+        fixtures = fixtures or r0.builtin_fixtures(stack)
+    plan, _ = stack_plan.target_plan(args.repo, args.base, args.head)
+    entry = stack_plan.entry_for(plan, stack, args.project_dir)
+    target = (entry.target_os if entry is not None and entry.target_os else None) or \
+        (adapter.target_os if adapter is not None else "linux")
+    return {"dir": os.path.abspath(args.r0), "fixtures": fixtures, "raw": raw, "path": path or args.adapter,
+            "target_os": target}
 
 
 def _review(args, adapter):
@@ -406,12 +442,15 @@ def _not_built(args, adapter):
         else:
             checks, entries = {c: {"status": "skipped", "note": f"not run by {args.check}"} for c in report.CHECKS}, []
         if runs:
-            red_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, which="red",
-                                 agent_prefix=args.agent_prefix, head_branch=args.head_branch, test_cmd=args.test_cmd,
-                                 project_dir=args.project_dir, adapter=adapter)
-            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check]})
+            with contextlib.ExitStack() as keep:
+                red_env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, which="red",
+                                     agent_prefix=args.agent_prefix, head_branch=args.head_branch,
+                                     test_cmd=args.test_cmd, project_dir=args.project_dir, adapter=adapter,
+                                     r0=_r0_inputs(args, adapter, args.stack, keep))
+            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check] + (("R0",) if args.r0 else ())
+                           if c in red_env["checks"]})
             entries = sorted(entries + red_env["entries"], key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
-    except gitio.Die as e:
+    except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     for c in () if runs else RUN_SIDE[args.check]:
@@ -634,8 +673,10 @@ def main(argv):
             print(f"mech-review: adapter file {args.adapter} describes stack `{adapter.name}`, not `{args.stack}`",
                   file=sys.stderr)
             return 2
-    if args.fixtures is not None and args.check != "all":
-        parser.error("--fixtures applies to all and r0 only (R0's fixture dir)")
+    if args.fixtures is not None and args.check != "all" and not (args.r0 and args.check in R0_SIDE):
+        parser.error("--fixtures applies to all and r0, and to red and mutants with --r0 (R0's fixture dir)")
+    if args.r0 is not None and args.check not in R0_SIDE:
+        parser.error("--r0 applies to red, all and mutants (R0's runtime half)")
     if args.check == "merge":
         return _merge(parser, args)
     if (adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS
@@ -666,12 +707,13 @@ def main(argv):
     if adapter is not None and args.adapter is None and args.check in ("red", "all"):
         return _not_built(args, adapter)
     try:
-        env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
-                         which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
-                         test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
-                         mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
-                         project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
-                         fixtures_dir=args.fixtures)
+        with contextlib.ExitStack() as keep:
+            env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
+                             which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
+                             test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
+                             mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
+                             project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
+                             fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack, keep))
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2

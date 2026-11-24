@@ -1,0 +1,4 @@
+# R0 R3 control (mini): a strong assert, no MISSED mutant.
+test("twice", {
+  assertEquals(4, twice(2))
+})

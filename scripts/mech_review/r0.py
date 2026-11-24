@@ -745,6 +745,27 @@ def editing(repo, mb, head, adapter_paths=()):
                   "(a tighter limit needs no one)", "loosening a check's limit or moving its runner to pass the gate")]
 
 
+ORDER = ("fail", "n/a", "unproven", "pass", "skipped")  # the worst status first: what a combined R0 reads
+
+
+def combine(parts):
+    """one R0 check from the checks of its halves and parts (#21: the static half from `r0`, the runtime half's run
+    part from `red`, its R3 control from `mutants`), each kept whole under `parts`: the worst status (ORDER), the notes
+    joined, and a failed part's blocks and cause carried. One part is returned as it is; skipped ones are left out."""
+    got = [p for p in parts if isinstance(p, dict) and p.get("status") != "skipped"]
+    if not got:
+        return next((p for p in parts if isinstance(p, dict)), {"status": "skipped", "note": "not run"})
+    if len(got) == 1:
+        return got[0]
+    status = min((p.get("status") for p in got), key=lambda s: ORDER.index(s) if s in ORDER else 0)
+    out = {"status": status, "note": "; ".join(p.get("note", "") for p in got), "parts": got}
+    failed = [p for p in got if p.get("status") == "fail" and p.get("blocks")]
+    if failed:
+        out["blocks"] = sorted({c for p in failed for c in p["blocks"]})
+        out["cause"] = "; ".join(p.get("cause", p.get("note", "")) for p in failed)
+    return out
+
+
 def blocked(check, checks):
     """{name: n/a check} for each check in checks ({name: check}) a failed half blocks, its cause named and its own
     result kept under `before`; {} when the half did not fail. A check that did not run (skipped) stays as it is."""

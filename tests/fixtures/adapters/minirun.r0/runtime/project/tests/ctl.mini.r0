@@ -1,0 +1,16 @@
+# R0 runtime controls (mini): one test per verdict the runner must give.
+test("passes", {
+  assertEquals(3, add(1, 2))
+})
+
+test("fails", {
+  assertEquals(4, add(1, 2))
+})
+
+xtest("skipped", {
+  assertEquals(3, add(1, 2))
+})
+
+it("also passes", {
+  assertEquals(2, add(1, 1))
+})
