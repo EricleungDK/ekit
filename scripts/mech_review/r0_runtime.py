@@ -305,6 +305,9 @@ def listing(adapter, runner, cmd, crate, project_dir="."):
     rc, out = runner(argv, crate)
     if rc is None:
         return None, f"env: `{argv[0]}` not found"
+    if adapter.outcome(rc, out) == "env":  # the runner started, its toolchain is missing (`No module named pytest`)
+        first = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()), f"exit {rc}")
+        return None, f"env: {first[:200]}"
     got = adapter.listed(rc, out, crate)
     if got is None:
         first = next((ln.strip() for ln in (out or "").splitlines() if ln.strip()), f"exit {rc}")
