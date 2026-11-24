@@ -300,6 +300,34 @@ up = step(mu, "upload mutants result")
 check("mutants: uploads its JSON artifact per shard", "mech-review-mutants-${{ matrix.shard }}" in "\n".join(up)
       and "upload-artifact" in mt and any(l == "if: always()" for l in up), str(up))
 
+# ---- R0's runtime half (#21): red-first runs its run part, mutants shard 0 its R3 control, each skipped by a
+# passed fingerprint the workflow cache remembers. A miss only re-runs the proof; the engine writes the pass file
+# only on a pass and reads it only when it names the fingerprint it computed itself, so a hit never turns fail to pass
+R0_DIR = '"$HOME/.cache/ekit-r0"'
+for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", mu, "r3", True)):
+    fp = step(lines, f"R0 runtime fingerprint ({part})")
+    cache = step(lines, f"R0 runtime cache ({part})")
+    names = [l.strip()[len("- name: "):] for l in lines if l.strip().startswith("- name: ")]
+    run_name = "R1 red-first, R4 determinism" if job == "red-first" else "R3 mutation on the diff (shard)"
+    run = text(step(lines, run_name))
+    check(f"{job}: the R0 {part} fingerprint step prints the cache key (r0 --fingerprint {part}), never stops the job",
+          "id: r0fp" in fp and f"--fingerprint {part}" in text(fp) and "|| exit 0" in text(fp)
+          and 'key={key}' in text(fp), text(fp))
+    check(f"{job}: the R0 {part} cache is actions/cache, keyed by the fingerprint step, at the dir the engine gets",
+          "uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache and "key: ${{ steps.r0fp.outputs.key }}" in cache
+          and "path: ~/.cache/ekit-r0" in cache and any(l.startswith("if:") and "steps.r0fp.outputs.key != ''" in l
+                                                        for l in cache), str(cache))
+    check(f"{job}: fingerprint, then cache, then the run that passes --r0", names.index(f"R0 runtime fingerprint ({part})")
+          < names.index(f"R0 runtime cache ({part})") < names.index(run_name), str(names))
+    check(f"{job}: the run passes the cache dir as --r0" + (" on shard 0 only" if shard0 else ""),
+          f"--r0 {R0_DIR}" in run and (not shard0 or 'if [ "$SHARD" = "0" ]' in run), run)
+    if shard0:
+        check("mutants: the R0 r3 fingerprint and cache steps run on shard 0 only",
+              all(any(l == "if: matrix.shard == 0" or (l.startswith("if:") and "matrix.shard == 0" in l) for l in st)
+                  for st in (fp, cache)), str(fp) + str(cache))
+        check("mutants: the r3 fingerprint probes the tool the shard runs (ts: the pinned Stryker)",
+              '--mutants-cmd "$STRYKER_BIN"' in text(fp), text(fp))
+
 check("mutation-budget: used by the mutants job, not UNUSED",
       "UNUSED" not in " ".join(block(inputs, "mutation-budget") or []) and value(block(inputs, "mutation-budget") or [], "default") == "10",
       str(block(inputs, "mutation-budget")))
@@ -467,7 +495,9 @@ WF_BLOCK = re.compile(r"^[|>][-+0-9]*\s*(#.*)?$")
 WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 WF_ALLOWED = {
     "env": WF_ENV,                                                          # an env var: the only way into a shell
-    "with": {"ref", "repository", "toolchain", "name"},                    # action inputs (checkout, toolchain, artifacts)
+    # action inputs (checkout, toolchain, artifacts); key: actions/cache's key, the R0 fingerprint step's output (#21),
+    # read by the cache action only, never a shell
+    "with": {"ref", "repository", "toolchain", "name", "key"},
     "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout"},  # job outputs
     "matrix": {"shard", "include"},  # include: only a whole `${{ fromJSON(...) }}` (WF_INCLUDE; #17's multi-stack legs)
     "concurrency": {"group"},
