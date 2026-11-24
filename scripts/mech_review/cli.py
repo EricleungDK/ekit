@@ -9,7 +9,8 @@ import signal
 import sys
 import tempfile
 
-from . import adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, red, report, resolve, stack_plan
+from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_install, r0, red, report, resolve,
+               stack_plan)
 from .stack import ADAPTERS
 
 
@@ -89,6 +90,11 @@ r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .]
 drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
   only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
   planned, retiring and vanished stacks. Exit 0 clean or messages only, 1 the adapter-fix entry, 2 bad plan, usage or git.
+
+parser-install (`parser-install --base B --stack S [--repo .] [--project-dir D] [--home DIR]`): the workflow's install
+  step for a parser-backed adapter file (#27): the install argvs of the [parser] the base's adapter file for the stack
+  declares (the file r2 reads; never the head's), as JSON {stack, adapter, steps, program}; steps [] for a built-in or a
+  file without [parser]. Git only, runs nothing. Exit 0, 2 usage, git error or a base adapter file that does not read.
 
 envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summary.
 
@@ -624,6 +630,8 @@ def main(argv):
         return _doctor(argv[1:])
     if argv[:1] == ["resolve"]:
         return _resolve(argv[1:])
+    if argv[:1] == ["parser-install"]:
+        return parser_install.main(argv[1:], project_dir_arg)
     parser = build_parser()
     args = parser.parse_args(argv)
     adapter = None
