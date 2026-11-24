@@ -55,6 +55,14 @@ checks (status in envelope: pass | fail | partial | n/a | skipped; the CI report
       empty diff of every fixture) none; an adapter file with a bad ident_chars, no assert shape or an unbalanced
       bracket pair must fail to load cleanly. A failed case: one `fail` entry of class adapter-fix, and R1 R2 R4 are
       n/a (blocked; their entries kept and still counted). A case with no fixture: R0 unproven (never all pass).
+  R0  runtime half (#21; `red`, `all` and `mutants` with --r0 DIR): run part (red, all): the census (every test the
+      runner lists is found by the scanner, found/listed, misses named), assert density (tests with no recognised
+      assert over [limits] assert-density, default 10%: needs-human until a person accepts them in
+      .ekit/r0-accepted.json at the base) and the runner controls (fixture tests read pass, fail, none, build, none;
+      the skipped one carries the skip marker); r3 part (mutants, shard 0): a weak-assert fixture gives a MISSED
+      mutant, the strong one none. Each runs only when DIR holds no pass for its fingerprint (adapter, fixtures, ekit,
+      target OS, toolchain version lines); on a hit, red still runs the census of the changed test files. A failed
+      case: one adapter-fix entry; run blocks R1 R2 R4, r3 blocks R3. `r0 --fingerprint run|r3` prints the key.
   `r2` runs R2. `red` runs R1 and R4. `all` = R1, R2 and R4, after R0's static half (R3 is not in `all`: run `baseline`,
   then `mutants`). `.ekit/scenarios/**` is a test path for every stack, beside --test-paths.
   `mutants` runs R3; `baseline` prints the R3 baseline step: {run, count, mutants, timeout, checks, entries}. A check a subcommand does not run
