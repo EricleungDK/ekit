@@ -410,8 +410,9 @@ apt_ifs = [step(block(jobs, j) or [], "extra apt packages") for j in ("red-first
 check("extra apt packages: Linux only (#58)", all(s and s[0].startswith("if: runner.os == 'Linux' && ") for s in apt_ifs),
       str([s[:1] for s in apt_ifs]))
 g_names = [l.strip()[len("- name: "):] for l in (block(jobs, "guard") or []) if l.strip().startswith("- name: ")]
-check("guard: the drift step (D) right after the checkouts, before R2 guard (#56)",
-      g_names[2:5] == ["drift check (stack plan, D)", "upload drift result", "R2 guard"], str(g_names))
+INSTALL = "install the declared parser (the base's adapter file, #27)"
+check("guard: the drift step (D) right after the checkouts, then the parser install, before R2 guard (#56, #27)",
+      g_names[2:6] == ["drift check (stack plan, D)", "upload drift result", INSTALL, "R2 guard"], str(g_names))
 dt = text(step(block(jobs, "guard") or [], "drift check (stack plan, D)"))
 check("guard: drift runs mech-review.py drift, no result stops the job",
       "mech-review.py\" drift" in dt and "[ -s mech-review-drift.json ] || rm -f mech-review-drift.json" in dt
@@ -420,7 +421,7 @@ check("report: the drift envelope only when its file is there (#56)",
       "if [ -f drift-result/mech-review-drift.json ]; then" in text(report)
       and "extra+=(--envelope drift=drift-result/mech-review-drift.json)" in text(report), text(report))
 check("guard: R0's static half right after R2 guard, before the upload (#20)",
-      g_names[4:7] == ["R2 guard", "R0 static half (adapter proof)", "upload result"], str(g_names))
+      g_names[5:8] == ["R2 guard", "R0 static half (adapter proof)", "upload result"], str(g_names))
 r0t = text(step(block(jobs, "guard") or [], "R0 static half (adapter proof)"))
 check("guard: R0 runs mech-review.py r0 on the settled stack and the test paths, git only",
       "mech-review.py\" r0 \"${args[@]}\" > mech-review-r0.json" in r0t and "STACK: ${{ matrix.stack }}" in r0t
@@ -863,11 +864,165 @@ check("workflow values check allows a fromJSON matrix include, timeout-minutes, 
       interpolations(W[:at] + fine + W[at:]) == [], str(interpolations(W[:at] + fine + W[at:])))
 
 # ---- an adapter's parser command (#27) never reaches a run: script; it runs as argv inside the engine ----
-# The workflow reads no repo adapter file yet (#17 wires them in, with the guard's install step for the parser): until
-# then no expression that names a parser may appear in the workflow except as an env value.
+# The parser's install step (#27 follow-up): `parser-install` prints the base adapter file's install argvs, and a step
+# in each job whose engine call reads source with the adapter (guard: R2, R0; red-first: R1 and R4 name the changed
+# tests) runs them as argv. plan, baseline and mutants read no source with it (changed paths, the tool's report).
+# No expression that names a parser may appear in the workflow except as an env value.
+# In red-first it runs before R0's runtime cache steps (#21): PR code can steer that install, and the cache dir is
+# cleared after it, so nothing the install plants there survives to read as a pass.
+for job_name, before in (("guard", "R2 guard"), ("red-first", "R0 runtime fingerprint (run)")):
+    jl = block(jobs, job_name) or []
+    names = [l.strip()[len("- name: "):] for l in jl if l.strip().startswith("- name: ")]
+    check(f"{job_name}: the parser install step right before {before} (#27)",
+          INSTALL in names and names.index(INSTALL) + 1 == names.index(before), str(names))
+    ist = step(jl, INSTALL)
+    check(f"{job_name}: the parser install step takes base, stack and project-dir through env only, no head",
+          "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in ist and "STACK: ${{ matrix.stack }}" in ist
+          and "PROJECT_DIR: ${{ matrix.project-dir }}" in ist and "HEAD" not in text(ist), str(ist))
+    check(f"{job_name}: a failed parser install is not a stop (the engine reports it)", "continue-on-error: true" in ist,
+          str(ist))
+check("parser install: one step text in guard and red-first",
+      step(block(jobs, "guard") or [], INSTALL) == step(block(jobs, "red-first") or [], INSTALL) != [], "")
+for job_name in ("stack", "plan", "baseline", "mutants", "report"):
+    check(f"{job_name}: no parser install step (it reads no source with the adapter)",
+          INSTALL not in text(block(jobs, job_name, 2) or []), job_name)
+_ins = text(step(block(jobs, "guard") or [], INSTALL))
+check("parser install: argv only, no shell string (no bash -c, eval, shell=True, os.system)",
+      not re.search(r"bash -c|\beval\b|shell=True|os\.system|os\.popen", _ins)
+      and "subprocess.run(argv, env=env, cwd=cwd)" in _ins,
+      _ins)
 parser_lines = [l for l in W if "${{" in l and "parser" in l.lower()]
 check("parser: the command or install step is never interpolated into a run: line (only env values)",
       all(re.match(r"\s*[A-Z_]+: \$\{\{", l) for l in parser_lines), str(parser_lines))
+
+install_py = heredoc(block(jobs, "guard") or [], INSTALL)
+RECORD = "import json, os, sys\nwith open(os.environ['STEP_LOG'], 'a') as f:\n    f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+
+
+def install_run(d, printed=None, rc=0, extra_env=None, caller=None):
+    """run the install step's python in d (its workspace), with a stub engine printing `printed` and exiting rc (None:
+    the real engine), caller(dir) building the caller checkout: (exit code, stdout, GITHUB_ENV lines, the stub engine's
+    argv, the steps' logged argvs)."""
+    import shutil
+    import subprocess
+    ws = os.path.join(d, "ws")
+    for sub in ("ws", "tmp"):
+        shutil.rmtree(os.path.join(d, sub), ignore_errors=True)
+    os.makedirs(os.path.join(ws, "caller"), exist_ok=True)
+    os.makedirs(os.path.join(d, "tmp"))
+    extra_env = dict(extra_env or {}, **(caller(os.path.join(ws, "caller")) if caller else {}))
+    if printed is None:
+        os.symlink(ROOT, os.path.join(ws, "ekit"))
+    else:
+        os.makedirs(os.path.join(ws, "ekit", "scripts"))
+        with open(os.path.join(ws, "ekit", "scripts", "mech-review.py"), "w") as f:
+            f.write(RECORD.replace("STEP_LOG", "ENGINE_LOG") + f"print({json.dumps(json.dumps(printed))})\nsys.exit({rc})\n")
+    for name in ("env", "engine.log", "steps.log"):
+        open(os.path.join(d, name), "w").close()
+    env = {"GITHUB_WORKSPACE": ws, "RUNNER_TEMP": os.path.join(d, "tmp"), "GITHUB_ENV": os.path.join(d, "env"),
+           "BASE_SHA": "b" * 40, "STACK": "mini", "PROJECT_DIR": ".", "ENGINE_LOG": os.path.join(d, "engine.log"),
+           "STEP_LOG": os.path.join(d, "steps.log"), "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+           **extra_env}
+    r = run_py(install_py, d, env)
+    got = []
+    for name in ("env", "engine.log", "steps.log"):
+        with open(os.path.join(d, name)) as f:
+            got.append(f.read().splitlines())
+    return (r.returncode, r.stdout + r.stderr, got[0], [json.loads(l) for l in got[1]], [json.loads(l) for l in got[2]])
+
+
+with tempfile.TemporaryDirectory() as d:
+    d = os.path.realpath(d)
+    home = os.path.join(d, "tmp", "ekit-parsers")
+    rec = os.path.join(d, "record.py")
+    with open(rec, "w") as f:
+        f.write(RECORD + "if sys.argv[1:2] == ['make']:\n    os.makedirs(os.path.dirname(sys.argv[2]), exist_ok=True)\n"
+                         "    open(sys.argv[2], 'w').close()\n    os.chmod(sys.argv[2], 0o755)\n"
+                         "if sys.argv[1:2] == ['home']:\n    assert os.environ['EKIT_PARSER_HOME'] == sys.argv[2]\n"
+                         "if sys.argv[1:2] == ['cwd']:\n    here = os.path.realpath(os.getcwd())\n"
+                         "    assert os.listdir(here) == [] and os.path.dirname(here) == sys.argv[2], here\n"
+                         "sys.exit(int(sys.argv[2]) if sys.argv[1:2] == ['exit'] else 0)\n")
+    prog = os.path.join(home, "pip", "p", "1", "bin", "p")
+    rc, out, genv, engine, ran = install_run(d, {"stack": "mini", "adapter": "a.toml", "program": prog, "steps": [
+        [sys.executable, rec, "home", home], [sys.executable, rec, "cwd", os.path.join(d, "tmp")],
+        [sys.executable, rec, "; touch pwned", "$(touch pwned)", "`id`"],
+        [sys.executable, rec, "make", prog]]})
+    check("parser install: the printed argvs run in order, as argv (shell words stay literal), in a fresh empty dir "
+          "under the runner's temp dir (not the checkout), EKIT_PARSER_HOME set for them and, through GITHUB_ENV, for "
+          "the later steps",
+          rc == 0 and genv == [f"EKIT_PARSER_HOME={home}"] and ran == [["home", home], ["cwd", os.path.join(d, "tmp")],
+          ["; touch pwned", "$(touch pwned)", "`id`"], ["make", prog]] and not os.path.exists(os.path.join(d, "pwned"))
+          and os.access(prog, os.X_OK), str((rc, out, genv, ran)))
+    check("parser install: the engine is asked about the base only, with the home under the runner's temp dir",
+          engine == [["parser-install", "--repo", f"{d}/ws/caller", "--base", "b" * 40, "--stack", "mini",
+                      "--project-dir", ".", "--home", home]], str(engine))
+    rc, out, genv, _, ran = install_run(d, {"steps": [], "program": None})
+    check("parser install: nothing to install (a built-in, a pattern file) runs nothing and passes",
+          rc == 0 and ran == [] and genv == [f"EKIT_PARSER_HOME={home}"], str((rc, out, ran)))
+    rc, out, genv, _, ran = install_run(d, {"steps": [[sys.executable, rec, "exit", "3"], [sys.executable, rec, "after"]],
+                                            "program": prog})
+    check("parser install: a failed step stops the install, fails the step (continue-on-error) and names it",
+          rc == 1 and ran == [["exit", "3"]] and "::error::parser install step failed (3)" in out
+          and "not installed by the declared package" in out and genv == [f"EKIT_PARSER_HOME={home}"], str((rc, out, ran)))
+    rc, out, _, _, ran = install_run(d, {"steps": [[os.path.join(d, "no-such-installer"), "x"]], "program": prog})
+    check("parser install: an installer missing on the runner fails the step, named", rc == 1
+          and "::error::parser install step failed (cannot run: " in out, out)
+    rc, out, _, _, ran = install_run(d, {"steps": [[sys.executable, rec, "ok"]], "program": prog})
+    check("parser install: steps that leave no program fail the step", rc == 1 and ran == [["ok"]]
+          and f"::error::the install steps left no program at {prog}" in out, out)
+    for printed, rc_engine, why in (({"steps": [[sys.executable, rec, "x"]]}, 2, "exit 2"), ({"steps": "rm -rf /"}, 0,
+                                    "steps: want a list of argv lists"), ({"steps": [[]]}, 0, "steps: want a list of"),
+                                    ([], 0, "list indices")):
+        rc, out, _, _, ran = install_run(d, printed, rc_engine)
+        check(f"parser install: an engine error or output that is not argv lists runs nothing and fails the step ({why})",
+              rc == 1 and ran == [] and "::error::mech-review parser-install: " in out and why in out, out)
+
+    # the real engine on a fixture repo: the base's [parser] installs, the PR's changed one never does
+    import subprocess
+    PARSER = ('format = 1\nname = "mini"\nextensions = [".mini"]\n\n[parser]\ncommand = "mini-facts"\n'
+              'installer = "pip"\npackage = "mini-facts"\nversion = "{v}"\n')
+    fake = os.path.join(d, "bin")
+    os.makedirs(fake)
+    with open(os.path.join(fake, "python3"), "w") as f:  # `python3 -m venv P`: a venv whose pip writes the program
+        f.write(f"#!{sys.executable} -I\nimport os, sys\nassert sys.argv[1:3] == ['-m', 'venv'], sys.argv\n"
+                "os.makedirs(sys.argv[3] + '/bin')\nwith open(sys.argv[3] + '/bin/python', 'w') as f:\n"
+                f"    f.write('#!{sys.executable} -I\\nimport os, sys\\nd = os.path.dirname(os.path.dirname(sys.argv[0]))\\n"
+                "open(d + \"/pip.log\", \"w\").write(\" \".join(sys.argv[1:]))\\n"
+                "open(d + \"/bin/mini-facts\", \"w\").close()\\nos.chmod(d + \"/bin/mini-facts\", 0o755)\\n')\n"
+                "os.chmod(sys.argv[3] + '/bin/python', 0o755)\n")
+    os.chmod(os.path.join(fake, "python3"), 0o755)
+
+    def fixture(repo):
+        """a base with the parser-backed mini.toml at 1.0.0 and a head (checked out) that bumps it to 6.6.6."""
+        def git(*a):
+            return subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "-c",
+                                   "commit.gpgsign=false", *a], check=True, capture_output=True, text=True,
+                                  env=dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)).stdout
+        git("init", "-q", "-b", "main")
+        os.makedirs(os.path.join(repo, ".ekit", "adapters"))
+        shas = []
+        for v in ("1.0.0", "6.6.6"):
+            with open(os.path.join(repo, ".ekit", "adapters", "mini.toml"), "w") as f:
+                f.write(PARSER.format(v=v))
+            git("add", "-A")
+            git("commit", "-q", "-m", v)
+            shas.append(git("rev-parse", "HEAD").strip())
+        return {"BASE_SHA": shas[0]}
+
+    rc, out, genv, _, _ = install_run(d, None, extra_env={"PATH": fake + os.pathsep + os.environ["PATH"]}, caller=fixture)
+    prefix = os.path.join(home, "pip", "mini-facts")
+    try:
+        with open(os.path.join(prefix, "1.0.0", "pip.log")) as f:
+            pip_log = f.read()
+    except OSError as e:
+        pip_log = str(e)
+    check("parser install: on the real engine, the base's [parser] installs (the PR's changed version never does)",
+          rc == 0 and pip_log == "-m pip install mini-facts==1.0.0" and genv == [f"EKIT_PARSER_HOME={home}"]
+          and os.access(os.path.join(prefix, "1.0.0", "bin", "mini-facts"), os.X_OK)
+          and sorted(os.listdir(prefix)) == ["1.0.0"], str((rc, out, pip_log)))
+    rc, out, _, _, _ = install_run(d, None, extra_env={"STACK": "python"}, caller=fixture)
+    check("parser install: on the real engine, a built-in stack installs nothing", rc == 0 and not os.path.exists(home)
+          and "install:" not in out, str((rc, out)))
 
 # ---- ekit's own caller ----
 SW = ".github/workflows/mech-review-self.yml"

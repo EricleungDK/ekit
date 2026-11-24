@@ -10,8 +10,8 @@ import signal
 import sys
 import tempfile
 
-from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, r0_runtime, red, report, resolve,
-               stack_plan)
+from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, r0_runtime, red,
+               report, resolve, stack_plan)
 from .stack import ADAPTERS
 
 
@@ -101,6 +101,11 @@ r0 (`r0 --base B --head H --stack S [--adapter FILE] [--fixtures DIR] [--repo .]
 drift (`drift --base B --head H [--repo .] [--format json|text]`): the stack plan's drift check (#56), git only. Check D
   only with a plan (.ekit/stack-plan.toml): one adapter-fix entry for the manifests no stack covers, and messages for
   planned, retiring and vanished stacks. Exit 0 clean or messages only, 1 the adapter-fix entry, 2 bad plan, usage or git.
+
+parser-install (`parser-install --base B --stack S [--repo .] [--project-dir D] [--home DIR]`): the workflow's install
+  step for a parser-backed adapter file (#27): the install argvs of the [parser] the base's adapter file for the stack
+  declares (the file r2 reads; never the head's), as JSON {stack, adapter, steps, program}; steps [] for a built-in or a
+  file without [parser]. Git only, runs nothing. Exit 0, 2 usage, git error or a base adapter file that does not read.
 
 envelope: ekit (plugin version), base, head (full SHAs), checks, entries, summary.
 
@@ -465,6 +470,8 @@ def _not_built(args, adapter):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    except parser_cmd.ParserError as e:
+        return _parser_failed(e)
     for c in () if runs else RUN_SIDE[args.check]:
         checks[c] = {"status": "n/a", "note": f"stack `{args.stack}` is the repo's adapter file, which has no [run] "
                                               f"table: {c} runs through [run] (#18)"}
@@ -473,6 +480,12 @@ def _not_built(args, adapter):
         env["notes"] = adapter.notes()
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
     return 1 if any(e["severity"] == "fail" for e in entries) else 0
+
+
+def _parser_failed(err):
+    """a parser-backed adapter's parser failed in R1 or R4 (#27): exit 2, so the red-first step goes red, naming it."""
+    print(f"mech-review: the adapter's parser failed: {err}", file=sys.stderr)
+    return 2
 
 
 def _resolve(argv):
@@ -693,6 +706,8 @@ def main(argv):
         return _doctor(argv[1:])
     if argv[:1] == ["resolve"]:
         return _resolve(argv[1:])
+    if argv[:1] == ["parser-install"]:
+        return parser_install.main(argv[1:], project_dir_arg)
     parser = build_parser()
     args = parser.parse_args(argv)
     adapter = None
@@ -767,6 +782,8 @@ def main(argv):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    except parser_cmd.ParserError as e:  # red, all: R1 and R4 name the changed tests from the parser's facts
+        return _parser_failed(e)
     if adapter is not None and args.check in ("red", "all"):  # #18: a command the file declares as none is named;
         env["notes"] = adapter.notes()  # r2 and R3 through a file print what the built-in prints
     if args.format == "json":
