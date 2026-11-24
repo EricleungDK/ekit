@@ -486,3 +486,27 @@ class Probes(Case):
         self.assertEqual(len(got), 1)
         self.assertTrue(got[0].startswith("mini --version: not probed (in the reviewed checkout: "), got)
         self.assertEqual([x for x in self.calls() if x.startswith("--version")], [])
+
+
+class FingerprintCommand(Case):
+    """`r0 --fingerprint run|r3` prints the part's fingerprint and the cache key the workflow restores, the same one
+    `red --r0` and `mutants --r0` compute."""
+
+    def fp(self, part, *extra):
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.base, "--head", self.base, "--stack", "minirun",
+                          "--adapter", MINIRUN, "--fixtures", MINIRUN_FX, "--fingerprint", part, *extra])
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return json.loads(r.stdout)
+
+    def test_the_run_part_key_matches_red(self):
+        got = self.fp("run")
+        r, env = self.red()
+        fp = env["checks"]["R0"]["fingerprint"]
+        self.assertEqual(got, {"part": "run", "fingerprint": fp, "key": f"ekit-r0-run-{fp}",
+                               "probes": ["mini --version: mini 1.0.0"]})
+
+    def test_the_r3_part_key_matches_mutants(self):
+        got = self.fp("r3")
+        head = self.commit({"src/calc.mini": "fn add(a, b) { a + b + 0 }\n"})
+        r, env = self.mutants(None, head)
+        self.assertEqual(got["key"], "ekit-r0-r3-" + env["checks"]["R0"]["fingerprint"])

@@ -10,7 +10,7 @@ import signal
 import sys
 import tempfile
 
-from . import adapter_file, doctor, engine, gitio, merge, mutants, r0, red, report, resolve, stack_plan
+from . import adapter_file, doctor, engine, gitio, merge, mutants, r0, r0_runtime, red, report, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -584,6 +584,35 @@ def _r0_repo(args, adapter, path):
     return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
 
 
+def _fingerprint(p, args):
+    """`r0 --fingerprint PART`: the part's fingerprint with the adapter, fixtures and target OS red and mutants use."""
+    args.r0 = "."  # the inputs of --r0; no dir is read or written
+    try:
+        adapter = None
+        if args.adapter is not None:
+            adapter, err = _load_adapter(args.adapter, args.stack)
+            if err:
+                print(f"mech-review: {err}", file=sys.stderr)
+                return 2
+        else:
+            adapter = stack_plan.repo_adapter(args.repo, gitio.resolve(args.repo, args.base), args.stack, args.project_dir)
+            if adapter is None and args.stack not in ADAPTERS:
+                p.error(f"argument --stack: invalid choice: {args.stack!r}")
+        with contextlib.ExitStack() as keep:
+            inputs = _r0_inputs(args, adapter, args.stack, keep)
+            _, head, mb = gitio.merge_base(args.repo, args.base, args.head)
+            built = engine._on_os(adapter or ADAPTERS[args.stack](), inputs["target_os"])
+            rv = gitio.Review(args.repo, mb, head, built, engine.test_paths(args.test_paths), args.project_dir)
+            fp, lines = r0_runtime.part_fingerprint(rv, args.fingerprint, args.test_cmd, args.mutants_cmd,
+                                                    inputs["fixtures"], inputs["raw"])
+    except (gitio.Die, adapter_file.AdapterFileError, r0.FixtureError) as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps({"part": args.fingerprint, "fingerprint": fp, "key": f"ekit-r0-{args.fingerprint}-{fp}",
+                      "probes": lines}))
+    return 0
+
+
 def _r0(argv):
     """R0's static half (#20): the adapter against the cheat suite and the controls, git and adapter only. Exit 0 pass
     or unproven, 1 a fail entry, 2 usage or git error."""
@@ -603,7 +632,14 @@ def _r0(argv):
     p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
                    help="the stack's dir (default .): the plan entry whose adapter file r0 proves (#17)")
     p.add_argument("--format", choices=["json", "text"], default="json", help="json (contract, default) or text")
+    p.add_argument("--fingerprint", choices=r0_runtime.PARTS,
+                   help="print the fingerprint of the runtime half's part (#21: run, as red --r0 computes it; r3, as "
+                        "mutants --r0 does) and its cache key, {part, fingerprint, key, probes}; nothing is proved")
+    p.add_argument("--test-cmd", metavar="CMD", help="--fingerprint run: the test command red is given")
+    p.add_argument("--mutants-cmd", metavar="CMD", help="--fingerprint r3: the mutation tool mutants is given")
     args = p.parse_args(argv)
+    if args.fingerprint:
+        return _fingerprint(p, args)
     adapter = None
     if args.adapter is not None:
         adapter, err = _load_adapter(args.adapter, args.stack)

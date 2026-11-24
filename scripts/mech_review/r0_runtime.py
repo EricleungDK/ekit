@@ -577,6 +577,18 @@ def r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw):
     return fingerprint("r3", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines), lines
 
 
+def part_fingerprint(rv, part, cmd=None, mutants_cmd=None, fixtures_dir=None, adapter_raw=None):
+    """(fingerprint, probe lines) of a part as `red --r0` (run) or `mutants --r0` (r3) computes it: the key the
+    workflow's cache step restores before the run."""
+    if part == "r3":
+        return r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw)
+    accepted_raw = accepted_list(rv.repo, rv.mb, rv.adapter.name)[1]
+    with red.worktree(rv.repo, rv.head) as wt:
+        crate = os.path.join(wt, rv.project_dir)
+        rv.adapter.worktree_setup(rv.repo, wt, rv.project_dir)
+        return run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate)
+
+
 def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, cache_dir=None, adapter_path=None):
     """(R0 check, raw entries) of the run part in `red`: the census, assert density and the runner controls when the
     fingerprint has no pass in cache_dir; else only the census of the PR's changed test files."""
