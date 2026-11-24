@@ -18,7 +18,7 @@ def read(path):
 MINI_R2 = read(MINI)
 
 
-class RepoAdapterRunSide(Fixture):
+class RepoAdapterRunSide(Fixture, unittest.TestCase):  # TestCase named here: R2 sees the tests (#21 census)
     def setUp(self):
         super().setUp()
         with open(os.environ["MECH_TEST_STUB"], "w") as f:
@@ -95,7 +95,7 @@ class RepoAdapterRunSide(Fixture):
                                      "not run"}))
 
 
-class OverrideWithRun(Fixture):
+class OverrideWithRun(Fixture, unittest.TestCase):  # TestCase named here: R2 sees the tests (#21 census)
     """a repo file named like a built-in (.ekit/adapters/ts.toml): with [run] it drives R1 and R4 too."""
 
     def ts_pr(self, adapter_text, outcomes):
