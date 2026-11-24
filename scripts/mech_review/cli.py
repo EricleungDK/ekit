@@ -1,5 +1,6 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
+import copy
 import json
 import math
 import os
@@ -8,7 +9,7 @@ import signal
 import sys
 import tempfile
 
-from . import adapter_file, doctor, engine, gitio, merge, r0, red, report, resolve, stack_plan
+from . import adapter_file, doctor, engine, gitio, merge, mutation_tool, r0, red, report, resolve, stack_plan
 from .stack import ADAPTERS
 
 
@@ -158,8 +159,9 @@ def build_parser():
     p.add_argument("--stack", required=True, metavar="{" + ",".join(sorted(ADAPTERS)) + "}",
                    help="language adapter; with --adapter, the name the adapter file gives")
     p.add_argument("--adapter", metavar="FILE",
-                   help="r2, red, all: an adapter file (TOML) that describes the stack named by --stack, in place of a "
-                        "built-in; red and all need its [run] table (format: docs/mech-review-ci.md#adapter-file)")
+                   help="r2, red, all, mutants, baseline, plan: an adapter file (TOML) that describes the stack named by "
+                        "--stack, in place of a built-in; red and all need its [run] table, R3 runs its [mutation.tool] "
+                        "(none: n/a) (format: docs/mech-review-ci.md#adapter-file)")
     p.add_argument("--test-paths", action="append", default=[], metavar="GLOB", help="test file glob, repeatable")
     p.add_argument("--fixtures", metavar="DIR", help="all only: R0's fixture dir (default: the built-in stack's)")
     p.add_argument("--protected-paths", action="append", default=[], metavar="GLOB", help="protected file glob, repeatable")
@@ -207,10 +209,54 @@ def render_text(env):
 SHARD = re.compile(r"^(\d+)/(\d+)$")
 
 
-def _plan(args):
-    """Print {run}: whether the mutants job runs (the baseline step sets the shard count, #46). Exit 0 (2 on a git error)."""
+R3_SIDE = ("mutants", "baseline", "plan")
+
+
+def _with_plan_os(args, adapter):
+    """the repo's adapter with the stack's target OS as resolve settles it (#58, #19): the plan entry's target-os
+    first (its own, else its adapter file's), so R3's mutation.tool.os check reads the OS the jobs run on."""
+    plan, _ = stack_plan.target_plan(args.repo, args.base, args.head)
+    entry = stack_plan.entry_for(plan, args.stack, args.project_dir)
+    if entry is None or not entry.target_os or entry.target_os == adapter.target_os:
+        return adapter
+    adapter = copy.copy(adapter)
+    adapter.target_os = entry.target_os
+    return adapter
+
+
+def _review(args, adapter):
+    """(base, head, Review) of the PR with an adapter file's adapter (engine.plan and engine.baseline take a built-in)."""
+    base, head, mb = gitio.merge_base(args.repo, args.base, args.head)
+    return base, head, gitio.Review(args.repo, mb, head, adapter, engine.test_paths(args.test_paths), args.project_dir)
+
+
+def _mutants_file(args, adapter):
+    """R3 through an adapter file (#19): mutation_tool.run (its declared tool, or n/a) in the envelope engine.run gives
+    the built-ins' mutants: the other checks skipped, the shard and its cap. Exit 1 on a fail entry, 2 on a git error."""
     try:
-        out = engine.plan(args.repo, args.base, args.head, args.stack, args.test_paths)
+        base, head, rv = _review(args, adapter)
+        check, ents = mutation_tool.run(rv, args.mutants_cmd, args.mutation_budget, args.shard, args.mutant_timeout,
+                                        max_mutants=args.max_mutants)
+    except gitio.Die as e:
+        print(f"mech-review: {e}", file=sys.stderr)
+        return 2
+    checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in report.CHECKS}
+    checks["R3"] = check
+    env = report.envelope(base, head, sorted(ents, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"])), checks)
+    k, _, n = (args.shard or "0/1").partition("/")
+    env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
+    print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
+    return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
+
+
+def _plan(args, adapter=None):
+    """Print {run}: whether the mutants job runs (the baseline step sets the shard count, #46). Exit 0 (2 on a git error).
+    adapter: an adapter file's (#19), whose test paths and extensions say what a production change is."""
+    try:
+        if adapter is None:
+            out = engine.plan(args.repo, args.base, args.head, args.stack, args.test_paths)
+        else:
+            out = {"run": bool(red.prod_changes(_review(args, adapter)[2]))}
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
@@ -218,7 +264,7 @@ def _plan(args):
     return 0
 
 
-def _baseline(parser, args):
+def _baseline(parser, args, adapter=None):
     """Print the baseline step's result (#46): run, count, mutants, timeout and the R3 check. Exit 0 (2 on usage or git
     error). A baseline that fails or times out is a result here, not an exit code: the merge reports it."""
     if args.mutant_timeout is not None:
@@ -227,8 +273,16 @@ def _baseline(parser, args):
     if shards < 1:
         parser.error("--shards N: want N >= 1")
     try:
-        env = engine.baseline(args.repo, args.base, args.head, args.stack, args.test_paths, args.mutants_cmd,
-                              args.mutation_budget, shards, project_dir=args.project_dir, max_mutants=args.max_mutants)
+        if adapter is None:
+            env = engine.baseline(args.repo, args.base, args.head, args.stack, args.test_paths, args.mutants_cmd,
+                                  args.mutation_budget, shards, project_dir=args.project_dir, max_mutants=args.max_mutants)
+        else:  # an adapter file's (#19): its declared tool's baseline, or n/a with no tool
+            base, head, rv = _review(args, adapter)
+            p = mutation_tool.baseline(rv, args.mutants_cmd, args.mutation_budget, shards, max_mutants=args.max_mutants)
+            checks = {c: {"status": "skipped", "note": "not run by baseline"} for c in report.CHECKS}
+            checks["R3"] = p["check"]
+            env = report.envelope(base, head, p["entries"], checks)
+            env.update({k: p[k] for k in ("run", "count", "mutants", "timeout")})
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
@@ -351,18 +405,14 @@ def _named(args):
     return resolve.pick_pr([], [], args.stack, args.project_dir, {**ADAPTERS, **names, **repo}), repo
 
 
-RUN_SIDE = {"red": ("R1", "R4"), "all": ("R1", "R4"), "mutants": ("R3",), "baseline": ("R3",)}
+RUN_SIDE = {"red": ("R1", "R4"), "all": ("R1", "R4")}
 
 
-def _not_built(args, adapter=None):
-    """A run-side check on a stack the repo's adapter file describes (#17). R1 and R4 run through the file when it has
-    [run] (#18: all runs R2 and them through it); without [run] they are n/a, as R3 is (an adapter file's R3 is #19),
-    with the reason, never a usage error or the built-in of that name run in its place. plan says run, so the baseline
-    step reports R3's n/a; baseline runs no shard."""
-    runs = adapter is not None and adapter.run is not None and args.check in ("red", "all")
-    if args.check == "plan":
-        print(json.dumps({"run": True}))
-        return 0
+def _not_built(args, adapter):
+    """red or all on a stack the repo's adapter file describes (#17). R1 and R4 run through the file when it has [run]
+    (#18: all runs R2 and them through it); without [run] they are n/a with the reason, never a usage error or the
+    built-in of that name run in its place. (R3, plan and baseline go through the file's [mutation.tool], #19.)"""
+    runs = adapter.run is not None
     try:
         base, head, _ = gitio.merge_base(args.repo, args.base, args.head)
         if args.check == "all":
@@ -384,18 +434,11 @@ def _not_built(args, adapter=None):
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
     for c in () if runs else RUN_SIDE[args.check]:
-        checks[c] = {"status": "n/a", "note": (
-            f"stack `{args.stack}` is the repo's adapter file: R3 through an adapter file is not built yet (#19)"
-            if c == "R3" else f"stack `{args.stack}` is the repo's adapter file, which has no [run] table: {c} runs "
-                              f"through [run] (#18)")}
+        checks[c] = {"status": "n/a", "note": f"stack `{args.stack}` is the repo's adapter file, which has no [run] "
+                                              f"table: {c} runs through [run] (#18)"}
     env = report.envelope(base, head, entries, checks)
     if runs:
         env["notes"] = adapter.notes()
-    if args.check == "mutants":
-        k, _, n = (args.shard or "0/1").partition("/")
-        env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
-    if args.check == "baseline":
-        env.update({"run": False, "count": 0, "mutants": 0, "timeout": None})
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
     return 1 if any(e["severity"] == "fail" for e in entries) else 0
 
@@ -596,14 +639,14 @@ def main(argv):
         parser.error(f"argument --stack: invalid choice: {args.stack!r} (choose from "
                      + ", ".join(repr(s) for s in sorted(ADAPTERS)) + ")")
     if args.adapter is not None:
-        if args.check not in ("r2", "red", "all"):
-            parser.error("--adapter applies to r2, red and all (R3 through an adapter file is not built yet)")
+        if args.check == "merge":
+            parser.error("--adapter applies to r2, red, all, mutants, baseline and plan (merge reads no tree)")
         try:
             adapter = adapter_file.load(args.adapter)
         except adapter_file.AdapterFileError as e:
             print(f"mech-review: {e}", file=sys.stderr)
             return 2
-        if args.check != "r2" and adapter.run is None:
+        if args.check in ("red", "all") and adapter.run is None:
             parser.error(f"--adapter applies to r2 only for {args.adapter}: it has no [run] table, and {args.check} runs "
                          "R1 and R4 through [run] and [commands] (format: docs/mech-review-ci.md#adapter-file)")
         if adapter.name != args.stack:
@@ -615,27 +658,34 @@ def main(argv):
     if args.check == "merge":
         return _merge(parser, args)
     if (adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS
-            and not (adapter.run is not None and args.check in ("red", "all"))):
-        # a repo file named like a built-in with no [run] (#18), or for R3 (#19): R2 only. R1, R3 and R4 run the
-        # built-in, so adding the file turns no check off. `all` runs one adapter for all its checks
+            and not (adapter.run is not None and args.check in ("red", "all"))
+            and not (adapter.mutation_tool is not None and args.check in R3_SIDE)):
+        # a repo file named like a built-in with no [run] (#18), or no [mutation.tool] for R3 (#19): R2 only there. R1,
+        # R3 and R4 run the built-in, so adding the file turns no check off. `all` runs one adapter for all its checks
         if args.check == "all":
             parser.error(f"all on stack `{args.stack}`, which the repo's adapter file overrides: R2 is the file's, R1 "
                          f"and R4 the built-in's; run r2 and red apart")
         adapter = None
-    if adapter is not None and args.adapter is None and args.check in ("plan", "baseline"):
-        return _not_built(args)
+    if adapter is not None and args.adapter is None and args.check in ("mutants", "baseline"):
+        try:
+            adapter = _with_plan_os(args, adapter)
+        except gitio.Die as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
     if args.check == "plan":
-        return _plan(args)
+        return _plan(args, adapter)
     if args.check == "baseline":
-        return _baseline(parser, args)
+        return _baseline(parser, args, adapter)
     if args.shard is not None:
         m = SHARD.match(args.shard)
         if args.check != "mutants":
             parser.error("--shard applies to the mutants check only")
         if not m or int(m.group(1)) >= int(m.group(2)) or int(m.group(2)) < 1:
             parser.error(f"--shard {args.shard}: want K/N with 0 <= K < N")
-    if adapter is not None and args.adapter is None and args.check != "r2":
+    if adapter is not None and args.adapter is None and args.check in ("red", "all"):
         return _not_built(args, adapter)
+    if adapter is not None and args.check == "mutants":
+        return _mutants_file(args, adapter)
     try:
         env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
                          which=args.check, agent_prefix=args.agent_prefix, head_branch=args.head_branch,
@@ -646,8 +696,8 @@ def main(argv):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
-    if adapter is not None and args.check != "r2":  # #18: a command the file declares as none is named (red, all);
-        env["notes"] = adapter.notes()  # r2 through a file prints what the built-in prints
+    if adapter is not None and args.check in ("red", "all"):  # #18: a command the file declares as none is named;
+        env["notes"] = adapter.notes()  # r2 and R3 through a file print what the built-in prints
     if args.format == "json":
         print(json.dumps(env, indent=2))
     else:
