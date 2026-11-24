@@ -73,7 +73,11 @@ out=$(mutants_run "$BASE" "$HS" --max-mutants 3 --mutation-budget 0.5); rc=$?
 eq "retry cut exit" "$rc" 0
 eq "retry cut R3" "$(jq -r .checks.R3.status <<<"$out")" partial
 eq "retry cut no MISSED" "$(nmissed "$out")" 0
-has "retry cut note" "$(jq -r .checks.R3.note <<<"$out")" "whole-suite retry not reached at budget: untested"
+has "retry cut note" "$(jq -r .checks.R3.note <<<"$out")" "(budget hit before the whole-suite retry): untested"
+# #79: each such mutant is named, a confirm entry on line 10, and the partial entry names the cause
+eq "retry cut names its survivors" "$(jq -r '[.entries[] | select(.problem | startswith("R3 unconfirmed survivor"))]
+  | (length > 0) and all(.severity == "confirm" and .file == "src/calc/core.py" and .line == 10)' <<<"$out")" true
+has "retry cut partial cause" "$(jq -r '[.entries[] | select(.problem | startswith("R3 partial"))][0].problem' <<<"$out")" "unconfirmed survivor"
 hasnt "retry cut never all pass" "$(jq -r .summary <<<"$out")" "all pass"
 
 git -C "$R" checkout -q cap

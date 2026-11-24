@@ -36,7 +36,7 @@ class TestShardStatus(unittest.TestCase):
         env = merged(shard("pass", tested=2, total=2), shard("partial", tested=1, total=4))
         self.assertEqual(env["checks"]["R3"]["status"], "partial")
         self.assertEqual([(e["severity"], e["problem"]) for e in env["entries"]],
-                         [("confirm", "R3 partial: 3/6 mutants untested at budget")])
+                         [("confirm", "R3 partial: 3/6 mutants untested: left unrun by the mutation tool")])
 
     def test_every_shard_skipped_is_skipped(self):
         self.assertEqual(merged(shard("skipped"), shard("skipped"))["checks"]["R3"]["status"], "skipped")

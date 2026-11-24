@@ -1291,7 +1291,7 @@ class TestTsExcludedMutations(TsCli):
     def test_with_a_json_config_the_partial_entry_counts_what_the_run_makes(self):
         self.with_config()
         env = self.cli("--max-mutants", "5", STUB_EXCLUDE="StringLiteral")
-        self.assertEqual(self.partial_entry(env), "R3 partial: 1/6 mutants untested at budget")
+        self.assertEqual(self.partial_entry(env), "R3 partial: 1/6 mutants untested: past the cap")
 
     def test_with_a_json_config_and_no_line_under_the_cap_the_note_and_the_entry_count_the_same(self):
         # cap 3: the branch line alone holds 4. Real Stryker 10.0.0 (scratchpad u6/ex3): 0/6
@@ -1299,7 +1299,7 @@ class TestTsExcludedMutations(TsCli):
         env = self.cli("--max-mutants", "3", STUB_EXCLUDE="StringLiteral")
         self.assertEqual(env["checks"]["R3"]["note"], "0/6 tested: no changed line fits under the cap; 6 past the cap "
                                                       "(max-mutants 3): untested")
-        self.assertEqual(self.partial_entry(env), "R3 partial: 6/6 mutants untested at budget")
+        self.assertEqual(self.partial_entry(env), "R3 partial: 6/6 mutants untested: past the cap")
 
     def test_with_a_json_config_a_budget_hit_before_the_report_counts_the_same_in_the_note_and_the_entry(self):
         self.with_config()
@@ -1309,7 +1309,7 @@ class TestTsExcludedMutations(TsCli):
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", None, 6))
         self.assertEqual(r3["note"], "budget hit before Stryker wrote its report (it writes at the end of a run): 6 "
                                      "mutants, none read; 1 past the cap (max-mutants 5): untested")
-        self.assertEqual(self.partial_entry(env), "R3 partial: 6 mutants, tested count unknown at budget")
+        self.assertEqual(self.partial_entry(env), "R3 partial: 6 mutants, tested count unknown: past the cap; budget hit")
 
     def test_no_check_carries_a_bound(self):
         self.with_config()

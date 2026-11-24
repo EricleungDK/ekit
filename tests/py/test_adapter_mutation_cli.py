@@ -223,7 +223,7 @@ class Formats(Case):
         r, env = self.cli("mutants", self.adapter(adapter_text(PIT, '[".mini", ".java"]')),
                           env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
         self.assertEqual((r.returncode, sorted((e[0], e[3]) for e in ents(env))), (0, [
-            ("confirm", "R3 partial: 1/6 mutants untested at budget"),
+            ("confirm", "R3 partial: 1/6 mutants untested: left unrun by the mutation tool"),
             ("confirm", "R3 unlocated: 2 missed mutant(s) have no location in the pitest report "
                         "(target/pit-reports/mutations.xml): not blocking")]), r.stderr)
 
@@ -569,7 +569,7 @@ class ShardsBudgetPartial(Case):
         self.assertTrue(env["checks"]["R3"]["note"].startswith("budget hit before mut wrote its report: ? mutants, "
                                                                "none read"), env["checks"]["R3"]["note"])
         self.assertEqual([(e[0], e[3]) for e in ents(env)],
-                         [("confirm", "R3 partial: total unknown (? tested): untested mutants unknown at budget")])
+                         [("confirm", "R3 partial: total unknown (? tested): budget hit")])
         self.assertIn("partial: R3", env["summary"])
 
     def test_budget_hit_after_the_report_keeps_its_missed(self):
@@ -591,7 +591,7 @@ class ShardsBudgetPartial(Case):
                                                                                "STUB_TO": "out/report.json"})
         self.assertEqual((r.returncode, env["checks"]["R3"]["status"], env["checks"]["R3"]["tested"],
                           env["checks"]["R3"]["total"]), (0, "partial", 5, 6))
-        self.assertEqual([e[3] for e in ents(env)], ["R3 partial: 1/6 mutants untested at budget"])
+        self.assertEqual([e[3] for e in ents(env)], ["R3 partial: 1/6 mutants untested: left unrun by the mutation tool"])
 
     def test_the_mutant_timeout_reaches_the_tool(self):
         self.pr()

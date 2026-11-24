@@ -46,3 +46,9 @@ _Avoid_: host, local, client
 **Target OS**:
 The operating system a stack's tests must run on to mean anything (Windows for a WPF app); it decides the CI runner for that stack, whatever the developer machine is.
 _Avoid_: runner OS, platform
+
+### Mutation (R3)
+
+**Unconfirmed survivor**:
+A mutant mutmut reports surviving on a changed line whose whole-suite retry the budget did not reach or cut short: one R3 `confirm` entry naming its file, line and mutation, out of the tested count, and a missed mutant until a test kills it.
+_Avoid_: untested mutant, unreached mutant
