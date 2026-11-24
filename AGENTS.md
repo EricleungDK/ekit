@@ -17,7 +17,6 @@ ekit: a Claude Code plugin (skills, hooks) plus the mech-review engine that chec
 
 ## What no config tells you
 
-- A new module in `scripts/mech_review/` goes in the list in `tests/mech-modules.test.sh`.
 - ekit's own PRs run mech-review with the python stack: a change under `scripts/` needs a test in `tests/py/` that fails on the base.
 - Python tests of the engine call `cli.main(argv)` in-process, as `tests/py/test_adapter_cli.py` does. R3's mutmut sees only in-process calls; a subprocess-only test leaves every changed line MISSED.
 - Before a review request on a change under `scripts/`, run R3 as CI does (commit first; POSIX or WSL): `python3 scripts/r3-local.py --base origin/main --stack python --test-paths 'tests/**' --test-paths '.ekit/scenarios/**' --mutation-budget 20`. A MISSED on a changed line is fixed before review.
