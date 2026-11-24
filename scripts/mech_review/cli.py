@@ -9,8 +9,8 @@ import signal
 import sys
 import tempfile
 
-from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_install, r0, red, report, resolve,
-               stack_plan)
+from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, red, report,
+               resolve, stack_plan)
 from .stack import ADAPTERS
 
 
@@ -439,6 +439,8 @@ def _not_built(args, adapter):
     except gitio.Die as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    except parser_cmd.ParserError as e:
+        return _parser_failed(e)
     for c in () if runs else RUN_SIDE[args.check]:
         checks[c] = {"status": "n/a", "note": f"stack `{args.stack}` is the repo's adapter file, which has no [run] "
                                               f"table: {c} runs through [run] (#18)"}
@@ -447,6 +449,12 @@ def _not_built(args, adapter):
         env["notes"] = adapter.notes()
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
     return 1 if any(e["severity"] == "fail" for e in entries) else 0
+
+
+def _parser_failed(err):
+    """a parser-backed adapter's parser failed in R1 or R4 (#27): exit 2, so the red-first step goes red, naming it."""
+    print(f"mech-review: the adapter's parser failed: {err}", file=sys.stderr)
+    return 2
 
 
 def _resolve(argv):
@@ -704,6 +712,8 @@ def main(argv):
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
+    except parser_cmd.ParserError as e:  # red, all: R1 and R4 name the changed tests from the parser's facts
+        return _parser_failed(e)
     if adapter is not None and args.check in ("red", "all"):  # #18: a command the file declares as none is named;
         env["notes"] = adapter.notes()  # r2 and R3 through a file print what the built-in prints
     if args.format == "json":

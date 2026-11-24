@@ -831,7 +831,8 @@ for job_name in ("stack", "plan", "baseline", "mutants", "report"):
           INSTALL not in text(block(jobs, job_name, 2) or []), job_name)
 _ins = text(step(block(jobs, "guard") or [], INSTALL))
 check("parser install: argv only, no shell string (no bash -c, eval, shell=True, os.system)",
-      not re.search(r"bash -c|\beval\b|shell=True|os\.system|os\.popen", _ins) and "subprocess.run(argv, env=env)" in _ins,
+      not re.search(r"bash -c|\beval\b|shell=True|os\.system|os\.popen", _ins)
+      and "subprocess.run(argv, env=env, cwd=cwd)" in _ins,
       _ins)
 parser_lines = [l for l in W if "${{" in l and "parser" in l.lower()]
 check("parser: the command or install step is never interpolated into a run: line (only env values)",
@@ -881,14 +882,18 @@ with tempfile.TemporaryDirectory() as d:
         f.write(RECORD + "if sys.argv[1:2] == ['make']:\n    os.makedirs(os.path.dirname(sys.argv[2]), exist_ok=True)\n"
                          "    open(sys.argv[2], 'w').close()\n    os.chmod(sys.argv[2], 0o755)\n"
                          "if sys.argv[1:2] == ['home']:\n    assert os.environ['EKIT_PARSER_HOME'] == sys.argv[2]\n"
+                         "if sys.argv[1:2] == ['cwd']:\n    here = os.path.realpath(os.getcwd())\n"
+                         "    assert os.listdir(here) == [] and os.path.dirname(here) == sys.argv[2], here\n"
                          "sys.exit(int(sys.argv[2]) if sys.argv[1:2] == ['exit'] else 0)\n")
     prog = os.path.join(home, "pip", "p", "1", "bin", "p")
     rc, out, genv, engine, ran = install_run(d, {"stack": "mini", "adapter": "a.toml", "program": prog, "steps": [
-        [sys.executable, rec, "home", home], [sys.executable, rec, "; touch pwned", "$(touch pwned)", "`id`"],
+        [sys.executable, rec, "home", home], [sys.executable, rec, "cwd", os.path.join(d, "tmp")],
+        [sys.executable, rec, "; touch pwned", "$(touch pwned)", "`id`"],
         [sys.executable, rec, "make", prog]]})
-    check("parser install: the printed argvs run in order, as argv (shell words stay literal), EKIT_PARSER_HOME set "
-          "for them and, through GITHUB_ENV, for the later steps",
-          rc == 0 and genv == [f"EKIT_PARSER_HOME={home}"] and ran == [["home", home],
+    check("parser install: the printed argvs run in order, as argv (shell words stay literal), in a fresh empty dir "
+          "under the runner's temp dir (not the checkout), EKIT_PARSER_HOME set for them and, through GITHUB_ENV, for "
+          "the later steps",
+          rc == 0 and genv == [f"EKIT_PARSER_HOME={home}"] and ran == [["home", home], ["cwd", os.path.join(d, "tmp")],
           ["; touch pwned", "$(touch pwned)", "`id`"], ["make", prog]] and not os.path.exists(os.path.join(d, "pwned"))
           and os.access(prog, os.X_OK), str((rc, out, genv, ran)))
     check("parser install: the engine is asked about the base only, with the home under the runner's temp dir",
