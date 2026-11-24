@@ -258,6 +258,18 @@ class Output(Run):
             doc = f.read()
         self.assertIn(f"name: {ms.MERGED[0]}\n          path: {ms.MERGED[1]}\n", doc)
 
+    def test_the_report_job_uploads_the_merged_artifact_right_after_the_merge_step(self):
+        with open(os.path.join(_kit.ROOT, "docs", "mech-review-ci.md"), encoding="utf-8") as f:
+            doc = f.read()
+        with open(os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml"), encoding="utf-8") as f:
+            wf = f.read()
+        head = "      - name: upload merged mutants result\n"
+        step = head + doc.split("```yaml\n" + head, 1)[1].split("```", 1)[0]
+        merge = wf.index("      - name: merge mutants (R3, baseline and shards)\n")
+        nxt = wf.index("\n      - name: ", merge + 1) + 1
+        self.assertEqual(wf[nxt:nxt + len(step)], step)
+        self.assertLess(wf.index("\n  report:\n"), merge)
+
     def test_no_repo_flag_means_no_R(self):
         self.red_run()
         self.main("555")
