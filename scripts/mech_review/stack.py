@@ -29,6 +29,11 @@ Adapter interface:
   r3_tool: R3Tool(kind, packages, env, mutants_cmd) or None: the R3 tool as the workflow installs it, pinned (kind:
       venv = pip into a venv, npm = npm install --prefix, cargo = cargo install); env: set for the R3 runs;
       mutants_cmd: the tool's binary under the install dir, or None (on PATH). scripts/r3-local.py reads it (#35)
+  list_argv(cmd) -> argv that lists every test the runner collects in the crate, without running them, or None (the
+      runner cannot list tests: R0's census is not read) (#21; an adapter file's [run.list])
+  listed(rc, out, crate) -> [(path or None, name)] of that listing (path crate-relative, None when the runner does not
+      say; name as test_fns names it), or None: the listing failed. name_placeholders: a regex for name parts that
+      stand for any value (it.each's `%s`) or None; list_separator: how a qualified name joins its parts
   target_os: the OS the stack's tests run on (#58): linux, macos or windows. Default linux (every built-in)
   commands: an adapter file's [commands] (#18): install, build, lint, test ("" = none), for ci-doctor and the
       session's verify commands; R1 and R4 use test only (default_test_cmd). The built-ins have none
@@ -59,6 +64,7 @@ Suppression = namedtuple("Suppression", "line end_line kind lints lint_text reas
 R3Tool = namedtuple("R3Tool", "kind packages env mutants_cmd")
 
 RESULT = re.compile(r"test result: \w+\. (\d+) passed; (\d+) failed")
+RUST_LISTED = re.compile(r"^(\S+): test$", re.M)
 BUILD = re.compile(r"could not compile|error\[E\d{4}\]")
 RAW = re.compile(r'(?:br|cr|r)(#*)"')
 FN = re.compile(r'((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)')
@@ -231,6 +237,15 @@ class Adapter:
         """the test command for a checkout whose crate dir is `crate` (absolute): --test-cmd overrides it."""
         return self.default_test_cmd
 
+    name_placeholders = None
+    list_separator = "::"
+
+    def list_argv(self, cmd):
+        return None
+
+    def listed(self, rc, out, crate):
+        return None
+
     def worktree_setup(self, repo, wt, project_dir):
         """called once a worktree of the repo exists: whatever the toolchain needs beside the checkout (no-op by default)."""
 
@@ -349,6 +364,17 @@ class RustAdapter(Adapter):
         """one named test: libtest --exact matches the full mod-qualified name, so one test per run."""
         return shlex.split(cmd) + ["--", "--exact", name]
 
+    def list_argv(self, cmd):
+        """libtest's own listing: `<mod path>::<name>: test` per test, ignored ones too (doc tests named by file)."""
+        return shlex.split(cmd) + ["--", "--list"]
+
+    def listed(self, rc, out, crate):
+        """the tests of every test binary, by mod path (no file: the binary's name is not the file's); doc tests left
+        out (`src/lib.rs - add (line 2)`: no test fn); None when the build or the listing failed."""
+        if rc != 0:
+            return None
+        return [(None, m.group(1)) for m in RUST_LISTED.finditer(out)]
+
     def outcome(self, rc, out):
         """verdict of one test run from its exit code and output (cargo test / libtest shapes)."""
         if rc is None:
@@ -422,6 +448,7 @@ PY_NOQA = re.compile(r"#\s*noqa\b(?::\s*([A-Za-z]+\d+(?:\s*,\s*[A-Za-z]+\d+)*))?
 PY_TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b(?:\[([^\]]*)\])?")
 PY_BUILD = re.compile(r"Failed to import test module|ERROR collecting|during collection|^ERROR \S+\.py\s*$", re.M)
 PY_PASSED = re.compile(r"\b[1-9]\d* passed\b")
+PY_LISTED = re.compile(r"^(\S+?\.py)::(\S.*?)\s*$", re.M)
 PY_OK = re.compile(r"^OK\b", re.M)
 PY_RAN = re.compile(r"^Ran [1-9]\d* tests?\b", re.M)
 PY_SEP = re.compile(r"^[\s#:;,\-\u2014\u2013]+")
@@ -676,6 +703,25 @@ class PythonAdapter(Adapter):
         if "unittest" in argv:
             return argv + [path[:-3].replace("/", ".") + "." + name.replace("::", ".")]
         return argv + ["-q", f"{path}::{name}"]
+
+    def list_argv(self, cmd):
+        """pytest's collection, no test run (`path::Class::test` per line); a unittest command has no listing."""
+        argv = shlex.split(cmd)
+        if "unittest" in argv:
+            return None
+        return argv + ["--collect-only", "-q", "-p", "no:cacheprovider"]
+
+    def listed(self, rc, out, crate):
+        """the collected node ids, a parametrized test once (its `[...]` ids dropped); None on a collection error (exit
+        other than 0 or 5, no tests)."""
+        if rc not in (0, 5):
+            return None
+        got = []
+        for m in PY_LISTED.finditer(out):
+            item = (m.group(1), re.sub(r"\[.*\]$", "", m.group(2)))
+            if item not in got:
+                got.append(item)
+        return got
 
     def outcome(self, rc, out):
         """verdict of one run of pytest or unittest. Collection and import errors are build (like a compile error)."""
@@ -1013,6 +1059,7 @@ def _callback_inner(text, m, start, end):
 TS_BUILD = re.compile(r"Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package"
                       r"|Test suite failed to run|SyntaxError|\bTS\d{4}\b|Failed Suites")
 TS_TESTS = re.compile(r"^\s*Tests\b:?(.*)$", re.M)
+TS_LISTED = re.compile(r"^(\S+\.[cm]?[jt]sx?) > (.+?)\s*$", re.M)  # `vitest list`: `<file> > <Describe> > <test>`
 TS_RESULT = re.compile(r"(\d+) (passed|failed)\b")
 TS_RE_SPECIAL = re.compile(r"([\\^$.|?*+()\[\]{}/])")
 
@@ -1216,6 +1263,22 @@ class TsAdapter(Adapter):
         segments = name.split(" > ")
         full = (" " if jest else " > ").join(_ts_pattern(seg) for seg in segments)
         return argv + [path, "-t", f"^{full}$"]
+
+    name_placeholders = JS_PLACEHOLDER
+    list_separator = " > "
+
+    def list_argv(self, cmd):
+        """`vitest list` (`file > Describe > test` per line; skipped tests are not listed); jest lists files only: None."""
+        argv = shlex.split(cmd)
+        if any("jest" in a for a in argv):
+            return None
+        at = next((i for i, a in enumerate(argv) if "vitest" in a), len(argv) - 1)
+        return argv[:at + 1] + ["list"] + [a for a in argv[at + 1:] if a != "run"]
+
+    def listed(self, rc, out, crate):
+        if rc != 0:
+            return None
+        return [(m.group(1), m.group(2)) for m in TS_LISTED.finditer(out)]
 
     def outcome(self, rc, out):
         """verdict of one run of vitest or jest. Results come from the Tests summary line; a file that did not load

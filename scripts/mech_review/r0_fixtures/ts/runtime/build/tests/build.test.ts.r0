@@ -1,0 +1,7 @@
+// R0 runtime build control (ts): this file does not load (the import does not resolve).
+import { test, expect } from "vitest";
+import { nothing } from "../src/r0-no-such-module";
+
+test("builds", () => {
+  expect(nothing).toBe(1);
+});

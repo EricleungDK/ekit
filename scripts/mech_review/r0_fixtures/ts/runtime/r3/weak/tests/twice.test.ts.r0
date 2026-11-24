@@ -1,0 +1,7 @@
+// R0 R3 control (ts): a weak assert, a MISSED mutant.
+import { test, expect } from "vitest";
+import { twice } from "../src/twice";
+
+test("twice", () => {
+  expect(twice(2)).toBeGreaterThanOrEqual(0);
+});

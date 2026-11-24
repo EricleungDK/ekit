@@ -67,6 +67,14 @@ BUILTIN_PROBES = {
 Runtime = namedtuple("Runtime", "controls project build r3_base weak strong where")  # dirs as {relpath: bytes}
 
 
+def loads(text):
+    """json.loads with the engine's own nesting limit (mutants.MAX_JSON_DEPTH), never Python's RecursionError, whose
+    depth differs between interpreters: ValueError when it nests deeper."""
+    if mutants._too_deep(text):
+        raise ValueError(f"nested too deep (more than {mutants.MAX_JSON_DEPTH} levels)")
+    return json.loads(text)
+
+
 def host_os():
     """the OS this engine runs on, in target-os words."""
     return "macos" if sys.platform == "darwin" else "windows" if sys.platform.startswith(("win", "cygwin")) else "linux"
@@ -98,7 +106,7 @@ def load_runtime(fixtures_dir):
     path = os.path.join(rt, "controls.json")
     try:
         with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
+            raw = loads(f.read())
     except FileNotFoundError:
         raw = {}
     except (OSError, ValueError) as e:
@@ -223,7 +231,7 @@ def cached(cache_dir, part, fp):
     """True when the cache dir holds this part's pass for exactly this fingerprint (the file names it inside)."""
     try:
         with open(_pass_file(cache_dir, part, fp), encoding="utf-8") as f:
-            return json.load(f).get("fingerprint") == fp
+            return loads(f.read()).get("fingerprint") == fp
     except (OSError, ValueError, AttributeError):
         return False
 
@@ -340,7 +348,7 @@ def accepted_list(repo, sha, stack):
     if raw is None:
         return [], b""
     try:
-        doc = json.loads(raw.decode("utf-8"))
+        doc = loads(raw.decode("utf-8"))
         names = doc["assert-density"][stack]
     except (ValueError, KeyError, TypeError, UnicodeDecodeError):
         return [], raw

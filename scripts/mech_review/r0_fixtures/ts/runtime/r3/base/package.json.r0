@@ -1,0 +1,6 @@
+{
+  "name": "r0-controls",
+  "private": true,
+  "type": "module",
+  "devDependencies": { "vitest": "*" }
+}

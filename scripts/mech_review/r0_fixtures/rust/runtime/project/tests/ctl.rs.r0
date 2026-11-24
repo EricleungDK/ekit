@@ -1,0 +1,27 @@
+// R0 runtime controls (rust): one test per verdict the runner must give, and the test styles the census reads.
+use r0_controls::add;
+
+#[test]
+fn passes() {
+    assert_eq!(add(1, 2), 3);
+}
+
+#[test]
+fn fails() {
+    assert_eq!(add(1, 2), 4);
+}
+
+#[test]
+#[ignore]
+fn skipped() {
+    assert_eq!(add(1, 2), 3);
+}
+
+mod nested {
+    use super::*;
+
+    #[test]
+    fn in_a_mod() {
+        assert!(add(2, 2) == 4);
+    }
+}

@@ -1,0 +1,25 @@
+// R0 runtime controls (ts): one test per verdict the runner must give, and the test styles the census reads.
+import { describe, it, test, expect } from "vitest";
+import { add } from "../src/calc";
+
+describe("Controls", () => {
+  it("passes", () => {
+    expect(add(1, 2)).toBe(3);
+  });
+
+  it("fails", () => {
+    expect(add(1, 2)).toBe(4);
+  });
+
+  it.skip("skipped", () => {
+    expect(add(1, 2)).toBe(3);
+  });
+
+  it.each([1, 2])("each %s", (a) => {
+    expect(add(a, 0)).toBe(a);
+  });
+});
+
+test("top level", () => {
+  expect(add(2, 2)).toBe(4);
+});
