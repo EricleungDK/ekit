@@ -11,9 +11,7 @@ a throwaway repo (the paths seeded on base, changed on head). R2 (`guards`) chec
 file reads; a new rule's incident resolves to a commit or PR and it has both cases; a rule that fires in the range is
 not weakened (lower severity, a trigger glob gone, a require glob added) or removed in it. Adding and promoting a rule
 are not guarded."""
-import os
 import re
-import subprocess
 import tempfile
 from typing import NamedTuple, Tuple
 
@@ -247,31 +245,20 @@ def guards(repo, mb, head, rules, paths):
     return out
 
 
-# the throwaway repo of the proof: no user or system config (hooks, templates) reaches it
-GIT_ENV = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-
-
-def _git(repo, args, data=None, index=None):
-    env = dict(os.environ, **GIT_ENV, **({"GIT_INDEX_FILE": index} if index else {}))
-    r = subprocess.run(["git", "-C", repo, *args], input=data, capture_output=True, env=env)
-    if r.returncode:
-        raise gitio.Die(r.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed")
-    return r.stdout.decode("utf-8", "surrogateescape").strip()
-
-
-def _changed(repo, blobs, paths, index):
-    """the paths the PR changes when each of paths holds blobs[0] on base and blobs[1] on head (two trees built in the
-    throwaway repo's index, never files on disk): git leaves out a path it cannot take, so a case that does not build
-    as given shows here."""
+def _changed(repo, blobs, paths):
+    """the paths the PR changes when each of paths holds blobs[0] on base and blobs[1] on head: two trees built in the
+    throwaway repo's index, never files on disk. Git leaves out a path it cannot take (`..`, `.git`) and keeps the last
+    of a file and a folder of the same name, so a case that does not build as given shows here. One index serves every
+    case: the paths of the cases before are the same in both trees, so they are no change."""
     trees = []
     for blob in blobs:
-        _git(repo, ["update-index", "-z", "--add", "--index-info"],
-             b"".join(f"100644 {blob}\t{p}\0".encode("utf-8", "surrogateescape") for p in paths), index)
-        trees.append(_git(repo, ["write-tree"], index=index))
+        gitio.git(repo, "update-index", "-z", "--add", "--index-info",
+                  data=b"".join(f"100644 {blob}\t{p}\0".encode("utf-8", "surrogateescape") for p in paths))
+        trees.append(gitio.git(repo, "write-tree").strip())
     return sorted({p for ch in gitio.changes(repo, *trees) for p in (ch.old, ch.new) if p})
 
 
-def _proof(rule, repo, blobs, index):
+def _proof(rule, repo, blobs):
     """[(case, status, why)] of one rule's two cases."""
     out = []
     for case in CASES:
@@ -279,7 +266,7 @@ def _proof(rule, repo, blobs, index):
         if not paths:
             out.append((case, "fail", f"no `{case}` case"))
             continue
-        changed = _changed(repo, blobs, paths, f"{index}.{rule.id}.{case}")
+        changed = _changed(repo, blobs, paths)
         if changed != sorted(set(paths)):
             out.append((case, "fail", f"`{case}` case ({_names(paths)}) builds a PR that changes "
                                       f"{_names(changed) or 'no path'} (want each path as given: a repo path, no `.` "
@@ -305,10 +292,10 @@ def prove(repo, head):
         return None, []
     cases, entries, bad = [], [], []
     with tempfile.TemporaryDirectory(prefix="ekit-r0-cochange-") as tmp:
-        _git(tmp, ["init", "-q", "--bare", "--template="])
-        blobs = [_git(tmp, ["hash-object", "-w", "--stdin"], text) for text in (b"seed\n", b"case\n")]
+        gitio.git(tmp, "init", "-q", "--bare", "--template=")
+        blobs = [gitio.git(tmp, "hash-object", "-w", "--stdin", data=text).strip() for text in (b"seed\n", b"case\n")]
         for rule in rules:
-            got = _proof(rule, tmp, blobs, os.path.join(tmp, "index"))
+            got = _proof(rule, tmp, blobs)
             cases += [{"case": f"{rule.id}:{c}", "kind": "co-change", "status": status, "got": why}
                       for c, status, why in got]
             failed = [why for _, status, why in got if status == "fail"]
