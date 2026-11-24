@@ -149,6 +149,14 @@ class DeclaredTests(unittest.TestCase):
         self.assertEqual([(t.name, t.markers) for t in a.test_fns(src)], [("A > x", ["only"])])
 
 
+class CallsBodies(unittest.TestCase):
+    def test_a_skipped_call_keeps_its_body_only_with_a_callback(self):
+        """beside the declared rule (a skipped declared test keeps its body), calls keep theirs (mini.toml)."""
+        a = adapter_file.load(os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "mini.toml"))
+        src = 'test("bare")\nxtest("off", {\n  assertEquals(1, 1)\n})\nxtest("todo")\n'
+        self.assertEqual(sorted(a.test_bodies(src)), ["bare", "off"])
+
+
 def adapter_file_dict():
     return {"format": 1, "name": "j", "extensions": [".j"],
             "lexer": {"block_style": "braces", "brackets": ["()", "{}"], "line_comments": ["//"]},
