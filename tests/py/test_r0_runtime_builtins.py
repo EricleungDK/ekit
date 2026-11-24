@@ -12,6 +12,7 @@ import unittest
 import unittest.mock
 
 import _kit
+from scripts.mech_review import r0_runtime
 
 PY3 = shutil.which("python3")
 PY3_PYTEST = bool(PY3) and subprocess.run([PY3, "-m", "pytest", "--version"], capture_output=True).returncode == 0
@@ -20,6 +21,12 @@ CARGO = shutil.which("cargo")
 
 class Builtin(unittest.TestCase):
     def repo(self, files):
+        """a repo of files, with a stack plan giving its built-in stack this machine's OS: R0's runtime half runs only
+        on the stack's target OS, and a built-in targets linux, so the plan entry makes it run on every CI runner."""
+        stack = "rust" if "Cargo.toml" in files else "python"
+        plan = (f'[[stack]]\nname = "{stack}"\nfolder = "."\nadapter = "{stack}"\nstatus = "current"\n'
+                f'target-os = "{r0_runtime.host_os()}"\n')
+        files = dict(files, **{".ekit/stack-plan.toml": plan})
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         repo = os.path.join(tmp.name, "repo")

@@ -12,11 +12,35 @@ import tempfile
 import unittest
 from unittest import mock
 
+import atexit
+
 import _kit
+from scripts.mech_review import r0_runtime
 
 FX = os.path.join(_kit.ROOT, "tests", "fixtures", "adapters")
-MINIRUN = os.path.join(FX, "minirun.toml")
 MINIRUN_FX = os.path.join(FX, "minirun.r0")
+# R0's runtime half runs only on the stack's target OS: the tests' stacks target the OS they run on (the engine's own
+# host_os), so the half runs on every CI runner; TargetOS keeps the case of another OS
+HOST = r0_runtime.host_os()
+
+
+def host_plan(stack):
+    """a stack plan whose one entry gives the built-in `stack` this machine's OS (a built-in targets linux)."""
+    return (f'[[stack]]\nname = "{stack}"\nfolder = "."\nadapter = "{stack}"\nstatus = "current"\n'
+            f'target-os = "{HOST}"\n')
+
+
+def _hosted(src):
+    with open(src) as f:
+        text = f.read().replace('extensions = [".mini"]\n', f'extensions = [".mini"]\ntarget-os = "{HOST}"\n', 1)
+    d = tempfile.mkdtemp(prefix="ekit-minirun-")
+    atexit.register(shutil.rmtree, d, True)
+    with open(os.path.join(d, "minirun.toml"), "w") as f:
+        f.write(text)
+    return os.path.join(d, "minirun.toml")
+
+
+MINIRUN = _hosted(os.path.join(FX, "minirun.toml"))  # minirun.toml with target-os this machine's OS
 
 # the runner and the tool. `list`: `<path> :: <name>` of each test it would run (STUB_STYLES: the calls that are
 # tests, `xtest` skipped and not listed); `test <path> --name <n>`: runs one; `run --mutate F:a-b --report R`: one `+`
@@ -414,8 +438,8 @@ class Fingerprint(Case):
 
 class TargetOS(Case):
     def test_the_part_runs_only_on_the_stacks_target_os(self):
-        other = "macos" if not __import__("sys").platform == "darwin" else "linux"
-        text = adapter_text(lambda t: t.replace('extensions = [".mini"]', f'extensions = [".mini"]\ntarget-os = "{other}"'))
+        other = "linux" if HOST != "linux" else "macos"
+        text = adapter_text(lambda t: t.replace(f'target-os = "{HOST}"', f'target-os = "{other}"'))
         r, env = self.red(self.adapter(text))
         c = env["checks"]["R0"]
         self.assertEqual(c["status"], "n/a", c)
@@ -614,6 +638,9 @@ class ReviewRound1(Case):
         os.makedirs(os.path.join(repo, "tests"))
         with open(os.path.join(repo, "package.json"), "w") as f:
             f.write('{"name": "j", "devDependencies": {"jest": "29.7.0"}}\n')
+        os.makedirs(os.path.join(repo, ".ekit"))
+        with open(os.path.join(repo, ".ekit", "stack-plan.toml"), "w") as f:
+            f.write(host_plan("ts"))
         with open(os.path.join(repo, "tests", "a.test.js"), "w") as f:
             f.write('test("adds", () => {\n  expect(1 + 1).toBe(2);\n});\n')
         g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
@@ -690,6 +717,9 @@ class JestControls(unittest.TestCase):
             f.write(JEST_STUB)
         with open(os.path.join(repo, "package.json"), "w") as f:
             f.write('{"name": "j", "devDependencies": {"jest": "29.7.0"}}\n')
+        os.makedirs(os.path.join(repo, ".ekit"))
+        with open(os.path.join(repo, ".ekit", "stack-plan.toml"), "w") as f:
+            f.write(host_plan("ts"))
         with open(os.path.join(repo, "tests", "a.test.js"), "w") as f:
             f.write('test("adds", () => {\n  expect(1 + 1).toBe(2);\n});\n')
         g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
