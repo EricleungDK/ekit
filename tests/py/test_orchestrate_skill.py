@@ -166,11 +166,14 @@ class TestRoundsPerSource(unittest.TestCase):
 class TestLocalTools(unittest.TestCase):
     """#35 #38: local R3 before review; status from one script call."""
 
-    def test_brief_verify_runs_r3_local_before_the_review_request(self):
+    def test_brief_runs_r3_local_once_after_review_is_clean_not_each_fix_round(self):
+        # owner, 2026-11-24: a local R3 is ~20-30 min; run it once, before the final review request
         t = flat(read("brief-template.md"))
         self.assertIn("scripts/r3-local.py", t)
-        self.assertIn("before the review request", t)
-        self.assertIn("a MISSED on a changed line is fixed before review", t)
+        self.assertIn("once per unit, when the orchestrator says the review is clean, not after each fix round", t)
+        self.assertIn("a MISSED on a changed line is fixed with a killing test in a new commit, and that commit is your final review request", t)
+        self.assertNotIn("before the review request, R3", t)
+        self.assertIn("after review passes and the R3 run of task 4", t)
 
     def test_local_r3_uses_ci_budget_with_shards_in_parallel(self):
         t = flat(read("brief-template.md"))
@@ -224,6 +227,11 @@ class TestAgentsMdPreReviewChecks(unittest.TestCase):
         self.assertIn("scripts/r3-local.py", t)
         for arg in ("--stack python", "--test-paths 'tests/**' --test-paths '.ekit/scenarios/**'", "--mutation-budget 20"):
             self.assertIn(arg, t)
+
+    def test_r3_local_runs_once_before_the_final_review_request(self):
+        t = self.agents()
+        self.assertIn("Once per change under `scripts/`, before the final review request (not after each fix round)", t)
+        self.assertNotIn("Before a review request on a change under `scripts/`", t)
 
     def test_names_a_run_under_the_newest_python(self):
         self.assertIn("uv run --python 3.14 python -m unittest discover -s tests/py", self.agents())
