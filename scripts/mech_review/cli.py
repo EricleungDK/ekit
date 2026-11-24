@@ -613,7 +613,9 @@ def _fingerprint(p, args):
             inputs = r0_runtime.sources(args.repo, args.base, args.head, args.stack, args.project_dir, adapter,
                                         args.adapter, args.fixtures, keep)
             _, head, mb = gitio.merge_base(args.repo, args.base, args.head)
-            rv = gitio.Review(args.repo, mb, head, engine._on_os(adapter, inputs["target_os"]), (), args.project_dir)
+            # the fingerprint reads no test path: Review's default for them
+            built = engine._on_os(adapter, inputs["target_os"])
+            rv = gitio.Review(args.repo, mb, head, built, project_dir=args.project_dir)
             fp, lines = r0_runtime.part_fingerprint(rv, args.fingerprint, args.test_cmd, args.mutants_cmd,
                                                     inputs["fixtures"], inputs["raw"])
     except (gitio.Die, adapter_file.AdapterFileError, r0.FixtureError) as e:

@@ -87,7 +87,7 @@ class Reading(unittest.TestCase):
         self.assertEqual(a.listed(0, "tests/a.mini :: Calc ~ adds\n", "."), [("tests/a.mini", "Calc > adds")])
 
     def test_a_runners_separator_reads_its_listing(self):
-        runners = "\n[[run.runner]]\nname = \"mini\"\nseparator = \" ~ \"\n"
+        runners = "\n[[run.runner]]\nname = \"mini\"\nmatch = \"mini\"\nseparator = \" ~ \"\n"
         a = load(LIST, runners)
         self.assertEqual(a.listed(0, "tests/a.mini :: Calc ~ adds\n", "."), [("tests/a.mini", "Calc / adds")])
 

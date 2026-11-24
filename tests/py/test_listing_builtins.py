@@ -25,7 +25,7 @@ class Rust(unittest.TestCase):
                  "src/foo.rs": "foo::tests::x", "src/a/b.rs": "a::b::tests::x", "src/a/mod.rs": "a::tests::x",
                  "tests/it.rs": "tests::x", "tests/t/main.rs": "tests::x", "tests/t/sub.rs": "sub::tests::x",
                  "tests/t/sub/mod.rs": "sub::tests::x", "benches/b.rs": "tests::x", "build.rs": "tests::x",
-                 "README": "tests::x"}
+                 "README": "tests::x", "src/a/module": "tests::x", "tests": "tests::x"}
         self.assertEqual({p: RUST.listed_name(p, "tests::x") for p in cases}, cases)
 
 
@@ -52,6 +52,7 @@ class Ts(unittest.TestCase):
     def test_list_argv_puts_list_after_the_vitest_word_and_drops_run(self):
         self.assertEqual(TS.list_argv("node_modules/.bin/vitest run"), ["node_modules/.bin/vitest", "list"])
         self.assertEqual(TS.list_argv("npx vitest run --silent"), ["npx", "vitest", "list", "--silent"])
+        self.assertEqual(TS.list_argv("npx vitest --silent run"), ["npx", "vitest", "list", "--silent"])
         self.assertEqual(TS.list_argv("env X=1 node_modules/.bin/vitest"), ["env", "X=1", "node_modules/.bin/vitest",
                                                                             "list"])
 

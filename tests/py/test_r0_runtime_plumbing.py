@@ -72,6 +72,24 @@ class Fingerprint(Case):
         self.assertNotEqual(self.fp("--stack", "python", "--fingerprint", "run", base=a),
                             self.fp("--stack", "python", "--fingerprint", "run", base=b))
 
+    def test_a_base_plan_that_does_not_read_takes_the_target_os_of_the_pr_that_fixes_it(self):
+        self.commit({"pyproject.toml": "[project]\nname = 'x'\nversion = '0'\n"})
+        self.base = self.commit({".ekit/stack-plan.toml": "[[stack]]\nname = \n"})
+        keys = set()
+        for os_name in (HOST, OTHER):
+            head = self.commit({".ekit/stack-plan.toml": host_plan("python").replace(HOST, os_name)})
+            r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.base, "--head", head, "--stack", "python",
+                              "--fingerprint", "run"])
+            keys.add(json.loads(r.stdout)["fingerprint"])
+        self.assertEqual(len(keys), 2)  # the head plan's target OS is in each
+
+    def test_red_names_the_stack_its_adapter_file_describes(self):
+        from scripts.mech_review import engine, adapter_file
+        with self.assertRaises(ValueError) as cm:
+            engine.run(self.repo, self.base, self.base, "other", ["tests/**"], which="red",
+                       adapter=adapter_file.load(MINIRUN))
+        self.assertEqual(str(cm.exception), "stack `other` is not the adapter's (`minirun`)")
+
     def test_an_adapter_file_for_another_stack_is_a_usage_error(self):
         r = self.fp("--stack", "other", "--adapter", MINIRUN, "--fingerprint", "run", rc=2)
         self.assertEqual(r.stderr.strip(), f"mech-review: adapter file {MINIRUN} describes stack `minirun`, not `other`")

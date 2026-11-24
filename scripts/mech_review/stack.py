@@ -379,7 +379,7 @@ class RustAdapter(Adapter):
             if rest in (["lib"], ["main"]) or rest[:1] == ["bin"]:
                 rest = []
         elif parts[:1] == ["tests"]:
-            rest = parts[2:] if len(parts) > 2 else []
+            rest = parts[2:]  # tests/<crate>.rs is a crate root; tests/<crate>/<mod path> under it
             if rest == ["main"]:
                 rest = []
         else:

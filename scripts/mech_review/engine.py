@@ -93,6 +93,8 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     entries kept, marked `blocked`). r0 (#21, `--r0`): {dir, fixtures, raw, path, target_os}: red and all also run the
     runtime half's run part, mutants (shard 0) its R3 control, each unless dir holds a pass for its fingerprint; a
     failed part blocks the checks it proves (r0_runtime.BLOCKS) as the static half does."""
+    if adapter is not None and adapter.name != stack:  # the stack a result names is the adapter that judged it
+        raise ValueError(f"stack `{stack}` is not the adapter's (`{adapter.name}`)")
     cache = r0_runtime.Cache(r0["dir"] if r0 else None)
     try:
         return _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, agent_prefix, head_branch,
