@@ -256,6 +256,11 @@ class NotRun(Tmp):
                          "mech: not run here: mech-review.py all exit 2: mech-review: bad revision")
         self.assertIn("mech-review: bad revision\n", r.stderr)
 
+    def test_an_engine_error_with_nothing_on_stderr_says_no_result(self):
+        r = self.main(Fake(mech=(2, "", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r)[0], "mech: not run here: mech-review.py all exit 2: no result")
+
     def test_an_unreadable_engine_result_is_not_run_here(self):
         r = self.main(Fake(mech=(0, "{", "")))
         self.assertEqual(r.returncode, 1)
