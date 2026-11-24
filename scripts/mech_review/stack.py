@@ -1291,6 +1291,10 @@ class TsAdapter(Adapter):
         the crate's own node_modules/.bin."""
         return "node_modules/.bin/jest" if ts_runner(crate) == "jest" else "node_modules/.bin/vitest run"
 
+    def runner_name(self, crate):
+        """the runner the checkout at crate picks: vitest or jest (R0's runtime fixture follows it, #21)."""
+        return ts_runner(crate)
+
     def worktree_setup(self, repo, wt, project_dir):
         """a worktree has no node_modules (ignored by git): link the caller checkout's node_modules into the crate dir,
         so the runner resolves from the repo's own install. Never linked over an existing dir; the link is removed with

@@ -100,11 +100,15 @@ def _tree(path):
     return out
 
 
-def load_runtime(fixtures_dir):
-    """Runtime of a fixture dir, or None when it has no runtime/ dir. r0.FixtureError: a controls.json that does not read."""
+def load_runtime(fixtures_dir, runner=None):
+    """Runtime of a fixture dir, or None when it has no runtime/ dir: `runtime-<runner>/` for the checkout's runner
+    when there is one (ts: runtime-jest/ for a jest checkout), else `runtime/`. r0.FixtureError: a controls.json that
+    does not read."""
     if not fixtures_dir:
         return None
     rt = os.path.join(fixtures_dir, "runtime")
+    if runner and os.path.isdir(f"{rt}-{runner}"):
+        rt = f"{rt}-{runner}"
     if not os.path.isdir(rt):
         return None
     path = os.path.join(rt, "controls.json")
@@ -765,9 +769,15 @@ def _controls_note(results, fx):
             f"{sum(1 for r in ctl if r['status'] == 'pass')} of {len(CONTROLS)} read right")
 
 
+def _runner_of(adapter, crate):
+    """the name of the runner the checkout at crate picks (ts: vitest or jest; an adapter file's [[run.runner]]), or
+    None: it picks the fixture variant the controls run (load_runtime)."""
+    return adapter.runner_name(crate) if hasattr(adapter, "runner_name") else None
+
+
 def _fixture_cases(adapter, runner, cmd, fixtures_dir, src, results, census_out):
     """the fixture census and the runner controls into results; the fixture Census or None."""
-    rt = load_runtime(fixtures_dir)
+    rt = load_runtime(fixtures_dir, _runner_of(adapter, src))
     if rt is None:
         results.append(_case("controls", "control", "unproven", "the runner controls", "no runtime/ fixtures"))
         return None
@@ -833,7 +843,7 @@ def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, prepare
     if prepared.hit:
         return _result("r3", adapter, [], fp, lines, where, f"fingerprint {fp[:12]} passed before (cache): not re-run",
                        ran=False)
-    rt = load_runtime(fixtures_dir)
+    rt = load_runtime(fixtures_dir, _runner_of(adapter, os.path.join(repo, project_dir)))
     results = []
     if rt is None:
         results.append(_case("r3-weak", "r3", "unproven", "a MISSED mutant", "no runtime/ fixtures"))

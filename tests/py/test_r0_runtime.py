@@ -667,3 +667,46 @@ class R3ControlRoots(Case):
         got = {x["case"]: x for x in env["checks"]["R0"]["cases"]}
         self.assertIn("in the reviewed checkout", got["r3-weak"]["got"], got)
         self.assertEqual([x for x in self.calls() if x.startswith("run ")], [])  # the tool never ran
+
+
+JEST_STUB = r'''
+import os, sys
+with open(os.environ["STUB_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+print("Tests:       1 passed, 1 total")
+'''
+
+
+class JestControls(unittest.TestCase):
+    """review N-c: a jest repo's runner controls run jest on the ts fixture's jest variant (runtime-jest/), never
+    vitest on the vitest project (which read n/a for ever)."""
+
+    def test_a_jest_checkout_runs_the_jest_fixture(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo, log, stub = (os.path.join(tmp.name, n) for n in ("repo", "calls.log", "stub.py"))
+        os.makedirs(os.path.join(repo, "tests"))
+        with open(stub, "w") as f:
+            f.write(JEST_STUB)
+        with open(os.path.join(repo, "package.json"), "w") as f:
+            f.write('{"name": "j", "devDependencies": {"jest": "29.7.0"}}\n')
+        with open(os.path.join(repo, "tests", "a.test.js"), "w") as f:
+            f.write('test("adds", () => {\n  expect(1 + 1).toBe(2);\n});\n')
+        g = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        subprocess.run(g[:3] + ["init", "-q", "-b", "main"], check=True)
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-qm", "b"], check=True)
+        with mock.patch.dict(os.environ, {"MECH_TEST_STUB": stub, "STUB_LOG": log}):
+            _kit.run_cli(["red", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts",
+                          "--test-paths", "tests/**", "--r0", os.path.join(tmp.name, "c")])
+        with open(log) as f:
+            calls = f.read().splitlines()
+        self.assertIn("tests/ctl.test.js -t ^Controls passes$", calls)
+
+    def test_a_file_whose_listing_is_another_runners_says_so(self):
+        from scripts.mech_review import adapter_file
+        ts = adapter_file.load(os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml"))
+        self.assertIsNone(ts.list_argv("node_modules/.bin/jest"))
+        self.assertEqual(ts.no_listing("node_modules/.bin/jest"),
+                         "the adapter file's [run.list] lists the `vitest` runner's tests, this checkout runs `jest`: "
+                         "no census")

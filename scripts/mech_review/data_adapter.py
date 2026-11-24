@@ -356,6 +356,15 @@ class DataAdapter(Adapter):
                 return None
         return shlex.split(lst["command"])
 
+    def no_listing(self, cmd):
+        """why list_argv gives no listing for cmd: no [run.list], or one that lists another runner's tests."""
+        lst = self._listing()
+        if not lst:
+            return f"the `{self.name}` adapter names no command that lists the runner's tests ([run.list])"
+        r = (self._runner(shlex.split(cmd)) or {}).get("name") if cmd else None
+        return (f"the adapter file's [run.list] lists the `{lst['runner']}` runner's tests, this checkout runs "
+                f"`{r}`: no census")
+
     def listed(self, rc, out, crate):
         """[(path or None, name)] of the tests the listing printed (pattern's `file` and `name` groups; the name split
         at the listing's separator and joined with tests.separator, as test_fns names it), or None when it failed:
