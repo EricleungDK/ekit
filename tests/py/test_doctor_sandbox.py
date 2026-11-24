@@ -377,15 +377,21 @@ class SandboxTrial(unittest.TestCase):
                                                        "mutants/ fails on `test`")
 
     def test_an_unreadable_dir_behind_a_top_level_test_link_outside_is_an_entry_not_a_crash(self):
-        # test -> <outside> is not walked (it may be big); copytree then cannot read outside/locked
+        # test -> <outside> is not walked (it may be big); copytree then cannot read outside/locked. The OS refuses
+        # the listing of locked as it does for a dir of mode 0 (which root could still read)
         outside = os.path.join(os.path.dirname(self.repo), "outside")
         write(outside, {"locked/x.txt": "", "ok.txt": ""})
         fifo(self, os.path.join(outside, "fifo"))
-        os.chmod(os.path.join(outside, "locked"), 0)
-        self.addCleanup(os.chmod, os.path.join(outside, "locked"), 0o700)
+        locked, real_scandir = os.path.join(outside, "locked"), os.scandir
+
+        def scandir(path="."):  # shutil also lists by an open fd (rmtree): those are never locked
+            if not isinstance(path, int) and os.path.realpath(os.fspath(path)) == os.path.realpath(locked):
+                raise PermissionError(errno.EACCES, "Permission denied", os.fspath(path))
+            return real_scandir(path)
         self.commit({"pyproject.toml": "[project]\n", "calc/__init__.py": "X = 1\n", "tests/test_a.py": PASSES,
                      ".github/workflows/mech-review.yml": CALLER % ""}, links=[("test", outside)])
-        env = self.doctor()
+        with unittest.mock.patch("os.scandir", scandir):
+            env = self.doctor()
         [e] = env["entries"]
         self.assertEqual((e["class"], e["severity"]), ("env", "fail"))
         self.assertEqual(e["problem"], "R3's mutmut sandbox cannot be built: mutmut's copy into mutants/ fails on "
