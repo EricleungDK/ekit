@@ -34,10 +34,10 @@ class Builtin(unittest.TestCase):
         subprocess.run(git + ["commit", "-qm", "base"], check=True)
         return repo
 
-    def r0(self, repo, stack):
+    def r0(self, repo, stack, rc=(0,)):
         r = _kit.run_cli(["red", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", stack,
                           "--test-paths", "tests/**", "--r0", self.cache])
-        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn(r.returncode, rc, r.stderr + r.stdout)
         return json.loads(r.stdout)["checks"]["R0"]
 
     def check_env(self, c):
@@ -89,6 +89,37 @@ class Builtin(unittest.TestCase):
         # unit_adds (src/lib.rs, `tests::unit_adds`), passes, fails, skipped (ignored: listed), nested::in_a_mod
         self.check_pass(c, 5)
         self.assertTrue(c["probes"][0].startswith("cargo --version: cargo "), c["probes"])
+
+
+    def rust_repo(self, integration):
+        """review S2: a lib test the scanner cannot see (made by a macro) and an integration test in tests/a.rs."""
+        lib = ("pub fn inc(x: i32) -> i32 { x + 1 }\n#[cfg(test)]\nmod tests {\n    macro_rules! mk { ($n:ident) => { "
+               "#[test] fn $n() { assert_eq!(super::inc(1), 2); } } }\n    mk!(adds);\n}\n")
+        return self.repo({"Cargo.toml": '[package]\nname = "cr"\nversion = "0.1.0"\nedition = "2021"\n',
+                          "src/lib.rs": lib,
+                          "tests/a.rs": f"#[test]\nfn {integration}() {{ assert_eq!(cr::inc(1), 2); }}\n"})
+
+    def test_rust_a_found_test_matches_one_listed_test_by_its_module_path(self):
+        for name in ("adds", "other"):
+            with self.subTest(integration=name):
+                c = self.r0(self.rust_repo(name), "rust", (0, 1))
+                if not CARGO:
+                    return self.check_env(c)
+                # listed: `tests::adds` (src/lib.rs, the macro's: unseen) and `<name>` (tests/a.rs): one found, one missed
+                self.assertEqual(c["census"]["repo"], {"found": 1, "listed": 2, "misses": ["tests::adds"]}, c)
+
+
+    def test_rust_the_miss_is_named_by_its_module_path(self):
+        """src/foo.rs's test is seen, src/bar.rs's (a macro's) is not: the miss is bar's, matched by module path."""
+        seen = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn x() { assert_eq!(1, 1); }\n}\n"
+        unseen = ("#[cfg(test)]\nmod tests {\n    macro_rules! mk { ($n:ident) => { #[test] fn $n() { assert_eq!(1, 1); } "
+                  "} }\n    mk!(x);\n}\n")
+        repo = self.repo({"Cargo.toml": '[package]\nname = "cr"\nversion = "0.1.0"\nedition = "2021"\n',
+                          "src/lib.rs": "pub mod bar;\npub mod foo;\n", "src/foo.rs": seen, "src/bar.rs": unseen})
+        c = self.r0(repo, "rust", (0, 1))
+        if not CARGO:
+            return self.check_env(c)
+        self.assertEqual(c["census"]["repo"], {"found": 1, "listed": 2, "misses": ["bar::tests::x"]}, c)
 
 
 if __name__ == "__main__":

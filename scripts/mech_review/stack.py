@@ -33,7 +33,9 @@ Adapter interface:
       runner cannot list tests: R0's census is not read) (#21; an adapter file's [run.list])
   listed(rc, out, crate) -> [(path or None, name)] of that listing (path crate-relative, None when the runner does not
       say; name as test_fns names it), or None: the listing failed. name_placeholders: a regex for name parts that
-      stand for any value (it.each's `%s`) or None; list_separator: how a qualified name joins its parts
+      stand for any value (it.each's `%s`) or None; list_separator: how a qualified name joins its parts;
+      listed_name(path, name) (optional): the name a listing with no file gives a test of that file (rust: its
+      module path, then its name); no_listing(cmd) (optional): why that runner has no listing
   target_os: the OS the stack's tests run on (#58): linux, macos or windows. Default linux (every built-in)
   commands: an adapter file's [commands] (#18): install, build, lint, test ("" = none), for ci-doctor and the
       session's verify commands; R1 and R4 use test only (default_test_cmd). The built-ins have none
@@ -363,6 +365,25 @@ class RustAdapter(Adapter):
     def test_argv(self, cmd, path, name):
         """one named test: libtest --exact matches the full mod-qualified name, so one test per run."""
         return shlex.split(cmd) + ["--", "--exact", name]
+
+    def listed_name(self, path, name):
+        """the name libtest lists a test of the file at path (crate-relative) by: its module path from the file, then
+        the scanner's mod-qualified name. src/lib.rs, src/main.rs, src/bin/*.rs and tests/*.rs are crate roots (no
+        prefix); src/a/b.rs and src/a/b/mod.rs are `a::b::`; tests/t/x.rs under tests/t/main.rs is `x::`."""
+        parts = path[:-len(".rs")].split("/") if path.endswith(".rs") else [path]
+        if parts[-1] == "mod":
+            parts = parts[:-1]
+        if parts[:1] == ["src"]:
+            rest = parts[1:]
+            if rest in (["lib"], ["main"]) or rest[:1] == ["bin"]:
+                rest = []
+        elif parts[:1] == ["tests"]:
+            rest = parts[2:] if len(parts) > 2 else []
+            if rest == ["main"]:
+                rest = []
+        else:
+            rest = []
+        return "::".join(rest + [name])
 
     def list_argv(self, cmd):
         """libtest's own listing: `<mod path>::<name>: test` per test, ignored ones too (doc tests named by file)."""
