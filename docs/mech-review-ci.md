@@ -155,7 +155,7 @@ python3 -I scripts/r3-local.py --base origin/main --stack python --test-paths 't
 
 `scripts/verified-commit.py [--allow-behind] RESULT WORKTREE` (#81) checks that a result describes the commit you act on: its `head` must be the worktree's HEAD and, when the branch is pushed, the branch's tip on its remote (its upstream, else `origin/<branch>`, asked with `git ls-remote`: a remote-tracking ref may be stale). `RESULT` is the envelope `mech-review.py` prints (`-` reads stdin). A detached HEAD, a missing remote or a branch the remote lacks is not pushed. `--allow-behind` also accepts a remote tip that is an ancestor of the result's head (verified fixes not pushed yet); a tip this clone lacks is refused (fetch, then rerun). Exit 0 the same commit; 1 another commit, both named; 2 no answer, with its reason: a result that cannot be read or has no commit SHA `head`, a path that is not a git worktree, a remote that cannot be asked. The orchestrate-agent skill runs it before the review and before a push.
 
-The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38; not yet in the workflow: an owner edit):
+The merged R3 artifact comes from this step in the `report` job, right after `merge mutants (R3, baseline and shards)` (#38). It uploads the single-stack `mutants-merged.json`; a run with several stacks writes one `mutants-merged<key>.json` per stack, which it leaves out:
 
 ```yaml
       - name: upload merged mutants result
