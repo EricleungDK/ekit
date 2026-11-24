@@ -308,7 +308,7 @@ def found_tests(adapter, files):
         try:
             if adapter.parse_error(text):
                 continue
-            out[path] = {f.name: list(f.markers) for f in adapter.test_fns(text)}
+            out[path] = {f.name: list(f.markers) for f in r0._at(adapter, path).test_fns(text)}
         except Exception:  # a scanner that crashes on a real file finds nothing there: the census names the misses
             out[path] = {}
     return out
@@ -462,7 +462,7 @@ def density(adapter, files, accepted):
         try:
             if adapter.parse_error(files[path]):
                 continue
-            got = asserting(adapter, files[path])
+            got = asserting(r0._at(adapter, path), files[path])
         except Exception:
             continue
         total += len(got)

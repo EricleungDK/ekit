@@ -139,5 +139,26 @@ class Builtin(unittest.TestCase):
                         line)
 
 
+    def test_python_a_test_class_on_an_imported_base_is_counted_and_run(self):
+        """S4/S4b: `class Foo(Base)` with `from base import Base` in tests/test_x.py: the census finds it, and R4 runs
+        a test the PR adds to it (red binds each file's path, as R2 does)."""
+        base = "import unittest\n\n\nclass Base(unittest.TestCase):\n    pass\n"
+        foo = "from base import Base\n\n\nclass Foo(Base):\n    def test_y(self):\n        self.assertEqual(1, 1)\n"
+        repo = self.repo({"pyproject.toml": '[project]\nname = "x"\nversion = "0"\n\n[tool.pytest.ini_options]\n'
+                                            'pythonpath = ["tests"]\n', "tests/base.py": base, "tests/test_x.py": foo})
+        more = foo + "\n    def test_z(self):\n        self.assertEqual(2, 2)\n"
+        with open(os.path.join(repo, "tests", "test_x.py"), "w") as f:
+            f.write(more)
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        subprocess.run(git + ["commit", "-qam", "head"], check=True)
+        r = _kit.run_cli(["red", "--repo", repo, "--base", "HEAD~1", "--head", "HEAD", "--stack", "python",
+                          "--test-paths", "tests/**", "--r0", self.cache])
+        env = json.loads(r.stdout)
+        if not PY3_PYTEST:
+            return self.check_env(env["checks"]["R0"])
+        self.assertEqual(env["checks"]["R0"]["census"]["repo"], {"found": 2, "listed": 2, "misses": []}, env)
+        self.assertEqual(env["checks"]["R4"]["note"], "1 new or changed test(s) run 5x at head")
+
+
 if __name__ == "__main__":
     unittest.main()

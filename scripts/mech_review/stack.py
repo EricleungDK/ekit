@@ -45,6 +45,7 @@ new method for its message text.
 """
 import configparser
 import ast
+import copy
 import functools
 import io
 import json
@@ -474,6 +475,7 @@ PY_OK = re.compile(r"^OK\b", re.M)
 PY_RAN = re.compile(r"^Ran [1-9]\d* tests?\b", re.M)
 PY_SEP = re.compile(r"^[\s#:;,\-\u2014\u2013]+")
 PY_TEST_FILE = re.compile(r"(?:test_.*|.*_test|tests)\.py")  # pytest's test_*.py and *_test.py, and django's tests.py
+PY_COLLECTED = re.compile(r"(?:test_.*|.*_test)\.py")  # the files pytest collects tests from (its python_files default)
 
 
 def _last(node):
@@ -514,7 +516,8 @@ class _Scan(ast.NodeVisitor):
     assertions with their enclosing test fn, calls per function, test bodies. Scope entries: ("class", name,
     is_test, skipped, None) or ("fn", name, is_test, qname, None)."""
 
-    def __init__(self):
+    def __init__(self, imported_bases=False):
+        self.imported_bases = imported_bases  # the imported-base rule applies (a file pytest collects tests from)
         self.known = set()  # TestCase-derived class names seen so far (a subclass in the same file counts)
         self.defined = set()  # every class name this file defined so far
         self.scope = []
@@ -548,7 +551,7 @@ class _Scan(ast.NodeVisitor):
         pytest collect it through that base, so it is a test class (#21: R0's census found the scanner blind to it).
         `object`, and a non-test class of this file, are no such base."""
         bases = [_last(b) for b in node.bases]
-        if not any(n and n != "object" and n not in self.defined for n in bases):
+        if not self.imported_bases or not any(n and n != "object" and n not in self.defined for n in bases):
             return False
         return any(isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name.startswith("test") for s in node.body)
 
@@ -635,10 +638,18 @@ class PythonAdapter(Adapter):
         `test_connection` is production code: no runner collects it, so it is not a test to guard or to run."""
         return any_glob(path, test_globs) or PY_TEST_FILE.fullmatch(os.path.basename(path)) is not None
 
-    @staticmethod
-    def _scan(text):
+    path = None  # the file being read (at): the imported-base rule holds only in a file pytest collects (#21 S4b)
+
+    def at(self, path):
+        """this adapter reading the file at path: a class on an imported base counts as a test class only in a
+        `test_*.py` or `*_test.py` file, never in conftest.py or a helper module (a fake's `test_connection`)."""
+        bound = copy.copy(self)
+        bound.path = path
+        return bound
+
+    def _scan(self, text):
         tree = ast.parse(text)
-        sc = _Scan()
+        sc = _Scan(bool(self.path) and PY_COLLECTED.fullmatch(os.path.basename(self.path)) is not None)
         sc.visit(tree)
         return sc
 
