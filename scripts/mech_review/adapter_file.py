@@ -177,13 +177,15 @@ def _lexer(d):
     return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx)
 
 
-def _tests(d, lexer):
+def _tests(d, lexer, functions=False):
     f = "tests"
-    _table(d, f, ("style", "groups", "cases", "separator", "skip", "only", "skip_modifiers", "only_modifiers",
-                  "table_modifiers", "min_args", "not_after", "skipped_text"), ("style", "cases"))
-    style = _str(d["style"], f + ".style")
-    if style != "calls":
-        _err(f + ".style", f"unknown style `{style}`: want calls")
+    style = _str(_table(d, f, TEST_KEYS + ("prefix",), ("style", "cases")).get("style"), f + ".style")
+    if style not in ("calls", "declared"):
+        _err(f + ".style", f"unknown style `{style}`: want calls or declared")
+    if style == "declared":
+        return _declared(d, lexer, functions)
+    if "prefix" in d:
+        _err(f + ".prefix", "style calls has no prefix (declared only: what starts a test's marker)")
     names = set(_idents(d.get("groups", []), f + ".groups", lexer)) | set(_idents(d["cases"], f + ".cases", lexer, True))
     for k in ("skip", "only"):
         for i, w in enumerate(_strs(d.get(k, []), f"{f}.{k}")):
@@ -196,6 +198,34 @@ def _tests(d, lexer):
     if "min_args" in d:
         _int(d["min_args"], f + ".min_args")
     _strs(d.get("not_after", []), f + ".not_after")
+    if "skipped_text" in d:
+        _template(d["skipped_text"], f + ".skipped_text", "name")
+
+
+TEST_KEYS = ("style", "groups", "cases", "separator", "skip", "only", "skip_modifiers", "only_modifiers",
+             "table_modifiers", "min_args", "not_after", "skipped_text")
+CALLS_ONLY = ("skip_modifiers", "only_modifiers", "table_modifiers", "min_args", "not_after")
+
+
+def _declared(d, lexer, functions):
+    """[tests] style declared (#22): a test is a [functions] shape with a case marker before it (`@Test`); groups are
+    `<word> NAME ...{...}` declarations; skip and only are marker words."""
+    f = "tests"
+    for k in CALLS_ONLY:
+        if k in d:
+            _err(f"{f}.{k}", "style calls only: a declared test is no call")
+    if not functions:
+        _err("functions", "missing: tests.style declared reads each test as a [functions] shape with a marker")
+    if "prefix" not in d:
+        _err(f + ".prefix", "missing: style declared needs what starts a marker, e.g. \"@\"")
+    prefix = _str(d["prefix"], f + ".prefix")
+    if any(lexer.is_ident(ch) or ch.isspace() or ch in lexer.opens + lexer.closes + (lexer.member or "") for ch in prefix):
+        _err(f + ".prefix", f"`{prefix}`: want punctuation that is no word character, bracket or member character")
+    _idents(d["cases"], f + ".cases", lexer, True)
+    for k in ("groups", "skip", "only"):
+        _idents(d.get(k, []), f"{f}.{k}", lexer)
+    if "separator" in d:
+        _str(d["separator"], f + ".separator")
     if "skipped_text" in d:
         _template(d["skipped_text"], f + ".skipped_text", "name")
 
@@ -300,7 +330,7 @@ def _mutation(d, run=None):
 
 REPORT_FORMATS = ("mutation-testing-elements", "pit-xml", "lines")  # what R3 reads: report formats, not tools (#19)
 TOOL_ARGS = ("mutate", "timeout_ms", "timeout_s", "report")  # [mutation.tool].args placeholders
-RANGE = ("file", "first", "last")  # [mutation.tool].mutate placeholders: one changed-line range
+RANGE = ("file", "first", "last", "module")  # [mutation.tool].mutate placeholders: one changed-line range
 STATUS_KINDS = ("missed", "caught", "timeout", "unviable")  # format lines: what each status word means for R3
 LINE_GROUPS = ("file", "line", "status")
 TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # the tool's name in notes: ASCII, no space or quote
@@ -311,8 +341,8 @@ def _tool(d, config_files, run):
     """[mutation.tool]: the command R3 runs on the changed lines, the report it writes and the report's format. Returns
     the table with its defaults filled and its patterns compiled (version_rx, baseline_rx, pattern_rx)."""
     f = "mutation.tool"
-    _table(d, f, ("name", "command", "args", "mutate", "mutate_join", "version", "version_pattern", "report", "format",
-                  "os", "timeout", "baseline_failed", "pattern", "status", "runners"),
+    _table(d, f, ("name", "command", "args", "mutate", "mutate_join", "module_roots", "version", "version_pattern",
+                  "report", "format", "os", "timeout", "baseline_failed", "pattern", "status", "runners"),
            ("name", "command", "report", "format", "os"))
     name = _str(d["name"], f + ".name")
     if not TOOL_NAME.fullmatch(name):
@@ -326,10 +356,11 @@ def _tool(d, config_files, run):
     if "mutate" in d:
         if "mutate" not in used:
             _err(f + ".mutate", "never used: no arg has `{mutate}`")
-        if "file" not in _template(d["mutate"], f + ".mutate", RANGE):
-            _err(f + ".mutate", "no `{file}`: a range names its file")
+        _module_roots(d, f, _template(d["mutate"], f + ".mutate", RANGE))
     elif "mutate" in used:
         _err(f + ".mutate", "missing: an arg uses `{mutate}`, the changed line ranges")
+    elif "module_roots" in d:
+        _err(f + ".module_roots", "never used: no mutate has `{module}`")
     _str(d.get("mutate_join", ","), f + ".mutate_join")
     version = _strs(d["version"], f + ".version", nonempty=True) if "version" in d else None
     if "runners" in d:
@@ -363,6 +394,21 @@ def _tool(d, config_files, run):
 
 
 ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")  # a POSIX or a Windows drive path
+
+
+def _module_roots(d, f, names):
+    """mutate names its file: `{file}`, or `{module}` (#22: the file under one of module_roots, as a dotted name, PIT's
+    class name), which needs module_roots: dirs under the project dir, each a path as `report` is."""
+    if "file" not in names and "module" not in names:
+        _err(f + ".mutate", "no `{file}` or `{module}`: a range names its file")
+    if "module" not in names:
+        if "module_roots" in d:
+            _err(f + ".module_roots", "never used: mutate has no `{module}`")
+        return
+    if "module_roots" not in d:
+        _err(f + ".module_roots", "missing: `{module}` is a file's dotted name under one of these dirs")
+    for i, root in enumerate(_strs(d["module_roots"], f + ".module_roots", nonempty=True)):
+        _filepath(root, f"{f}.module_roots[{i}]")
 
 
 def _program(word, field):
@@ -752,7 +798,7 @@ def parse(data):
         tool = _mutation(data.get("mutation", {}), run)
     else:
         lexer = _lexer(data["lexer"])
-        _tests(data["tests"], lexer)
+        _tests(data["tests"], lexer, "functions" in data)
         shapes = _functions(data["functions"], lexer) if "functions" in data else []
         _asserts(data["asserts"], lexer)
         _suppressions(data.get("suppressions", []))

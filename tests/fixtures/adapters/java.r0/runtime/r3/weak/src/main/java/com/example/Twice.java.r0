@@ -1,0 +1,10 @@
+package com.example;
+
+public final class Twice {
+    private Twice() {
+    }
+
+    public static int twice(int n) {
+        return n + n;
+    }
+}

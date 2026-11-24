@@ -1,0 +1,141 @@
+# TEST FIXTURE, NOT A SUPPORTED BUILT-IN. ekit's hand-written Java reference adapter (#22): Maven, JUnit 5, PIT.
+# It proves that the adapter format and the engine can express Java end to end (R2, R1, R4, R3 through PIT, and R0's
+# static and runtime halves) before an agent is asked to generate an adapter (#23): when a generated adapter fails,
+# comparing it with this one shows whether the engine or the agent is at fault. It is never shipped or offered: it
+# sits under tests/fixtures, which neither `resolve`, `auto` nor any listing reads (they see the built-ins and a repo's
+# .ekit/adapters/<name>.toml only), and #25 deletes it once the generated adapter holds up.
+# Use: mech-review.py all --stack java --adapter tests/fixtures/adapters/java.toml --test-paths 'src/test/**'
+# Its R0 fixtures sit beside it (java.r0/); tests/py/test_java_reference.py runs it on a Maven fixture repo.
+# Format: docs/mech-review-ci.md#adapter-file
+format = 1
+name = "java"
+manifests = ["pom.xml"]
+extensions = [".java"]
+target-os = "linux"
+
+[lexer]
+block_style = "braces"
+brackets = ["()", "[]", "{}"]
+ident_chars = "$"
+line_comments = ["//"]
+block_comments = [["/*", "*/"]]
+
+# a text block first: `"""` would otherwise read as an empty string and an open one
+[[lexer.strings]]
+quote = '"""'
+escape = '\'
+multiline = true
+name = "text block"
+
+[[lexer.strings]]
+quote = '"'
+escape = '\'
+
+[[lexer.strings]]
+quote = "'"
+escape = '\'
+
+# JUnit 5: a test is a method with a test annotation; a class groups them (`CalcTest.adds`); @Disabled skips a method,
+# or every test in a class
+[tests]
+style = "declared"
+prefix = "@"
+cases = ["Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"]
+groups = ["class"]
+skip = ["Disabled"]
+separator = "."
+skipped_text = "test `{name}` marked @Disabled"
+
+# methods: a test (JUnit 5 test methods return void) or a helper it calls, which owns the asserts in it
+[functions]
+shapes = [
+  "void NAME (...) {...}",
+  "void NAME (...) throws ...{...}",
+]
+
+# org.junit.jupiter.api.Assertions, statically imported (`Assertions.assertEquals(` is a member call: not read)
+[[asserts.call]]
+names = ["assertEquals", "assertArrayEquals", "assertIterableEquals", "assertSame"]
+kind = "eq"
+operands = [0, 1]
+
+[[asserts.call]]
+names = ["assertNotEquals", "assertNotSame"]
+kind = "ne"
+operands = [0, 1]
+
+[[asserts.call]]
+names = ["assertTrue", "assertFalse", "assertNull", "assertNotNull", "assertThrows", "assertDoesNotThrow",
+         "assertAll", "assertTimeout", "assertLinesMatch", "assertInstanceOf", "fail"]
+kind = "other"
+
+# AssertJ: assertThat(actual).isEqualTo(expected)
+[[asserts.chain]]
+start = "assertThat"
+eq = ["isEqualTo"]
+
+# PMD's `// NOPMD`, with its reason after it: `// NOPMD - why`
+[[suppressions]]
+directives = ["NOPMD"]
+covers = { "NOPMD" = "line" }
+lints = "directive"
+reason_strip = [" -:"]
+problem = "`{lints}` added without a reason"
+hint = "fix the PMD finding, or give the suppression a reason after it: `// NOPMD - why`"
+
+# R3 (#19) through PIT 1.17.4 (pitest-maven, with pitest-junit5-plugin in the project's pom.xml): the changed classes
+# (`{module}`: a changed file under src/main/java as its class name, with its nested and inner classes), then ekit's
+# own changed-line filter keeps the MISSED mutants on the changed lines. mutations.xml is read as pit-xml.
+# The program is `mvn` on PATH (never ./mvnw: a file in the checkout the PR could change).
+[mutation.tool]
+name = "pit"
+command = "mvn"
+version = ["--version"]
+version_pattern = '^Apache Maven \d'
+args = ["-B", "-ntp", "test-compile", "org.pitest:pitest-maven:mutationCoverage", "-DtargetClasses={mutate}",
+        "-DoutputFormats=XML", "-DtimestampedReports=false", "-DfailWhenNoMutations=false",
+        "-DtimeoutConstant={timeout_ms}"]
+mutate = "{module},{module}$*"
+module_roots = ["src/main/java"]
+report = "target/pit-reports/mutations.xml"
+format = "pit-xml"
+os = ["linux", "macos", "windows"]
+baseline_failed = 'All tests did not pass without mutation|Mutation testing requires a green suite'
+
+# the stack's commands (ci-doctor's base jobs, the session's verify commands); R1 and R4 start from test. lint is
+# javac's: the project's own -Xlint options, with any warning an error
+[commands]
+install = "mvn -B -ntp dependency:go-offline"
+build = "mvn -B -ntp test-compile"
+lint = "mvn -B -ntp test-compile -Dmaven.compiler.showWarnings=true -Dmaven.compiler.failOnWarning=true"
+test = "mvn -B -ntp test"
+
+# one named test: surefire's -Dtest=Class#method (the class's simple name)
+[run]
+test = ["-Dtest={name}"]
+
+# surefire joins a class and its method with `#`
+[[run.runner]]
+name = "surefire"
+separator = "#"
+
+# R0's census (#21): JUnit Platform's dry run (junit.platform.execution.dryRun.enabled, JUnit 5.10 or newer) through
+# surefire discovers every test as a run does and executes none: each is reported skipped, one line per test in
+# surefire's plain report (`com.example.CalcTest.adds skipped`). The name has its package: the census matches it to the
+# scanner's `CalcTest.adds` by its tail. A JUnit older than 5.10 runs the tests instead: they print as
+# `<name> -- Time elapsed`, so they are still listed.
+[run.list]
+command = "mvn -B -ntp test -Djunit.platform.execution.dryRun.enabled=true -Dsurefire.reportFormat=plain -Dsurefire.useFile=false"
+pattern = '^\[\w+\] (?P<name>[\w$.]+\.[\w$]+)(?: skipped| -- Time elapsed)'
+separator = "."
+
+# surefire's counts: run, failures, errors, skipped, from the last summary line (under Results). A run's passed count
+# is its run count when no test failed, errored or was skipped: a single named test runs alone
+[run.outcome]
+summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'
+passed = 'Tests run: (\d+), Failures: 0, Errors: 0, Skipped: 0'
+failed = '(?:Failures|Errors): (\d+)'
+skipped = 'Skipped: (\d+)'
+build = 'COMPILATION ERROR|Compilation failure'
+no_test = 'No tests matching pattern'
+env = 'JAVA_HOME environment variable is not defined correctly|JAVA_HOME not found|No compiler is provided in this environment'

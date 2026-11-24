@@ -359,11 +359,28 @@ def _ranges(r):
         if "mutate" in t and t["mutate_join"] in crate_f:
             return None, (_check("n/a", f"{f}: a file name with `{t['mutate_join']}` in it cannot be passed to "
                                         f"{t['name']} (env): mutation.tool.mutate_join"), [])
+        module = module_name(t, crate_f)
+        if module == "":
+            return None, (_check("n/a", f"{f}: under none of mutation.tool.module_roots ({', '.join(t['module_roots'])}), "
+                                        f"so it has no `{{module}}` to pass to {t['name']} (env)"), [])
         for a, _, b in (x.partition("-") for x in line_ranges(ln for ln, _ in r.changed.get(f, []))):
-            ranges.append(t["mutate"].format(file=crate_f, first=a, last=b) if "mutate" in t else crate_f)
+            ranges.append(t["mutate"].format(file=crate_f, first=a, last=b, module=module) if "mutate" in t else crate_f)
     if "mutate" in t and not ranges:
         return None, (_check("pass", "0 mutants in the diff", 0, 0), [])
     return ranges, None
+
+
+def module_name(t, path):
+    """`{module}` of a project-dir relative path (#22): the path under the first of mutation.tool.module_roots that
+    holds it, its extension dropped, `/` as `.` (src/main/java/com/x/Calc.java -> com.x.Calc). "" when no root holds
+    it; None when mutate has no `{module}`."""
+    roots = t.get("module_roots")
+    if not roots:
+        return None
+    for root in roots:
+        if path.startswith(root + "/"):
+            return os.path.splitext(path[len(root) + 1:])[0].replace("/", ".")
+    return ""
 
 
 def _argv(r, extra, ranges, config):

@@ -1,0 +1,24 @@
+// R0 seed (java): each test is a run of non-blank lines; `adds` has two asserts, each on its own line.
+package com.example;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+
+class CalcTest {
+
+    @Test
+    void adds() {
+        int x = Calc.add(1, 2);
+        assertEquals(3, x);
+        assertTrue(x != 4);
+    }
+
+    @Test
+    void addsZero() {
+        assertEquals(3, Calc.add(0, 2));
+    }
+
+}

@@ -1,0 +1,13 @@
+// R0 R3 control (java): a weak assert, a MISSED mutant.
+package com.example;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Test;
+
+class TwiceTest {
+    @Test
+    void twice() {
+        assertTrue(Twice.twice(2) >= 0);
+    }
+}
