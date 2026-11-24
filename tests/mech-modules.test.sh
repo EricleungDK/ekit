@@ -3,7 +3,7 @@
 source "$(dirname "$0")/lib.sh"
 PKG="$ROOT/scripts/mech_review"
 
-for m in gitio report scan parser_cmd data_adapter adapter_file r2 r0 red mutants mutation_tool r0_runtime engine merge resolve stack_plan doctor comment cli; do
+for m in gitio report scan parser_cmd data_adapter adapter_file r2 r0 red mutants mutation_tool r0_runtime engine merge resolve stack_plan parser_install doctor comment cli; do
   out=$(python3 -I -c "import sys; sys.path.insert(0, sys.argv[1]); import mech_review.$m" "$ROOT/scripts" 2>&1)
   eq "$out" "" "mech_review.$m imports first, alone"
 done

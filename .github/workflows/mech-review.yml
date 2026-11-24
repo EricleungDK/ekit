@@ -198,6 +198,61 @@ jobs:
           path: mech-review-drift.json
           if-no-files-found: ignore
           overwrite: true
+      - name: install the declared parser (the base's adapter file, #27)
+        # the [parser] of the base branch's adapter file for this leg (parser-install reads no head copy, ADR 0001):
+        # its install argvs, each run as argv, never through a shell; nothing for a built-in or a pattern file.
+        # EKIT_PARSER_HOME, under the runner's temp dir (empty when the job starts), reaches this job's later engine
+        # steps through GITHUB_ENV. A failed install is not a stop: the engine reads the parser as not installed by
+        # the declared package, a blocking CI entry, never a pass
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
+        shell: bash
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import os
+          import shlex
+          import subprocess
+          import sys
+          import tempfile
+
+          ws, home = os.environ["GITHUB_WORKSPACE"], os.path.join(os.environ["RUNNER_TEMP"], "ekit-parsers")
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.write(f"EKIT_PARSER_HOME={home}\n")
+          env = dict(os.environ, EKIT_PARSER_HOME=home)
+          p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
+                              f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--stack", os.environ["STACK"],
+                              "--project-dir", os.environ["PROJECT_DIR"], "--home", home], stdout=subprocess.PIPE, env=env)
+          try:
+              if p.returncode:
+                  raise ValueError(f"exit {p.returncode}")
+              got = json.loads(p.stdout)
+              steps, program = got["steps"], got.get("program")
+              if not isinstance(steps, list) or not all(
+                      isinstance(s, list) and s and all(isinstance(w, str) for w in s) for s in steps):
+                  raise ValueError("steps: want a list of argv lists")
+          except (ValueError, KeyError, TypeError, AttributeError) as e:
+              print(f"::error::mech-review parser-install: {e}: no parser installed (the engine reports it)")
+              sys.exit(1)
+          cwd = tempfile.mkdtemp(prefix="ekit-parser-install-", dir=os.environ["RUNNER_TEMP"])  # fresh: not the
+          for argv in steps:  # checkout, whose files `python -m pip` would import from its cwd
+              print(f"install: {shlex.join(argv)}", flush=True)
+              try:
+                  rc = subprocess.run(argv, env=env, cwd=cwd).returncode
+              except OSError as e:
+                  rc = f"cannot run: {e.strerror or e}"
+              if rc != 0:
+                  print(f"::error::parser install step failed ({rc}): {shlex.join(argv)}: the engine reads the parser "
+                        "as not installed by the declared package, a blocking CI entry")
+                  sys.exit(1)
+          if isinstance(program, str) and not os.access(program, os.X_OK):
+              print(f"::error::the install steps left no program at {program}: the engine reads the parser as not "
+                    "installed by the declared package")
+              sys.exit(1)
+          PY
       - name: R2 guard
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -352,6 +407,61 @@ jobs:
           SETUP_COMMAND: ${{ inputs.setup-command }}
         shell: bash
         run: bash -c "$SETUP_COMMAND"
+      - name: install the declared parser (the base's adapter file, #27)
+        # the [parser] of the base branch's adapter file for this leg (parser-install reads no head copy, ADR 0001):
+        # its install argvs, each run as argv, never through a shell; nothing for a built-in or a pattern file.
+        # EKIT_PARSER_HOME, under the runner's temp dir (empty when the job starts), reaches this job's later engine
+        # steps through GITHUB_ENV. A failed install is not a stop: the engine reads the parser as not installed by
+        # the declared package, a blocking CI entry, never a pass
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          STACK: ${{ matrix.stack }}
+          PROJECT_DIR: ${{ matrix.project-dir }}
+        shell: bash
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import os
+          import shlex
+          import subprocess
+          import sys
+          import tempfile
+
+          ws, home = os.environ["GITHUB_WORKSPACE"], os.path.join(os.environ["RUNNER_TEMP"], "ekit-parsers")
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.write(f"EKIT_PARSER_HOME={home}\n")
+          env = dict(os.environ, EKIT_PARSER_HOME=home)
+          p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
+                              f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--stack", os.environ["STACK"],
+                              "--project-dir", os.environ["PROJECT_DIR"], "--home", home], stdout=subprocess.PIPE, env=env)
+          try:
+              if p.returncode:
+                  raise ValueError(f"exit {p.returncode}")
+              got = json.loads(p.stdout)
+              steps, program = got["steps"], got.get("program")
+              if not isinstance(steps, list) or not all(
+                      isinstance(s, list) and s and all(isinstance(w, str) for w in s) for s in steps):
+                  raise ValueError("steps: want a list of argv lists")
+          except (ValueError, KeyError, TypeError, AttributeError) as e:
+              print(f"::error::mech-review parser-install: {e}: no parser installed (the engine reports it)")
+              sys.exit(1)
+          cwd = tempfile.mkdtemp(prefix="ekit-parser-install-", dir=os.environ["RUNNER_TEMP"])  # fresh: not the
+          for argv in steps:  # checkout, whose files `python -m pip` would import from its cwd
+              print(f"install: {shlex.join(argv)}", flush=True)
+              try:
+                  rc = subprocess.run(argv, env=env, cwd=cwd).returncode
+              except OSError as e:
+                  rc = f"cannot run: {e.strerror or e}"
+              if rc != 0:
+                  print(f"::error::parser install step failed ({rc}): {shlex.join(argv)}: the engine reads the parser "
+                        "as not installed by the declared package, a blocking CI entry")
+                  sys.exit(1)
+          if isinstance(program, str) and not os.access(program, os.X_OK):
+              print(f"::error::the install steps left no program at {program}: the engine reads the parser as not "
+                    "installed by the declared package")
+              sys.exit(1)
+          PY
       - name: R0 runtime fingerprint (run)
         # #21: the key of a passed proof in the cache below. No key (an error here) only means the red step proves it
         id: r0fp
