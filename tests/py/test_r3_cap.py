@@ -496,10 +496,13 @@ class TestPythonCap(PyRepo):
     def test_a_listing_cut_by_the_budget_leaves_a_shards_total_unknown(self):
         # each shard's listing may be partial, so a dealt count could count a mutant twice or not at all. Unsharded,
         # the listed count stands (test_mutmut_run: 0/2 tested when the budget ends the listing)
-        for shard in ("0/2", "1/2"):
+        # the tested count is known, the total not: the partial entry says both, and its causes (#79): shard 0
+        # reports the 2 of 5 past the cap of 3
+        for shard, why in (("0/2", "past the cap; budget hit"), ("1/2", "budget hit")):
             check, entries = self.r3(CopyingMutmut(list_timeout=True), cap=3, shard=shard)
             self.assertEqual((check["status"], check["tested"], check["total"]), ("partial", 0, None), shard)
             self.assertEqual([e for e in entries if e["severity"] == "fail"], [])
+            self.assertEqual([e["problem"] for e in entries], [f"R3 partial: total unknown (0 tested): {why}"])
 
     def test_a_shard_with_no_share_of_the_capped_list_is_empty_and_merges_counting_each_mutant_once(self):
         from scripts.mech_review import merge
