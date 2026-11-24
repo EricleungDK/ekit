@@ -126,6 +126,7 @@ class Declared(unittest.TestCase):
 
     def test_timeout_is_a_whole_number_of_seconds(self):
         self.assertEqual(parse(with_tool(changed(timeout=30))).mutation_tool["timeout"], 30)
+        self.assertEqual(parse(with_tool(changed(timeout=1))).mutation_tool["timeout"], 1)  # the least, 1 s
         for bad in (0, True, 1.5, "30"):
             with self.subTest(bad):
                 self.assertEqual(self.err(with_tool(changed(timeout=bad))),
@@ -223,6 +224,11 @@ class Runners(unittest.TestCase):
     def test_a_runner_name_is_one_of_run_runner(self):
         self.assertEqual(self.err(with_tool(changed(runners={"jest": {}}), self.MUT, **RUN)),
                          "mutation.tool.runners.jest: not a [[run.runner]] name: want fast or slow")
+
+    def test_a_run_table_with_no_runner_names_none_to_pick(self):
+        run = {"commands": RUN["commands"], "run": {k: v for k, v in RUN["run"].items() if k != "runner"}}
+        self.assertEqual(self.err(with_tool(changed(runners={"fast": {}}), self.MUT, **run)),
+                         "mutation.tool.runners.fast: not a [[run.runner]] name: want a [[run.runner]] first")
 
     def test_runner_keys(self):
         bad = {"needs": "../x"}
