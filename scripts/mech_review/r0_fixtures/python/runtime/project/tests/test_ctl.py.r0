@@ -1,0 +1,34 @@
+# R0 runtime controls (python): one test per verdict the runner must give, and the test styles the census reads.
+import unittest
+
+import pytest
+
+from calc import add
+
+
+def test_passes():
+    assert add(1, 2) == 3
+
+
+def test_fails():
+    assert add(1, 2) == 4
+
+
+@pytest.mark.skip(reason="the R0 skipped control")
+def test_skipped():
+    assert add(1, 2) == 3
+
+
+@pytest.mark.parametrize("a", [1, 2])
+def test_each(a):
+    assert add(a, 0) == a
+
+
+class TestStyle:
+    def test_method(self):
+        assert add(2, 2) == 4
+
+
+class CaseStyle(unittest.TestCase):
+    def test_unittest(self):
+        self.assertEqual(add(1, 1), 2)

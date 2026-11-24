@@ -1,0 +1,6 @@
+// R0 runtime build control (ts, jest): this file does not load (the require does not resolve).
+const { nothing } = require("../src/r0-no-such-module");
+
+test("builds", () => {
+  expect(nothing).toBe(1);
+});

@@ -1,0 +1,4 @@
+# R0 R3 control (mini): a weak assert, a MISSED mutant.
+test("twice", {
+  assertTrue(twice(2) >= 0)
+})

@@ -1,0 +1,6 @@
+# R0 R3 control (python): a strong assert, no MISSED mutant.
+from twice import twice
+
+
+def test_twice():
+    assert twice(2) == 4

@@ -1,0 +1,7 @@
+// R0 R3 control (rust): a strong assert, no MISSED mutant.
+use r0_controls::twice::twice;
+
+#[test]
+fn twice_doubles() {
+    assert_eq!(twice(2), 4);
+}

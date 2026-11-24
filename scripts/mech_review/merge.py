@@ -6,15 +6,18 @@ n/a; their entries stay, marked `blocked`, and still count); a CI entry in a job
 unreadable, or for another head) fails the checks it owns and adds one CI entry naming it, so a crash in one job
 never hides the other job's entries. A job that was not run (no production file changed) is simply absent: its
 checks stay skipped. Several stacks (#17): each stack's results merge apart, then combine_stacks reports them as one.
+R0's runtime half (#21) rides in the red and mutants results beside their own checks: each part is combined with the
+guard's static half into one R0 (r0.combine), and its entries are kept.
 """
 import hashlib
 import json
 
 from .report import ALL, CHECKS, entry, envelope, finalize
 from .mutants import partial_entry
-from .r0 import blocked, mark
+from .r0 import blocked, combine, mark
 
 OWNS = {"r2": ("R2",), "red": ("R1", "R4"), "mutants": ("R3",), "drift": ("D",), "r0": ("R0",)}
+RUNTIME = ("red", "mutants")  # the jobs whose result may hold a part of R0's runtime half (#21)
 
 
 def merge(parts, reasons):
@@ -25,7 +28,7 @@ def merge(parts, reasons):
     first = present[0]
     checks = {c: {"status": "skipped", "note": "not run by any job"} for c in CHECKS}
     checks["R3"] = {"status": "skipped", "note": "not run: no production file changed"}
-    kept, ci = [], []
+    kept, ci, rt_parts = [], [], []
     for job, env in parts.items():
         owned = OWNS[job]
         if env is None:
@@ -39,8 +42,14 @@ def merge(parts, reasons):
         for c in owned:
             if c in CHECKS or c in env["checks"]:  # an optional check (D) a job did not report stays out
                 checks[c] = env["checks"][c]
+        runtime = job in RUNTIME and "R0" in env["checks"]  # R0's runtime half, from the jobs that run it (#21)
+        if runtime:
+            rt_parts.append(env["checks"]["R0"])
         # a job's own CI entries (the mutants merge: a missing or mismatched shard, #42) reach the comment too
-        kept += [e for e in env["entries"] if e["check"] in owned or e["check"] == "CI"]
+        kept += [e for e in env["entries"] if e["check"] in owned or e["check"] == "CI"
+                 or (runtime and e["check"] == "R0")]
+    if rt_parts:
+        checks["R0"] = combine([checks.get("R0")] + rt_parts)
     # a failed R0 (#20) blocks the checks that read tests through the adapter, whichever job ran them: n/a, cause named
     # (one no job ran stays skipped); their entries stay and count, marked
     stop = blocked(checks.get("R0") or {}, checks)
@@ -182,7 +191,7 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     Partial: exactly one partial confirm for the merged run, however many shards hit the budget.
     Entries: one per id (see _add_unique)."""
     checks = {c: {"status": "skipped", "note": "not run by mutants"} for c in CHECKS}
-    kept, ci, notes, statuses, timings = [], [], [], [], []
+    kept, ci, notes, statuses, timings, r0_parts = [], [], [], [], [], []
     seen = {}
     tested = total = 0
     counted = unknown = False
@@ -205,8 +214,10 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
         timings.append((label, c.get("timing"), c.get("tested")))
         # a shard's own partial confirm is replaced by the one for the merged run
         for e in env["entries"]:
-            if e["check"] == "R3" and e["id"] != guard_id:
+            if (e["check"] == "R3" and e["id"] != guard_id) or (e["check"] == "R0" and "R0" in env["checks"]):
                 _add_unique(kept, seen, e, label)
+        if "R0" in env["checks"]:  # R0's R3 control (#21): shard 0 runs it
+            r0_parts.append(env["checks"]["R0"])
         if c.get("tested") is not None:
             counted = True
             tested += c["tested"]
@@ -240,6 +251,8 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     if timing:
         check["timing"] = timing
     checks["R3"] = check
+    if r0_parts:
+        checks["R0"] = combine(r0_parts)
     if status == "partial":
         kept.append(partial_entry(check))
     ci = finalize(ci)

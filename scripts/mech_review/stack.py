@@ -29,6 +29,13 @@ Adapter interface:
   r3_tool: R3Tool(kind, packages, env, mutants_cmd) or None: the R3 tool as the workflow installs it, pinned (kind:
       venv = pip into a venv, npm = npm install --prefix, cargo = cargo install); env: set for the R3 runs;
       mutants_cmd: the tool's binary under the install dir, or None (on PATH). scripts/r3-local.py reads it (#35)
+  list_argv(cmd) -> argv that lists every test the runner collects in the crate, without running them, or None (the
+      runner cannot list tests: R0's census is not read) (#21; an adapter file's [run.list])
+  listed(rc, out, crate) -> [(path or None, name)] of that listing (path crate-relative, None when the runner does not
+      say; name as test_fns names it), or None: the listing failed. name_placeholders: a regex for name parts that
+      stand for any value (it.each's `%s`) or None; list_separator: how a qualified name joins its parts;
+      listed_name(path, name) (optional): the name a listing with no file gives a test of that file (rust: its
+      module path, then its name); no_listing(cmd) (optional): why that runner has no listing
   target_os: the OS the stack's tests run on (#58): linux, macos or windows. Default linux (every built-in)
   commands: an adapter file's [commands] (#18): install, build, lint, test ("" = none), for ci-doctor and the
       session's verify commands; R1 and R4 use test only (default_test_cmd). The built-ins have none
@@ -38,6 +45,7 @@ new method for its message text.
 """
 import configparser
 import ast
+import copy
 import functools
 import io
 import json
@@ -59,6 +67,7 @@ Suppression = namedtuple("Suppression", "line end_line kind lints lint_text reas
 R3Tool = namedtuple("R3Tool", "kind packages env mutants_cmd")
 
 RESULT = re.compile(r"test result: \w+\. (\d+) passed; (\d+) failed")
+RUST_LISTED = re.compile(r"^(\S+): test$", re.M)
 BUILD = re.compile(r"could not compile|error\[E\d{4}\]")
 RAW = re.compile(r'(?:br|cr|r)(#*)"')
 FN = re.compile(r'((?:#\[[^\]]*\]\s*)*)(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)')
@@ -231,6 +240,15 @@ class Adapter:
         """the test command for a checkout whose crate dir is `crate` (absolute): --test-cmd overrides it."""
         return self.default_test_cmd
 
+    name_placeholders = None
+    list_separator = "::"
+
+    def list_argv(self, cmd):
+        return None
+
+    def listed(self, rc, out, crate):
+        return None
+
     def worktree_setup(self, repo, wt, project_dir):
         """called once a worktree of the repo exists: whatever the toolchain needs beside the checkout (no-op by default)."""
 
@@ -349,6 +367,36 @@ class RustAdapter(Adapter):
         """one named test: libtest --exact matches the full mod-qualified name, so one test per run."""
         return shlex.split(cmd) + ["--", "--exact", name]
 
+    def listed_name(self, path, name):
+        """the name libtest lists a test of the file at path (crate-relative) by: its module path from the file, then
+        the scanner's mod-qualified name. src/lib.rs, src/main.rs, src/bin/*.rs and tests/*.rs are crate roots (no
+        prefix); src/a/b.rs and src/a/b/mod.rs are `a::b::`; tests/t/x.rs under tests/t/main.rs is `x::`."""
+        parts = path[:-len(".rs")].split("/") if path.endswith(".rs") else [path]
+        if parts[-1] == "mod":
+            parts = parts[:-1]
+        if parts[:1] == ["src"]:
+            rest = parts[1:]
+            if rest in (["lib"], ["main"]) or rest[:1] == ["bin"]:
+                rest = []
+        elif parts[:1] == ["tests"]:
+            rest = parts[2:]  # tests/<crate>.rs is a crate root; tests/<crate>/<mod path> under it
+            if rest == ["main"]:
+                rest = []
+        else:
+            rest = []
+        return "::".join(rest + [name])
+
+    def list_argv(self, cmd):
+        """libtest's own listing: `<mod path>::<name>: test` per test, ignored ones too (doc tests named by file)."""
+        return shlex.split(cmd) + ["--", "--list"]
+
+    def listed(self, rc, out, crate):
+        """the tests of every test binary, by mod path (no file: the binary's name is not the file's); doc tests left
+        out (`src/lib.rs - add (line 2)`: no test fn); None when the build or the listing failed."""
+        if rc != 0:
+            return None
+        return [(None, m.group(1)) for m in RUST_LISTED.finditer(out)]
+
     def outcome(self, rc, out):
         """verdict of one test run from its exit code and output (cargo test / libtest shapes)."""
         if rc is None:
@@ -422,10 +470,12 @@ PY_NOQA = re.compile(r"#\s*noqa\b(?::\s*([A-Za-z]+\d+(?:\s*,\s*[A-Za-z]+\d+)*))?
 PY_TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b(?:\[([^\]]*)\])?")
 PY_BUILD = re.compile(r"Failed to import test module|ERROR collecting|during collection|^ERROR \S+\.py\s*$", re.M)
 PY_PASSED = re.compile(r"\b[1-9]\d* passed\b")
+PY_LISTED = re.compile(r"^(\S+?\.py)::(\S.*?)\s*$", re.M)
 PY_OK = re.compile(r"^OK\b", re.M)
 PY_RAN = re.compile(r"^Ran [1-9]\d* tests?\b", re.M)
 PY_SEP = re.compile(r"^[\s#:;,\-\u2014\u2013]+")
 PY_TEST_FILE = re.compile(r"(?:test_.*|.*_test|tests)\.py")  # pytest's test_*.py and *_test.py, and django's tests.py
+PY_COLLECTED = re.compile(r"(?:test_.*|.*_test)\.py")  # the files pytest collects tests from (its python_files default)
 
 
 def _last(node):
@@ -466,8 +516,11 @@ class _Scan(ast.NodeVisitor):
     assertions with their enclosing test fn, calls per function, test bodies. Scope entries: ("class", name,
     is_test, skipped, None) or ("fn", name, is_test, qname, None)."""
 
-    def __init__(self):
+    def __init__(self, imported_bases):
+        self.imported_bases = imported_bases  # the imported-base rule applies (a file pytest collects tests from)
         self.known = set()  # TestCase-derived class names seen so far (a subclass in the same file counts)
+        self.defined = set()  # every class name this file defined so far
+        self.rooted = set()  # same-file classes whose base chain reaches a base the file does not define
         self.scope = []
         self.tests = []
         self.bodies = {}
@@ -485,13 +538,27 @@ class _Scan(ast.NodeVisitor):
         self.asserts.append(Assertion(node.lineno, test, scope, kind, left, right, text, owner))
 
     def visit_ClassDef(self, node):
-        tc = any(_last(b) == "TestCase" or _last(b) in self.known for b in node.bases)
+        tc = any(_last(b) == "TestCase" or _last(b) in self.known for b in node.bases) or self._imported_base(node)
         if tc:
             self.known.add(node.name)
+        self.defined.add(node.name)
         self.scope.append(("class", node.name, tc or node.name.startswith("Test"), _skip_decorated(node.decorator_list), None))
         for stmt in node.body:
             self.visit(stmt)
         self.scope.pop()
+
+    def _imported_base(self, node):
+        """a class with test* methods on a base this file does not define (`from _kit import Fixture`): unittest and
+        pytest collect it through that base, so it is a test class (#21: R0's census found the scanner blind to it).
+        `object`, and a non-test class of this file, are no such base."""
+        bases = [_last(b) for b in node.bases]
+        # rooted: a base not defined in this file (imported), or a same-file class already rooted (a helper with no
+        # tests passes its root on). One pass in source order: a name not yet defined reads as imported, so a cycle ends
+        if not self.imported_bases or not any(n and n != "object" and (n not in self.defined or n in self.rooted)
+                                              for n in bases):
+            return False
+        self.rooted.add(node.name)
+        return any(isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name.startswith("test") for s in node.body)
 
     def _func(self, node):
         qname = "::".join(self._chain() + [node.name])
@@ -555,7 +622,8 @@ def mutmut_section(text):
     return "\n".join(out) or None
 
 class PythonAdapter(Adapter):
-    """Python: pytest functions and `Test*` classes, unittest TestCase methods (test_* / test* prefix, as both runners collect).
+    """Python: pytest functions and `Test*` classes, unittest TestCase methods (test_* / test* prefix, as both runners collect),
+    and a class with test* methods on a base the file does not define (an imported TestCase subclass).
     Names: `test_fn`, `Class::test_method` (Class nested in another class: `Outer::Class::test_method`)."""
     name = "python"
     default_test_cmd = "python3 -m pytest"
@@ -575,10 +643,18 @@ class PythonAdapter(Adapter):
         `test_connection` is production code: no runner collects it, so it is not a test to guard or to run."""
         return any_glob(path, test_globs) or PY_TEST_FILE.fullmatch(os.path.basename(path)) is not None
 
-    @staticmethod
-    def _scan(text):
+    path = None  # the file being read (at): the imported-base rule holds only in a file pytest collects (#21 S4b)
+
+    def at(self, path):
+        """this adapter reading the file at path: a class on an imported base counts as a test class only in a
+        `test_*.py` or `*_test.py` file, never in conftest.py or a helper module (a fake's `test_connection`)."""
+        bound = copy.copy(self)
+        bound.path = path
+        return bound
+
+    def _scan(self, text):
         tree = ast.parse(text)
-        sc = _Scan()
+        sc = _Scan(bool(self.path) and PY_COLLECTED.fullmatch(os.path.basename(self.path)) is not None)
         sc.visit(tree)
         return sc
 
@@ -676,6 +752,29 @@ class PythonAdapter(Adapter):
         if "unittest" in argv:
             return argv + [path[:-3].replace("/", ".") + "." + name.replace("::", ".")]
         return argv + ["-q", f"{path}::{name}"]
+
+    def list_argv(self, cmd):
+        """pytest's collection, no test run (`path::Class::test` per line); the project's addopts cleared (`-o addopts=`:
+        an `addopts = "-q"` would make it `-qq`, one line per file); a unittest command has no listing."""
+        argv = shlex.split(cmd)
+        if "unittest" in argv:
+            return None
+        return argv + ["--collect-only", "-q", "-o", "addopts=", "-p", "no:cacheprovider"]
+
+    def no_listing(self, cmd):
+        return "a unittest command lists no tests by name without running them: no census"
+
+    def listed(self, rc, out, crate):
+        """the collected node ids, a parametrized test once (its `[...]` ids dropped); None on a collection error (exit
+        other than 0 or 5, no tests)."""
+        if rc not in (0, 5):
+            return None
+        got = []
+        for m in PY_LISTED.finditer(out):
+            item = (m.group(1), re.sub(r"\[.*\]$", "", m.group(2)))
+            if item not in got:
+                got.append(item)
+        return got
 
     def outcome(self, rc, out):
         """verdict of one run of pytest or unittest. Collection and import errors are build (like a compile error)."""
@@ -1013,6 +1112,7 @@ def _callback_inner(text, m, start, end):
 TS_BUILD = re.compile(r"Transform failed|Failed to load url|Failed to resolve import|Cannot find module|Cannot find package"
                       r"|Test suite failed to run|SyntaxError|\bTS\d{4}\b|Failed Suites")
 TS_TESTS = re.compile(r"^\s*Tests\b:?(.*)$", re.M)
+TS_LISTED = re.compile(r"^(\S+\.[cm]?[jt]sx?) > (.+?)\s*$", re.M)  # `vitest list`: `<file> > <Describe> > <test>`
 TS_RESULT = re.compile(r"(\d+) (passed|failed)\b")
 TS_RE_SPECIAL = re.compile(r"([\\^$.|?*+()\[\]{}/])")
 
@@ -1196,6 +1296,10 @@ class TsAdapter(Adapter):
         the crate's own node_modules/.bin."""
         return "node_modules/.bin/jest" if ts_runner(crate) == "jest" else "node_modules/.bin/vitest run"
 
+    def runner_name(self, crate):
+        """the runner the checkout at crate picks: vitest or jest (R0's runtime fixture follows it, #21)."""
+        return ts_runner(crate)
+
     def worktree_setup(self, repo, wt, project_dir):
         """a worktree has no node_modules (ignored by git): link the caller checkout's node_modules into the crate dir,
         so the runner resolves from the repo's own install. Never linked over an existing dir; the link is removed with
@@ -1206,16 +1310,38 @@ class TsAdapter(Adapter):
             os.symlink(os.path.abspath(src), dst)
 
     def test_argv(self, cmd, path, name):
-        """one named test: the file, then `-t <anchored name>` (both runners match -t as a regex on the full name).
-        vitest joins describe and test names with ` > `, jest with a space; `it.each` placeholders match any value."""
+        """one named test: the file, then `-t <anchored name>` (both runners match -t as a regex on the full name: the
+        describe and test names joined with a space, in vitest 2.1.9 and 3.2.7 and in jest 29.7.0; the adapter's own
+        name joins them with ` > `); `it.each` placeholders match any value."""
         argv = shlex.split(cmd)
         jest = any("jest" in a for a in argv)
         if not jest and "run" not in argv:
             at = next((i for i, a in enumerate(argv) if "vitest" in a), len(argv) - 1)
             argv = argv[:at + 1] + ["run"] + argv[at + 1:]
         segments = name.split(" > ")
-        full = (" " if jest else " > ").join(_ts_pattern(seg) for seg in segments)
+        full = " ".join(_ts_pattern(seg) for seg in segments)
         return argv + [path, "-t", f"^{full}$"]
+
+    name_placeholders = JS_PLACEHOLDER
+    list_separator = " > "
+
+    def list_argv(self, cmd):
+        """`vitest list` (`file > Describe > test` per line; skipped tests are not listed); jest lists files only: None."""
+        argv = shlex.split(cmd)
+        if any("jest" in a for a in argv):
+            return None
+        at = next((i for i, a in enumerate(argv) if "vitest" in a), None)
+        if at is None:  # no vitest word (a wrapper script): list at the end
+            return argv + ["list"]
+        return argv[:at + 1] + ["list"] + [a for a in argv[at + 1:] if a != "run"]
+
+    def listed(self, rc, out, crate):
+        if rc != 0:
+            return None
+        return [(m.group(1), m.group(2)) for m in TS_LISTED.finditer(out)]
+
+    def no_listing(self, cmd):
+        return "jest lists test files, not tests (`--listTests`): no census"
 
     def outcome(self, rc, out):
         """verdict of one run of vitest or jest. Results come from the Tests summary line; a file that did not load

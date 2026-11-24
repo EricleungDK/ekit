@@ -6,7 +6,7 @@ from collections import namedtuple
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 Change = namedtuple("Change", "status old new")
 # one review of mb..head: what every check needs. mb: merge base sha; project_dir: crate dir under the repo root
-Review = namedtuple("Review", "repo mb head adapter test_globs project_dir", defaults=(".",))
+Review = namedtuple("Review", "repo mb head adapter test_globs project_dir", defaults=((), "."))
 
 
 class Die(Exception):

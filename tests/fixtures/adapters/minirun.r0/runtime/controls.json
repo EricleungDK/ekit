@@ -1,0 +1,7 @@
+{
+  "pass": {"file": "tests/ctl.mini", "name": "passes"},
+  "fail": {"file": "tests/ctl.mini", "name": "fails"},
+  "skipped": {"file": "tests/ctl.mini", "name": "skipped"},
+  "build": {"file": "tests/broken.mini", "name": "builds"},
+  "no-such-test": {"file": "tests/ctl.mini", "name": "r0 no such test"}
+}

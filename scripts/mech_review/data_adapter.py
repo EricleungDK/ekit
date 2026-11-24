@@ -332,6 +332,54 @@ class DataAdapter(Adapter):
         joined = runner.get("separator", own).join(self._quote(seg) for seg in name.split(own))
         return argv + [w.format(path=path, name=joined) for w in self.run["test"]]
 
+    @property
+    def name_placeholders(self):
+        """[run.name] placeholders: a listed name matches a test name with them in it wherever they stand (it.each)."""
+        return self._rx.get("placeholders")
+
+    @property
+    def list_separator(self):
+        return self.tests.get("separator", " > ")
+
+    def _listing(self):
+        return (self.run or {}).get("list")
+
+    def list_argv(self, cmd):
+        """[run.list] command's words (R0's census, #21), or None: no [run.list], or it lists another runner's tests
+        than the one cmd runs."""
+        lst = self._listing()
+        if not lst:
+            return None
+        if "runner" in lst:
+            r = self._runner(shlex.split(cmd)) if cmd else None
+            if not r or r["name"] != lst["runner"]:
+                return None
+        return shlex.split(lst["command"])
+
+    def no_listing(self, cmd):
+        """why list_argv gives no listing for cmd: no [run.list], or one that lists another runner's tests."""
+        lst = self._listing()
+        if not lst:
+            return f"the `{self.name}` adapter names no command that lists the runner's tests ([run.list])"
+        r = (self._runner(shlex.split(cmd)) or {}).get("name") if cmd else None
+        return (f"the adapter file's [run.list] lists the `{lst['runner']}` runner's tests, this checkout runs "
+                f"`{r}`: no census")
+
+    def listed(self, rc, out, crate):
+        """[(path or None, name)] of the tests the listing printed (pattern's `file` and `name` groups; the name split
+        at the listing's separator and joined with tests.separator, as test_fns names it), or None when it failed:
+        a non-zero exit, or a build pattern that matched."""
+        if rc != 0 or _first(self._rx.get("build"), out):  # out: the runner's output, text (red.default_runner)
+            return None
+        lst, own = self._listing(), self.tests.get("separator", " > ")
+        sep = lst.get("separator") or (self._runner(shlex.split(lst["command"])) or {}).get("separator") or own
+        got = []
+        for m in _matches(self._rx["list"], out):
+            name = m.group("name").strip()
+            path = m.groupdict().get("file")
+            got.append((path.strip() if path else None, own.join(p.strip() for p in name.split(sep))))
+        return got
+
     def _quote(self, seg):
         """a name part as the runner reads it: [run.name] escape characters get a backslash, placeholders (it.each's
         `%s`) become `any`. No [run.name]: the part as it is."""

@@ -81,13 +81,20 @@ def touched(rv):
         text_after = blob(repo, b, ch.new)
         if adapter.parse_error(text_after):
             continue  # reported by unparseable(): its tests cannot be named
-        after = adapter.test_bodies(text_after)
+        after = _at(adapter, ch.new).test_bodies(text_after)
         text_before = blob(repo, a, ch.old) if ch.old else None
-        before = adapter.test_bodies(text_before) if text_before is not None and not adapter.parse_error(text_before) else {}
+        before = (_at(adapter, ch.old).test_bodies(text_before)
+                  if text_before is not None and not adapter.parse_error(text_before) else {})
         for name, (line, body) in sorted(after.items(), key=lambda kv: kv[1][0]):
             if name not in before or before[name][1] != body:
                 out.append((ch.new, name, line))
     return out
+
+
+def _at(adapter, path):
+    """the adapter reading the file at path, as R2 binds it: the python built-in's imported-base rule holds in test
+    files only (#21), a parser-backed one gives its command that path (#27)."""
+    return adapter.at(path) if hasattr(adapter, "at") else adapter
 
 
 def unparseable(rv):

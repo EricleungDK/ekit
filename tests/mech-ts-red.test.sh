@@ -85,9 +85,9 @@ check("runner: both listed is vitest", A.test_cmd_in(pkg(["jest", "vitest"])), "
 check("runner: neither is the vitest default", A.test_cmd_in(pkg([])), "node_modules/.bin/vitest run")
 check("runner: missing directory is the default", A.test_cmd_in("/no/such/dir"), "node_modules/.bin/vitest run")
 
-check("argv: vitest runs the file with the anchored full name (describe > test)",
+check("argv: vitest runs the file with the anchored full name (describe and test joined by a space, as vitest matches -t)",
       A.test_argv("node_modules/.bin/vitest run", "tests/calc.test.ts", "Calc > adds"),
-      ["node_modules/.bin/vitest", "run", "tests/calc.test.ts", "-t", "^Calc > adds$"])
+      ["node_modules/.bin/vitest", "run", "tests/calc.test.ts", "-t", "^Calc adds$"])
 check("argv: jest joins names with a space",
       A.test_argv("node_modules/.bin/jest", "tests/calc.test.ts", "Calc > adds"),
       ["node_modules/.bin/jest", "tests/calc.test.ts", "-t", "^Calc adds$"])
@@ -96,7 +96,7 @@ check("argv: a custom vitest command gets run inserted",
       ["npx", "vitest", "run", "tests/calc.test.ts", "-t", "^adds$"])
 check("argv: regex characters in a name are literal",
       A.test_argv("node_modules/.bin/vitest run", "tests/calc.test.ts", "Calc > adds (1) [x]")[-1],
-      "^Calc > adds \\(1\\) \\[x\\]$")
+      "^Calc adds \\(1\\) \\[x\\]$")
 check("argv: it.each placeholders match any value",
       A.test_argv("node_modules/.bin/vitest run", "tests/calc.test.ts", "sums %i and %i")[-1],
       "^sums .* and .*$")
@@ -194,7 +194,7 @@ eq "$rc" 0 "ts red fails, head passes: exit 0"
 eq "$(jq -r .checks.R1.status <<<"$out")" pass "ts R1 pass"
 eq "$(jq -r .checks.R4.status <<<"$out")" pass "ts R4 pass"
 eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 0 confirm; ran: R1 R4; skipped: R2 R3)" "ts: summary names ran and skipped"
-has "$(cat "$MECH_STUB_LOG")" "run tests/calc.test.ts -t ^Calc > fresh$" "ts vitest: named test with the anchored describe > test pattern"
+has "$(cat "$MECH_STUB_LOG")" "run tests/calc.test.ts -t ^Calc fresh$" "ts vitest: named test with the anchored, space-joined describe and test pattern"
 
 RED_OUT=pass agent_repo passes
 out=$(red "$R" "$B" "$H" --head-branch agent/x); rc=$?
@@ -298,7 +298,7 @@ H=$(commit "$R" "feat: fix")
 out=$(MECH_TEST_STUB="$STUB" python3 -I "$MR" red --repo "$R" --base "$B" --head "$H" --stack ts --test-paths 'pkg/tests/**' --project-dir pkg --head-branch agent/x ${MECH_ADAPTER_TS:+--adapter "$MECH_ADAPTER_TS"}); rc=$?
 eq "$rc" 0 "ts project-dir: red fails, head passes: exit 0"
 has "$(cat "$MECH_STUB_LOG")" "/pkg |" "ts project-dir: the runner starts in the crate dir"
-has "$(cat "$MECH_STUB_LOG")" "run tests/calc.test.ts -t ^Calc > fresh$" "ts project-dir: test path is crate-relative"
+has "$(cat "$MECH_STUB_LOG")" "run tests/calc.test.ts -t ^Calc fresh$" "ts project-dir: test path is crate-relative"
 
 # real runner, no node_modules in the repo: the runner is missing, so R1 and R4 are n/a (env), never a pass
 R=$(mkrepo nomods)

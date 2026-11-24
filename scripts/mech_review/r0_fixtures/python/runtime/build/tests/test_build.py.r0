@@ -1,0 +1,6 @@
+# R0 runtime build control (python): this file does not load (the import fails at collection).
+import r0_no_such_module
+
+
+def test_builds():
+    assert r0_no_such_module.x == 1

@@ -1,0 +1,7 @@
+// R0 R3 control (rust): a weak assert, a MISSED mutant.
+use r0_controls::twice::twice;
+
+#[test]
+fn twice_is_not_negative() {
+    assert!(twice(2) >= 0);
+}
