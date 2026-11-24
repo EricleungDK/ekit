@@ -149,6 +149,72 @@ class DeclaredTests(unittest.TestCase):
         self.assertEqual([(t.name, t.markers) for t in a.test_fns(src)], [("A > x", ["only"])])
 
 
+class RoundOne(unittest.TestCase):
+    """review round 1 of #22: what the reference adapter missed."""
+
+    def setUp(self):
+        self.a = java()
+
+    def test_a_generic_test_method_is_found_past_its_type_parameters(self):  # S9
+        src = ("class T {\n    @Test\n    public <T extends Comparable<T>> void adds() {\n    }\n\n"
+               "    int x = a > b;\n    @Test void c() {\n    }\n}\n")
+        self.assertEqual([t.name for t in self.a.test_fns(src)], ["T.adds", "T.c"])
+        self.assertEqual(self.a.test_fns("class T {\n    @Test x> void a() {\n    }\n}\n"), [])
+
+    def test_junits_condition_annotations_skip(self):  # B4
+        for ann in ("DisabledOnOs(OS.LINUX)", "EnabledOnOs(OS.WINDOWS)", "EnabledIfEnvironmentVariable(named = \"CI\")",
+                    "DisabledForJreRange(min = JRE.JAVA_8)"):
+            with self.subTest(ann):
+                src = f"class T {{\n    @Test\n    @{ann}\n    void a() {{\n    }}\n}}\n"
+                self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(src)], [("T.a", ["ignore"])])
+
+    def test_skip_annotations_are_mutation_skips_in_code_only(self):  # B3
+        src = ('class A {\n    @DoNotMutate\n    int x() { return 1; }\n    @lombok.Generated("y") void g() {}\n'
+               '    // @Generated in a comment\n    String s = "@CoverageIgnore";\n    @Generatedx void h() {}\n'
+               '    @ CoverageIgnore void i() {}\n}\n')
+        self.assertEqual(self.a.mutation_skips(src), [(2, 2, "@DoNotMutate"), (4, 4, "@lombok.Generated")])
+        self.assertEqual(self.a.mutation_skips("@"), [])
+        self.assertEqual(self.a.mutation_config("pom.xml", None), "PIT config (pom.xml)")
+        self.assertEqual(self.a.mutation_config("sub/pom.xml", None), "PIT config (pom.xml)")
+
+    def test_a_test_that_prints_the_toolchains_message_is_judged_by_its_counts(self):  # B2
+        fail = ("[INFO] Running com.example.CalcTest\nThe JAVA_HOME environment variable is not defined correctly\n"
+                "JAVA_HOME not found\n[ERROR] No compiler is provided in this environment\n[ERROR] Tests run: 1, "
+                "Failures: 1, Errors: 0, Skipped: 0\n")
+        self.assertEqual(self.a.outcome(1, fail), "fail")
+        self.assertEqual(self.a.outcome(1, "  The JAVA_HOME environment variable is not defined correctly\n"), "error")
+        self.assertEqual(self.a.outcome(1, "JAVA_HOME not found\n"), "error")
+        for out in ("The JAVA_HOME environment variable is not defined correctly,\nthis environment variable is needed\n",
+                    "[ERROR] Failed to execute goal ...: Compilation failure\n[ERROR] No compiler is provided in this "
+                    "environment. Perhaps you are running on a JRE rather than a JDK?\n"):
+            with self.subTest(out):
+                self.assertEqual(self.a.outcome(1, out), "env")
+
+    def test_test_factory_is_no_case(self):  # S7: its method returns the tests, no void shape matches it
+        self.assertEqual(self.a.tests["cases"], ["Test", "ParameterizedTest", "RepeatedTest", "TestTemplate"])
+
+
+class SkipAnnotationsValidation(unittest.TestCase):
+    def err(self, d):
+        with self.assertRaises(AdapterFileError) as cm:
+            parse(d)
+        return str(cm.exception)
+
+    def test_skip_annotations_need_style_declared_and_words(self):
+        d = adapter_file_dict()
+        d["mutation"] = {"skip_annotations": ["DoNotMutate"]}
+        self.assertEqual(parse(d).mutation_skips("class A {\n    @DoNotMutate void a() {}\n}\n"), [(2, 2, "@DoNotMutate")])
+        d["mutation"] = {"skip_annotations": []}
+        self.assertEqual(self.err(d), "mutation.skip_annotations: want at least one entry")
+        d["mutation"] = {"skip_annotations": ["a b"]}
+        self.assertEqual(self.err(d), "mutation.skip_annotations[0]: `a b` is not a word (letters, digits, _ and "
+                                      "lexer.ident_chars)")
+        d["tests"] = {"style": "calls", "cases": ["test"]}
+        d["mutation"] = {"skip_annotations": ["DoNotMutate"]}
+        self.assertEqual(self.err(d), "mutation.skip_annotations: needs tests.style declared: an annotation is a "
+                                      "marker, its prefix the tests'")
+
+
 class CallsBodies(unittest.TestCase):
     def test_a_skipped_call_keeps_its_body_only_with_a_callback(self):
         """beside the declared rule (a skipped declared test keeps its body), calls keep theirs (mini.toml)."""

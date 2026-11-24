@@ -35,16 +35,23 @@ escape = '\'
 quote = "'"
 escape = '\'
 
-# JUnit 5: a test is a method with a test annotation; a class groups them (`CalcTest.adds`); @Disabled skips a method,
-# or every test in a class
+# JUnit 5: a test is a method with a test annotation; a class groups them (`CalcTest.adds`). @Disabled, and each of
+# JUnit's conditions (@DisabledOnOs, @EnabledOnOs, ...: any can stop the test from running), skips a method, or every
+# test in a class. @TestFactory is left out: its method returns the tests, and the shapes below are void methods
 [tests]
 style = "declared"
 prefix = "@"
-cases = ["Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"]
+cases = ["Test", "ParameterizedTest", "RepeatedTest", "TestTemplate"]
 groups = ["class"]
-skip = ["Disabled"]
+skip = ["Disabled",
+        "DisabledOnOs", "DisabledOnJre", "DisabledForJreRange", "DisabledIf", "DisabledIfSystemProperty",
+        "DisabledIfSystemProperties", "DisabledIfEnvironmentVariable", "DisabledIfEnvironmentVariables",
+        "DisabledInNativeImage",
+        "EnabledOnOs", "EnabledOnJre", "EnabledForJreRange", "EnabledIf", "EnabledIfSystemProperty",
+        "EnabledIfSystemProperties", "EnabledIfEnvironmentVariable", "EnabledIfEnvironmentVariables",
+        "EnabledInNativeImage"]
 separator = "."
-skipped_text = "test `{name}` marked @Disabled"
+skipped_text = "test `{name}` marked @Disabled, or with a condition that can skip it"
 
 # methods: a test (JUnit 5 test methods return void) or a helper it calls, which owns the asserts in it
 [functions]
@@ -83,19 +90,28 @@ reason_strip = [" -:"]
 problem = "`{lints}` added without a reason"
 hint = "fix the PMD finding, or give the suppression a reason after it: `// NOPMD - why`"
 
-# R3 (#19) through PIT 1.17.4 (pitest-maven, with pitest-junit5-plugin in the project's pom.xml): the changed classes
-# (`{module}`: a changed file under src/main/java as its class name, with its nested and inner classes), then ekit's
-# own changed-line filter keeps the MISSED mutants on the changed lines. mutations.xml is read as pit-xml.
+# what hides code from R3: PIT's config is the pitest-maven plugin's in pom.xml (excludedMethods, excludedClasses, ...),
+# so a pom edit is R2's needs-human entry; PIT skips code under an annotation named DoNotMutate, Generated or
+# CoverageIgnore
+[mutation]
+config_files = ["pom.xml"]
+config_name = "PIT config (pom.xml)"
+skip_annotations = ["DoNotMutate", "Generated", "CoverageIgnore"]
+
+# R3 (#19) through PIT, pinned here: pitest-maven 1.17.4. The PR's pom still gives the plugin's config and its
+# dependencies (pitest-junit5-plugin), which [mutation] config_files names. The changed files' packages
+# (`{package}`: com.example. for src/main/java/com/example/Calc.java, so every class a changed file holds), then
+# ekit's own changed-line filter keeps the MISSED mutants on the changed lines. mutations.xml is read as pit-xml.
 # The program is `mvn` on PATH (never ./mvnw: a file in the checkout the PR could change).
 [mutation.tool]
 name = "pit"
 command = "mvn"
 version = ["--version"]
 version_pattern = '^Apache Maven \d'
-args = ["-B", "-ntp", "test-compile", "org.pitest:pitest-maven:mutationCoverage", "-DtargetClasses={mutate}",
+args = ["-B", "-ntp", "test-compile", "org.pitest:pitest-maven:1.17.4:mutationCoverage", "-DtargetClasses={mutate}",
         "-DoutputFormats=XML", "-DtimestampedReports=false", "-DfailWhenNoMutations=false",
         "-DtimeoutConstant={timeout_ms}"]
-mutate = "{module},{module}$*"
+mutate = "{package}*"
 module_roots = ["src/main/java"]
 report = "target/pit-reports/mutations.xml"
 format = "pit-xml"
@@ -123,7 +139,9 @@ separator = "#"
 # surefire discovers every test as a run does and executes none: each is reported skipped, one line per test in
 # surefire's plain report (`com.example.CalcTest.adds skipped`). The name has its package: the census matches it to the
 # scanner's `CalcTest.adds` by its tail. A JUnit older than 5.10 runs the tests instead: they print as
-# `<name> -- Time elapsed`, so they are still listed.
+# `<name> -- Time elapsed`, so they are still listed. The dry run lists no @ParameterizedTest, @RepeatedTest or
+# @TestTemplate (templates: their invocations are made at run time) and no test in an inner class without @Nested
+# (JUnit runs none): the census cannot see those (only listed tests must be found).
 [run.list]
 command = "mvn -B -ntp test -Djunit.platform.execution.dryRun.enabled=true -Dsurefire.reportFormat=plain -Dsurefire.useFile=false"
 pattern = '^\[\w+\] (?P<name>[\w$.]+\.[\w$]+)(?: skipped| -- Time elapsed)'
@@ -138,4 +156,4 @@ failed = '(?:Failures|Errors): (\d+)'
 skipped = 'Skipped: (\d+)'
 build = 'COMPILATION ERROR|Compilation failure'
 no_test = 'No tests matching pattern'
-env = 'JAVA_HOME environment variable is not defined correctly|JAVA_HOME not found|No compiler is provided in this environment'
+env = '^The JAVA_HOME environment variable is not defined correctly|^\[ERROR\] .*No compiler is provided in this environment'

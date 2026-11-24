@@ -218,7 +218,9 @@ class RunSideBehaviour(unittest.TestCase):
         for rc, out, want in [
             (None, "minitest: not found", "env"),
             ("timeout", "", "timeout"),
-            (0, "runtime missing: erlang\n== 1 ok", "env"),
+            (0, "runtime missing: erlang", "env"),
+            (0, "runtime missing: erlang\n== 1 ok", "pass"),  # #22: a summary was read: the test printed it
+            (1, "runtime missing: erlang\n== 0 ok 1 bad", "fail"),
             (1, "== 1 ok 1 bad", "fail"),
             (0, "== 1 ok", "pass"),
             (1, "== 1 ok", "fail"),

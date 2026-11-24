@@ -282,9 +282,15 @@ class DataAdapter(Adapter):
         return self.tests.get("skipped_text", DEFAULT_SKIPPED).format(name=name)
 
     def mutation_skips(self, text):
-        _, comments, _, _, _, _ = self._parse(text)
-        return [(line_of(text, start), line_of(text, end), " ".join(body.split())) for start, end, body in comments
-                if any(r.match(body) for r in self._skip_res)]
+        """comments that start with a skip_comments phrase, and (#22) markers named in skip_annotations."""
+        m, comments, _, _, _, _ = self._parse(text)
+        out = [(line_of(text, start), line_of(text, end), " ".join(body.split())) for start, end, body in comments
+               if any(r.match(body) for r in self._skip_res)]
+        names = self.mutation.get("skip_annotations")
+        if names:
+            out += [(line_of(text, a), line_of(text, b), mark)
+                    for a, b, mark in declared.annotations(self.lexer, m, self.tests["prefix"], set(names))]
+        return sorted(out)
 
     def mutation_config(self, path, load):
         if os.path.basename(path) in self.mutation.get("config_files", []):
@@ -425,20 +431,22 @@ class DataAdapter(Adapter):
         """verdict of one run from [run.outcome]. Counts (passed, failed, skipped) are read from the last summary line
         (summary's group, or the whole match), or from the whole output without summary. A failed count is fail; a
         passed count is pass at exit 0, fail otherwise: pass needs a counted passed test. Then build, no_test and a
-        skipped count (none: the test did not run). No count read at all is error; counts of 0 are none at exit 0."""
+        skipped count (none: the test did not run). No count read at all is error; counts of 0 are none at exit 0. env
+        reads only when no summary line (with summary) or no count (without) was read: a test that prints the toolchain's
+        message is still judged by its counts."""
         if rc is None:
             return "env"
         if rc == "timeout":
             return "timeout"
         out = out or ""
         rx = self._rx
-        if _first(rx.get("env"), out):
-            return "env"
         if "summary" in rx:
             lines = list(_matches(rx["summary"], out))
             text = (lines[-1].group(rx["summary"].groups) if lines else None)
         else:
             text = out if any(_first(rx.get(k), out) for k in ("passed", "failed", "skipped")) else None
+        if text is None and _first(rx.get("env"), out):  # #22: a test's own output (a summary read) is never env
+            return "env"
         if text is not None:
             if self._count("failed", text):
                 return "fail"

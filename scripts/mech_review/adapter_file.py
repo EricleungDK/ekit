@@ -315,11 +315,16 @@ def _suppressions(v):
                 _template(s[k], f"{sf}.{k}", "lints")
 
 
-def _mutation(d, run=None):
-    """[mutation]: R2's skip markers and config files, and the R3 tool (#19). Returns the validated tool or None."""
+def _mutation(d, run=None, tests=None, lexer=None):
+    """[mutation]: R2's skip markers and config files, and the R3 tool (#19). Returns the validated tool or None.
+    tests, lexer: the file's (None beside [parser]): skip_annotations (#22) are markers, so they need style declared."""
     f = "mutation"
-    _table(d, f, ("skip_comments", "config_files", "config_name", "tool"))
+    _table(d, f, ("skip_comments", "skip_annotations", "config_files", "config_name", "tool"))
     _strs(d.get("skip_comments", []), f + ".skip_comments")
+    if "skip_annotations" in d:
+        if (tests or {}).get("style") != "declared":
+            _err(f + ".skip_annotations", "needs tests.style declared: an annotation is a marker, its prefix the tests'")
+        _idents(d["skip_annotations"], f + ".skip_annotations", lexer, nonempty=True)
     if _strs(d.get("config_files", []), f + ".config_files"):
         if "config_name" not in d:
             _err(f + ".config_name", "missing: config_files needs a name for the entry")
@@ -330,7 +335,7 @@ def _mutation(d, run=None):
 
 REPORT_FORMATS = ("mutation-testing-elements", "pit-xml", "lines")  # what R3 reads: report formats, not tools (#19)
 TOOL_ARGS = ("mutate", "timeout_ms", "timeout_s", "report")  # [mutation.tool].args placeholders
-RANGE = ("file", "first", "last", "module")  # [mutation.tool].mutate placeholders: one changed-line range
+RANGE = ("file", "first", "last", "module", "package")  # [mutation.tool].mutate placeholders: one changed-line range
 STATUS_KINDS = ("missed", "caught", "timeout", "unviable")  # format lines: what each status word means for R3
 LINE_GROUPS = ("file", "line", "status")
 TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # the tool's name in notes: ASCII, no space or quote
@@ -360,7 +365,7 @@ def _tool(d, config_files, run):
     elif "mutate" in used:
         _err(f + ".mutate", "missing: an arg uses `{mutate}`, the changed line ranges")
     elif "module_roots" in d:
-        _err(f + ".module_roots", "never used: no mutate has `{module}`")
+        _err(f + ".module_roots", "never used: no mutate has `{module}` or `{package}`")
     _str(d.get("mutate_join", ","), f + ".mutate_join")
     version = _strs(d["version"], f + ".version", nonempty=True) if "version" in d else None
     if "runners" in d:
@@ -397,16 +402,18 @@ ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")  # a POSIX or a Windows drive pa
 
 
 def _module_roots(d, f, names):
-    """mutate names its file: `{file}`, or `{module}` (#22: the file under one of module_roots, as a dotted name, PIT's
-    class name), which needs module_roots: dirs under the project dir, each a path as `report` is."""
-    if "file" not in names and "module" not in names:
-        _err(f + ".mutate", "no `{file}` or `{module}`: a range names its file")
-    if "module" not in names:
+    """mutate names its file: `{file}`, or `{module}` / `{package}` (#22: the file under one of module_roots, as a
+    dotted name, PIT's class name, or its dotted dir), which need module_roots: dirs under the project dir, each a
+    path as `report` is."""
+    dotted = {"module", "package"} & set(names)
+    if "file" not in names and not dotted:
+        _err(f + ".mutate", "no `{file}`, `{module}` or `{package}`: a range names its file")
+    if not dotted:
         if "module_roots" in d:
-            _err(f + ".module_roots", "never used: mutate has no `{module}`")
+            _err(f + ".module_roots", "never used: mutate has no `{module}` or `{package}`")
         return
     if "module_roots" not in d:
-        _err(f + ".module_roots", "missing: `{module}` is a file's dotted name under one of these dirs")
+        _err(f + ".module_roots", "missing: `{module}` and `{package}` are a file's dotted name under one of these dirs")
     for i, root in enumerate(_strs(d["module_roots"], f + ".module_roots", nonempty=True)):
         _filepath(root, f"{f}.module_roots[{i}]")
 
@@ -802,7 +809,7 @@ def parse(data):
         shapes = _functions(data["functions"], lexer) if "functions" in data else []
         _asserts(data["asserts"], lexer)
         _suppressions(data.get("suppressions", []))
-        tool = _mutation(data.get("mutation", {}), run)
+        tool = _mutation(data.get("mutation", {}), run, data["tests"], lexer)
     if "run" in data and "commands" not in data:
         _err("commands", "missing: [run] needs [commands] (install, build, lint, test): R1 and R4 start from its test")
     if "commands" in data:  # the run side (#18) is the same beside [parser] (#27): it reads runner output, not source
@@ -821,7 +828,9 @@ def load(path):
             raw = f.read()
     except OSError as e:
         raise AdapterFileError(f"adapter file {path}: cannot read: {e.strerror or e}") from None
-    return loads(raw, path)
+    adapter = loads(raw, path)
+    adapter.source_path = path  # the file on disk: `all --adapter` proves it as `r0 --adapter` does (#22)
+    return adapter
 
 
 def loads(raw, path):

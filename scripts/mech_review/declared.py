@@ -5,7 +5,8 @@ its markers read the same way (`@Disabled class X` skips the tests in it).
 
 A marker is the prefix, then a word, dotted or not (`@Test`, `@org.junit.jupiter.api.Test`: its last word counts),
 then optionally a bracket group (`@Disabled("later")`). The markers of a declaration are those right before its first
-word, with plain words (modifiers: `public static`) between them; anything else ends them. Everything is read from the
+word, with plain words (modifiers: `public static`) and a `<...>` type-parameter list between them; anything else ends
+them. Everything is read from the
 masked text (scan.Lexer.mask): a marker in a string or a comment never counts."""
 from collections import namedtuple
 
@@ -24,6 +25,16 @@ def _open_of(lx, m, j):
             depth -= 1
             if depth == 0:
                 return i
+    return None
+
+
+def _angle_open(m, j):
+    """index of the `<` that opens the `>` at m[j], or None."""
+    depth = 0
+    for i in range(j, -1, -1):
+        depth += {">": 1, "<": -1}.get(m[i], 0)
+        if depth == 0:
+            return i
     return None
 
 
@@ -52,6 +63,11 @@ def markers(lx, m, start, prefix):
         j = k - 1
         while j >= 0 and m[j].isspace():
             j -= 1
+        if j >= 0 and m[j] == ">":  # a type-parameter list, `<T extends Comparable<T>>`: a modifier
+            k = _angle_open(m, j)
+            if k is None:
+                return out
+            continue
         group = j >= 0 and m[j] in lx.closes
         if group:
             j = _open_of(lx, m, j)
@@ -113,3 +129,19 @@ def body(text, m, lx, span):
         return None
     first, last = line_of(text, open_) + 1, line_of(text, close) - 1
     return (first, last) if first <= last else None
+
+
+def annotations(lx, m, prefix, names):
+    """[(start, end, marker)] of each marker in masked m whose (last) word is one of names: `@DoNotMutate`,
+    `@lombok.Generated`, `@Generated("x")` (its group not included)."""
+    out, at = [], m.find(prefix)
+    while at >= 0:
+        w = lx.word_re.match(m, at + len(prefix))
+        end = w.end() if w else at + len(prefix)
+        while w and lx.member and m.startswith(lx.member, end) and lx.word_re.match(m, end + len(lx.member)):
+            w = lx.word_re.match(m, end + len(lx.member))
+            end = w.end()
+        if w and w.group() in names:
+            out.append((at, end, m[at:end]))
+        at = m.find(prefix, end)
+    return out

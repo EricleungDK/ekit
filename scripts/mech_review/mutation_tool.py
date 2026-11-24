@@ -296,10 +296,8 @@ def _in_worktree(r, wt):
     extra, stop = _runner_extra(r, crate)
     if stop:
         return stop
-    ranges, stop = _ranges(r)
-    if stop:
-        return stop
-    return _run_tool(r, wt, crate, extra, ranges)
+    ranges, outside, stop = _ranges(r)
+    return _not_mutated(stop or _run_tool(r, wt, crate, extra, ranges), r.tool, outside)
 
 
 def _guard_program(r, wt):
@@ -350,24 +348,36 @@ def _runner_extra(r, crate):
 
 
 def _ranges(r):
-    """(the `mutate` ranges of the shard's changed lines, None), or (None, the result): a file name holding mutate_join,
-    or no range at all (pass)."""
+    """(the `mutate` ranges of the shard's changed lines, the files under no module root, None), or (None, those
+    files, the result): a file name holding mutate_join, or no range at all (pass). A file under none of
+    mutation.tool.module_roots is not mutated (#22: the build compiles none, Maven's src/main/java), and named."""
     t = r.tool
-    ranges = []
+    ranges, outside = [], []
     for f in r.files:
         crate_f = _crate_path(r.rv.project_dir, f)
         if "mutate" in t and t["mutate_join"] in crate_f:
-            return None, (_check("n/a", f"{f}: a file name with `{t['mutate_join']}` in it cannot be passed to "
-                                        f"{t['name']} (env): mutation.tool.mutate_join"), [])
+            return None, outside, (_check("n/a", f"{f}: a file name with `{t['mutate_join']}` in it cannot be passed "
+                                                 f"to {t['name']} (env): mutation.tool.mutate_join"), [])
         module = module_name(t, crate_f)
         if module == "":
-            return None, (_check("n/a", f"{f}: under none of mutation.tool.module_roots ({', '.join(t['module_roots'])}), "
-                                        f"so it has no `{{module}}` to pass to {t['name']} (env)"), [])
+            outside.append(f)
+            continue
+        package = module.rpartition(".")[0] + "." if module and "." in module else ""
         for a, _, b in (x.partition("-") for x in line_ranges(ln for ln, _ in r.changed.get(f, []))):
-            ranges.append(t["mutate"].format(file=crate_f, first=a, last=b, module=module) if "mutate" in t else crate_f)
+            ranges.append(t["mutate"].format(file=crate_f, first=a, last=b, module=module, package=package)
+                          if "mutate" in t else crate_f)
     if "mutate" in t and not ranges:
-        return None, (_check("pass", "0 mutants in the diff", 0, 0), [])
-    return ranges, None
+        return None, outside, (_check("pass", "0 mutants in the diff", 0, 0), [])
+    return ranges, outside, None
+
+
+def _not_mutated(result, t, outside):
+    """the result with the changed files under no module root named in its note (they were not mutated)."""
+    if not outside:
+        return result
+    check, ents = result
+    return dict(check, note=check["note"] + f"; not mutated: {', '.join(outside)} (under none of "
+                                            f"mutation.tool.module_roots: {', '.join(t['module_roots'])})"), ents
 
 
 def module_name(t, path):

@@ -75,6 +75,23 @@ class Fixture(unittest.TestCase):
         self.assertIn(r.returncode, rc, r.stderr + r.stdout)
         return json.loads(r.stdout)
 
+    def branch(self, name, start, files):
+        """a branch from start with files ({path: text}, or {path: (old, new)} to replace in the file there)."""
+        self.git("checkout", "-q", "-b", name, start)
+        for path, text in files.items():
+            full = os.path.join(self.repo, path)
+            if isinstance(text, tuple):
+                with open(full) as f:
+                    old = f.read()
+                self.assertIn(text[0], old)
+                text = old.replace(*text)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write(text)
+        self.commit(name)
+        self.git("checkout", "-q", "main")
+        return name
+
     def red(self, head, *extra):
         return self.cli("red", head, "--head-branch", "claude/t22", *extra)
 
@@ -103,6 +120,7 @@ class Reference(unittest.TestCase):
         self.assertEqual(a.test_argv(a.commands["test"], TEST, "CalcTest.adds"),
                          ["mvn", "-B", "-ntp", "test", "-Dtest=CalcTest#adds"])
         self.assertFalse(os.path.exists(os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "java.toml")))
+        self.assertIn("org.pitest:pitest-maven:1.17.4:mutationCoverage", a.mutation_tool["args"])  # S5: pinned here
 
 
 class NotOffered(Fixture):
@@ -120,7 +138,7 @@ class R2(Fixture):
         self.assertEqual(ents(env, "R2"), [
             ("confirm", TEST, 13, "expected value changed in `CalcTest.adds`: was 3, now 4"),
             ("fail", TEST, 17, "test fn `CalcTest.subtracts` removed"),
-            ("fail", TEST, 19, "test `CalcTest.negates` marked @Disabled")])
+            ("fail", TEST, 19, "test `CalcTest.negates` marked @Disabled, or with a condition that can skip it")])
 
     def test_r0_static_half_proves_the_reference(self):
         r = _kit.run_cli(["r0", "--repo", self.repo, "--base", "main", "--head", "main", "--stack", "java",
@@ -161,6 +179,35 @@ class NoJdk(Fixture):
             self.assertIn("JAVA_HOME environment variable is not defined correctly", red["checks"]["R1"]["note"])
 
 
+class RoundOneR2(Fixture):
+    """review round 1 of #22: cheats R2 must name on the reference adapter."""
+
+    def test_a_condition_annotation_is_a_skip(self):  # B4
+        head = self.branch("cond", "main", {TEST: ("    @Test\n    void subtracts", "    @Test\n    @DisabledOnOs(OS.LINUX)\n"
+                                                   "    void subtracts")})
+        head = self.branch("cond2", head, {TEST: ("    @Test\n    void negates", "    @Test\n    @EnabledOnOs(OS.WINDOWS)\n"
+                                                  "    void negates")})
+        self.assertEqual([(s, p) for s, _, _, p in ents(self.cli("r2", head), "R2")], [
+            ("fail", "test `CalcTest.subtracts` marked @Disabled, or with a condition that can skip it"),
+            ("fail", "test `CalcTest.negates` marked @Disabled, or with a condition that can skip it")])
+
+    def test_pit_config_in_the_pom_and_a_skip_annotation_are_named(self):  # B3
+        pom = ("<artifactId>pitest-maven</artifactId>\n        <version>1.17.4</version>\n",
+               "<artifactId>pitest-maven</artifactId>\n        <version>1.17.4</version>\n        <configuration>\n"
+               "          <excludedMethods>\n            <param>mul</param>\n          </excludedMethods>\n"
+               "        </configuration>\n")
+        head = self.branch("hide", "weak", {"pom.xml": pom, CALC: ("    public static int mul(", "    @DoNotMutate\n"
+                                                                   "    public static int mul(")})
+        got = [(e["severity"], e["class"], e["file"], e["problem"]) for e in self.cli("r2", head)["entries"]]
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(any(f == "pom.xml" and c == "needs-human" and "PIT config (pom.xml)" in p for _, c, f, p in got), got)
+        self.assertTrue(any(f == CALC and c == "needs-human" and "@DoNotMutate" in p for _, c, f, p in got), got)
+
+    def test_all_with_the_adapter_proves_it_with_its_fixtures(self):  # S8
+        c = self.cli("all", "main", "--head-branch", "claude/t22")["checks"]["R0"]
+        self.assertEqual((c["status"], c["note"]), ("pass", "static half: 17 of 17 cases proved"), c)
+
+
 class Run(Fixture):
     """R1 and R4 through [run]: surefire's -Dtest=Class#method, read from its counts."""
 
@@ -183,6 +230,16 @@ class Run(Fixture):
         self.assertEqual(ents(env, "R4"), [("fail", TEST, 27, "test `CalcTest.addsOnes` failed 5 of 5 runs at head "
                                                           "(fail)")])
 
+    def test_a_failing_test_that_prints_the_jdk_message_is_still_a_fail(self):  # B2
+        say = ('        System.out.println("The JAVA_HOME environment variable is not defined correctly");\n'
+               '        System.out.println("JAVA_HOME not found");\n')
+        head = self.branch("printer", "broken", {TEST: ("    void addsOnes() {\n", "    void addsOnes() {\n" + say)})
+        env = self.red(head)
+        if not TOOLCHAIN:
+            return self.check_env(env["checks"]["R4"])
+        self.assertEqual([(s, p) for s, _, _, p in ents(env, "R4")],
+                         [("fail", "test `CalcTest.addsOnes` failed 5 of 5 runs at head (fail)")])
+
 
 class Mutation(Fixture):
     """R3 through PIT: the changed classes, then ekit's changed-line filter."""
@@ -196,6 +253,29 @@ class Mutation(Fixture):
                                "division"),
             ("fail", CALC, 16, f"MISSED mutant {CALC}:16: PrimitiveReturnsMutator in mul: replaced int return with 0 "
                                "for com/example/Calc::mul")])
+
+    def test_a_stray_file_outside_src_main_java_leaves_r3_on(self):  # B1
+        head = self.branch("stray", "weak", {"tools/Stray.java": "class Stray {}\n"})
+        env = self.cli("mutants", head)
+        if not TOOLCHAIN:
+            return self.check_env(env["checks"]["R3"])
+        self.assertEqual([(e["line"], e["problem"].split(": ", 1)[1]) for e in env["entries"]], [
+            (16, "MathMutator in mul: Replaced integer multiplication with division"),
+            (16, "PrimitiveReturnsMutator in mul: replaced int return with 0 for com/example/Calc::mul")])
+        self.assertIn("; not mutated: tools/Stray.java (under none of mutation.tool.module_roots: src/main/java)",
+                      env["checks"]["R3"]["note"])
+
+    def test_a_second_top_level_class_in_a_changed_file_is_mutated(self):  # S6
+        helper = "\nfinal class Helper {\n    static int twice(int n) {\n        return n + n;\n    }\n}\n"
+        test = ("    @Test\n    void subtracts", "    @Test\n    void twice() {\n        assertTrue(Helper.twice(2) >= 0);"
+                "\n    }\n\n    @Test\n    void subtracts")
+        head = self.branch("helper", "main", {CALC: ("    }\n}\n", "    }\n}\n" + helper), TEST: test})
+        env = self.cli("mutants", head)
+        if not TOOLCHAIN:
+            return self.check_env(env["checks"]["R3"])
+        self.assertEqual([(e["line"], e["problem"].split(": ", 1)[1]) for e in env["entries"]], [
+            (22, "PrimitiveReturnsMutator in twice: replaced int return with 0 for com/example/Helper::twice"),
+            (22, "MathMutator in twice: Replaced integer addition with subtraction")])
 
     def test_a_strong_test_leaves_none(self):
         env = self.cli("mutants", "red")

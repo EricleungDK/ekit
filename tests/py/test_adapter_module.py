@@ -35,11 +35,18 @@ class ModuleValidation(unittest.TestCase):
 
     def test_module_needs_its_roots_and_the_roots_need_module(self):
         self.assertEqual(self.err(with_tool(module_roots=None)),
-                         "mutation.tool.module_roots: missing: `{module}` is a file's dotted name under one of these dirs")
+                         "mutation.tool.module_roots: missing: `{module}` and `{package}` are a file's dotted name under "
+                         "one of these dirs")
+        self.assertEqual(self.err(with_tool(mutate="{package}*", module_roots=None)),
+                         "mutation.tool.module_roots: missing: `{module}` and `{package}` are a file's dotted name under "
+                         "one of these dirs")
+        self.assertEqual(parse(with_tool(mutate="{package}*")).mutation_tool["mutate"], "{package}*")
+        self.assertEqual(self.err(with_tool(mutate="{first}")),
+                         "mutation.tool.mutate: no `{file}`, `{module}` or `{package}`: a range names its file")
         self.assertEqual(self.err(with_tool(mutate="{file}")),
-                         "mutation.tool.module_roots: never used: mutate has no `{module}`")
+                         "mutation.tool.module_roots: never used: mutate has no `{module}` or `{package}`")
         self.assertEqual(self.err(with_tool(args=["run"], mutate=None)),
-                         "mutation.tool.module_roots: never used: no mutate has `{module}`")
+                         "mutation.tool.module_roots: never used: no mutate has `{module}` or `{package}`")
         self.assertEqual(self.err(with_tool(module_roots=[])), "mutation.tool.module_roots: want at least one entry")
 
     def test_each_root_is_a_dir_under_the_project_dir(self):
@@ -85,15 +92,41 @@ class ModuleRun(Case):
         self.assertIn("| pit -DtargetClasses=Top,Top$*,com.example.Calc,com.example.Calc$*\n", self.calls())
         self.assertEqual([e["line"] for e in env["entries"]], [5, 9])
 
-    def test_a_changed_file_under_no_root_is_n_a_and_runs_nothing(self):
+    def test_a_changed_file_under_no_root_is_left_out_and_named_the_rest_still_runs(self):
+        """review round 1, B1: a stray tools/Stray.java made R3 n/a (env); the build compiles no such file, so it is
+        not mutated, it is named, and the changed classes keep their MISSED."""
+        other = "tools/Stray.java"
+        self.pr(base={"mini.json": "{}", JAVA: SRC, other: SRC, "tests/calc.mini": "\n"},
+                head={JAVA: SRC.replace("// 5\n", "int a;\n").replace("// 9\n", "int b;\n"),
+                      other: SRC.replace("// 5\n", "x\n")})
+        r, env = self.cli("mutants", self.adapter_java(),
+                          env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual([(e["file"], e["line"]) for e in env["entries"]], [(JAVA, 5), (JAVA, 9)])
+        self.assertIn("| pit -DtargetClasses=com.example.Calc,com.example.Calc$*\n", self.calls())
+        self.assertEqual(env["checks"]["R3"]["status"], "fail")
+        self.assertIn(f"; not mutated: {other} (under none of mutation.tool.module_roots: src/main/java, gen)",
+                      env["checks"]["R3"]["note"])
+        self.assertNotIn("(env)", env["checks"]["R3"]["note"])
+
+    def test_only_changed_files_under_no_root_is_a_pass_naming_them_that_runs_nothing(self):
         other = "src/it/java/Calc.java"
         self.pr(base={"mini.json": "{}", other: SRC, "tests/calc.mini": "\n"}, head={other: SRC.replace("// 5\n", "x\n")})
         r, env = self.cli("mutants", self.adapter_java())
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(env["checks"]["R3"], {
-            "status": "n/a", "note": f"{other}: under none of mutation.tool.module_roots (src/main/java, gen), so it has no "
-                                     "`{module}` to pass to pit (env)"})
+            "status": "pass", "note": f"0 mutants in the diff; not mutated: {other} (under none of "
+                                      "mutation.tool.module_roots: src/main/java, gen)", "tested": 0, "total": 0})
         self.assertNotIn("| pit", self.calls())
+
+    def test_package_is_the_dotted_dir_of_each_changed_file(self):
+        """review round 1, S6: `{package}*` reaches a second top-level class in a changed file (Helper in Calc.java)."""
+        self.pr(base={"mini.json": "{}", JAVA: SRC, "src/main/java/Top.java": SRC, "tests/calc.mini": "\n"},
+                head={JAVA: SRC.replace("// 5\n", "int a;\n"), "src/main/java/Top.java": SRC.replace("// 2\n", "c\n")})
+        path = self.adapter(adapter_text(PIT_TOML.replace('mutate = "{module},{module}$*"', 'mutate = "{package}*"'),
+                                         '[".mini", ".java"]'))
+        self.cli("mutants", path, env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
+        self.assertIn("| pit -DtargetClasses=*,com.example.*\n", self.calls())
 
 
 class RuntimeTestPaths(unittest.TestCase):
