@@ -412,7 +412,7 @@ class RunUsage(Fixture):
         self.assertEqual(json.loads(self.red(head, head, adapter=full, stack="mini").stdout)["notes"], [])
         self.assertNotIn("notes", json.loads(self.red(head, head, adapter=None, check="r2").stdout))
 
-    def test_r3_through_a_file_is_a_usage_error(self):
+    def test_r3_through_a_file_runs_the_declared_tool(self):
         head = self.commit({"tests/calc.test.ts": TEST})
         # #19: no longer a usage error: R3 runs through the file's [mutation.tool] (ts.toml declares Stryker); with no
         # production change it is skipped, as the built-in's is (tests/py/test_adapter_mutation_ts.py runs it)
