@@ -313,7 +313,8 @@ def _guard_program(r, wt):
             "install the tool as a program of its own on PATH (setup-command) or pass mutants-cmd: a launcher "
             "runs what it is given, which can be a file the PR under review changes",
             "running a mutation tool through an interpreter, shell or launcher")])
-    inside = _in_checkout(r.prog, (r.rv.repo, wt))
+    # R0's R3 control (#21) runs in a throwaway repo: the reviewed checkout rides in as the adapter's checkout_roots
+    inside = _in_checkout(r.prog, (r.rv.repo, wt) + tuple(getattr(r.rv.adapter, "checkout_roots", ())))
     if inside:
         problem = (f"the mutation tool `{word}` resolves to {r.prog} ({inside}), in the reviewed checkout: mutants "
                    "not run")

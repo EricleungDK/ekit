@@ -650,3 +650,20 @@ class ReviewRound1(Case):
         c = env["checks"]["R0"]
         self.assertEqual((c["ran"], c["status"]), (False, "pass"), c)
         self.assertEqual(c["census"]["pr"], {"found": 1, "listed": 2, "misses": ["tests/more.mini :: new style"]})
+
+
+class R3ControlRoots(Case):
+    """review N-d: the R3 control refuses what R3 refuses: a tool that resolves on PATH into the reviewed checkout is
+    not run in the control's throwaway repo either."""
+
+    def test_a_tool_in_the_reviewed_checkout_is_refused_by_the_control_too(self):
+        inside = os.path.join(self.repo, "tools")
+        os.makedirs(inside)
+        os.symlink(os.path.join(self.tmp, "stub.py"), os.path.join(inside, "mut"))
+        head = self.commit({"src/calc.mini": "fn add(a, b) { a + b + 0 }\n"})
+        open(self.log, "w").close()
+        with mock.patch.dict(os.environ, {"PATH": inside + os.pathsep + os.environ["PATH"]}):
+            r, env = self.mutants(None, head)
+        got = {x["case"]: x for x in env["checks"]["R0"]["cases"]}
+        self.assertIn("in the reviewed checkout", got["r3-weak"]["got"], got)
+        self.assertEqual([x for x in self.calls() if x.startswith("run ")], [])  # the tool never ran

@@ -32,6 +32,7 @@ Runtime fixtures: `runtime/` in the fixture dir (r0.builtin_fixtures, or `<adapt
                   MISSED mutant) and strong (none)
 The fixture project's tests sit under tests/ (TEST_GLOBS).
 """
+import copy
 import hashlib
 import json
 import os
@@ -564,8 +565,11 @@ def _r3_case(case, check, ents, weak):
     return _case(case, "r3", "pass" if ok else "fail", want, got[:400])
 
 
-def r3_control(adapter, rt, src, mutants_cmd, budget_min, results):
-    """the R3 control: R3 on the weak and the strong fixture PR (base: r3/base), each in a throwaway repo."""
+def r3_control(adapter, rt, src, mutants_cmd, budget_min, results, roots=()):
+    """the R3 control: R3 on the weak and the strong fixture PR (base: r3/base), each in a throwaway repo. roots: the
+    reviewed checkout, where the tool must not resolve (as R3 refuses it there, #21 review N-d)."""
+    adapter = copy.copy(adapter)
+    adapter.checkout_roots = tuple(getattr(adapter, "checkout_roots", ())) + tuple(roots)
     for case, tree, weak in (("r3-weak", rt.weak, True), ("r3-strong", rt.strong, False)):
         if not tree:
             results.append(_case(case, "r3", "unproven", "a MISSED mutant" if weak else "no MISSED mutant",
@@ -834,7 +838,7 @@ def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, prepare
     if rt is None:
         results.append(_case("r3-weak", "r3", "unproven", "a MISSED mutant", "no runtime/ fixtures"))
     else:
-        r3_control(adapter, rt, os.path.join(repo, project_dir), mutants_cmd, budget_min, results)
+        r3_control(adapter, rt, os.path.join(repo, project_dir), mutants_cmd, budget_min, results, (repo,))
     got = {r["case"]: r for r in results}
     head_note = f"fingerprint {fp[:12]} (ran); R3 control: " + ", ".join(
         f"{c} {got[c]['status']}" for c in ("r3-weak", "r3-strong") if c in got)
