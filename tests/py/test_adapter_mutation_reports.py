@@ -4,6 +4,7 @@ mull), PIT's mutations.xml and a line pattern with named groups. Each reads a re
 R3 n/a (env), never a pass and never a crash. Fixtures: tests/fixtures/mutation-reports."""
 import json
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -125,6 +126,29 @@ class Pit(unittest.TestCase):
                 M.read_pit(raw)
             self.assertIn("not UTF-8", str(cm.exception))
 
+    def test_a_declared_encoding_other_than_utf8_is_refused_never_a_crash(self):  # review F2
+        for enc in (b"shift_jis", b"utf-7", b"euc-jp", b"ISO-8859-1", b"UTF-16"):
+            with self.subTest(enc):
+                x = b'<?xml version="1.0" encoding="' + enc + b'"?><mutations/>'
+                with self.assertRaises(M.ReportError) as cm:
+                    M.read_pit(x)
+                self.assertEqual(str(cm.exception), f"declares encoding `{enc.decode()}`: want UTF-8")
+        for ok in (b'<?xml version="1.0" encoding="UTF-8"?><mutations/>', b"<?xml version='1.0' encoding='utf8'?><mutations/>",
+                   b'<?xml version="1.0"?><mutations/>'):
+            self.assertEqual(M.read_pit(ok), [])
+
+    def test_a_value_error_from_the_parser_is_a_report_error(self):
+        with mock.patch("xml.etree.ElementTree.fromstring", side_effect=ValueError("multi-byte encodings")):
+            with self.assertRaises(M.ReportError) as cm:
+                M.read_pit(b"<mutations/>")
+        self.assertIn("not XML: multi-byte encodings", str(cm.exception))
+
+    def test_a_line_number_that_is_not_ascii_digits_is_unlocated(self):
+        for ln in ("\u00b2", "\u0663", "\uff13"):  # superscript two, arabic-indic three, fullwidth three
+            x = ("<mutations><mutation status='SURVIVED'><sourceFile>A.java</sourceFile><mutatedClass>A</mutatedClass>"
+                 f"<lineNumber>{ln}</lineNumber></mutation></mutations>").encode()
+            self.assertEqual(M.read_pit(x)[0].line, None, ln)
+
     def test_malformed_reports_are_refused_with_the_reason(self):
         ok = b"<sourceFile>A.java</sourceFile><mutatedClass>p.A</mutatedClass><lineNumber>3</lineNumber>"
         cases = {b"<mutations>": "not XML", b"<report/>": "root is <report>, not <mutations>",
@@ -182,6 +206,25 @@ class Lines(unittest.TestCase):
         with self.assertRaises(M.ReportError) as cm:
             M.read_lines(b"-:3 SURVIVED\n", tool, CRATE)
         self.assertEqual(str(cm.exception), "line 1: the pattern matched without its file group")
+
+    def test_a_line_that_is_not_ascii_digits_is_refused_never_a_crash(self):  # review F3
+        tool = lines_tool(r"^(?P<file>\S+):(?P<line>\S+) (?P<status>[A-Z]+) (?P<desc>.+)$")
+        for ln in ("\u00b2", "\u0663"):
+            with self.assertRaises(M.ReportError) as cm:
+                M.read_lines(f"a.mini:{ln} SURVIVED x\n".encode(), tool, CRATE)
+            self.assertEqual(str(cm.exception), f"line 1: line `{ln}` is not a whole number >= 1")
+
+    def test_a_large_report_reads_in_linear_time_with_its_line_numbers(self):
+        n = 80000
+        raw = "".join(f"src/a.mini:{i % 500 + 1} KILLED mutant {i}\n" for i in range(n)).encode()
+        t0 = time.monotonic()
+        rows = M.read_lines(raw, lines_tool(), CRATE)
+        self.assertEqual(len(rows), n)
+        self.assertLess(time.monotonic() - t0, 5.0)  # quadratic line counting took 32 s here
+        bad = raw + b"src/a.mini:1 ODD x\n"
+        with self.assertRaises(M.ReportError) as cm:
+            M.read_lines(bad, lines_tool(), CRATE)
+        self.assertEqual(str(cm.exception), f"line {n + 1}: status `ODD` is in no mutation.tool.status list")
 
     def test_not_utf8_is_refused(self):
         with self.assertRaises(M.ReportError):

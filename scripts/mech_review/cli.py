@@ -1,5 +1,6 @@
 """CLI: parse args, run the engine, print contract JSON, exit 0 (no fail entries) / 1 (any fail entry) / 2 (usage, git)."""
 import argparse
+import copy
 import json
 import math
 import os
@@ -209,6 +210,18 @@ SHARD = re.compile(r"^(\d+)/(\d+)$")
 
 
 R3_SIDE = ("mutants", "baseline", "plan")
+
+
+def _with_plan_os(args, adapter):
+    """the repo's adapter with the stack's target OS as resolve settles it (#58, #19): the plan entry's target-os
+    first (its own, else its adapter file's), so R3's mutation.tool.os check reads the OS the jobs run on."""
+    plan, _ = stack_plan.target_plan(args.repo, args.base, args.head)
+    entry = stack_plan.entry_for(plan, args.stack, args.project_dir)
+    if entry is None or not entry.target_os or entry.target_os == adapter.target_os:
+        return adapter
+    adapter = copy.copy(adapter)
+    adapter.target_os = entry.target_os
+    return adapter
 
 
 def _review(args, adapter):
@@ -634,6 +647,12 @@ def main(argv):
             parser.error(f"all on stack `{args.stack}`, which the repo's adapter file overrides: R2 is the file's, R1 "
                          f"and R4 the built-in's; run r2 and red apart")
         adapter = None
+    if adapter is not None and args.adapter is None and args.check in ("mutants", "baseline"):
+        try:
+            adapter = _with_plan_os(args, adapter)
+        except gitio.Die as e:
+            print(f"mech-review: {e}", file=sys.stderr)
+            return 2
     if args.check == "plan":
         return _plan(args, adapter)
     if args.check == "baseline":

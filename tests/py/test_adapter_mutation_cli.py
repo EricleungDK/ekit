@@ -26,7 +26,10 @@ if args[:1] == ["--version"]:
     print(os.environ.get("STUB_VERSION", "mut 1.0.0"))
     sys.exit(int(os.environ.get("STUB_VERSION_RC", "0")))
 src, dst = os.environ.get("STUB_REPORT"), os.environ.get("STUB_TO")
-if src and dst:
+if os.environ.get("STUB_LINK_TO") and dst:  # the run leaves a link at the report path
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    os.symlink(os.environ["STUB_LINK_TO"], dst)
+elif src and dst:
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     shutil.copy(src, dst)
 sys.stdout.write(os.environ.get("STUB_OUT", ""))
@@ -102,7 +105,12 @@ class Case(unittest.TestCase):
             f.write(STUB)
         os.chmod(stub, 0o755)
         self.stub = stub
-        self.env = {"MECH_TEST_STUB": stub, "STUB_LOG": self.log}
+        # the declared tools' programs on PATH, as setup-command installs them (a bare name resolves there, #19 F1)
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        for prog in ("mut", "mvn"):
+            os.symlink(stub, os.path.join(self.bin, prog))
+        self.env = {"MECH_TEST_STUB": stub, "STUB_LOG": self.log, "PATH": self.bin + os.pathsep + os.environ["PATH"]}
         os.makedirs(self.repo)
         self.git("init", "-q", "-b", "main")
 
@@ -353,16 +361,47 @@ class NotRun(Case):
         self.assertEqual(env["checks"]["R3"]["status"], "n/a")
         self.assertTrue(env["checks"]["R3"]["note"].startswith("no mut report at out/report.json (env)"))
 
-    def test_a_report_path_that_leads_out_of_the_project_dir_is_n_a(self):
-        outside = os.path.join(self.tmp, "outside")
-        os.makedirs(outside)
+    def pr_with(self, plant):
+        """base, then a head that changes calc.mini and lets plant(repo dir) put things in the checkout."""
         self.base = self.commit({"mini.json": "{}", "src/calc.mini": BASE_SRC, "tests/calc.mini": TEST})
-        os.symlink(outside, os.path.join(self.repo, "out"))
-        self.head = self.commit({"src/calc.mini": HEAD_SRC})
-        _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env=self.report("elements.json",
-                                                                                          "out/report.json"))
-        self.assertEqual(env["checks"]["R3"], {"status": "n/a", "note": "mut report out/report.json leads out of the "
-                                                                        "project dir (env): not read"})
+        with open(os.path.join(self.repo, "src", "calc.mini"), "w") as f:
+            f.write(HEAD_SRC)
+        plant(self.repo)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "head")
+        self.head = self.git("rev-parse", "HEAD")
+
+    def test_a_committed_link_or_file_on_the_report_path_is_cleared_without_following_it(self):  # review F5
+        victim = os.path.join(self.tmp, "victim")
+        os.makedirs(victim)
+        write(os.path.join(victim, "report.json"), "precious")
+        plants = {"a link for its dir": lambda r: os.symlink(victim, os.path.join(r, "out")),
+                  "a link for itself": lambda r: (os.makedirs(os.path.join(r, "out")),
+                                                  os.symlink(os.path.join(victim, "report.json"),
+                                                             os.path.join(r, "out", "report.json"))),
+                  "a file for its dir": lambda r: write(os.path.join(r, "out"), "x"),
+                  "a dir for itself": lambda r: (os.makedirs(os.path.join(r, "out", "report.json")),
+                                                 write(os.path.join(r, "out", "report.json", "x"), "x"))}
+        for what, plant in plants.items():
+            with self.subTest(what):
+                self.git("rm", "-rq", "--ignore-unmatch", "out")
+                self.pr_with(plant)
+                r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env=self.report("elements.json",
+                                                                                                  "out/report.json"))
+                self.assertEqual((r.returncode, len(env["entries"]), env["checks"]["R3"]["status"]), (1, 2, "fail"),
+                                 env["checks"]["R3"])
+                self.assertEqual(read(os.path.join(victim, "report.json")), "precious")
+
+    def test_a_report_the_run_leaves_as_a_link_out_of_the_project_dir_is_a_fail(self):  # review F5
+        self.pr()
+        outside = os.path.join(self.tmp, "outside.json")
+        write(outside, read(os.path.join(FX, "elements.json")))
+        r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_LINK_TO": outside,
+                                                                               "STUB_TO": "out/report.json"})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(env["checks"]["R3"]["status"], "fail")
+        self.assertEqual([(e["class"], e["severity"], e["problem"]) for e in env["entries"]], [
+            ("agent-fixable", "fail", "mut report out/report.json leads out of the project dir after the run: not read")])
 
     def test_no_production_change_is_skipped_and_runs_nothing(self):
         self.pr(head={"tests/calc.mini": TEST.replace("3, add", "3,  add")})
@@ -374,6 +413,100 @@ class NotRun(Case):
         _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)))
         self.assertEqual(env["checks"]["R3"], {"status": "n/a", "note": "no mini.json in .: set project-dir"})
 
+
+class ProgramOutsideTheCheckout(Case):
+    """review F1: the declared program is resolved on PATH (absolute entries only) or taken as an absolute path, and
+    never run from the reviewed checkout."""
+
+    def test_a_program_a_path_entry_finds_in_the_checkout_is_a_fail_a_person_fixes(self):
+        self.pr()
+        inside = os.path.join(self.repo, "tooling")  # untracked, in the caller's checkout: the PR's own tree
+        os.makedirs(inside)
+        os.symlink(self.stub, os.path.join(inside, "mut"))
+        r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)),
+                          env={"PATH": inside + os.pathsep + self.env["PATH"]})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        real = os.path.realpath(os.path.join(inside, "mut"))
+        self.assertEqual([(e["class"], e["severity"], e["problem"]) for e in env["entries"]], [
+            ("needs-human", "fail", f"the mutation tool `mut` resolves to {os.path.join(inside, 'mut')} ({real}), in "
+                                    "the reviewed checkout: mutants not run")])
+        self.assertEqual(self.calls(), "")
+
+    def test_an_absolute_command_in_the_checkout_is_the_same_fail(self):
+        self.pr()
+        prog = os.path.join(self.repo, "tooling", "mut")
+        os.makedirs(os.path.dirname(prog))
+        os.symlink(self.stub, prog)
+        tool = ELEMENTS.replace('command = "mut"', f'command = "{prog}"')
+        r, env = self.cli("mutants", self.adapter(adapter_text(tool)))
+        self.assertEqual((r.returncode, [e["class"] for e in env["entries"]]), (1, ["needs-human"]), r.stderr)
+
+    def test_a_relative_path_entry_never_finds_the_prs_program(self):
+        self.pr(head={"src/calc.mini": HEAD_SRC, "mut": "#!/bin/sh\nexit 0\n"})
+        os.chmod(os.path.join(self.repo, "mut"), 0o755)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "exec")
+        self.head = self.git("rev-parse", "HEAD")
+        r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"PATH": "." + os.pathsep + "/usr/bin"})
+        self.assertEqual(env["checks"]["R3"], {"status": "n/a", "note": "mut not installed (env): `mut` not runnable "
+                                               "(mutation.tool.command); install it (setup-command) or set mutants-cmd"})
+        self.assertEqual(self.calls(), "")
+
+    def test_a_relative_mutants_cmd_is_not_run_from_the_checkout(self):
+        self.pr()
+        _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), "--mutants-cmd", "bin/mut")
+        self.assertEqual(env["checks"]["R3"]["status"], "n/a")
+        self.assertIn("`bin/mut` not runnable", env["checks"]["R3"]["note"])
+        self.assertEqual(self.calls(), "")
+
+
+class ReviewNits(Case):
+    def test_mutate_join_applies_only_when_mutate_is_used(self):  # review F7
+        tool = ELEMENTS.replace('args = ["run", "--mutate", "{mutate}", "--timeout", "{timeout_ms}"]',
+                                'args = ["run"]').replace('mutate = "{file}:{first}-{last}"\n', "")
+        self.pr(base={"mini.json": "{}", "src/a,b.mini": BASE_SRC, "tests/calc.mini": TEST},
+                head={"src/a,b.mini": HEAD_SRC})
+        _, env = self.cli("mutants", self.adapter(adapter_text(tool)), env=self.report("elements.json",
+                                                                                      "out/report.json"))
+        self.assertNotIn("mutate_join", env["checks"]["R3"]["note"])
+        self.assertIn("| run\n", self.calls())
+
+    def test_a_silent_mutant_in_another_shards_file_leaves_this_shard_alone(self):  # review F8
+        self.pr(base={"mini.json": "{}", "src/calc.mini": BASE_SRC, "src/more.mini": BASE_SRC, "tests/calc.mini": TEST},
+                head={"src/calc.mini": HEAD_SRC, "src/more.mini": HEAD_SRC})
+        doc = json.loads(read(os.path.join(FX, "elements.json")))
+        doc["files"]["src/calc.mini"]["mutants"][0]["testsCompleted"] = 0  # calc.mini is shard 0's
+        p = os.path.join(self.tmp, "silent.json")
+        write(p, json.dumps(doc))
+        tool = self.adapter(adapter_text(ELEMENTS))
+        _, one = self.cli("mutants", tool, "--shard", "1/2", env={"STUB_REPORT": p, "STUB_TO": "out/report.json"})
+        self.assertEqual(one["checks"]["R3"]["status"], "pass", one["checks"]["R3"])
+        _, zero = self.cli("mutants", tool, "--shard", "0/2", env={"STUB_REPORT": p, "STUB_TO": "out/report.json"})
+        self.assertEqual(zero["checks"]["R3"]["status"], "n/a")
+
+    def test_two_shards_merge_to_the_one_shard_result(self):  # review F10
+        self.pr(base={"mini.json": "{}", "src/calc.mini": BASE_SRC, "src/more.mini": BASE_SRC, "src/other.mini": BASE_SRC,
+                      "tests/calc.mini": TEST}, head={"src/calc.mini": HEAD_SRC, "src/more.mini": HEAD_SRC})
+        doc = json.loads(read(os.path.join(FX, "elements.json")))
+        f = doc["files"]["src/calc.mini"]
+        doc["files"].update({"src/more.mini": f, "src/other.mini": f, "../x.mini": f})  # unchanged, outside the crate
+        p = os.path.join(self.tmp, "r.json")
+        write(p, json.dumps(doc))
+        tool = self.adapter(adapter_text(ELEMENTS))
+        got = {}
+        for shard in ("0/1", "0/2", "1/2"):
+            _, got[shard] = self.cli("mutants", tool, "--shard", shard, env={"STUB_REPORT": p, "STUB_TO": "out/report.json"})
+            path = os.path.join(self.tmp, shard.replace("/", "-") + ".json")
+            write(path, json.dumps(got[shard]))
+        self.assertEqual([(got[s]["checks"]["R3"]["tested"], got[s]["checks"]["R3"]["total"]) for s in got],
+                         [(20, 24), (15, 18), (5, 6)])
+        r = _kit.run_cli(["merge", "--repo", self.tmp, "--base", got["0/1"]["base"], "--head", got["0/1"]["head"],
+                          "--stack", "mini", "--shards", "2", "--envelope", "0=" + os.path.join(self.tmp, "0-2.json"),
+                          "--envelope", "1=" + os.path.join(self.tmp, "1-2.json")])
+        merged = json.loads(r.stdout)
+        self.assertEqual((merged["checks"]["R3"]["status"], merged["checks"]["R3"]["tested"],
+                          merged["checks"]["R3"]["total"]), ("fail", 20, 24), r.stderr)
+        self.assertEqual(sorted(e["id"] for e in merged["entries"]), sorted(e["id"] for e in got["0/1"]["entries"]))
 
 class ShardsBudgetPartial(Case):
     """T6: shards deal the changed production files round robin, the budget stops a run, partial is never a pass."""

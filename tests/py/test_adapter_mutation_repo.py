@@ -25,10 +25,13 @@ class RepoTool(unittest.TestCase):
             f.write(STUB)
         os.chmod(self.stub, 0o755)
         self.tmp = tmp.name
+        self.bin = os.path.join(tmp.name, "bin")  # the tool on PATH, as setup-command installs it
+        os.makedirs(self.bin)
+        os.symlink(self.stub, os.path.join(self.bin, "mut"))
 
     def cli(self, check, base, head, *extra, stack="mini", to="out/report.json"):
         env = {"MECH_TEST_STUB": self.stub, "STUB_LOG": self.log, "STUB_REPORT": os.path.join(FX, "elements.json"),
-               "STUB_TO": to}
+               "STUB_TO": to, "PATH": self.bin + os.pathsep + os.environ["PATH"]}
         with mock.patch.dict(os.environ, env):
             r = _kit.run_cli([check, "--repo", self.repo.path, "--base", base, "--head", head, "--stack", stack,
                               "--test-paths", "tests/**", *extra])
@@ -100,6 +103,58 @@ class RepoTool(unittest.TestCase):
         env = json.loads(r.stdout)
         self.assertEqual((r.returncode, env["checks"]["R3"]["status"], [e["id"] for e in env["entries"]]),
                          (1, "fail", [e["id"] for e in m["entries"]]), r.stderr)
+
+
+    def test_a_pr_cannot_supply_the_program_that_judges_it(self):  # review F1 (the reviewer's probe p5)
+        fake = "#!/bin/sh\nmkdir -p out; echo '{\"files\": {}}' > out/report.json\n"
+        base = self.repo.commit({"mini.json": "{}", "src/calc.mini": BASE_SRC, "tests/calc.mini": TEST,
+                                 ".ekit/adapters/mini.toml": mini() + ELEMENTS.replace('command = "mut"',
+                                                                                       'command = "tools/mut"')})
+        head = self.repo.commit({"src/calc.mini": HEAD_SRC, "tools/mut": fake})
+        r, env = self.cli("mutants", base, head)
+        self.assertEqual((r.returncode, env), (2, None))
+        self.assertIn("mutation.tool.command: `tools/mut` is a path in the project dir", r.stderr)
+        with open(self.log) as f:
+            self.assertEqual(f.read(), "")
+
+    def test_the_plan_entrys_target_os_decides_whether_the_tool_runs(self):  # review F4 (probe p3)
+        base, head = self.pr({"lib/mini.json": "{}", "lib/src/calc.mini": BASE_SRC, "build/m.toml": mini() + ELEMENTS,
+                              PLAN: plan(("lib", "lib", "build/m.toml", "current", "windows"))},
+                             {"lib/src/calc.mini": HEAD_SRC})
+        r, env = self.cli("mutants", base, head, "--project-dir", "lib")
+        self.assertEqual((r.returncode, env["checks"]["R3"]), (0, {
+            "status": "n/a", "note": "mut does not run on windows (env): mutation.tool.os lists linux, macos; the "
+                                     "stack's target-os is windows"}), r.stderr)
+        r, env = self.cli("baseline", base, head, "--project-dir", "lib")
+        self.assertEqual(env["checks"]["R3"]["status"], "skipped")  # git only: the shards say n/a
+
+
+class ToolEditsNeedAPerson(unittest.TestCase):
+    """review F6: R0's editing rules give the needs-human entry for a PR that changes [mutation.tool] (adds, removes or
+    edits it): after the merge every later PR's R3 runs the new tool, or none."""
+
+    def problems(self, base_tool, head_tool, plan_file=True):
+        from scripts.mech_review import r0 as r0_mod
+        repo = Repo(self)
+        where = "build/m.toml" if plan_file else ".ekit/adapters/mini.toml"
+        extra = {PLAN: plan(("lib", "lib", where, "current"))} if plan_file else {}
+        mb = repo.commit(dict(extra, **{"lib/mini.json": "{}", where: mini() + base_tool}))
+        head = repo.commit({where: mini() + head_tool})
+        return [e["problem"] for e in r0_mod.editing(repo.path, mb, head, [] if plan_file else [where])]
+
+    def test_each_change_of_the_tool_is_named(self):
+        narrow = ELEMENTS.replace('os = ["linux", "macos"]', 'os = ["macos"]')
+        other = ELEMENTS.replace('command = "mut"', 'command = "mut2"')
+        for base_tool, head_tool in ((ELEMENTS, ""), ("", ELEMENTS), (ELEMENTS, narrow), (ELEMENTS, other)):
+            with self.subTest(head_tool[:40]):
+                self.assertEqual(self.problems(base_tool, head_tool), [
+                    "a person decides: [mutation.tool] of the stack in folder `lib` changed (build/m.toml)"])
+                self.assertEqual(self.problems(base_tool, head_tool, plan_file=False), [
+                    "a person decides: adapter file .ekit/adapters/mini.toml: [mutation.tool] changed"])
+
+    def test_an_unchanged_tool_needs_no_one(self):
+        self.assertEqual(self.problems(ELEMENTS, ELEMENTS), [])
+        self.assertEqual(self.problems(ELEMENTS, ELEMENTS.replace("os = ", "# the OSes\nos = ")), [])
 
 
 if __name__ == "__main__":

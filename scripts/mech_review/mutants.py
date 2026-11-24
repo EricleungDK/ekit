@@ -32,6 +32,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1863,8 +1864,9 @@ class Stryker:
                     return _check("partial" if extra else "pass", f"{shown}{what}{capped}", 0, extra), []
                 return _check("pass", "0 mutants in the diff", 0, 0), []
             report = os.path.join(crate, STRYKER_REPORT)
-            if os.path.lexists(report):
-                os.remove(report)  # a report the repo itself committed is never read as this run's
+            why = _clear_path(wt, crate, "reports/mutation/mutation.json")  # never follows a link the PR committed
+            if why:
+                return _path_fail(f"Stryker report {STRYKER_REPORT}", why)
             argv = shlex.split(cmd) + ["run", "--mutate", ",".join(ranges), "--reporters", "json",
                                        "--allowConsoleColors", "false", "--timeoutMS",
                                        str((STRYKER_TIMEOUT if mutant_timeout is None else mutant_timeout) * 1000)]
@@ -1966,7 +1968,7 @@ MAX_REPORT_BYTES = 64 * 1024 * 1024  # a report larger than this is not read (n/
 # file outside the crate; line: 1-based, or None (unlocated); kind: missed, caught, timeout, unviable, ignored (not
 # R3's: the tool's own config or a comment turned it off), pending (never run: untested); fix: survived | nocoverage
 # (missed only: the hint); desc: stable across line moves (no line number in it, where the format allows).
-Found = namedtuple("Found", "file line kind desc fix suffix")
+Found = namedtuple("Found", "file line kind desc fix suffix silent", defaults=(False,))
 ELEMENTS_KIND = {"Killed": ("caught", None), "Survived": ("missed", "survived"), "NoCoverage": ("missed", "nocoverage"),
                  "Timeout": ("timeout", None), "CompileError": ("unviable", None), "RuntimeError": ("unviable", None),
                  "Ignored": ("ignored", None), "Pending": ("pending", None)}
@@ -1974,6 +1976,8 @@ PIT_KIND = {"KILLED": ("caught", None), "SURVIVED": ("missed", "survived"), "NO_
             "TIMED_OUT": ("timeout", None), "NON_VIABLE": ("unviable", None), "MEMORY_ERROR": ("unviable", None),
             "RUN_ERROR": ("unviable", None), "STARTED": ("pending", None), "NOT_STARTED": ("pending", None)}
 XML_DECL = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)", re.I)
+XML_ENCODING = re.compile(rb"""^\s*<\?xml\b[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
+DIGITS = re.compile(r"[0-9]+")  # a line number: ASCII digits only (str.isdigit takes `²`, which int() refuses)
 
 
 class ReportError(ValueError):
@@ -2032,9 +2036,9 @@ def read_elements(raw, crate):
             kind, fix = ELEMENTS_KIND[status]
             loc = m.get("location") if isinstance(m.get("location"), dict) else {}
             start = loc.get("start") if isinstance(loc.get("start"), dict) else {}
-            if status == "Survived" and m.get("coveredBy") and not m.get("testsCompleted"):
-                silent += 1
-            out.append(Found(path, _line(start.get("line")), kind, stryker_desc(m, src), fix, False))
+            quiet = bool(status == "Survived" and m.get("coveredBy") and not m.get("testsCompleted"))
+            silent += quiet
+            out.append(Found(path, _line(start.get("line")), kind, stryker_desc(m, src), fix, False, quiet))
     return out, silent
 
 
@@ -2052,9 +2056,12 @@ def read_pit(raw):
         raise ReportError("not UTF-8 (a NUL byte: a wide encoding)")
     if XML_DECL.search(raw):
         raise ReportError("has a DTD or an entity declaration: refused")
+    enc = XML_ENCODING.match(raw.lstrip(b"\xef\xbb\xbf"))
+    if enc and enc.group(1).lower() not in (b"utf-8", b"utf8"):  # utf-7 would hide a declaration from the check above
+        raise ReportError(f"declares encoding `{enc.group(1).decode('ascii', 'replace')}`: want UTF-8")
     try:
         root = ET.fromstring(raw)
-    except ET.ParseError as e:
+    except (ET.ParseError, ValueError) as e:  # ValueError: an encoding expat cannot read (multi-byte)
         raise ReportError(f"not XML: {e}") from None
     if root.tag != "mutations":
         raise ReportError(f"root is <{root.tag}>, not <mutations>")
@@ -2075,7 +2082,7 @@ def read_pit(raw):
         pkg = cls.rpartition(".")[0]
         path = (pkg.replace(".", "/") + "/" if pkg else "") + src
         ln = _child_text(el, "lineNumber") or ""
-        line = int(ln) if ln.isdigit() and int(ln) >= 1 else None
+        line = int(ln) if DIGITS.fullmatch(ln) and int(ln) >= 1 else None
         kind, fix = PIT_KIND[status]
         mutator = (_child_text(el, "mutator") or "").rpartition(".")[2]
         desc = f"{mutator} in {_child_text(el, 'mutatedMethod') or '?'}: {_child_text(el, 'description') or ''}".strip()
@@ -2091,12 +2098,14 @@ def read_lines(raw, tool, crate):
     rx = tool["pattern_rx"]
     words = {w: k for k, ws in tool["status"].items() for w in ws}
     out = []
+    n, at = 1, 0  # the line number at offset `at`, advanced with the matches (one pass over the text)
     for m in (m for m in rx.finditer(text) if m.end() > m.start()):
-        n = text.count("\n", 0, m.start()) + 1
+        n += text.count("\n", at, m.start())
+        at = m.start()
         for g in ("file", "line", "status"):
             if m.group(g) is None:
                 raise ReportError(f"line {n}: the pattern matched without its {g} group")
-        if not m.group("line").isdigit() or int(m.group("line")) < 1:
+        if not DIGITS.fullmatch(m.group("line")) or int(m.group("line")) < 1:
             raise ReportError(f"line {n}: line `{m.group('line')}` is not a whole number >= 1")
         kind = words.get(m.group("status"))
         if kind is None:
@@ -2169,8 +2178,10 @@ class DeclaredTool:
             base = shlex.split(cmd)
         except ValueError:
             base = []
-        if not base:
+        prog = _program_path(base[0]) if base else None
+        if prog is None:
             return self._not_installed(cmd)
+        base = [prog] + base[1:]
         prod = sorted({ch.new for ch in red.prod_changes(rv) if ch.new and _under(ch.new, project_dir)})
         files = shard_files(prod, shard)
         changed = added_lines(repo, mb, head)
@@ -2181,6 +2192,15 @@ class DeclaredTool:
                 return bad
             if not files:
                 return _check("pass", "0 mutants in the diff (no changed production file in this shard)", 0, 0), []
+            inside = _in_checkout(prog, (repo, wt))
+            if inside:
+                problem = (f"the mutation tool `{shlex.split(cmd)[0]}` resolves to {prog} ({inside}), in the reviewed "
+                           "checkout: mutants not run")
+                return _check("fail", problem), finalize([entry(
+                    "R3", "", 0, "tool-in-checkout", "needs-human", "fail", problem,
+                    "install the tool outside the checkout (setup-command, into the runner's temp dir) and put that on "
+                    "PATH, or pass mutants-cmd: the PR under review must not supply the program that judges it",
+                    "running a mutation tool the PR can change")])
             adapter.worktree_setup(repo, wt, project_dir)
             if t["version"] is not None:
                 rc, text = runner(base + t["version"], crate, PROBE_TIMEOUT)
@@ -2197,7 +2217,7 @@ class DeclaredTool:
             ranges = []
             for f in files:
                 crate_f = _crate_path(project_dir, f)
-                if t["mutate_join"] in crate_f:
+                if "mutate" in t and t["mutate_join"] in crate_f:
                     return _check("n/a", f"{f}: a file name with `{t['mutate_join']}` in it cannot be passed to {name} "
                                          "(env): mutation.tool.mutate_join"), []
                 for a, _, b in (r.partition("-") for r in line_ranges(ln for ln, _ in changed.get(f, []))):
@@ -2205,10 +2225,9 @@ class DeclaredTool:
             if "mutate" in t and not ranges:
                 return _check("pass", "0 mutants in the diff", 0, 0), []
             report = os.path.join(crate, t["report"])
-            if os.path.isdir(report) and not os.path.islink(report):
-                return _check("n/a", f"{name} report {t['report']} is a directory in the checkout (env): not read"), []
-            if os.path.lexists(report):
-                os.remove(report)  # a report the repo itself committed is never read as this run's
+            why = _clear_path(wt, crate, t["report"])  # a report (or link) the PR committed is never read or followed
+            if why:
+                return _path_fail(f"{name} report {t['report']}", why)
             secs = t["timeout"] if mutant_timeout is None else mutant_timeout
             words = {"mutate": t["mutate_join"].join(dict.fromkeys(ranges)), "timeout_ms": str(secs * 1000),
                      "timeout_s": str(secs), "report": t["report"]}
@@ -2216,6 +2235,9 @@ class DeclaredTool:
             if config is None:
                 argv += [a.format(**words) for a in extra.get("args", [])]
                 if extra.get("config") is not None:
+                    why = _clear_path(wt, crate, extra["config_file"])
+                    if why:
+                        return _path_fail(f"{name} config {extra['config_file']}", why)
                     with open(os.path.join(crate, extra["config_file"]), "w", encoding="utf-8") as fh:
                         fh.write(extra["config"])
             t0 = time.monotonic()
@@ -2237,8 +2259,12 @@ class DeclaredTool:
                 return _check("n/a", f"no {name} report at {t['report']} (env): {_first_line(text) or f'exit {rc}'}; "
                                      "check the tool's run log"), []
             real_crate = os.path.realpath(crate)
-            if not os.path.realpath(report).startswith(real_crate + os.sep):
-                return _check("n/a", f"{name} report {t['report']} leads out of the project dir (env): not read"), []
+            if not os.path.realpath(report).startswith(real_crate + os.sep):  # the run (PR code) left a link there
+                problem = f"{name} report {t['report']} leads out of the project dir after the run: not read"
+                return _check("fail", problem), finalize([entry(
+                    "R3", "", 0, "report-link", "agent-fixable", "fail", problem,
+                    "the run left a link at the report path (a test or a build step makes it): remove what makes it",
+                    "a mutation result read through a link out of the checkout")])
             try:
                 with open(report, "rb") as fh:
                     raw = fh.read(MAX_REPORT_BYTES + 1)
@@ -2248,9 +2274,6 @@ class DeclaredTool:
             except ReportError as e:
                 return _check("n/a", f"{name} report {t['report']} is malformed (env): {e}; check the tool's version "
                                      "and its run log"), []
-            if silent:
-                return _check("n/a", f"{name} completed no test for {silent} covered mutant(s) (env): the test runner "
-                                     "did not run them; check the tool's test runner setup"), []
             tracked = _tracked_at(repo, head) if any(r.suffix for r in rows) else []
             first = shard_index(shard)[0] == 0
             counts = {k: 0 for k in ("caught", "timeout", "unviable")}
@@ -2273,6 +2296,10 @@ class DeclaredTool:
                 else:
                     found.append((file, r))
             rows = mine
+            silent = sum(1 for r in rows if r.silent)  # this shard's: another shard's file is that shard's to report
+            if silent:
+                return _check("n/a", f"{name} completed no test for {silent} covered mutant(s) (env): the test runner "
+                                     "did not run them; check the tool's test runner setup"), []
             ents = finalize([
                 entry("R3", file, r.line, f"missed:{file}|{r.desc}", "agent-fixable", "fail",
                       f"MISSED mutant {file}:{r.line}: {r.desc}",
@@ -2304,6 +2331,67 @@ class DeclaredTool:
                            note + capped, tested, total)
             check["timing"] = timing
             return check, ents
+
+
+def _program_path(word):
+    """the absolute path of the tool's program, or None (not found): an absolute word as it is, a bare name on PATH's
+    absolute entries only (a relative entry would resolve in the checkout the tool runs in), a relative path never
+    (#19: a file in the project dir is the PR's)."""
+    if os.path.isabs(word):
+        return word
+    if "/" in word or "\\" in word:
+        return None
+    dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and os.path.isabs(d)]
+    return shutil.which(word, path=os.pathsep.join(dirs)) if dirs else None
+
+
+def _in_checkout(prog, roots):
+    """the program's real path when it, or the path it was found at (its dir's links resolved: a link the PR committed
+    picks the program whatever it points to), lies in one of roots (the caller's checkout, the worktree); else None."""
+    real = os.path.realpath(prog)
+    found = os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(prog))), os.path.basename(prog))
+    for root in roots:
+        top = os.path.realpath(root).rstrip(os.sep) + os.sep
+        if any(p.startswith(top) for p in (real, found)):
+            return real
+    return None
+
+
+def _clear_path(wt, crate, rel):
+    """make rel (a file under the crate dir) free for the run to write, never following a link: each part on the way
+    that is a link, or not a dir where one is needed, is removed (the worktree's copy only; the tool makes the dirs it
+    writes into, as on a clean checkout); at rel itself a link or file is removed, a dir removed whole. None, or why
+    not (an OSError, or a crate dir that leads out of the worktree)."""
+    top = os.path.realpath(wt)
+    if not os.path.realpath(crate).startswith(top.rstrip(os.sep) + os.sep) and os.path.realpath(crate) != top:
+        return "the project dir leads out of the checkout"
+    parts = rel.split("/")
+    cur = crate
+    try:
+        for i, part in enumerate(parts):
+            cur = os.path.join(cur, part)
+            last = i == len(parts) - 1
+            try:
+                st = os.lstat(cur)
+            except FileNotFoundError:
+                break  # nothing there, nor below it
+            if last and stat.S_ISDIR(st.st_mode):
+                shutil.rmtree(cur)
+            elif last or not stat.S_ISDIR(st.st_mode):  # a link (to a dir too), a file, anything else
+                os.unlink(cur)
+                break
+    except OSError as e:
+        return e.strerror or str(e)
+    return None
+
+
+def _path_fail(what, why):
+    """a path in the checkout the run needs that cannot be cleared: the PR put something there; an R3 fail, never n/a."""
+    problem = f"{what}: the checkout's path cannot be cleared ({why}): mutants not run"
+    return _check("fail", problem), finalize([entry(
+        "R3", "", 0, "report-path", "agent-fixable", "fail", problem,
+        "remove what the PR puts on that path (a link, a file where a dir goes): the tool writes there",
+        "a mutation check that did not run")])
 
 
 def _matched(rx, text):

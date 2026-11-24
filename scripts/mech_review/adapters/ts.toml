@@ -99,10 +99,11 @@ config_files = [
 ]
 
 # R3 (#19): Stryker 10.0.0 on the changed lines (`--mutate file:a-b` per run of changed lines), its JSON reporter's file
-# read as mutation-testing-elements. The workflow passes --mutants-cmd (its own Stryker install) in place of command.
+# read as mutation-testing-elements. The program is `stryker` on PATH, never the checkout's node_modules (the PR under
+# review could supply it); the workflow passes --mutants-cmd (its own pinned install, outside the checkout).
 [mutation.tool]
 name = "stryker"
-command = "node_modules/.bin/stryker"
+command = "stryker"
 version = ["--version"]
 version_pattern = '^\d+\.\d+\.\d+$'
 args = ["run", "--mutate", "{mutate}", "--reporters", "json", "--allowConsoleColors", "false", "--timeoutMS", "{timeout_ms}"]

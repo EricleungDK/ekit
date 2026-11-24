@@ -71,7 +71,10 @@ class Parity(unittest.TestCase):
         with open(stub, "w") as f:
             f.write(STUB)
         os.chmod(stub, 0o755)
-        self.env = {"MECH_TEST_STUB": stub, "STUB_LOG": self.log}
+        bin_dir = os.path.join(self.tmp, "bin")  # `stryker` on PATH, as --mutants-cmd or a global install gives it
+        os.makedirs(bin_dir)
+        os.symlink(stub, os.path.join(bin_dir, "stryker"))
+        self.env = {"MECH_TEST_STUB": stub, "STUB_LOG": self.log, "PATH": bin_dir + os.pathsep + os.environ["PATH"]}
 
     def git(self, repo, *args):
         return subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
@@ -140,10 +143,26 @@ class Parity(unittest.TestCase):
         built, file = self.same({"MUT_HANG": "1"}, "--mutation-budget", "0.02")
         self.assertEqual(file["checks"]["R3"]["status"], "partial")
 
+    def test_a_committed_reports_link_is_never_followed_built_in_or_file(self):  # review F5
+        r, b, _ = self.repo()
+        victim = os.path.join(self.tmp, "victim")
+        os.makedirs(os.path.join(victim, "mutation"))
+        with open(os.path.join(victim, "mutation", "mutation.json"), "w") as f:
+            f.write("precious")
+        os.symlink(victim, os.path.join(r, "reports"))
+        self.git(r, "add", "-A")
+        self.git(r, "commit", "-qm", "link")
+        h = self.git(r, "rev-parse", "HEAD")
+        (built, _), (file, _) = self.both(r, b, h, {"MUT_REPORT": os.path.join(FX, "missed", "report.json")})
+        self.assertEqual(file["entries"], built["entries"])
+        self.assertEqual(len(built["entries"]), 5)
+        with open(os.path.join(victim, "mutation", "mutation.json")) as f:
+            self.assertEqual(f.read(), "precious")
+
     def test_the_file_declares_stryker(self):
         tool = adapter_file.load(TS_FILE).mutation_tool
         self.assertEqual((tool["name"], tool["command"], tool["report"], tool["format"], tool["os"]),
-                         ("stryker", "node_modules/.bin/stryker", "reports/mutation/mutation.json",
+                         ("stryker", "stryker", "reports/mutation/mutation.json",
                           "mutation-testing-elements", ["linux", "macos", "windows"]))
 
 

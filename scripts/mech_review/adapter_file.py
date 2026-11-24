@@ -318,6 +318,7 @@ def _tool(d, config_files, run):
     if not TOOL_NAME.fullmatch(name):
         _err(f + ".name", f"`{name}`: want letters, digits, _, - or .")
     _command(d["command"], f + ".command")
+    _program(shlex.split(d["command"])[0], f + ".command")
     args = _strs(d.get("args", []), f + ".args")
     used = set()
     for i, a in enumerate(args):
@@ -359,6 +360,18 @@ def _tool(d, config_files, run):
             if k in d:
                 _err(f"{f}.{k}", f"format {fmt} has {what} (lines only)")
     return tool
+
+
+ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")  # a POSIX or a Windows drive path
+
+
+def _program(word, field):
+    """the tool's program: a bare name (found on PATH when R3 runs) or an absolute path. A relative path is a file in
+    the project dir, so the PR under review could supply the program that judges it (#19; #27's rule for a parser)."""
+    if ("/" in word or "\\" in word) and not ABSOLUTE.match(word):
+        _err(field, f"`{word}` is a path in the project dir, which the PR under review can change: want a program on "
+                    "PATH or an absolute path outside it (install the tool with setup-command, or pass mutants-cmd)")
+    return word
 
 
 def _lines_format(d, f):

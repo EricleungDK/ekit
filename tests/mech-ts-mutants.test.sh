@@ -30,6 +30,8 @@ case "$1" in
 esac
 SH
 chmod +x "$STUB"
+# MECH_ADAPTER_TS: the file's program is `stryker` on PATH (never the checkout's node_modules): the stub is put there
+if [[ -n ${MECH_ADAPTER_TS-} ]]; then mkdir -p "$T/bin"; ln -s "$STUB" "$T/bin/stryker"; export PATH="$T/bin:$PATH"; fi
 
 # ---- pure: stryker report, kinds, log total, ranges, descriptions, config detection ----
 python3 -I - "$ROOT" "$FX" <<'PY'

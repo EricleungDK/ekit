@@ -16,10 +16,10 @@ BASE = {
     "tests": {"style": "calls", "groups": ["suite"], "cases": ["test", "xtest"], "skip": ["xtest"]},
     "asserts": {"call": [{"names": ["assertEquals"], "kind": "eq", "operands": [0, 1]}]},
 }
-TOOL = {"name": "mut", "command": "bin/mut", "args": ["--files", "{mutate}", "--timeout", "{timeout_s}"],
+TOOL = {"name": "mut", "command": "mut", "args": ["--files", "{mutate}", "--timeout", "{timeout_s}"],
         "mutate": "{file}:{first}-{last}", "report": "out/report.json", "format": "mutation-testing-elements",
         "os": ["linux", "macos"]}
-LINES = {"name": "mut", "command": "bin/mut", "report": "out/report.txt", "format": "lines", "os": ["linux"],
+LINES = {"name": "mut", "command": "mut", "report": "out/report.txt", "format": "lines", "os": ["linux"],
          "pattern": r"^(?P<file>\S+):(?P<line>\d+) (?P<status>\w+)$",
          "status": {"missed": ["SURVIVED"], "caught": ["KILLED"], "timeout": ["SLOW"], "unviable": ["BROKEN"]}}
 RUN = {"commands": {"install": "", "build": "", "lint": "", "test": "run-tests"},
@@ -66,7 +66,7 @@ class Declared(unittest.TestCase):
     def test_a_valid_tool_is_the_adapters_mutation_tool(self):
         tool = parse(with_tool()).mutation_tool
         self.assertEqual((tool["name"], tool["command"], tool["report"], tool["format"], tool["os"], tool["timeout"]),
-                         ("mut", "bin/mut", "out/report.json", "mutation-testing-elements", ["linux", "macos"], 120))
+                         ("mut", "mut", "out/report.json", "mutation-testing-elements", ["linux", "macos"], 120))
 
     def test_no_tool_is_none(self):
         self.assertIsNone(parse(copy.deepcopy(BASE)).mutation_tool)
@@ -98,6 +98,18 @@ class Declared(unittest.TestCase):
     def test_command_blank_or_unbalanced_quotes(self):
         self.assertEqual(self.err(with_tool(changed(command="  "))), "mutation.tool.command: want a command, not blank")
         self.assertIn("mutation.tool.command: `x 'y`: unbalanced quotes", self.err(with_tool(changed(command="x 'y"))))
+
+    def test_the_program_is_on_path_or_absolute_never_in_the_checkout(self):  # review F1
+        for bad, word in (("tools/mut", "tools/mut"), ("./mvnw --batch", "./mvnw"),
+                          ("node_modules/.bin/stryker run", "node_modules/.bin/stryker"), ("'a\\b.exe'", "a\\b.exe")):
+            with self.subTest(bad):
+                self.assertEqual(self.err(with_tool(changed(command=bad))),
+                                 f"mutation.tool.command: `{word}` is a path in the project dir, which the PR "
+                                 "under review can change: want a program on PATH or an absolute path outside it "
+                                 "(install the tool with setup-command, or pass mutants-cmd)")
+        for good in ("mut", "mvn -q", "/opt/mut/bin/mut --x", "'C:\\tools\\mut.exe'", "a\\b.exe"):  # the last: ab.exe
+            with self.subTest(good):
+                self.assertEqual(parse(with_tool(changed(command=good))).mutation_tool["command"], good)
 
     def test_args_placeholders_are_the_tools_only(self):
         self.assertEqual(self.err(with_tool(changed(args=["{path}"]))),
