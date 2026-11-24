@@ -1253,15 +1253,16 @@ class TsAdapter(Adapter):
             os.symlink(os.path.abspath(src), dst)
 
     def test_argv(self, cmd, path, name):
-        """one named test: the file, then `-t <anchored name>` (both runners match -t as a regex on the full name).
-        vitest joins describe and test names with ` > `, jest with a space; `it.each` placeholders match any value."""
+        """one named test: the file, then `-t <anchored name>` (both runners match -t as a regex on the full name: the
+        describe and test names joined with a space, in vitest 2.1.9 and 3.2.7 and in jest 29.7.0; the adapter's own
+        name joins them with ` > `); `it.each` placeholders match any value."""
         argv = shlex.split(cmd)
         jest = any("jest" in a for a in argv)
         if not jest and "run" not in argv:
             at = next((i for i, a in enumerate(argv) if "vitest" in a), len(argv) - 1)
             argv = argv[:at + 1] + ["run"] + argv[at + 1:]
         segments = name.split(" > ")
-        full = (" " if jest else " > ").join(_ts_pattern(seg) for seg in segments)
+        full = " ".join(_ts_pattern(seg) for seg in segments)
         return argv + [path, "-t", f"^{full}$"]
 
     name_placeholders = JS_PLACEHOLDER

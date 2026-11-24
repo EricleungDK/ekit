@@ -61,6 +61,8 @@ Releases are tags `vX.Y.Z` that match `version` in `.claude-plugin/plugin.json`;
 
 ### Fixed
 
+- **ts: R1 and R4 found no test inside a `describe` under real vitest** (#21's runtime half found it): the one-test pattern joined describe and test names with ` > ` (`-t '^Calc > adds$'`), but vitest (2.1.9 and 3.2.7) matches `-t` against the names joined with a space, as jest (29.7.0) does, so the run selected nothing: R1 read `none` (cannot be proven red) and R4 `did not run at head` for every such test. The built-in ts adapter and `ts.toml`'s vitest runner (`separator = " "`) now join with a space; regex characters stay escaped, so the pattern still selects that one test. Test names in entries keep ` > `.
+
 - **`mech-review.py resolve` from a subdir** (#29): with `--repo` (or the current dir) inside a repo's subdir, auto read the tree relative to that subdir and printed a wrong `project_dir`; it now reads the tree from the repo root. `resolve --help` lists the options only, with no text of its own: the main `--help` describes `resolve`.
 - **Stop gate: a blocked report no longer makes a later done true** (predates this release): a `done` report on a tree that only a `blocked` report was given for runs the verify commands again; before, it was let through unchecked.
 - **Scenario runner**: a background child (`server &`) is stopped with its scenario on POSIX too (its process group), as on Windows (its job); `--repo` naming no directory says so (exit 2), not "no scenarios found".

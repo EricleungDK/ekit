@@ -107,14 +107,14 @@ class OverrideWithRun(Fixture, unittest.TestCase):  # TestCase named here: R2 se
         return base, head
 
     def test_red_on_an_override_with_run_runs_the_files_runner_words(self):
-        # the file's own -t words: the built-in would run `-t ^Calc > fresh$`
+        # the file's own -t words: the built-in would run `-t ^Calc fresh$`
         text = read(TS_FILE).replace('test = ["{path}", "-t", "^{name}$"]', 'test = ["{path}", "--testNamePattern", "{name}"]')
         base, head = self.ts_pr(text, "fresh fail pass\n")
         r = self.red(base, head, adapter=None)
         env = json.loads(r.stdout)
         self.assertEqual(r.returncode, 1, r.stderr)  # the stub reads -t only: every run is the default pass
         self.assertEqual(set(c.split(" | ", 1)[1] for c in self.calls()),
-                         {"run tests/calc.test.ts --testNamePattern Calc > fresh"})
+                         {"run tests/calc.test.ts --testNamePattern Calc fresh"})
         self.assertEqual(env["checks"]["R1"]["status"], "fail")
 
     def test_all_on_an_override_with_run_runs_one_adapter(self):

@@ -167,11 +167,12 @@ command = "node_modules/.bin/jest"
 when = { file = "package.json", tables = ["dependencies", "devDependencies"], has = ["jest"], lacks = ["vitest"] }
 separator = " "
 
-# vitest: any other command; `run` is put in after the vitest word when missing (else at the end)
+# vitest: any other command; `run` is put in after the vitest word when missing (else at the end). Its -t matches the
+# full name with describe and test joined by a space (vitest 2.1.9, 3.2.7), as jest's does
 [[run.runner]]
 name = "vitest"
 subcommand = { word = "run", after = "vitest" }
-separator = " > "
+separator = " "
 
 # R0's census (#21): `vitest list` prints `<file> > <Describe> > <test>` per test it collects (skipped ones are not
 # listed); jest lists files only, so a jest checkout has no census

@@ -33,9 +33,9 @@ has "$out" "ok   rust skip: exit 1" "mech-mutation-skip rust cases stay on the b
 out=$(MECH_ADAPTER_TS="$TS_FILE" bash "$ROOT/tests/mech-ts-red.test.sh" 2>&1); rc=$?
 eq "$rc" 0 "mech-ts-red passes with TS from the adapter file"
 (( rc == 0 )) || grep -E 'FAIL|Traceback|Error' <<<"$out" | head -20
-# ...and the hook reaches the run side: a copy whose jest runner joins names like vitest fails the jest cases only,
-# one with no build pattern fails the compile-red case
-sed 's/^separator = " "$/separator = " > "/' "$TS_FILE" > "$T/jest-joined.toml"
+# ...and the hook reaches the run side: a copy whose jest runner (the first runner separator) joins names with ` > `
+# fails the jest cases only, one with no build pattern fails the compile-red case
+awk '!done && /^separator = " "$/ { print "separator = \" > \""; done = 1; next } { print }' "$TS_FILE" > "$T/jest-joined.toml"
 out=$(MECH_ADAPTER_TS="$T/jest-joined.toml" bash "$ROOT/tests/mech-ts-red.test.sh" 2>&1)
 has "$out" "FAIL argv: jest joins names with a space" "mech-ts-red unit section reads the file's runners"
 has "$out" "FAIL ts jest: space-joined pattern, no run subcommand" "mech-ts-red red cases read the file's runners"
