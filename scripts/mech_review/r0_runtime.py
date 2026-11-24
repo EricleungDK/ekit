@@ -44,7 +44,7 @@ import sys
 import tempfile
 from collections import namedtuple
 
-from . import adapter_file, gitio, mutants, mutation_tool, r0, red, report
+from . import adapter_file, gitio, mutants, mutation_tool, r0, red, report, stack_plan
 from .gitio import Review, blob, changes
 from .report import entry
 
@@ -653,6 +653,44 @@ def _wrong_os(part, adapter):
     return {"status": "n/a", "half": "runtime", "part": part, "adapter": adapter.name,
             "note": f"runtime half ({part}): n/a: the stack runs on {adapter.target_os} (target-os), this machine is "
                     f"{host_os()}: R0 runs where the stack's tests run"}, []
+
+
+def _file_sources(path, fixtures_dir):
+    """(fixtures, raw, path) of an adapter file given as a path (--adapter): read as given, its fixtures beside it."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    return fixtures_dir or r0.adapter_fixtures(path), raw, path
+
+
+def _repo_sources(repo, base, stack, project_dir, fixtures_dir, keep):
+    """(fixtures, raw, repo path) of the repo's own adapter file and its fixtures, read at the base (written to a dir
+    keep removes), so the PR cannot change what judges it."""
+    _, path = stack_plan.repo_adapter_at(repo, base, stack, project_dir)
+    tmp = keep.enter_context(tempfile.TemporaryDirectory())
+    stack_plan.write_adapter(repo, base, path, tmp)
+    return fixtures_dir or r0.adapter_fixtures(os.path.join(tmp, path)), r0._blob(repo, base, path), path
+
+
+def plan_os(repo, base_ref, head_ref, stack, project_dir, adapter):
+    """the stack's target OS as resolve settles it (#58): the plan entry's target-os first, else the adapter's."""
+    plan, _ = stack_plan.target_plan(repo, base_ref, head_ref)
+    entry = stack_plan.entry_for(plan, stack, project_dir)
+    return entry.target_os if entry is not None and entry.target_os else adapter.target_os
+
+
+def sources(repo, base_ref, head_ref, stack, project_dir, adapter, adapter_path, fixtures_dir, keep):
+    """{fixtures, raw, path, target_os}: what the runtime half proves, as `--r0` and `r0 --fingerprint` read it.
+    adapter: the stack's adapter (a built-in's instance too); adapter_path: the file given with --adapter, else None
+    (adapter.from_file: the repo's own adapter file; else a built-in, with ekit's fixtures). fixtures_dir: --fixtures."""
+    fixtures = os.path.abspath(fixtures_dir) if fixtures_dir else None
+    if adapter_path is not None:
+        fixtures, raw, path = _file_sources(adapter_path, fixtures)
+    elif getattr(adapter, "from_file", False):
+        fixtures, raw, path = _repo_sources(repo, gitio.resolve(repo, base_ref), stack, project_dir, fixtures, keep)
+    else:
+        fixtures, raw, path = fixtures or r0.builtin_fixtures(stack), None, None
+    return {"fixtures": fixtures, "raw": raw, "path": path,
+            "target_os": plan_os(repo, base_ref, head_ref, stack, project_dir, adapter)}
 
 
 def run_cmds(adapter, cmd, crate):

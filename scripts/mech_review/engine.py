@@ -159,15 +159,16 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
     return env
 
 
-def mutants_file(rv, mutants_cmd, budget, shard, mutant_timeout, max_mutants, r0=None):
+def mutants_file(rv, mutants_cmd, budget, shard, mutant_timeout, r0=None):
     """R3 through an adapter file (#19, mutation_tool.run) and, with r0 on shard 0, R0's R3 control (#21): its cache hit
-    read before the tool runs PR code, a failed control blocking R3. ({check: result}, finalized entries)."""
+    read before the tool runs PR code, a failed control blocking R3. ({check: result}, finalized entries). A declared
+    tool lists no mutant before its run, so max-mutants does not apply (mutation_tool's note says so)."""
     cache = r0_runtime.Cache(r0["dir"] if r0 else None)
     try:
         own = r0 is not None and mutants.shard_index(shard)[0] == 0
         rt_rv = rv._replace(adapter=_on_os(rv.adapter, r0["target_os"])) if own else None
         prepared = r0_runtime.prepare(rt_rv, "r3", cache, None, mutants_cmd, r0["fixtures"], r0["raw"]) if own else None
-        check, ents = mutation_tool.run(rv, mutants_cmd, budget, shard, mutant_timeout, max_mutants=max_mutants)
+        check, ents = mutation_tool.run(rv, mutants_cmd, budget, shard, mutant_timeout)
         checks = {"R3": check}
         if own:
             checks["R0"], more = r0_runtime.r3_part(rt_rv, mutants_cmd, budget, r0["fixtures"], r0["raw"], prepared,

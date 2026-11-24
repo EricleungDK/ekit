@@ -369,12 +369,12 @@ class DataAdapter(Adapter):
         """[(path or None, name)] of the tests the listing printed (pattern's `file` and `name` groups; the name split
         at the listing's separator and joined with tests.separator, as test_fns names it), or None when it failed:
         a non-zero exit, or a build pattern that matched."""
-        if rc != 0 or _first(self._rx.get("build"), out or ""):
+        if rc != 0 or _first(self._rx.get("build"), out):  # out: the runner's output, text (red.default_runner)
             return None
         lst, own = self._listing(), self.tests.get("separator", " > ")
         sep = lst.get("separator") or (self._runner(shlex.split(lst["command"])) or {}).get("separator") or own
         got = []
-        for m in _matches(self._rx["list"], out or ""):
+        for m in _matches(self._rx["list"], out):
             name = m.group("name").strip()
             path = m.groupdict().get("file")
             got.append((path.strip() if path else None, own.join(p.strip() for p in name.split(sep))))

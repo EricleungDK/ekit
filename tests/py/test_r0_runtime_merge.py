@@ -87,5 +87,24 @@ class Merged(unittest.TestCase):
         self.assertEqual([e["check"] for e in got["entries"]], ["R0"])
 
 
+    def test_only_r0_entries_ride_in_with_a_runtime_part_and_only_with_one(self):
+        stray = report.finalize([report.entry("R2", "a.py", 1, "stray", "agent-fixable", "fail", "R2 in red", "h", "f")])
+        with_part = env({"R0": RUN_FAIL}, [r0_entry()] + stray)
+        without = env({"R1": {"status": "pass", "note": "x"}}, [r0_entry("runtime:run:other")])
+        got = merge.merge({"r0": env({"R0": STATIC}), "red": with_part}, {})
+        self.assertEqual([e["check"] for e in got["entries"]], ["R0"])  # the stray R2 entry stays out
+        got = merge.merge({"r0": env({"R0": STATIC}), "red": without}, {})
+        self.assertEqual(got["entries"], [])  # no runtime part: its R0 entry stays out
+
+    def test_a_shard_keeps_its_r3_entries_and_r0_only_with_its_r0_part(self):
+        stray = report.finalize([report.entry("R2", "a.py", 1, "stray", "agent-fixable", "fail", "R2 in a shard", "h", "f")])
+        r3 = report.finalize([report.entry("R3", "a.py", 2, "missed:a", "agent-fixable", "fail", "MISSED", "h", "f")])
+        part = {"status": "pass", "note": "runtime half (r3)", "half": "runtime", "part": "r3"}
+        s0 = env({"R3": {"status": "fail", "note": "1 missed"}, "R0": part}, r3 + stray)
+        s1 = env({"R3": {"status": "pass", "note": "0 missed"}}, [r0_entry("runtime:r3:x")])
+        got = merge.combine_shards(B, H, 2, {0: s0, 1: s1}, {})
+        self.assertEqual(sorted(e["check"] for e in got["entries"]), ["R3"])
+
+
 if __name__ == "__main__":
     unittest.main()

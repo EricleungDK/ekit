@@ -242,33 +242,13 @@ def _with_plan_os(args, adapter):
 
 
 def _r0_inputs(args, adapter, stack, keep):
-    """the runtime half's inputs (#21) for `--r0`, or None without it: {dir, fixtures, raw, path, target_os}. An
-    adapter file given with --adapter is read as given, beside its fixtures; the repo's own adapter file and its
-    fixtures are read at the base (written to a dir that keep, an ExitStack, removes), so the PR cannot change what
-    judges it; a built-in uses ekit's fixtures. target_os: the stack's, the plan entry's first (#58)."""
+    """the runtime half's inputs (#21) for `--r0`, or None without it: r0_runtime.sources and the cache dir. adapter:
+    an adapter file's, or None for the built-in of that name."""
     if args.r0 is None:
         return None
-    base = gitio.resolve(args.repo, args.base)
-    raw = path = None
-    fixtures = os.path.abspath(args.fixtures) if args.fixtures else None
-    if args.adapter is not None:
-        with open(args.adapter, "rb") as f:
-            raw = f.read()
-        fixtures = fixtures or r0.adapter_fixtures(args.adapter)
-    elif adapter is not None:
-        _, path = stack_plan.repo_adapter_at(args.repo, base, stack, args.project_dir)
-        tmp = keep.enter_context(tempfile.TemporaryDirectory(prefix="ekit-r0-base-"))
-        stack_plan.write_adapter(args.repo, base, path, tmp)
-        raw = r0._blob(args.repo, base, path)
-        fixtures = fixtures or r0.adapter_fixtures(os.path.join(tmp, *path.split("/")))
-    else:
-        fixtures = fixtures or r0.builtin_fixtures(stack)
-    plan, _ = stack_plan.target_plan(args.repo, args.base, args.head)
-    entry = stack_plan.entry_for(plan, stack, args.project_dir)
-    target = (entry.target_os if entry is not None and entry.target_os else None) or \
-        (adapter.target_os if adapter is not None else "linux")
-    return {"dir": os.path.abspath(args.r0), "fixtures": fixtures, "raw": raw, "path": path or args.adapter,
-            "target_os": target}
+    got = r0_runtime.sources(args.repo, args.base, args.head, stack, args.project_dir, adapter or ADAPTERS[stack](),
+                             args.adapter, args.fixtures, keep)
+    return dict(got, dir=os.path.abspath(args.r0))
 
 
 def _review(args, adapter):
@@ -284,8 +264,7 @@ def _mutants_file(args, adapter):
         base, head, rv = _review(args, adapter)
         with contextlib.ExitStack() as keep:  # --r0 (#21): R0's R3 control on shard 0
             got, ents = engine.mutants_file(rv, args.mutants_cmd, args.mutation_budget, args.shard,
-                                            args.mutant_timeout, args.max_mutants,
-                                            _r0_inputs(args, adapter, args.stack, keep))
+                                            args.mutant_timeout, _r0_inputs(args, adapter, args.stack, keep))
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2
@@ -479,8 +458,8 @@ def _not_built(args, adapter):
                                      agent_prefix=args.agent_prefix, head_branch=args.head_branch,
                                      test_cmd=args.test_cmd, project_dir=args.project_dir, adapter=adapter,
                                      r0=_r0_inputs(args, adapter, args.stack, keep))
-            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check] + (("R0",) if args.r0 else ())
-                           if c in red_env["checks"]})
+            # R0 only when --r0 ran red's runtime half (#21): red's envelope has no R0 otherwise
+            checks.update({c: red_env["checks"][c] for c in RUN_SIDE[args.check] + ("R0",) if c in red_env["checks"]})
             entries = sorted(entries + red_env["entries"], key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
@@ -618,9 +597,7 @@ def _r0_repo(args, adapter, path):
 
 def _fingerprint(p, args):
     """`r0 --fingerprint PART`: the part's fingerprint with the adapter, fixtures and target OS red and mutants use."""
-    args.r0 = "."  # the inputs of --r0; no dir is read or written
     try:
-        adapter = None
         if args.adapter is not None:
             adapter, err = _load_adapter(args.adapter, args.stack)
             if err:
@@ -631,10 +608,11 @@ def _fingerprint(p, args):
             if adapter is None and args.stack not in ADAPTERS:
                 p.error(f"argument --stack: invalid choice: {args.stack!r}")
         with contextlib.ExitStack() as keep:
-            inputs = _r0_inputs(args, adapter, args.stack, keep)
+            adapter = adapter or ADAPTERS[args.stack]()
+            inputs = r0_runtime.sources(args.repo, args.base, args.head, args.stack, args.project_dir, adapter,
+                                        args.adapter, args.fixtures, keep)
             _, head, mb = gitio.merge_base(args.repo, args.base, args.head)
-            built = engine._on_os(adapter or ADAPTERS[args.stack](), inputs["target_os"])
-            rv = gitio.Review(args.repo, mb, head, built, engine.test_paths(args.test_paths), args.project_dir)
+            rv = gitio.Review(args.repo, mb, head, engine._on_os(adapter, inputs["target_os"]), (), args.project_dir)
             fp, lines = r0_runtime.part_fingerprint(rv, args.fingerprint, args.test_cmd, args.mutants_cmd,
                                                     inputs["fixtures"], inputs["raw"])
     except (gitio.Die, adapter_file.AdapterFileError, r0.FixtureError) as e:

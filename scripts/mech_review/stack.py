@@ -516,7 +516,7 @@ class _Scan(ast.NodeVisitor):
     assertions with their enclosing test fn, calls per function, test bodies. Scope entries: ("class", name,
     is_test, skipped, None) or ("fn", name, is_test, qname, None)."""
 
-    def __init__(self, imported_bases=False):
+    def __init__(self, imported_bases):
         self.imported_bases = imported_bases  # the imported-base rule applies (a file pytest collects tests from)
         self.known = set()  # TestCase-derived class names seen so far (a subclass in the same file counts)
         self.defined = set()  # every class name this file defined so far
@@ -1330,7 +1330,9 @@ class TsAdapter(Adapter):
         argv = shlex.split(cmd)
         if any("jest" in a for a in argv):
             return None
-        at = next((i for i, a in enumerate(argv) if "vitest" in a), len(argv) - 1)
+        at = next((i for i, a in enumerate(argv) if "vitest" in a), None)
+        if at is None:  # no vitest word (a wrapper script): list at the end
+            return argv + ["list"]
         return argv[:at + 1] + ["list"] + [a for a in argv[at + 1:] if a != "run"]
 
     def listed(self, rc, out, crate):

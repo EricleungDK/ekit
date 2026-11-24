@@ -116,7 +116,7 @@ if args[:1] == ["list"]:
             print(p + " :: " + name)
     sys.exit(0)
 if args[:1] == ["test"]:
-    path, name = args[1], args[args.index("--name") + 1]
+    path, name = args[args.index("--name") - 1], args[args.index("--name") + 1]  # the words --test-cmd adds come first
     if name == "poison" and os.environ.get("POISON_DIR"):  # a PR test that forges R0's cache while R4 runs it
         os.makedirs(os.environ["POISON_DIR"], exist_ok=True)
         with open(os.path.join(os.environ["POISON_DIR"], "run-" + os.environ["POISON_FP"] + ".pass"), "w") as f:

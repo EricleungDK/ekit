@@ -39,6 +39,9 @@ class Validation(unittest.TestCase):
     def test_the_command_is_split_as_the_engine_splits_it(self):
         self.assertIn("unbalanced quotes", self.refused(LIST.replace('"mini list"', '"mini \'list"'), "command"))
 
+    def test_a_pattern_that_does_not_compile_is_named(self):
+        self.assertIn("bad regex", self.refused(LIST.replace("(?P<name>.+)", "(?P<name>.+"), "pattern"))
+
     def test_the_pattern_needs_a_name_group_and_only_name_and_file(self):
         self.assertIn("no named group `name`", self.refused(LIST.replace("(?P<name>.+)", "(.+)"), "pattern"))
         self.assertIn("the group `kind`", self.refused(LIST.replace("(?P<name>.+)", "(?P<name>.+) (?P<kind>\\w+)"),
@@ -72,6 +75,28 @@ class Reading(unittest.TestCase):
         a = load(LIST + "runner = \"other\"\n", runners)
         self.assertEqual(a.list_argv("other test"), ["mini", "list"])
         self.assertIsNone(a.list_argv("mini test"))
+
+    def test_a_listing_with_no_file_group_names_no_file(self):
+        a = load("[run.list]\ncommand = \"mini list\"\npattern = '^- (?P<name>.+)$'\n")
+        self.assertEqual(a.listed(0, "- adds\n", "."), [(None, "adds")])
+
+    def test_with_no_tests_separator_the_parts_join_with_the_default(self):
+        with open(MINIRUN) as f:
+            t = f.read().replace('separator = " / "\n', "")
+        a = adapter_file.loads(t.replace(LIST, LIST + 'separator = " ~ "\n').encode(), "minirun.toml")
+        self.assertEqual(a.listed(0, "tests/a.mini :: Calc ~ adds\n", "."), [("tests/a.mini", "Calc > adds")])
+
+    def test_a_runners_separator_reads_its_listing(self):
+        runners = "\n[[run.runner]]\nname = \"mini\"\nseparator = \" ~ \"\n"
+        a = load(LIST, runners)
+        self.assertEqual(a.listed(0, "tests/a.mini :: Calc ~ adds\n", "."), [("tests/a.mini", "Calc / adds")])
+
+    def test_with_no_command_no_runner_is_picked(self):
+        runners = "\n[[run.runner]]\nname = \"other\"\nmatch = \"other\"\n\n[[run.runner]]\nname = \"mini\"\n"
+        a = load(LIST + "runner = \"mini\"\n", runners)
+        self.assertIsNone(a.list_argv(""))
+        self.assertEqual(a.no_listing(""), "the adapter file's [run.list] lists the `mini` runner's tests, this checkout "
+                                           "runs `None`: no census")
 
 
 if __name__ == "__main__":
