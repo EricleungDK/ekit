@@ -799,7 +799,7 @@ python3 -I scripts/mech-review.py r0 --repo . --base main --head HEAD --stack py
 
 ## Co-change rules
 
-A co-change rule says "when these paths change, at least one of those must change too" (a behaviour change updates the changelog; a new module goes in a list). A linter reads code, not diffs, so it cannot see such a rule; R2 can. The rules live in `.ekit/co-change.toml`, read from the **base** branch (as the repo's adapter file is): a PR is judged by the rules it starts from, never by rules it writes, and a rule a PR adds judges the PRs after it.
+A co-change rule says "when these paths change, at least one of those must change too" (a behaviour change updates the changelog; a new module goes in a list). A linter reads code, not diffs, so it cannot see such a rule; R2 can. The `mistake-to-check` skill (#87) is how a rule usually starts: it turns an agent mistake that passes its filter into a rule with its two cases, and says when to promote or remove one. The rules live in `.ekit/co-change.toml`, read from the **base** branch (as the repo's adapter file is): a PR is judged by the rules it starts from, never by rules it writes, and a rule a PR adds judges the PRs after it.
 
 ```toml
 format = 1
