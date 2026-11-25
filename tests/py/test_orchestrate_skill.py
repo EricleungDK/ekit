@@ -242,10 +242,11 @@ class TestAgentsMdPreReviewChecks(unittest.TestCase):
             return flat(f.read())
 
     def test_names_r3_local_with_ekits_own_caller_inputs(self):
+        """#84: one command carries the caller inputs (test_ci_local checks them against the workflow), not a recipe."""
         t = self.agents()
-        self.assertIn("scripts/r3-local.py", t)
-        for arg in ("--stack python", "--test-paths 'tests/**' --test-paths '.ekit/scenarios/**'", "--mutation-budget 20"):
-            self.assertIn(arg, t)
+        self.assertIn("`python3 scripts/ci-local.py --base origin/main`", t)
+        self.assertNotIn("scripts/r3-local.py --base", t)
+        self.assertNotIn("--mutation-budget 20", t)
 
     def test_r3_local_runs_once_before_the_final_review_request(self):
         t = self.agents()
@@ -253,7 +254,11 @@ class TestAgentsMdPreReviewChecks(unittest.TestCase):
         self.assertNotIn("Before a review request on a change under `scripts/`", t)
 
     def test_names_a_run_under_the_newest_python(self):
-        self.assertIn("uv run --python 3.14 python -m unittest discover -s tests/py", self.agents())
+        """#84: ci-local's suite step runs it (uv run --no-project); the bare recipe could write a uv.lock in the
+        repo."""
+        t = self.agents()
+        self.assertIn("the unittest suite on CI's Python 3.14", t)
+        self.assertNotIn("uv run --python 3.14", t)
 
 
 if __name__ == "__main__":
