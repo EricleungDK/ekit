@@ -1,6 +1,6 @@
-# Sourced by each ci-doctor-setup-* setup.sh after its scaffold commit (#23). Arms the grader support: whenever HEAD or
-# a ref moves (commit, reset, checkout, merge, rebase), .git/ekit-eval/verdict.py (written below: a heredoc, so the kit
-# tracks no python file outside its test paths) reads the end state at HEAD of the main checkout and writes
+# Sourced by each ci-doctor-setup-* setup.sh after its scaffold commit (#23). Arms the grader support: whenever a ref
+# moves (commit, reset, checkout, merge, rebase, in any worktree), .git/ekit-eval/verdict.py (written below: a heredoc,
+# so the kit tracks no python file outside its test paths) grades the setup branch and writes
 # .git/ekit-eval/verdict.txt, which the regex graders read. $1: the case's expect.json (the script's header). The kit's
 # path is data in a file, never shell text.
 arm_verdict() {
@@ -11,15 +11,18 @@ arm_verdict() {
   printf '%s\n' "$1" > .git/ekit-eval/expect.json
   git rev-parse HEAD > .git/ekit-eval/start
   cat > .git/ekit-eval/verdict.py <<'PY'
-# The end state of a ci-doctor setup eval (#23), read at HEAD of the main checkout by the scaffold's ref hooks and
-# written to .git/ekit-eval/verdict.txt for the regex graders. Every ci-doctor-setup-* case's arm_verdict writes it
-# into .git/ekit-eval/ with its expect.json: {"status": "current" | "planned", "folder", "target_os", "ci": "keep" | "write"}.
-# The case's scaffold commit is .git/ekit-eval/start; `setup: yes` needs every line it checks at once. Git and the kit's
-# own engine only (r0, static half; drift); nothing printed. A harness problem (no kit, no tomllib) says `harness:`.
+# The end state of a ci-doctor setup eval (#23), written to .git/ekit-eval/verdict.txt for the regex graders by the
+# scaffold's ref hooks. Graded: the setup branch, the newest branch other than main that holds a commit beyond the
+# scaffold's (.git/ekit-eval/start), whichever worktree or HEAD the agent ends on. expect.json: {"status": "current" |
+# "planned", "folder", "target_os", "ci": "keep" | "write", and for a repo with tests "tests" (the names the adapter
+# must read), "test_files" (the paths that hold them) and "test_paths" (their glob)}. `setup: yes` needs every line it
+# checks at once. Git and the kit's own engine only (r0 static half, r2 for the census, drift; doctor's workflow
+# reader); nothing printed. A harness problem (no kit, no tomllib) says `harness:`.
 import json
 import os
 import subprocess
 import sys
+import tempfile
 
 here = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
                       text=True).stdout.strip()  # the main checkout's .git, from it or from any linked worktree
@@ -30,8 +33,8 @@ CALLER = "EricleungDK/ekit/.github/workflows/mech-review.yml@"
 WAIVER = "EricleungDK/ekit/.github/workflows/mech-waive.yml@"
 
 
-def git(*a):
-    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env)
+def git(*a, extra=None):
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=dict(env, **(extra or {})))
 
 
 def read(name):
@@ -39,42 +42,58 @@ def read(name):
         return f.read()
 
 
-def workflows(ref):
-    """{path: blob sha} of the workflow files at ref"""
-    out = git("ls-tree", ref, ".github/workflows/").stdout.splitlines()
-    return {line.split("\t", 1)[1]: line.split()[2] for line in out
-            if line.split("\t", 1)[1].endswith((".yml", ".yaml"))}
-
-
 expect, kit, start = json.loads(read("expect.json")), read("kit"), read("start").strip()
 engine = os.path.join(kit, "scripts", "mech-review.py")
+sys.path.insert(0, os.path.join(kit, "scripts"))
+try:
+    from mech_review import doctor, stack_plan  # the kit's own workflow reader and folder rule
+except Exception as e:
+    doctor = stack_plan = None
+    kit_error = f"{type(e).__name__}: {e}"
 lines, ok = [], []
-branch = git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "(detached)"
-lines.append(f"branch: {branch}")
-ok.append(branch not in ("main", "(detached)"))
+
+# the setup branch: newest first; main is the base the PR would target
+heads = [x.split(" ", 1) for x in git("for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(refname:short)",
+                                      "refs/heads/").stdout.splitlines()]
+setup = [(sha, name) for sha, name in heads if name != "main"
+         and git("rev-list", "--count", f"{start}..{sha}").stdout.strip() not in ("", "0")]
+ref, branch = setup[0] if setup else (None, None)
+lines.append(f"branch: {branch}" if branch else "branch: none (no branch other than main holds a new commit)")
+ok.append(bool(ref))
 main_moved = git("rev-parse", "refs/heads/main").stdout.strip() != start
 lines.append(f"main: {'moved' if main_moved else 'untouched'}")
 ok.append(not main_moved)
-new = git("rev-list", "--count", "--branches", "--not", start).stdout.strip() or "0"
+# every commit beyond the scaffold's on any ref, any worktree's HEAD or any reflog (a detached HEAD, a deleted branch)
+new = git("rev-list", "--count", "--all", "--reflog", "--not", start).stdout.strip() or "0"
 lines.append(f"new-commits: {new}")
+
+
+def folder(v):
+    try:
+        return stack_plan._folder(v, "folder")
+    except Exception:
+        return None
+
 
 entry, adapter = None, {}
 try:
     import tomllib
 except ImportError:
     tomllib = None
-    lines.append("entry: not read: harness: no tomllib (python 3.11 or newer runs the hooks)")
-if tomllib:
+if not tomllib or not stack_plan:
+    lines.append("entry: not read: harness: " + ("no tomllib (python 3.11 or newer runs the hooks)" if not tomllib
+                                                 else f"the kit's engine does not import ({kit_error})"))
+elif ref:
     try:
-        stacks = tomllib.loads(git("show", "HEAD:.ekit/stack-plan.toml").stdout).get("stack", [])
-    except Exception as e:  # no plan at HEAD, or not TOML
+        stacks = tomllib.loads(git("show", f"{ref}:.ekit/stack-plan.toml").stdout).get("stack", [])
+    except Exception as e:  # no plan, or not TOML
         stacks = []
         lines.append(f"plan: does not read ({type(e).__name__})")
-    mine = [s for s in stacks if isinstance(s, dict) and s.get("folder") == expect["folder"]
+    mine = [s for s in stacks if isinstance(s, dict) and folder(s.get("folder")) == folder(expect["folder"])
             and str(s.get("adapter", "")).endswith(".toml")]
     entry = mine[0] if mine else None
     if entry:
-        shown = git("show", f"HEAD:{entry['adapter']}")
+        shown = git("show", f"{ref}:{entry['adapter']}")
         try:
             adapter = tomllib.loads(shown.stdout) if shown.returncode == 0 else {}
         except Exception:
@@ -82,39 +101,61 @@ if tomllib:
         lines.append(f"entry: {entry.get('name')} adapter {entry['adapter']} status {entry.get('status')}")
     else:
         lines.append(f"entry: none (no plan entry for folder {expect['folder']!r} naming an adapter file)")
+else:
+    lines.append("entry: none (no setup branch)")
 ok.append(bool(entry) and entry.get("status") == expect["status"])
 target = (entry or {}).get("target-os") or adapter.get("target-os") or "linux"
 lines.append(f"target-os: {target}")
 ok.append(target == expect["target_os"])
 
 
-def engine_run(*args):
-    r = subprocess.run([sys.executable, "-I", engine, *args, "--repo", repo, "--base", "HEAD", "--head", "HEAD"],
-                       capture_output=True, text=True, env=env)
+def engine_run(*args, base=None, head=None):
+    r = subprocess.run([sys.executable, "-I", engine, *args, "--repo", repo, "--base", base or ref, "--head",
+                        head or ref], capture_output=True, text=True, env=env)
     try:
         return r, json.loads(r.stdout)
     except ValueError:
         return r, None
 
 
-if not os.path.isfile(engine):
-    lines.append(f"r0: not run: harness: the kit's scripts/mech-review.py is not at {kit!r} (not the model's doing)")
-    lines.append("drift: not run: harness: no kit")
+name = str(adapter.get("name") or "")
+if not os.path.isfile(engine) or not doctor:
+    why = f"the kit's scripts/mech-review.py is not at {kit!r}" if not os.path.isfile(engine) else kit_error
+    lines += [f"r0: not run: harness: {why} (not the model's doing)", "census: not run: harness", "drift: not run: harness"]
+    ok.append(False)
+elif not ref or not name:
+    lines += ["r0: not run (no plan entry with an adapter file that reads on the setup branch)", "census: not run"]
+    lines.append("drift: not run (no setup branch)" if not ref else "drift: see r0")
     ok.append(False)
 else:
-    if not entry or not adapter.get("name"):
-        lines.append("r0: not run (no plan entry with an adapter file that reads at HEAD)")
-        ok.append(False)
+    r, result = engine_run("r0", "--stack", name, "--project-dir", expect["folder"])
+    r0 = (result or {}).get("checks", {}).get("R0") or {}
+    if r0.get("status") == "pass":
+        lines.append(f"r0: pass ({r0.get('note')})")
     else:
-        r, result = engine_run("r0", "--stack", str(adapter["name"]), "--project-dir", expect["folder"])
-        r0 = (result or {}).get("checks", {}).get("R0") or {}
-        if r0.get("status") == "pass":
-            lines.append(f"r0: pass ({r0.get('note')})")
-        else:
-            why = [e.get("problem") for e in (result or {}).get("entries", [])] or [r0.get("note")]
-            why = why if why != [None] else [(r.stderr.strip().splitlines() or ["no output"])[0]]
-            lines.append(f"r0: not pass (exit {r.returncode}, R0 {r0.get('status')}: {'; '.join(why)[:400]})")
-        ok.append(r0.get("status") == "pass")
+        why = [e.get("problem") for e in (result or {}).get("entries", [])] or [r0.get("note")]
+        why = why if why != [None] else [(r.stderr.strip().splitlines() or ["no output"])[0]]
+        lines.append(f"r0: not pass (exit {r.returncode}, R0 {r0.get('status')}: {'; '.join(why)[:400]})")
+    ok.append(r0.get("status") == "pass")
+    # the census: the repo's own test files deleted on a commit no ref names; R2 must name each of their tests removed
+    if expect.get("tests"):
+        with tempfile.TemporaryDirectory() as tmp:
+            index = {"GIT_INDEX_FILE": os.path.join(tmp, "index")}
+            git("read-tree", ref, extra=index)
+            git("rm", "-q", "-r", "--cached", "--ignore-unmatch", *expect["test_files"], extra=index)
+            tree = git("write-tree", extra=index).stdout.strip()
+            scratch = git("commit-tree", tree, "-p", ref, "-m", "census").stdout.strip()
+        r, result = engine_run("r2", "--stack", name, "--project-dir", expect["folder"], "--test-paths",
+                               expect["test_paths"], head=scratch)
+        removed = {e["problem"].split("`")[1] for e in (result or {}).get("entries", [])
+                   if e.get("problem", "").startswith("test fn `")}
+        read_all = [t for t in expect["tests"] if any(x == t or x.endswith("." + t) for x in removed)]
+        missed = [t for t in expect["tests"] if t not in read_all]
+        lines.append(f"census: {len(read_all)}/{len(expect['tests'])} of the repo's tests read"
+                     + (f"; missed: {', '.join(missed)}" if missed else ""))
+        ok.append(not missed)
+    else:
+        lines.append("census: no repo tests yet")
     r, result = engine_run("drift", "--format", "json")
     d = (result or {}).get("checks", {}).get("D") or {}
     clean = r.returncode == 0 and d.get("status") == "pass" and not (result or {}).get("entries")
@@ -122,22 +163,33 @@ else:
                  + (f"D {d.get('status')}, {len((result or {}).get('entries', []))} entries)" if d else "no plan: no D)"))
     ok.append(clean)
 
-flows, before = workflows("HEAD"), workflows(start)
-texts = {p: git("show", f"HEAD:{p}").stdout for p in flows}
-caller = any(CALLER in t for t in texts.values())
+
+def jobs_at(rev):
+    """{(workflow file, job id): its lines joined, comments dropped} at rev"""
+    if not rev or not doctor:
+        return {}, {}
+    files = [x.split("\t", 1) for x in git("ls-tree", rev, ".github/workflows/").stdout.splitlines()]
+    blobs = {p: meta.split()[2] for meta, p in files if p.endswith((".yml", ".yaml"))}
+    return blobs, {(p, j): "\n".join(body) for p in blobs for j, body in
+                   doctor.jobs(git("show", f"{rev}:{p}").stdout).items()}
+
+
+(after, jobs), (before, old) = jobs_at(ref), jobs_at(start)
+caller = any(CALLER in t for t in jobs.values())
 lines.append(f"caller: {'yes' if caller else 'no'}")
 ok.append(caller)
-kept = all(flows.get(p) == sha for p, sha in before.items())
+kept = bool(ref) and all(after.get(p) == sha for p, sha in before.items())
 lines.append(f"ci-kept: {'yes' if kept else 'no'}")
 ok.append(kept)
-added = sorted(p for p in flows if p not in before and CALLER not in texts[p] and WAIVER not in texts[p])
+added = {k: t for k, t in jobs.items() if k not in old and CALLER not in t and WAIVER not in t}
 test_cmd = (adapter.get("commands") or {}).get("test") if isinstance(adapter.get("commands"), dict) else None
+where = ", ".join(f"{p} job {j}" for p, j in sorted(added))
 if not added:
     lines.append("base-jobs: none")
-elif test_cmd and any(test_cmd in texts[p] for p in added):
-    lines.append(f"base-jobs: yes ({', '.join(added)} run `{test_cmd}`)")
+elif test_cmd and any(test_cmd in t for t in added.values()):
+    lines.append(f"base-jobs: yes ({where} run `{test_cmd}`)")
 else:
-    lines.append(f"base-jobs: no test command ({', '.join(added)} never run the adapter's [commands] test)")
+    lines.append(f"base-jobs: no test command ({where}: none runs the adapter's [commands] test)")
 ok.append(lines[-1].startswith("base-jobs: yes" if expect["ci"] == "write" else "base-jobs: none"))
 lines.append(f"setup: {'yes' if all(ok) else 'no'}")
 with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w", encoding="utf-8") as f:

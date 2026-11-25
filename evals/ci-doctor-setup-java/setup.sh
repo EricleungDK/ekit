@@ -25,4 +25,5 @@ jobs:
 Y
 git add -A; git commit -qm "calc: maven project"
 source "$here/arm.sh"
-arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "keep"}'
+arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "keep",
+  "tests": ["CalcTest.adds", "CalcTest.negates", "CalcTest.subtracts"], "test_files": ["src/test"], "test_paths": "src/test/**"}'

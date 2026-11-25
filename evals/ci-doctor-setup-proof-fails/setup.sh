@@ -38,4 +38,5 @@ func TestSub(t *testing.T) {
 GO
 git add -A; git commit -qm "calc: go module"
 source "$here/../ci-doctor-setup-java/arm.sh"
-arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "write"}'
+arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "write",
+  "tests": ["TestAdd", "TestSub"], "test_files": ["calc_test.go"], "test_paths": "*_test.go"}'

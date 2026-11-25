@@ -9,4 +9,5 @@ printf '.gitconfig\n.config/\n.npm/\n.m2/\n' >> .git/info/exclude  # sandbox HOM
 cp -R "$here/../../tests/fixtures/java/base/." .
 git add -A; git commit -qm "calc: maven project"
 source "$here/../ci-doctor-setup-java/arm.sh"
-arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "write"}'
+arm_verdict '{"status": "current", "folder": ".", "target_os": "linux", "ci": "write",
+  "tests": ["CalcTest.adds", "CalcTest.negates", "CalcTest.subtracts"], "test_files": ["src/test"], "test_paths": "src/test/**"}'
