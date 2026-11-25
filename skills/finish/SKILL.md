@@ -49,11 +49,14 @@ TDD: <test> red (`<failure line>`) → green (`<cmd>` exit 0)
 Env: <the line `preflight.py --env` printed>
 Verification debt: <items, or none>
 Open: <issues, flakes, follow-ups, confirm entries for reviewer, or none>
+<one line per rule added, promoted or removed in the run, as mistake-to-check wrote it>
 ```
 
 Scenario row evidence: `RUN run <id>` → `PASS <id>`, `<results.json / transcript path>`, `RUN check` exit 0. A scenario with `artifacts` in results.json (screenshots): add their paths to the row.
 
 Features line: copy the `N of M features working` line `RUN check` printed, as printed ([scenarios.md](scenarios.md)); never count by hand. `RUN check` printed none → leave the line out. A seeding task (taste-it §7) is done with none of its seeded features working: scenarios.md says when.
+
+Rule lines: copy each `Rule added:`, `Rule promoted:` and `Rule removed:` line the mistake-to-check skill gave in the run, one per rule, as written: the owner overrules a rule from that line. No rule changed in the run → leave them out.
 
 Each 👤 row gets a Needs-you block (same shape as in Blocked; Run/Expect become the exact steps and expected result, Why = what the check protects). Verdict stays "done except the rows marked ⚠️/👤".
 
@@ -76,6 +79,7 @@ Needs you:
 Done so far: <criteria table, as above>
 <the `N of M features working` line `RUN check` printed, as printed>
 Verification debt: <blocked cmd → reason → where to rerun>
+<one line per rule added, promoted or removed in the run, as mistake-to-check wrote it>
 ```
 
 A denied command keeps its exact form in the Needs-you block; the user decides. A command that prompts for a password (`sudo`, interactive logins) goes under "Run in your own terminal:" instead of `!`. The blocked report's verdict is "blocked" throughout; the done branch's "done except" wording stays out of it.
