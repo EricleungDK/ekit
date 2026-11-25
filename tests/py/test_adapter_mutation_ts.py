@@ -143,6 +143,22 @@ class Parity(unittest.TestCase):
         built, file = self.same({"MUT_HANG": "1"}, "--mutation-budget", "0.02")
         self.assertEqual(file["checks"]["R3"]["status"], "partial")
 
+    def test_no_report_is_a_fail_and_a_report_that_is_no_object_is_n_a_both_ways(self):  # #22 review round 2
+        r, b, h = self.repo()
+        for (env, calls), tool in zip(self.both(r, b, h, {"MUT_STDOUT": os.path.join(FX, "missed", "stdout.txt"),
+                                                          "MUT_RC": "1"}), ("Stryker", "stryker")):
+            want = f"{tool} ran and wrote no report (reports/mutation/mutation.json): mutants not read: "
+            self.assertEqual(env["checks"]["R3"]["status"], "fail", env["checks"]["R3"])
+            self.assertTrue(env["checks"]["R3"]["note"].startswith(want), env["checks"]["R3"])
+            self.assertEqual([(e["class"], e["problem"][:len(want)]) for e in env["entries"]], [("agent-fixable", want)])
+        listed = os.path.join(self.tmp, "list.json")
+        with open(listed, "w") as f:
+            f.write("[1, 2]")
+        for env, _ in self.both(r, b, h, {"MUT_REPORT": listed}):
+            self.assertEqual(env["checks"]["R3"]["status"], "n/a", env["checks"]["R3"])
+            self.assertIn("malformed (env)", env["checks"]["R3"]["note"])
+            self.assertEqual(env["entries"], [])
+
     def test_a_committed_reports_link_is_never_followed_through_the_file(self):  # review F5
         # the built-in ts's own pre-delete is mutants.py's, left as on main (a follow-up: an edit there makes every
         # later R3 regenerate all of mutants.py); through the file, the link is removed, never followed
