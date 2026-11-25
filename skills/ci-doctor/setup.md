@@ -6,7 +6,7 @@ The proof gates the PR: a setup PR goes out only with every R0 case passing.
 
 ## 1. Detect
 
-Start from `DOCTOR`'s `setup.projects[0]`: folder, manifests, language, build tool, test framework, target OS and its reason, and `setup.own_ci`, the repo's own workflows.
+Start from `DOCTOR`'s `setup.projects[0]` (mode `setup`): folder, manifests, language, build tool, test framework, target OS and its reason, and `setup.own_ci`, the repo's own workflows.
 
 An empty repo (`no-project`) where the user names the stack to come ("a Java API"): take language, build tool and test framework from their words (ask for what they leave open), folder `.`, and the target OS by doctor's rule: windows for a WPF app, macos for an iOS app, else linux. Its plan entry is `planned`.
 
@@ -33,19 +33,18 @@ Read how the repo writes its tests (test files, the manifest's test and lint set
 
 ## 4. Prove it with R0
 
-Budget: 5 rounds; a round is one adapter revision and one static run. Nothing is committed yet; the static half reads the working tree:
+The proof is every R0 case of both halves, the census and the cheat list. Budget: 5 rounds; a round is one adapter revision and one run of the proof below, and a failing case of either half counts the same. Nothing is committed yet; each step reads the working tree:
 
-```
-MR r0 --repo <repo> --base HEAD --head HEAD --stack <name> --adapter .ekit/adapters/<name>.toml
-```
+1. **Static half**: `MR r0 --repo <repo> --base HEAD --head HEAD --stack <name> --adapter .ekit/adapters/<name>.toml`. Pass is `checks.R0.status` `pass`, never the exit code: exit 0 also covers `unproven`, a case with no fixture yet.
+2. **Census of the repo's own tests**: clone the repo into a scratch folder, delete its test files there and commit, then run `MR r2 --repo <scratch> --base HEAD~1 --head HEAD --stack <name> --adapter <abs path of the file> --test-paths '<glob>'`. It must name every test the repo's test files hold (`test fn ... removed`); each one it misses is a failed case. An empty repo has none.
+3. **Runtime half**, where the toolchain is installed and this machine is the target OS (`--r0` takes an empty scratch dir): `MR red ... --stack <name> --adapter <file> --test-paths '<glob>' --head-branch claude/setup --r0 <dir>` (census, runner controls) and `MR mutants ... --r0 <dir>` (the R3 control). `checks.R0` must read `pass`; an `n/a` is the report's "not run here: <why>".
+4. **The cheat list**: each item with no R0 case of its own is proved like the census, on its own scratch pair (the seed, then the cheat): `MR r2` must give its entry.
 
-Pass is `checks.R0.status` `pass`, never the exit code: exit 0 also covers `unproven`, a case with no fixture yet. Each failed case is a fix to the adapter; a cheat fixture changes only when it is not valid code in the language, and the report says which and why.
+Each failed case is a fix to the adapter; a cheat fixture changes only when it is not valid code in the language, and the report says which and why.
 
-Each cheat-list item with no R0 case of its own: commit the seed and then the cheat in a scratch repo, run `MR r2 --repo <scratch> --base <seed> --head <cheat> --stack <name> --adapter <file> --test-paths '<glob>'`, and record it as caught (the entry) or a limit (no entry the format can give). Name each limit in a comment at the top of the adapter and in the report.
+A cheat the proof cannot catch is a **limit** only when the CI doc already names it as one (`<kit>/docs/mech-review-ci.md`: the format's own limits), or when the PR body lists it under a `## Limits (owner decides)` heading, which the owner accepts or rejects before merging. Name each in a comment at the top of the adapter too. Any other uncaught cheat is a miss.
 
-Runtime half, where the toolchain is installed and this machine is the target OS (`--r0` takes an empty scratch dir): `MR red ... --stack <name> --adapter <file> --test-paths '<glob>' --head-branch claude/setup --r0 <dir>` (census, runner controls) and `MR mutants ... --r0 <dir>` (the R3 control). `checks.R0` must read `pass`; an `n/a` is the report's "not run here: <why>".
-
-Budget spent with a case still failing or unproven: stop here. Commit nothing, open no PR, and report blocked via finish: each failed case as `r0` names it, the cheats left uncaught, the draft's path, and what would unblock it.
+Budget spent with a case failing, unproven or missed: stop here. Commit nothing, open no PR, and report blocked via finish: each failed case as `r0` or `r2` names it, the cheats missed, the draft's path, and what would unblock it.
 
 ## 5. Stack plan
 
@@ -55,7 +54,7 @@ Add the entry to `.ekit/stack-plan.toml` (write the file if there is none): `nam
 
 The caller and the waiver caller as SKILL.md step 3 (`test-paths`: the project's test folder, e.g. `src/test/**`, plus `.ekit/scenarios/**`; `stack` stays `auto`: the plan names it).
 
-Base CI jobs only when `setup.own_ci` is empty: `.github/workflows/ci.yml`, one job on the target OS's runner (`ubuntu-latest`, `windows-latest`, `macos-latest`) that sets up the toolchain and runs the adapter's `[commands]` in order, install, build, lint, test (an empty one left out). Every workflow the team wrote stays byte for byte.
+Base CI jobs only when `setup.own_ci` is empty (no workflow with a build or test job of the team's): a new file, `.github/workflows/<name>-base-ci.yml` (another free name if that one is taken), with one job on the target OS's runner (`ubuntu-latest`, `windows-latest`, `macos-latest`) that sets up the toolchain and runs the adapter's `[commands]` in order, install, build, lint, test (an empty one left out). Every workflow file already there stays byte for byte.
 
 ## 7. Commit and recheck
 
@@ -67,4 +66,5 @@ Push and open it, as SKILL.md step 5. Its body, beside step 5's:
 
 - Files: the adapter and its fixtures, the stack plan entry, the callers, the base CI jobs or why none (`own_ci` names the team's).
 - Detection: doctor's `setup` (language, build, test framework, target OS and why).
-- Proof report: the static half (`N of N cases`), the runtime half's result or not run here and why, and the cheat list, each item caught (its R0 case, or the r2 run) or a named limit.
+- Proof report: the static half (`N of N cases`), the census (`N of N tests`), the runtime half's result or not run here and why, and the cheat list, each item caught (its R0 case, or the r2 run) or a limit the CI doc names (quoted).
+- `## Limits (owner decides)`: each other cheat the proof cannot catch, with why; leave the heading out when there is none.

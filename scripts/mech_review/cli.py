@@ -88,15 +88,18 @@ summary (one line, text format first line and envelope `summary`):
 
 doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base or head): finds the stack and project dir,
   reads .github/workflows, trial-runs the tests and the mutation tool at HEAD in a throwaway worktree, and prints
-  {ekit, head, detected, inputs, trial, setup, entries, summary}: `inputs` is what the caller needs, each entry names one
-  exact fix. Detection takes the built-ins and the repo's .ekit/adapters/<name>.toml (an adapter file's stack: one
-  `adapter-file` confirm entry, no trial: repair mode's, #24). `setup` (#23, ci-doctor's setup mode) is null unless a
-  project no built-in and no adapter file covers is found (pom.xml, build.gradle[.kts], *.sln, *.csproj, Package.swift,
-  *.xcodeproj, go.mod; shallowest, as for the built-ins; one below a built-in project is its tooling): then
-  {projects: [{project_dir, manifests, language, build, test_framework, target_os, target_os_why}], own_ci: [the
-  workflow files that call no ekit workflow]}, and one `no-adapter` entry (adapter-fix), or with several projects of
-  any kind one `ambiguous` entry naming them all (needs-human: --project-dir picks one, never a guess). target_os:
-  windows for a WPF app (UseWPF), macos for an Xcode project or a Package.swift naming .iOS, else linux.
+  {ekit, head, detected, inputs, trial, setup, mode, entries, summary}: `inputs` is what the caller needs, each entry
+  names one exact fix. The repo's adapters are read as resolve reads them (the built-ins, .ekit/adapters/<name>.toml,
+  the adapter files the stack plan names); one that does not read is an entry. `mode` (#23): adopt (one built-in
+  project), setup, repair (a stack of the repo's adapter file, which doctor does not trial; an adapter file or plan that
+  does not read; an uncovered project beside the repo's own adapter files: repair mode, #24), ask (several projects:
+  one `ambiguous` entry naming them all, built-in or not, at any depth), or null. `setup` is null unless a project no
+  adapter covers is found (pom.xml, build.gradle[.kts], settings.gradle[.kts], *.sln, *.csproj, Package.swift,
+  *.xcodeproj, go.mod; the shallowest): then {projects: [{project_dir, manifests, language, build, test_framework,
+  target_os, target_os_why}], own_ci: [the team's CI workflows: run on push, pull_request, pull_request_target or
+  merge_group, with a job that calls no ekit workflow]}. target_os: windows for a WPF app (UseWPF, the WPF project
+  type, PresentationFramework), macos for an Xcode project or a Package.swift naming .iOS, else linux. --stack takes a
+  built-in or such a project's build (maven, gradle, dotnet, swiftpm, xcode, go): every ask has an answer.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
 resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
