@@ -307,7 +307,7 @@ class DataAdapter(Adapter):
         """a config_files entry names a file in any dir: a name (`pom.xml`) matches the path's last part, a path
         (`.mvn/maven.config`, #22) its last parts."""
         for c in self.mutation.get("config_files", []):
-            if path == c or path.endswith("/" + c) or ("/" not in c and os.path.basename(path) == c):
+            if path == c or path.endswith("/" + c):
                 return self.mutation["config_name"]
         return None
 

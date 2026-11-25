@@ -166,5 +166,5 @@ def annotations(lx, m, prefix, names):
         word, end = _chain(lx, m, at + len(prefix))
         if word and word.endswith(tuple(names)):
             out.append((at, end, prefix + word))
-        at = m.find(prefix, max(end, at + len(prefix)))
+        at = m.find(prefix, end)  # end is past the prefix: _chain gives at least its start
     return out

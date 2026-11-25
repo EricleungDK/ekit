@@ -218,6 +218,32 @@ class RoundOne(unittest.TestCase):
                 got = self.a.mutation_skips("class T {\n    " + skip + " int a() { return 1; }\n}\n")
                 self.assertEqual([m for _, _, m in got], ["@DoNotMutate"])
 
+    def test_unicode_unescape(self):
+        from scripts.mech_review.scan import unicode_unescape
+        b = "\\"  # one backslash
+        self.assertEqual(unicode_unescape(b + "u0040x"), "@x")
+        self.assertEqual(unicode_unescape(b * 2 + "u0040x"), b * 2 + "u0040x")  # an escaped backslash: no escape
+        self.assertEqual(unicode_unescape(b * 3 + "uu0040x"), b * 2 + "@x")
+        self.assertEqual(unicode_unescape(b + "u004"), b + "u004")
+
+    def test_without_unicode_escapes_nothing_is_decoded(self):
+        d = adapter_file_dict()
+        src = "class T {\n    " + "\\" + "u0040Disabled @Test void a() {\n    }\n}\n"
+        self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", [])])
+        d["lexer"]["unicode_escapes"] = True
+        self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", [])])  # no skip words in d
+        d["tests"]["skip"] = ["Disabled"]
+        self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", ["ignore"])])
+        d["lexer"]["unicode_escapes"] = "yes"
+        with self.assertRaises(AdapterFileError) as cm:
+            parse(d)
+        self.assertEqual(str(cm.exception), "lexer.unicode_escapes: want true or false")
+        d["lexer"]["unicode_escapes"] = False
+        d["mutation"] = {"config_files": ["../pom.xml"], "config_name": "x"}
+        with self.assertRaises(AdapterFileError) as cm:
+            parse(d)
+        self.assertTrue(str(cm.exception).startswith("mutation.config_files[0]: `../pom.xml`"), cm.exception)
+
     def test_an_escaped_backslash_is_no_unicode_escape(self):
         """JLS 3.3: a backslash is an escape only after an even run of backslashes: `\\u0040` stays."""
         src = "class T {\n    \\\\u0040Disabled @Test void a() {\n    }\n}\n"

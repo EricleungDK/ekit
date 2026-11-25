@@ -41,8 +41,7 @@ def line_of(text, pos):
 class Lexer:
     """The lexer table of one adapter file, validated (see adapter_file)."""
 
-    def __init__(self, brackets, ident_chars, member, line_comments, block_comments, strings, regex,
-                 unicode_escapes=False):
+    def __init__(self, brackets, ident_chars, member, line_comments, block_comments, strings, regex, unicode_escapes):
         self.pairs = {b[0]: b[1] for b in brackets}
         self.opens = "".join(b[0] for b in brackets)
         self.closes = "".join(b[1] for b in brackets)

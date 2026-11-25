@@ -363,7 +363,7 @@ def _ranges(r):
             outside.append(f)
             continue
         # a file directly under a root (the default package) is its own glob: PIT refuses a bare `*`
-        package = (module.rpartition(".")[0] + "." if "." in module else module) if module else ""
+        package = (module or "").rpartition(".")[0] + "." if "." in (module or "") else module
         for a, _, b in (x.partition("-") for x in line_ranges(ln for ln, _ in r.changed.get(f, []))):
             ranges.append(t["mutate"].format(file=crate_f, first=a, last=b, module=module, package=package)
                           if "mutate" in t else crate_f)
