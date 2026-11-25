@@ -11,7 +11,7 @@ import re
 import shlex
 import shutil
 
-from . import gitio, mutants, red, report
+from . import adapter_file, detect, gitio, mutants, red, report, stack_plan
 from .globs import any_glob
 from .mutants import DEFAULT_CMD as RUST_MUTANTS
 from .resolve import candidates, pick
@@ -19,10 +19,12 @@ from .stack import ADAPTERS
 
 CALLER = "EricleungDK/ekit/.github/workflows/mech-review.yml@"
 CALLERS = (CALLER, "EricleungDK/ek/.github/workflows/mech-review.yml@")  # + pre-rename callers
+WAIVER = "EricleungDK/ekit/.github/workflows/mech-waive.yml@"
 
 
 def is_caller(text):
     return any(c in text for c in CALLERS)
+
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 APT = re.compile(r"\bapt(?:-get)?\s+install\s+([^\n#|&;]*)")
 EXPR = re.compile(r"\$\{\{.*?\}\}")
@@ -37,12 +39,23 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
                   "setup-command: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0")
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
+NOT_UNPROVEN = "opening the setup PR before its adapter passes R0"
 DEFAULT_TEST_PATHS = "tests/**"
 SCENARIOS = ".ekit/scenarios/"  # taste-it scenarios (and their fixtures): test support in every stack (#39)
 SCENARIO_GLOB = SCENARIOS + "**"
 MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
 LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
+
+
+def own_ci(repo, head, paths):
+    """the repo's own workflow files (#23): every one that calls neither ekit's mech-review nor its mech-waive workflow.
+    Setup mode writes base CI jobs only when there is none."""
+    return [p for p in sorted(paths) if WORKFLOW.match(p) and not _calls_ekit(gitio.blob(repo, head, p))]
+
+
+def _calls_ekit(text):
+    return is_caller(text) or WAIVER in text
 
 
 def read_ci(texts):
@@ -493,6 +506,23 @@ def _channel(repo, head, project_dir, paths):
     return None
 
 
+def _repo_adapters(repo, head, paths):
+    """({name: adapter}, entries): the repo's adapter files at head (#17) not named like a built-in (a file named like
+    one only tunes it), each read on its own; one that does not read is an entry naming it, and lists no manifest."""
+    mine, entries = {}, []
+    for path in sorted(paths):
+        folder, _, name = path.rpartition("/")
+        if folder != stack_plan.ADAPTERS_DIR or not name.endswith(".toml") or name[:-len(".toml")] in ADAPTERS:
+            continue
+        try:
+            mine.update(stack_plan.repo_adapters(repo, head, [path]))
+        except adapter_file.AdapterFileError as e:
+            entries.append(report.entry("doctor", path, 0, "adapter-file", "adapter-fix", "fail",
+                                        f"the repo's adapter file does not read: {e}",
+                                        "repair it (ci-doctor's repair mode, #24), then rerun doctor", NOT_UNPROVEN))
+    return mine, entries
+
+
 def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, runner=None):
     try:
         gitio.git(repo, "rev-parse", "--git-dir")
@@ -500,12 +530,32 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         raise gitio.Die(f"not a git repo: {repo}")
     head = gitio.resolve(repo, head_ref)
     paths = gitio.git(repo, "ls-tree", "-r", "--name-only", head).splitlines()
-    found = [c for c in candidates(paths) if (not stack or c[0] == stack) and (not project_dir or c[1] == project_dir)]
+    mine, entries = _repo_adapters(repo, head, paths)
+    found = [c for c in candidates(paths, {**ADAPTERS, **mine})
+             if (not stack or c[0] == stack) and (not project_dir or c[1] == project_dir)]
     if project_dir and stack and not found:
         found = [(stack, project_dir)]
     detected = {"stack": None, "project_dir": None}
-    inputs, entries, tried = {}, [], {"tests": "skipped"}
-    if len(found) != 1:
+    inputs, tried, setup = {}, {"tests": "skipped"}, None
+    known = {m for a in [*ADAPTERS.values(), *mine.values()] for m in a.manifests}
+    new = [] if stack else detect.projects(repo, head, paths, known, project_dir)
+    if found and new and not project_dir and detect.depth(new[0]["project_dir"]) > detect.depth(found[0][1]):
+        new = []  # a built-in project above: the uncovered ones below it are its tools, as for candidates
+    if new:
+        setup = {"projects": new, "own_ci": own_ci(repo, head, paths)}
+    if new and len(found) + len(new) > 1:
+        names = ", ".join([f"{s} in {d}" for s, d in found]
+                          + [f"{p['language']} ({p['build']}, no adapter) in {p['project_dir']}" for p in new])
+        entries.append(report.entry("doctor", "", 0, "ambiguous", "needs-human", "fail", f"several projects: {names}",
+                                    "pick one with --project-dir, and --stack for a built-in", "guessing the project"))
+    elif new:
+        p = new[0]
+        manifest = p["manifests"][0] if p["project_dir"] == "." else f"{p['project_dir']}/{p['manifests'][0]}"
+        entries.append(report.entry("doctor", manifest, 0, "no-adapter", "adapter-fix", "fail",
+                                    f"no built-in or adapter file covers `{manifest}` ({p['language']}, {p['build']})",
+                                    "set up its adapter with ci-doctor's setup mode, starting from `setup`",
+                                    NOT_UNPROVEN))
+    elif len(found) != 1:
         if found:
             names = ", ".join(f"{s} in {d}" for s, d in found)
             entries.append(report.entry("doctor", "", 0, "ambiguous", "needs-human", "fail", f"several projects: {names}",
@@ -520,6 +570,14 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
             entries.append(report.entry("doctor", "", 0, "no-project", "needs-human", "fail",
                                         "no project found: no " + ", ".join(m for a in ADAPTERS.values() for m in a.manifests),
                                         "pass --stack and --project-dir", "guessing the project"))
+    elif found[0][0] in mine:
+        detected = {"stack": found[0][0], "project_dir": found[0][1]}
+        entries.append(report.entry(
+            "doctor", f"{stack_plan.ADAPTERS_DIR}/{found[0][0]}.toml", 0, "adapter-file", "adapter-fix", "confirm",
+            f"`{found[0][0]}` in {found[0][1]} is checked through the repo's adapter file: doctor trial-runs the "
+            "built-in stacks only",
+            f"prove it with `r0 --stack {found[0][0]} --project-dir {found[0][1]}` (static half; `red --r0` runs the "
+            "runtime half) and `drift`; ci-doctor's repair mode (#24) takes it from there", NOT_UNPROVEN))
     else:
         stack, project_dir = found[0]
         detected = {"stack": stack, "project_dir": project_dir}
@@ -539,4 +597,4 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
     entries = report.finalize(entries)
     summary = f"fail {head} ({len(entries)} problems)" if entries else f"ok {head}"
     return {"ekit": report.ekit_version(), "head": head, "detected": detected, "inputs": inputs, "trial": tried,
-            "entries": entries, "summary": summary}
+            "setup": setup, "entries": entries, "summary": summary}

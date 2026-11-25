@@ -88,7 +88,15 @@ summary (one line, text format first line and envelope `summary`):
 
 doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base or head): finds the stack and project dir,
   reads .github/workflows, trial-runs the tests and the mutation tool at HEAD in a throwaway worktree, and prints
-  {ekit, head, detected, inputs, trial, entries, summary}: `inputs` is what the caller needs, each entry names one exact fix.
+  {ekit, head, detected, inputs, trial, setup, entries, summary}: `inputs` is what the caller needs, each entry names one
+  exact fix. Detection takes the built-ins and the repo's .ekit/adapters/<name>.toml (an adapter file's stack: one
+  `adapter-file` confirm entry, no trial: repair mode's, #24). `setup` (#23, ci-doctor's setup mode) is null unless a
+  project no built-in and no adapter file covers is found (pom.xml, build.gradle[.kts], *.sln, *.csproj, Package.swift,
+  *.xcodeproj, go.mod; shallowest, as for the built-ins; one below a built-in project is its tooling): then
+  {projects: [{project_dir, manifests, language, build, test_framework, target_os, target_os_why}], own_ci: [the
+  workflow files that call no ekit workflow]}, and one `no-adapter` entry (adapter-fix), or with several projects of
+  any kind one `ambiguous` entry naming them all (needs-human: --project-dir picks one, never a guess). target_os:
+  windows for a WPF app (UseWPF), macos for an Xcode project or a Package.swift naming .iOS, else linux.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
 resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
