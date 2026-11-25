@@ -149,20 +149,44 @@ class SetupDetection(unittest.TestCase):
         self.assertEqual([e["problem"] for e in env["entries"]],
                          ["several projects: java (maven, no adapter) in api, csharp (dotnet, no adapter) in app"])
 
-    def test_a_built_in_and_an_uncovered_project_at_any_depth_are_an_ask_both_ways(self):
-        for files, names in (
-                ({"Cargo.toml": "[package]\nname = \"a\"\n", "src/lib.rs": "", "tools/gen/pom.xml": POM},
-                 "rust in ., java (maven, no adapter) in tools/gen"),
-                (dict(JAVA, **{"web/package.json": '{"name": "web"}\n', "web/src/a.ts": ""}),
-                 "ts in web, java (maven, no adapter) in .")):
-            with self.subTest(names=names):
-                repo = Repo(os.path.join(self.repo.path + "-" + str(len(names)), "r"))
+    def test_the_shallowest_project_wins_across_built_in_and_uncovered_manifests(self):
+        cases = (  # files, (detected stack, mode, setup projects): the deeper project is tooling, whichever way round
+            ({"Cargo.toml": "[package]\nname = \"a\"\n", "src/lib.rs": "", "tools/gen/pom.xml": POM},
+             ("rust", "adopt", None)),
+            (dict(JAVA, **{"web/package.json": '{"name": "web"}\n', "web/src/a.ts": ""}), (None, "setup", ["."])),
+            ({"package.json": '{"name": "app"}\n', "android/build.gradle": "", "android/settings.gradle": "",
+              "ios/App.xcodeproj/project.pbxproj": ""}, ("ts", "adopt", None)),
+            ({"package.json": '{"name": "app"}\n', "tools/x/pyproject.toml": "[project]\n"}, ("ts", "adopt", None)))
+        for n, (files, (stack, mode, folders)) in enumerate(cases):
+            with self.subTest(case=n):
+                repo = Repo(os.path.join(self.repo.path + "-" + str(n), "r"))
                 repo.commit(files, "c")
                 env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
-                self.assertEqual([e["problem"] for e in env["entries"]], [f"several projects: {names}"])
-                built_in = names.split(" in ")[0]
-                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial", "--stack", built_in]).stdout)
-                self.assertEqual((env["detected"]["stack"], env["setup"]), (built_in, None))
+                self.assertEqual((env["detected"]["stack"], env["mode"],
+                                  [p["project_dir"] for p in env["setup"]["projects"]] if env["setup"] else None),
+                                 (stack, mode, folders))
+
+    def test_an_uncovered_project_beside_the_repos_found_adapter_is_set_up_once_picked(self):
+        rc, env = self.doctor({"backend/pom.xml": POM, ".ekit/adapters/java.toml": self.java_adapter(),
+                               "svc/go.mod": "module svc\n"})
+        self.assertEqual((env["mode"], [e["problem"] for e in env["entries"]]),
+                         ("ask", ["several projects: java in backend, go (go, no adapter) in svc"]))
+        rc, env = self.again("--stack", "go", "--project-dir", "svc")
+        self.assertEqual((env["mode"], [e["file"] for e in env["entries"]]), ("setup", ["svc/go.mod"]))
+        rc, env = self.again("--project-dir", "svc")
+        self.assertEqual(env["mode"], "setup")
+
+    def test_an_orphaned_adapter_file_keeps_an_answered_pick_in_setup(self):
+        orphan = self.java_adapter().replace('manifests = ["pom.xml"]', 'manifests = []')
+        rc, env = self.doctor(dict(JAVA, **{".ekit/adapters/java.toml": orphan}), "--project-dir", ".")
+        self.assertEqual(env["mode"], "setup")
+
+    def test_the_plans_ignore_folders_hold_no_project(self):
+        rc, env = self.doctor({"app/package.json": '{"name": "app"}\n', "tools/go.mod": "module tools\n",
+                               ".ekit/stack-plan.toml": 'ignore = ["tools"]\n\n[[stack]]\nname = "app"\n'
+                                                        'folder = "app"\nadapter = "ts"\nstatus = "current"\n'})
+        self.assertEqual((env["detected"], env["mode"], env["setup"]), ({"stack": "ts", "project_dir": "app"},
+                                                                       "adopt", None))
 
     def test_two_built_in_projects_are_an_ask_too(self):
         rc, env = self.doctor({"a/Cargo.toml": "[package]\nname = \"a\"\n", "b/pyproject.toml": "[project]\n"})
@@ -205,8 +229,8 @@ class SetupDetection(unittest.TestCase):
                                             'status = "planned"\n[[stack]]\nname = "b"\nfolder = "lib"\n'
                                             'adapter = ".ekit/adapters/java.toml"\nstatus = "planned"\n'}))
         self.assertEqual((env["mode"], [e["problem"] for e in env["entries"]]), ("repair", [
-            "no adapter lists `pom.xml` (java, maven), and the repo has its own adapter files (`.ekit/adapters/java.toml`, "
-            "`ci/calc.toml`): one may be meant for it"]))
+            "no adapter lists `pom.xml` (java, maven), and the repo's own adapter files `.ekit/adapters/java.toml`, "
+            "`ci/calc.toml` find no project: one may be meant for it"]))
 
     def test_two_projects_in_one_folder_are_an_ask_that_stack_answers(self):
         cases = (
@@ -366,8 +390,8 @@ class SetupDetection(unittest.TestCase):
             'manifests = ["pom.xml"]', "manifests = []")}))
         self.assertEqual([(e["class"], e["severity"], e["file"], e["problem"]) for e in env["entries"]], [(
             "adapter-fix", "fail", "pom.xml",
-            "no adapter lists `pom.xml` (java, maven), and the repo has its own adapter files "
-            "(`.ekit/adapters/java.toml`): one may be meant for it")])
+            "no adapter lists `pom.xml` (java, maven), and the repo's own adapter files "
+            "`.ekit/adapters/java.toml` find no project: one may be meant for it")])
         self.assertEqual(env["entries"][0]["hint"], "repair or extend that adapter file (ci-doctor's repair mode, #24) "
                                                     "rather than set up a second one; the owner decides")
         self.assertEqual(env["mode"], "repair")

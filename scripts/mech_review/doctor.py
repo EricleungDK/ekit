@@ -565,16 +565,17 @@ def _reads_toml():
 
 
 def _repo_adapters(repo, head, paths):
-    """({name: (adapter, path)}, own, entries) as resolve reads them at head (#17): each .ekit/adapters/<name>.toml
-    (a file named like a built-in replaces it) and each adapter file the stack plan names, read one by one; own: the
-    paths of the adapter files that define a stack of their own (not named like a built-in), read or not; entries: a
-    file or a plan that does not read. None for the dict when this python has no TOML reader and the repo has either."""
+    """({name: (adapter, path)}, own, entries, ignore) as resolve reads them at head (#17): each
+    .ekit/adapters/<name>.toml (a file named like a built-in replaces it) and each adapter file the stack plan names,
+    read one by one; own: the paths of the adapter files that define a stack of their own (not named like a built-in),
+    read or not; entries: a file or a plan that does not read; ignore: the plan's ignore folders. None for the dict
+    when this python has no TOML reader and the repo has either."""
     files = [p for p in sorted(paths) if p.rpartition("/")[0] == stack_plan.ADAPTERS_DIR and p.endswith(".toml")]
     if (files or stack_plan.PATH in paths) and not _reads_toml():
         return None, [], [report.entry(
             "doctor", "", 0, "toml", "env", "fail",
             "this python cannot read the repo's adapter files and stack plan (tomllib, python 3.11 or newer): doctor "
-            "cannot tell which manifests they cover", "rerun doctor with python 3.11 or newer", NOT_UNPROVEN)]
+            "cannot tell which manifests they cover", "rerun doctor with python 3.11 or newer", NOT_UNPROVEN)], ()
     mine, entries = {}, []
     own = [p for p in files if p.rpartition("/")[2][:-len(".toml")] not in ADAPTERS]
     for path in files:
@@ -596,7 +597,7 @@ def _repo_adapters(repo, head, paths):
             own += [e.adapter_ref] if e.adapter_ref not in own else []
             if e.adapter is not None:
                 mine.setdefault(e.adapter.name, (e.adapter, e.adapter_ref))
-    return mine, sorted(own), entries
+    return mine, sorted(own), entries, tuple(plan.ignore) if plan else ()
 
 
 def _envelope(head, detected, inputs, tried, setup, mode, entries):
@@ -613,20 +614,25 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         raise gitio.Die(f"not a git repo: {repo}")
     head = gitio.resolve(repo, head_ref)
     paths = gitio.git(repo, "ls-tree", "-r", "--name-only", head).splitlines()
-    mine, own, entries = _repo_adapters(repo, head, paths)
+    mine, own, entries, ignore = _repo_adapters(repo, head, paths)
     detected = {"stack": None, "project_dir": None}
     inputs, tried, setup, mode = {}, {"tests": "skipped"}, None, None
     if mine is None:  # no TOML reader here: which manifests the repo's adapters cover is unknown, so nothing is routed
         return _envelope(head, detected, inputs, tried, setup, mode, entries)
     adapters = {**ADAPTERS, **{n: a for n, (a, _) in mine.items()}}
     named = stack in adapters  # else a build of a project no adapter covers (detect.BUILDS), or none
-    found = [c for c in candidates(paths, adapters)
+    scan = [p for p in paths if not any(stack_plan.holds(f, p) for f in ignore)]  # the plan's ignore: no projects
+    found = [c for c in candidates(scan, adapters)
              if (not stack or c[0] == stack) and (not project_dir or c[1] == project_dir)]
     if project_dir and named and not found:
         found = [(stack, project_dir)]
     known = {m for a in adapters.values() for m in a.manifests}
-    new = [] if named else detect.projects(repo, head, paths, known, project_dir, stack)
-    if new:  # with a built-in project at any depth beside it, an ask both ways: never a guess (#23)
+    new = [] if named else detect.projects(repo, head, scan, known, project_dir, stack)
+    if found and new:  # one pool, the shallowest wins: the deeper projects are tooling, whichever kind (#23)
+        top = min(detect.depth(found[0][1]), detect.depth(new[0]["project_dir"]))
+        found = [c for c in found if detect.depth(c[1]) == top]
+        new = [p for p in new if detect.depth(p["project_dir"]) == top]
+    if new:
         setup = {"projects": new, "own_ci": own_ci(repo, head, paths)}
     if new and len(found) + len(new) > 1:
         mode = "ask"
@@ -638,12 +644,14 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
     elif new:
         p = new[0]
         manifest = p["manifests"][0] if p["project_dir"] == "." else f"{p['project_dir']}/{p['manifests'][0]}"
-        if own:  # an adapter file is there that lists none of it: a second one would sit beside it
+        homes = {path: a for a, path in mine.values()}
+        orphans = [x for x in own if x not in homes or not candidates(scan, {"own": homes[x]})]
+        if orphans and not (project_dir or stack):  # an adapter of the repo's own finds no project: it may be this one's
             mode = "repair"
             entries.append(report.entry(
                 "doctor", manifest, 0, "own-adapter", "adapter-fix", "fail",
-                f"no adapter lists `{manifest}` ({p['language']}, {p['build']}), and the repo has its own adapter files "
-                f"({_listed(own)}): one may be meant for it",
+                f"no adapter lists `{manifest}` ({p['language']}, {p['build']}), and the repo's own adapter files "
+                f"{_listed(orphans)} find no project: one may be meant for it",
                 "repair or extend that adapter file (ci-doctor's repair mode, #24) rather than set up a second one; "
                 "the owner decides", NOT_UNPROVEN))
         else:
