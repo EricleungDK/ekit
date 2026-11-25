@@ -210,6 +210,14 @@ class SetupDetection(unittest.TestCase):
         self.assertEqual(env["setup"]["own_ci"], [".github/workflows/flow.yml", ".github/workflows/list.yml",
                                                   ".github/workflows/none.yml", ".github/workflows/quoted.yml"])
 
+    def test_own_ci_reads_flow_jobs_tag_filters_and_pull_request_target(self):
+        rc, env = self.doctor(dict(JAVA, **{
+            ".github/workflows/flow-jobs.yml": "on: push\njobs: {test: {runs-on: x, steps: [{run: mvn test}]}}\n",
+            ".github/workflows/empty-jobs.yml": "on: push\njobs: {}\n",
+            ".github/workflows/tags-ignore.yml": "on:\n  push:\n    tags-ignore: ['v*']\njobs:\n  t:\n    steps: []\n",
+            ".github/workflows/target.yml": "on: pull_request_target\njobs:\n  t:\n    steps: []\n"}))
+        self.assertEqual(env["setup"]["own_ci"], [".github/workflows/flow-jobs.yml", ".github/workflows/target.yml"])
+
     def test_a_plan_entry_naming_an_adapter_file_missing_or_unread_is_repair(self):
         for adapter, why in (("ci/none.toml", "missing"), ("ci/bad.toml", "unread")):
             with self.subTest(why=why):
@@ -319,6 +327,9 @@ class SetupDetection(unittest.TestCase):
     def test_junit_platform_is_junit_5(self):
         cases = {"gradle": {"build.gradle.kts": "dependencies { testImplementation(libs.junit.jupiter) }\n"
                                                 "tasks.test { useJUnitPlatform() }\n// junit:junit was dropped\n"},
+                 "catalog": {"build.gradle.kts": "dependencies { testImplementation(libs.junit.jupiter) }\n"},
+                 "kotlin-test": {"build.gradle.kts": 'dependencies { testImplementation(kotlin("test")) }\n'
+                                                     "tasks.test { useJUnitPlatform() }\n"},
                  "spring": {"pom.xml": "<project><artifactId>spring-boot-starter-test</artifactId></project>\n"},
                  "platform": {"build.gradle": "test { useJUnitPlatform() }\n"}}
         for name, files in cases.items():
@@ -334,15 +345,16 @@ class SetupDetection(unittest.TestCase):
                  "presentation": {"App/App.csproj": '<Project><Reference Include="PresentationFramework" /></Project>'},
                  "props": {"Directory.Build.props": "<Project><PropertyGroup><UseWPF> True </UseWPF></PropertyGroup>"
                                                     "</Project>", "App/App.csproj": "<Project />"},
-                 "utf16": {"App/App.csproj": None}}
+                 "utf16": {"App/App.csproj": None}, "utf16be": {"App/App.csproj": None}}
         for name, files in cases.items():
             with self.subTest(name=name):
                 repo = Repo(os.path.join(self.repo.path + "-" + name, "r"))
                 files = dict({"App.sln": ""}, **files)
-                if name == "utf16":
+                if name.startswith("utf16"):
                     os.makedirs(os.path.join(repo.path, "App"))
                     with open(os.path.join(repo.path, "App", "App.csproj"), "wb") as f:
-                        f.write("<Project><UseWPF>true</UseWPF></Project>".encode("utf-16"))
+                        text = "\ufeff<Project><UseWPF>true</UseWPF></Project>"
+                        f.write(text.encode("utf-16-le" if name == "utf16" else "utf-16-be"))
                     del files["App/App.csproj"]
                 repo.commit(files, "c")
                 env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
@@ -360,6 +372,25 @@ class SetupDetection(unittest.TestCase):
                 self.repo.commit({"Package.swift": text}, "c")
                 env = self.again("--stack", "swiftpm")[1]
                 self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["linux"])
+
+    def test_a_comment_marker_inside_a_string_is_no_comment(self):
+        gradle = ('tasks.test { include("**/*Test.class") }\n'
+                  'dependencies { testImplementation("org.junit.jupiter:junit-jupiter:5.10.0") }\n'
+                  "tasks.test { exclude('**/*IT.class') } // a */ in a comment\n")
+        rc, env = self.doctor({"build.gradle.kts": gradle})
+        self.assertEqual([p["test_framework"] for p in env["setup"]["projects"]], ["junit5"])
+        swift = ('let package = Package(name: "Kit", resources: [.copy("Assets/*")],\n'
+                 '    platforms: [.iOS(.v16)], path: "a*/b", url: "https://example.com/kit")\n'
+                 'let doc = """\n  /* not a comment */ "quoted" \n  """\n')
+        rc, env = self.doctor({"Package.swift": swift}, "--stack", "swiftpm")
+        self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["macos"])
+
+    def test_every_manifest_of_one_build_in_a_folder_is_one_project(self):
+        adapter = self.java_adapter().replace('name = "java"', 'name = "kgradle"').replace(
+            'manifests = ["pom.xml"]', 'manifests = ["build.gradle.kts"]')
+        rc, env = self.doctor({"build.gradle.kts": "", "settings.gradle.kts": "", ".ekit/adapters/kgradle.toml": adapter})
+        self.assertEqual((env["detected"], env["setup"], env["mode"]),
+                         ({"stack": "kgradle", "project_dir": "."}, None, "repair"))
 
     def test_settings_gradle_is_the_build_root(self):
         rc, env = self.doctor({"settings.gradle.kts": 'include("app")\n', "app/build.gradle.kts": "",

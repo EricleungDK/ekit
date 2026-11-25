@@ -52,7 +52,8 @@ BUILDS = tuple(sorted({k.build for k in KINDS}))
 EXTRA = {"dotnet": ("Directory.Build.props",)}  # read like the build's manifests, never a project of its own
 EVIDENCE_SKIP = SKIP_DIRS - {"tests", "test"}  # a test project's manifest names the test framework
 XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
-C_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+# a string literal (kept: `"**/*Test.class"` opens no comment) or a comment (dropped), leftmost first
+C_COMMENT = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*[\s\S]*?\*/|//[^\n]*')
 COMMENTS = {".xml": XML_COMMENT, ".csproj": XML_COMMENT, ".props": XML_COMMENT, ".swift": C_COMMENT,
             ".gradle": C_COMMENT, ".kts": C_COMMENT}
 LINUX = "no Windows- or Apple-only project file"
@@ -74,15 +75,18 @@ def _under(path, folder):
 
 def projects(repo, head, paths, known, project_dir=None, build=None):
     """[{project_dir, manifests, language, build, test_framework, target_os, target_os_why}], sorted by folder: the
-    shallowest projects no known adapter covers (a known name is the manifest's or its file's: an adapter may list
-    `project.pbxproj`), or with project_dir only the ones in that folder (any depth); build: only that build's."""
-    found = {}
+    shallowest projects no known adapter covers (every manifest of one build in a folder is one project, covered when
+    any of them, or its file, is a known name: an adapter may list only `build.gradle.kts`, or `project.pbxproj`), or
+    with project_dir only the ones in that folder (any depth); build: only that build's."""
+    groups = {}  # (folder, build) -> (manifests, the names they go by): one project, covered by any name known
     for path in paths:
         m = _manifest(path)
-        if m is None or {m[2], path.rpartition("/")[2]} & set(known) or SKIP_DIRS & set(m[1].split("/")) \
-                or build not in (None, m[0].build):
+        if m is None or SKIP_DIRS & set(m[1].split("/")) or build not in (None, m[0].build):
             continue
-        found.setdefault((m[1], m[0].build), []).append(m[2])
+        manifests, names = groups.setdefault((m[1], m[0].build), ([], set()))
+        manifests.append(m[2])
+        names.update({m[2], path.rpartition("/")[2]})
+    found = {k: manifests for k, (manifests, names) in groups.items() if not names & set(known)}
     if project_dir:
         found = {k: v for k, v in found.items() if k[0] == project_dir}
     elif found:
@@ -120,4 +124,9 @@ def _text(repo, head, path):
     raw = gitio.blob(repo, head, path).encode("utf-8", "surrogateescape")
     text = raw.decode("utf-16", "replace") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig", "replace")
     rx = COMMENTS.get("." + path.rpartition(".")[2])
-    return rx.sub("", text) if rx else text
+    return rx.sub(_uncommented, text) if rx else text
+
+
+def _uncommented(m):
+    """a match of a COMMENTS pattern: a string literal stays, a comment goes"""
+    return m.group(0) if m.group(0)[0] in "\"'" else ""

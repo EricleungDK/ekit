@@ -82,8 +82,11 @@ def sections(lines):
 
 
 def jobs(text):
-    """{job id: its lines} of a workflow's `jobs:`"""
+    """{job id: its lines} of a workflow's `jobs:`, or None when they are written in flow style (`jobs: {test: ...}`),
+    which this reader does not read"""
     block = sections(text.splitlines()).get("jobs")
+    if block and block[0] not in ("", "{}"):
+        return None
     return {k: v for k, (_, v) in sections(block[1]).items()} if block else {}
 
 
@@ -101,10 +104,10 @@ def _events(on):
 
 def is_ci(text):
     """the workflow is the team's CI: it holds a job that calls no ekit workflow (a build or test job of its own), and
-    its trigger is a push or a pull request (a push of tags only is a release), or one this reader cannot read: an
-    unread trigger counts, so base jobs are never written beside a team's CI"""
-    events = _events(sections(text.splitlines()).get("on"))
-    own = any(not any(_calls_ekit(line) for line in job) for job in jobs(text).values())
+    its trigger is a push or a pull request (a push of tags only is a release). A trigger or jobs this reader cannot
+    read count, so base jobs are never written beside a team's CI"""
+    events, found = _events(sections(text.splitlines()).get("on")), jobs(text)
+    own = found is None or any(not any(_calls_ekit(line) for line in job) for job in found.values())
     return own and (events is None or bool(events & CI_EVENTS))
 
 
