@@ -5,7 +5,6 @@ import unittest
 from unittest import mock
 
 import _kit  # noqa: F401 - puts the repo root on sys.path for the import below
-
 from scripts.mech_review import tomlfile
 
 
@@ -21,7 +20,6 @@ def load(raw):
     return tomlfile.loads(raw, "the file f.toml at 1a2b", Bad, "a test file")
 
 
-@unittest.skipIf(sys.version_info < (3, 11), "tomllib is python 3.11+")
 class Loads(unittest.TestCase):
     def test_a_toml_file_reads_as_its_dict(self):
         self.assertEqual(load(b'format = 1\n[[rule]]\nid = "x"\n'), {"format": 1, "rule": [{"id": "x"}]})
