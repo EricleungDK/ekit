@@ -1,5 +1,5 @@
 """The ci-doctor setup evals (#23) grade the end state at HEAD: each scaffold's ref hooks (ci-doctor-setup-java's arm.sh,
-on every commit, reset and checkout) run verdict.py, which reads the stack plan and the workflows at HEAD and runs the
+on every commit, reset and checkout) run the verdict script it writes, which reads the stack plan and the workflows at HEAD and runs the
 kit's own `r0` (static half) and `drift` on HEAD, and write the verdict the case's regex graders read. Here the good
 end state (the Java reference adapter and its R0 fixtures, committed on a setup branch with a plan entry and a caller)
 passes every regex grader of its case; wrong end states (a failing or unproven proof, the wrong status, the team's CI

@@ -158,8 +158,16 @@ class SetupDetection(unittest.TestCase):
                                "objc": [("objective-c", "xcode", None, "macos")]})
 
     def test_only_the_shallowest_uncovered_projects_count(self):
-        rc, env = self.doctor(dict(JAVA, **{"tools/gen/go.mod": "module gen\n", "tests/fixtures/x/go.mod": ""}))
+        rc, env = self.doctor(dict(JAVA, **{"tools/go.mod": "module tools\n", "tools/gen/go.mod": "module gen\n"}))
         self.assertEqual([(p["project_dir"], p["build"]) for p in env["setup"]["projects"]], [(".", "maven")])
+
+    def test_fixture_and_vendored_folders_hold_no_project_and_no_evidence(self):
+        rc, env = self.doctor({"tests/fixtures/app/pom.xml": POM, "vendor/lib/go.mod": "module lib\n"})
+        self.assertEqual((env["setup"], [e["problem"] for e in env["entries"]]),
+                         (None, ["no project found: no pyproject.toml, setup.py, setup.cfg, Cargo.toml, package.json"]))
+        rc, env = self.doctor({"App.sln": "", "App/App.csproj": "<Project />\n",
+                               "examples/Demo/Demo.csproj": "<UseWPF>true</UseWPF> <Package Include=\"xunit\" />"})
+        self.assertEqual([(p["test_framework"], p["target_os"]) for p in env["setup"]["projects"]], [(None, "linux")])
 
     def test_an_adapter_file_named_like_a_built_in_keeps_the_adopt_flow(self):
         with open(os.path.join(_kit.SCRIPTS, "mech_review", "adapters", "ts.toml"), encoding="utf-8") as f:

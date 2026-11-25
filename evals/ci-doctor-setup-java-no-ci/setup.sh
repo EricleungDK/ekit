@@ -1,7 +1,7 @@
 #!/bin/bash
 # fixture: the Java reference adapter's fixture repo (tests/fixtures/java/base) with no CI at all. As
 # ci-doctor-setup-java, and the setup also writes base CI jobs from the adapter's commands, its test command among
-# them (#23). The grader support is that case's (arm.sh, verdict.py).
+# them (#23). The grader support is that case's (arm.sh).
 set -e
 here="$(cd "$(dirname "$0")" && pwd -P)"
 git init -q -b main .; git config user.email t@t; git config user.name t

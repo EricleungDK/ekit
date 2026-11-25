@@ -74,12 +74,13 @@ def projects(repo, head, paths, known, project_dir=None):
     elif found:
         top = min(depth(folder) for folder, _ in found)
         found = {k: v for k, v in found.items() if depth(k[0]) == top}
-    return [_describe(repo, head, paths, folder, build, manifests) for (folder, build), manifests in sorted(found.items())]
+    return [_describe(repo, head, paths, folder, build, manifests)
+            for (folder, build), manifests in sorted(found.items())]
 
 
 def depth(folder):
-    """a folder's depth: `.` is 0, `a/b` is 2."""
-    return 0 if folder == "." else folder.count("/") + 1
+    """a folder's depth: `.` is 0, `a` is 1, `a/b` is 2."""
+    return folder.count("/") + (folder != ".")
 
 
 def _describe(repo, head, paths, folder, build, manifests):
