@@ -242,7 +242,7 @@ class Invalid(unittest.TestCase):
             "lexer.brackets.0": ("(", "lexer.brackets[0]: `(`: want an opener and a closer, e.g. \"()\""),
             "lexer.brackets": (["{}"], "lexer.brackets: want \"()\": calls are `name(...)`"),
             "lexer.strings.0.escape": ("\\\\", "lexer.strings[0].escape: want one character or \"\""),
-            "tests.style": ("functions", "tests.style: unknown style `functions`: want calls"),
+            "tests.style": ("functions", "tests.style: unknown style `functions`: want calls or declared"),
             "tests.skip": (["xit"], "tests.skip[0]: `xit` is not in tests.groups or tests.cases"),
             "tests.cases": (["it("], "tests.cases[0]: `it(` is not a word (letters, digits, _ and lexer.ident_chars)"),
             "tests.skipped_text": ("test {test} skipped", "tests.skipped_text: unknown placeholder `{test}`: want `{name}`"),

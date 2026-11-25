@@ -140,9 +140,9 @@ class Declared(unittest.TestCase):
         self.assertEqual(self.err(with_tool(changed(args=["run"]))),
                          "mutation.tool.mutate: never used: no arg has `{mutate}`")
         self.assertEqual(self.err(with_tool(changed(mutate="{file}:{start}"))),
-                         "mutation.tool.mutate: unknown placeholder `{start}`: want `{file}` or `{first}` or `{last}`")
+                         "mutation.tool.mutate: unknown placeholder `{start}`: want `{file}` or `{first}` or `{last}` or `{module}` or `{package}`")
         self.assertEqual(self.err(with_tool(changed(mutate="{first}-{last}"))),
-                         "mutation.tool.mutate: no `{file}`: a range names its file")
+                         "mutation.tool.mutate: no `{file}`, `{module}` or `{package}`: a range names its file")
         self.assertEqual(self.err(with_tool(changed(mutate_join=""))), "mutation.tool.mutate_join: want a non-empty string")
 
     def test_report_is_a_file_under_the_project_dir(self):

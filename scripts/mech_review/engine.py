@@ -130,7 +130,10 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
     checks = {c: {"status": "skipped", "note": f"not run by {which}"} for c in CHECKS}
     raw = []
     if "R0" in want:
-        checks["R0"], more = prove(stack, test_globs, adapter, None, fixtures_dir)
+        # an --adapter file is proved as `r0 --adapter` proves it (#22): its bytes, its fixtures beside it unless a
+        # built-in of its name ships some (ts.toml keeps the ts fixtures)
+        checks["R0"], more = prove(stack, test_globs, adapter, getattr(adapter, "source_path", None),
+                                   fixtures_dir or r0_mod.builtin_fixtures(stack))
         raw += more + _edit_rules(repo, mb, head, checks["R0"], []) + _rule_proof(repo, head, checks["R0"])
     if "R2" in want:
         own = r2(rv, list(protected_globs), cochange.at(repo, base))  # the base branch's rules judge the PR (#83)

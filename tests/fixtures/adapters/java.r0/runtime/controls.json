@@ -1,0 +1,8 @@
+{
+  "test-paths": ["src/test/**"],
+  "pass": {"file": "src/test/java/com/example/CtlTest.java", "name": "CtlTest.passes"},
+  "fail": {"file": "src/test/java/com/example/CtlTest.java", "name": "CtlTest.fails"},
+  "skipped": {"file": "src/test/java/com/example/CtlTest.java", "name": "CtlTest.skipped"},
+  "build": {"file": "src/test/java/com/example/BrokenTest.java", "name": "BrokenTest.builds"},
+  "no-such-test": {"file": "src/test/java/com/example/CtlTest.java", "name": "CtlTest.r0NoSuchTest"}
+}

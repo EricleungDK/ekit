@@ -30,7 +30,7 @@ Runtime fixtures: `runtime/` in the fixture dir (r0.builtin_fixtures, or `<adapt
   r3/base/        the R3 control's base commit: a project whose suite passes (R3 needs a green baseline)
   r3/weak/, r3/strong/   each laid over r3/base as one PR's head: a production file and a test of it, weak (a
                   MISSED mutant) and strong (none)
-The fixture project's tests sit under tests/ (TEST_GLOBS).
+The fixture project's tests sit under tests/ (TEST_GLOBS), or where controls.json's `test-paths` globs say.
 """
 import copy
 import hashlib
@@ -68,7 +68,8 @@ BUILTIN_PROBES = {
     "ts": {"run": (("node", "--version"),), "r3": (("node", "--version"),)},
 }
 
-Runtime = namedtuple("Runtime", "controls project build r3_base weak strong where")  # dirs as {relpath: bytes}
+# dirs as {relpath: bytes}; globs: the fixture project's test paths (controls.json's test-paths, else TEST_GLOBS)
+Runtime = namedtuple("Runtime", "controls project build r3_base weak strong where globs", defaults=(TEST_GLOBS,))
 
 
 def loads(text):
@@ -128,7 +129,17 @@ def load_runtime(fixtures_dir, runner=None):
         controls[k] = (v["file"], v["name"])
     return Runtime(controls, _tree(os.path.join(rt, "project")), _tree(os.path.join(rt, "build")),
                    _tree(os.path.join(rt, "r3", "base")), _tree(os.path.join(rt, "r3", "weak")),
-                   _tree(os.path.join(rt, "r3", "strong")), rt)
+                   _tree(os.path.join(rt, "r3", "strong")), rt, _fixture_globs(raw, path))
+
+
+def _fixture_globs(raw, path):
+    """controls.json's `test-paths` (#22: tests that sit elsewhere, Maven's src/test/), else TEST_GLOBS."""
+    if not isinstance(raw, dict) or "test-paths" not in raw:
+        return TEST_GLOBS
+    globs = raw["test-paths"]
+    if isinstance(globs, list) and globs and all(isinstance(g, str) and g for g in globs):
+        return tuple(globs)
+    raise r0.FixtureError(f"R0 runtime fixture {path}: `test-paths`: want a list of globs, such as [\"src/test/**\"]")
 
 
 def _write_tree(root, *trees):
@@ -540,7 +551,7 @@ def controls(adapter, rt, runner, cmd, src, results):
         adapter.worktree_setup(src, proj, ".")
         use = cmd or adapter.test_cmd_in(proj)
         texts = {p: raw.decode("utf-8", "surrogateescape") for p, raw in rt.project.items()}
-        scan = found_tests(adapter, {p: t for p, t in texts.items() if adapter.classify(p, list(TEST_GLOBS)) is not None})
+        scan = found_tests(adapter, {p: t for p, t in texts.items() if adapter.classify(p, list(rt.globs)) is not None})
         listed, why, st = listing(adapter, runner, use, proj)
         if listed is None:
             results.append(_case("census-fixtures", "census", st, "every listed test found", why))
@@ -586,7 +597,7 @@ def r3_control(adapter, rt, src, mutants_cmd, budget_min, results, roots=()):
             _git(tmp, "commit", "-q", "--allow-empty", "--no-verify", "-m", "r0 r3 head")
             head = _git(tmp, "rev-parse", "HEAD").strip()
             adapter.worktree_setup(src, tmp, ".")  # an install link (node_modules) stays untracked
-            rv = Review(tmp, base, head, adapter, list(TEST_GLOBS) + [r0.FIXTURE_DIR + "/**"], ".")
+            rv = Review(tmp, base, head, adapter, list(rt.globs) + [r0.FIXTURE_DIR + "/**"], ".")
             try:
                 tool = mutation_tool if getattr(adapter, "from_file", False) else mutants  # #19: a file's declared tool
                 check, ents = tool.run(rv, mutants_cmd, budget_min)

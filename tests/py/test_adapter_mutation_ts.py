@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 import _kit
-from scripts.mech_review import adapter_file
+from scripts.mech_review import adapter_file, report
 
 TS_FILE = os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml")
 FX = os.path.join(_kit.ROOT, "tests", "fixtures", "stryker")
@@ -143,6 +143,32 @@ class Parity(unittest.TestCase):
         built, file = self.same({"MUT_HANG": "1"}, "--mutation-budget", "0.02")
         self.assertEqual(file["checks"]["R3"]["status"], "partial")
 
+    def test_no_report_through_the_file_is_a_fail_and_a_report_that_is_no_object_is_n_a(self):  # #22 round 2
+        """the declared tool ran and wrote no report: a fail with one entry, never n/a (env). The built-in keeps n/a
+        (env) for now: an edit to mutants.py makes every later R3 regenerate all of it (a follow-up)."""
+        r, b, h = self.repo()
+        (built, _), (env, _) = self.both(r, b, h, {"MUT_STDOUT": os.path.join(FX, "missed", "stdout.txt"), "MUT_RC": "1"})
+        self.assertEqual(built["checks"]["R3"]["status"], "n/a")
+        with open(os.path.join(FX, "missed", "stdout.txt")) as f:
+            first = next(ln.strip() for ln in f if ln.strip())[:200]
+        want = "stryker ran and wrote no report (reports/mutation/mutation.json): mutants not read: " + first
+        self.assertEqual(env["checks"]["R3"], {"status": "fail", "note": want})
+        self.assertEqual(len(env["entries"]), 1)
+        e = env["entries"][0]
+        self.assertEqual((e["check"], e["class"], e["problem"], e["forbidden"]),
+                         ("R3", "agent-fixable", want, "a mutation check that did not run"))
+        self.assertEqual(e["hint"], "read the tool's run log: the code at head must build and its tests pass under the "
+                                    "tool; if the tool or its setup is at fault, a person repairs it, and a rerun "
+                                    "follows a network failure")
+        self.assertEqual(e["id"], report.finalize([report.entry("R3", "", 0, "no-report", "agent-fixable", "fail",
+                                                                "x", "y", "z")])[0]["id"])
+        listed = os.path.join(self.tmp, "list.json")
+        with open(listed, "w") as f:
+            f.write("[1, 2]")
+        for out, _ in self.both(r, b, h, {"MUT_REPORT": listed}):
+            self.assertEqual(out["checks"]["R3"]["status"], "n/a", out["checks"]["R3"])
+            self.assertEqual(out["entries"], [])
+
     def test_a_committed_reports_link_is_never_followed_through_the_file(self):  # review F5
         # the built-in ts's own pre-delete is mutants.py's, left as on main (a follow-up: an edit there makes every
         # later R3 regenerate all of mutants.py); through the file, the link is removed, never followed
@@ -193,7 +219,7 @@ class Suite(unittest.TestCase):
             f.write(text.replace('report = "reports/mutation/mutation.json"', 'report = "reports/elsewhere.json"'))
         r = self.run_suite(moved)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("FAIL ts MISSED mutants: exit 1", r.stdout)
+        self.assertIn("FAIL ts MISSED: one entry per mutant in the diff", r.stdout)  # the file's report path is read
 
 
 if __name__ == "__main__":

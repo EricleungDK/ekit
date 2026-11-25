@@ -21,6 +21,28 @@ def norm(s):
     return None if s is None else re.sub(r"\s+", "", s)
 
 
+UNICODE_ESCAPE = re.compile(r"(\\+)u+([0-9A-Fa-f]{4})")
+
+
+def unicode_unescape(text):
+    """`\\uXXXX` (one or more `u`) decoded, as javac does before it lexes (JLS 3.3): only when the backslash run
+    before the `u` is odd, so `\\\\u0040` stays as written. A decoded line break moves the lines after it, as it
+    does for javac."""
+    def sub(mt):
+        run = mt.group(1)
+        return mt.group(0) if len(run) % 2 == 0 else run[:-1] + chr(int(mt.group(2), 16))
+    return UNICODE_ESCAPE.sub(sub, text)
+
+
+def escaped_line_break(text):
+    """position of the first escape javac decodes to a line break (`\\u000a`, `\\u000d`), or None: it moves the
+    lines after it, so the compiler's lines are no longer the file's (#22 final)."""
+    for mt in UNICODE_ESCAPE.finditer(text):
+        if len(mt.group(1)) % 2 and mt.group(2).lower() in ("000a", "000d"):
+            return mt.start() + len(mt.group(1)) - 1
+    return None
+
+
 def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 
@@ -28,7 +50,7 @@ def line_of(text, pos):
 class Lexer:
     """The lexer table of one adapter file, validated (see adapter_file)."""
 
-    def __init__(self, brackets, ident_chars, member, line_comments, block_comments, strings, regex):
+    def __init__(self, brackets, ident_chars, member, line_comments, block_comments, strings, regex, unicode_escapes):
         self.pairs = {b[0]: b[1] for b in brackets}
         self.opens = "".join(b[0] for b in brackets)
         self.closes = "".join(b[1] for b in brackets)
@@ -38,6 +60,7 @@ class Lexer:
         self.block_comments = block_comments
         self.strings = strings
         self.regex = regex
+        self.unicode_escapes = unicode_escapes
         self.word_re = re.compile(r"[\w%s]+" % re.escape(ident_chars))
 
     def is_ident(self, ch):

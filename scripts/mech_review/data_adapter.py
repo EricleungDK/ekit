@@ -12,9 +12,9 @@ import os
 import re
 import shlex
 
-from . import parser_cmd
+from . import declared, parser_cmd
 from .globs import any_glob
-from .scan import Call, line_of, norm
+from .scan import Call, escaped_line_break, line_of, norm, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -34,6 +34,7 @@ class DataAdapter(Adapter):
         self.extensions = tuple(cfg["extensions"])
         self.lexer = lexer
         self.tests = cfg.get("tests", {})
+        self._declared = self.tests.get("style") == "declared"  # #22: tests are marked functions, not calls
         self.chains = cfg.get("asserts", {}).get("chain", [])
         self.call_shapes = cfg.get("asserts", {}).get("call", [])
         self.fn_shapes = fn_shapes
@@ -52,8 +53,11 @@ class DataAdapter(Adapter):
     # ---- parsing ----
     def _scan(self, text):
         m, comments, errors = self.lexer.mask(text)
+        fns = self.lexer.find_shapes(m, self.fn_shapes)
+        if self._declared:
+            return m, comments, errors, [], declared.tests(self.lexer, self.tests, m, fns), fns
         calls = self._calls(text, m)
-        return m, comments, errors, calls, self._scoped(calls), self.lexer.find_shapes(m, self.fn_shapes)
+        return m, comments, errors, calls, self._scoped(calls), fns
 
     def _not_after(self, m, start):
         """the name at start follows a word that makes it a declaration (`function it(`): not a call. Read backwards on
@@ -121,6 +125,10 @@ class DataAdapter(Adapter):
             out.append((sep.join([g.name for g in encl] + [t.name]), t, markers))
         return out
 
+    def _source(self, text):
+        """the text as the compiler reads it: [lexer] unicode_escapes (#22, Java) decodes `\\uXXXX` first."""
+        return unicode_unescape(text) if self.lexer.unicode_escapes else text
+
     # ---- the Adapter interface ----
     def classify(self, path, test_globs):
         if not path.endswith(self.extensions):
@@ -128,6 +136,10 @@ class DataAdapter(Adapter):
         return "test" if any_glob(path, test_globs) else "prod"
 
     def parse_error(self, text):
+        at = escaped_line_break(text) if self.lexer.unicode_escapes else None
+        if at is not None:  # every line after it would read one off the diff's: unparseable, never misread
+            return line_of(text, at), "a unicode escape decodes to a line break: the file's lines are not the compiler's"
+        text = self._source(text)
         m, _, errors, _, _, _ = self._parse(text)
         if errors:
             pos, msg = errors[0]
@@ -135,15 +147,23 @@ class DataAdapter(Adapter):
         return self.lexer.balance(text, m)
 
     def test_fns(self, text):
+        text = self._source(text)
         m, _, _, _, tests, _ = self._parse(text)
-        return [TestFn(name, line_of(text, t.start), markers, _callback_inner(text, m, t.start, t.end))
-                for name, t, markers in tests]
+        return [TestFn(name, line_of(text, t.start), markers, self._body(text, m, t)) for name, t, markers in tests]
+
+    def _body(self, text, m, t):
+        return declared.body(text, m, self.lexer, t) if self._declared else _callback_inner(text, m, t.start, t.end)
 
     def test_bodies(self, text):
+        """a declared test (declared.Span) keeps its body when skipped; a skipped call (`xit("x")`) has one only with
+        a callback."""
+        text = self._source(text)
         _, _, _, _, tests, _ = self._parse(text)
-        return {name: (line_of(text, t.start), norm(text[t.start:t.end])) for name, t, _ in tests if not t.skip or t.args[1:]}
+        return {name: (line_of(text, t.start), norm(text[t.start:t.end])) for name, t, _ in tests
+                if self._declared or not t.skip or t.args[1:]}
 
     def calls(self, text):
+        text = self._source(text)
         m, _, _, _, tests, fns = self._parse(text)
         out = {}
         for name, t, _ in tests:
@@ -153,6 +173,7 @@ class DataAdapter(Adapter):
         return out
 
     def assertions(self, text):
+        text = self._source(text)
         m, _, _, _, tests, fns = self._parse(text)
         lx = self.lexer
         spans = [(n, t.start, t.end) for n, t, _ in tests]
@@ -228,6 +249,7 @@ class DataAdapter(Adapter):
         return w.start(), end, "other", None, None
 
     def suppressions(self, text):
+        text = self._source(text)
         _, comments, _, _, _, _ = self._parse(text)
         total = text.count("\n") + 1
         out = []
@@ -273,13 +295,23 @@ class DataAdapter(Adapter):
         return self.tests.get("skipped_text", DEFAULT_SKIPPED).format(name=name)
 
     def mutation_skips(self, text):
-        _, comments, _, _, _, _ = self._parse(text)
-        return [(line_of(text, start), line_of(text, end), " ".join(body.split())) for start, end, body in comments
-                if any(r.match(body) for r in self._skip_res)]
+        """comments that start with a skip_comments phrase, and (#22) markers named in skip_annotations."""
+        text = self._source(text)
+        m, comments, _, _, _, _ = self._parse(text)
+        out = [(line_of(text, start), line_of(text, end), " ".join(body.split())) for start, end, body in comments
+               if any(r.match(body) for r in self._skip_res)]
+        names = self.mutation.get("skip_annotations")
+        if names:
+            out += [(line_of(text, a), line_of(text, b), mark)
+                    for a, b, mark in declared.annotations(self.lexer, m, self.tests["prefix"], names)]
+        return sorted(out)
 
     def mutation_config(self, path, load):
-        if os.path.basename(path) in self.mutation.get("config_files", []):
-            return self.mutation["config_name"]
+        """a config_files entry names a file in any dir: a name (`pom.xml`) matches the path's last part, a path
+        (`.mvn/maven.config`, #22) its last parts."""
+        for c in self.mutation.get("config_files", []):
+            if path == c or path.endswith("/" + c):
+                return self.mutation["config_name"]
         return None
 
     # ---- the run side: [run] and [commands] (R1, R4) ----
@@ -416,20 +448,22 @@ class DataAdapter(Adapter):
         """verdict of one run from [run.outcome]. Counts (passed, failed, skipped) are read from the last summary line
         (summary's group, or the whole match), or from the whole output without summary. A failed count is fail; a
         passed count is pass at exit 0, fail otherwise: pass needs a counted passed test. Then build, no_test and a
-        skipped count (none: the test did not run). No count read at all is error; counts of 0 are none at exit 0."""
+        skipped count (none: the test did not run). No count read at all is error; counts of 0 are none at exit 0. env
+        reads only when no summary line (with summary) or no count (without) was read: a test that prints the toolchain's
+        message is still judged by its counts."""
         if rc is None:
             return "env"
         if rc == "timeout":
             return "timeout"
         out = out or ""
         rx = self._rx
-        if _first(rx.get("env"), out):
-            return "env"
         if "summary" in rx:
             lines = list(_matches(rx["summary"], out))
             text = (lines[-1].group(rx["summary"].groups) if lines else None)
         else:
             text = out if any(_first(rx.get(k), out) for k in ("passed", "failed", "skipped")) else None
+        if text is None and _first(rx.get("env"), out):  # #22: a test's own output (a summary read) is never env
+            return "env"
         if text is not None:
             if self._count("failed", text):
                 return "fail"

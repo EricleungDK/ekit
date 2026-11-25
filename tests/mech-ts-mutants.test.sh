@@ -335,11 +335,18 @@ out=$(st "$R" "$B" "$H"); rc=$?
 eq "$(jq -r '[.entries[] | select(.problem | test("unlocated"))][0].severity' <<<"$out")" confirm "ts unlocated: a confirm entry"
 has "$(jq -r .checks.R3.note <<<"$out")" "1 unlocated" "ts unlocated: the note counts it"
 
-# a report that cannot be read is n/a (env): a Stryker run that wrote no report never passes
+# a Stryker run that wrote no report never passes. Through an adapter file (#22) it is a fail (the tool ran: no
+# toolchain absence); the built-in keeps n/a (env), a follow-up (an edit to mutants.py regenerates it all for R3)
 mrepo noreport
 export MUT_REPORT= MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=1
 out=$(st "$R" "$B" "$H"); rc=$?
-eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts no report: R3 n/a (env)"
+if [[ -n ${MECH_ADAPTER_TS-} ]]; then
+  eq "$(jq -r .checks.R3.status <<<"$out")" fail "ts no report: R3 fail through the file"
+  has "$(jq -r .checks.R3.note <<<"$out")" "ran and wrote no report (reports/mutation/mutation.json)" "ts no report: the note says so"
+  eq "$rc" 1 "ts no report: exit 1 through the file"
+else
+  eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts no report: R3 n/a (env), built-in"
+fi
 lacks "$(jq -r .summary <<<"$out")" "all pass" "ts no report: never all pass"
 
 # a covered mutant that the runner completed no test for (vitest 5 nested describe with the vitest plugin): n/a, not MISSED
