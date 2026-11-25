@@ -118,6 +118,6 @@ def _text(repo, head, path):
     """the file at head as text, its comments dropped: UTF-16 by its byte-order mark (Visual Studio writes some
     project files so), else UTF-8."""
     raw = gitio.blob(repo, head, path).encode("utf-8", "surrogateescape")
-    text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig", "replace")
+    text = raw.decode("utf-16", "replace") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig", "replace")
     rx = COMMENTS.get("." + path.rpartition(".")[2])
     return rx.sub("", text) if rx else text

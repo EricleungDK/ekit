@@ -68,7 +68,9 @@ def sections(lines):
     of the block style a workflow is written in, not a YAML parser. Comment lines, blank lines and ` #` comments after
     a value are dropped."""
     lines = [re.sub(r"\s+#.*$", "", line) for line in lines if line.strip() and not line.lstrip().startswith("#")]
-    out, key, top = {}, None, min((len(x) - len(x.lstrip()) for x in lines), default=0)
+    if not lines:
+        return {}
+    out, key, top = {}, None, min(len(x) - len(x.lstrip()) for x in lines)
     for line in lines:
         m = YAML_KEY.match(line.strip()) if len(line) - len(line.lstrip()) == top else None
         if m:
@@ -81,20 +83,29 @@ def sections(lines):
 
 def jobs(text):
     """{job id: its lines} of a workflow's `jobs:`"""
-    return {k: v for k, (_, v) in sections(sections(text.splitlines()).get("jobs", ("", []))[1]).items()}
+    block = sections(text.splitlines()).get("jobs")
+    return {k: v for k, (_, v) in sections(block[1]).items()} if block else {}
+
+
+def _events(on):
+    """the events a workflow's `on:` names, or None when it holds a shape this reader does not read (a flow mapping)
+    or there is no `on:`. A push of tags only is a release: left out."""
+    if on is None or on[0].startswith("{"):
+        return None
+    value, block = on
+    items = value.strip("[]").split(",") if value else [x.strip()[1:] for x in block if x.strip().startswith("- ")]
+    if value or items:
+        return {x.strip().strip("'\"") for x in items}
+    return {k for k, (_, under) in sections(block).items() if k != "push" or not under or set(sections(under)) - TAGS_ONLY}
 
 
 def is_ci(text):
-    """the workflow is the team's CI: it runs on a push or a pull request (a push of tags only is a release) and holds a
-    job that calls no ekit workflow (a build or test job of its own)"""
-    top = sections(text.splitlines())
-    value, block = top.get("on") or top.get("true") or ("", [])  # YAML 1.1 reads a bare `on` as true
-    if value:
-        events = {e.strip() for e in value.strip("[]").split(",")}
-    else:
-        events = {k for k, (_, under) in sections(block).items() if k != "push" or set(sections(under)) - TAGS_ONLY
-                  or not under}
-    return bool(events & CI_EVENTS) and any(not _calls_ekit("\n".join(j)) for j in jobs(text).values())
+    """the workflow is the team's CI: it holds a job that calls no ekit workflow (a build or test job of its own), and
+    its trigger is a push or a pull request (a push of tags only is a release), or one this reader cannot read: an
+    unread trigger counts, so base jobs are never written beside a team's CI"""
+    events = _events(sections(text.splitlines()).get("on"))
+    own = any(not any(_calls_ekit(line) for line in job) for job in jobs(text).values())
+    return own and (events is None or bool(events & CI_EVENTS))
 
 
 def read_ci(texts):
@@ -643,6 +654,7 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
                                         "from `setup`", NOT_UNPROVEN))
     elif len(found) != 1:
         if found:
+            mode = "ask"
             names = ", ".join(f"{s} in {d}" for s, d in found)
             entries.append(report.entry("doctor", "", 0, "ambiguous", "needs-human", "fail", f"several projects: {names}",
                                         "pick one with --stack and --project-dir", "guessing the project"))

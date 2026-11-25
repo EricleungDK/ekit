@@ -38,7 +38,7 @@ The proof is every R0 case of both halves, the census and the cheat list. Budget
 1. **Static half**: `MR r0 --repo <repo> --base HEAD --head HEAD --stack <name> --adapter .ekit/adapters/<name>.toml`. Pass is `checks.R0.status` `pass`, never the exit code: exit 0 also covers `unproven`, a case with no fixture yet.
 2. **Census of the repo's own tests**: clone the repo into a scratch folder, delete its test files there and commit, then run `MR r2 --repo <scratch> --base HEAD~1 --head HEAD --stack <name> --adapter <abs path of the file> --test-paths '<glob>'`. It must name every test the repo's test files hold (`test fn ... removed`); each one it misses is a failed case. An empty repo has none.
 3. **Runtime half**, where the toolchain is installed and this machine is the target OS (`--r0` takes an empty scratch dir): `MR red ... --stack <name> --adapter <file> --test-paths '<glob>' --head-branch claude/setup --r0 <dir>` (census, runner controls) and `MR mutants ... --r0 <dir>` (the R3 control). `checks.R0` must read `pass`; an `n/a` is the report's "not run here: <why>".
-4. **The cheat list**: each item with no R0 case of its own is proved like the census, on its own scratch pair (the seed, then the cheat): `MR r2` must give its entry.
+4. **The cheat list**: each item with no R0 case of its own is proved like the census, in a scratch clone (never a branch of the repo): commit the seed, then the cheat, and `MR r2` on that pair must give its entry.
 
 Each failed case is a fix to the adapter; a cheat fixture changes only when it is not valid code in the language, and the report says which and why.
 

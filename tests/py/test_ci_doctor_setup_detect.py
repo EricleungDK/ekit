@@ -164,6 +164,50 @@ class SetupDetection(unittest.TestCase):
                 env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial", "--stack", built_in]).stdout)
                 self.assertEqual((env["detected"]["stack"], env["setup"]), (built_in, None))
 
+    def test_two_built_in_projects_are_an_ask_too(self):
+        rc, env = self.doctor({"a/Cargo.toml": "[package]\nname = \"a\"\n", "b/pyproject.toml": "[project]\n"})
+        self.assertEqual((env["mode"], [e["problem"] for e in env["entries"]]),
+                         ("ask", ["several projects: python in b, rust in a"]))
+
+    def test_a_built_in_stack_and_a_folder_with_no_manifest_adopt_as_told(self):
+        rc, env = self.doctor(JAVA, "--stack", "rust", "--project-dir", "crates/x")
+        self.assertEqual((env["detected"], env["mode"], env["setup"]),
+                         ({"stack": "rust", "project_dir": "crates/x"}, "adopt", None))
+
+    def test_own_ci_fails_closed_on_a_trigger_it_cannot_read(self):
+        job = "jobs:\n  t:\n    steps: []\n"
+        rc, env = self.doctor(dict(JAVA, **{
+            ".github/workflows/list.yml": "on:\n  - push\n  - pull_request\n" + job,
+            ".github/workflows/quoted.yml": "on: [\"pull_request\"]\n" + job,
+            ".github/workflows/flow.yml": "on: {push: {branches: [main]}}\n" + job,
+            ".github/workflows/none.yml": job,
+            ".github/workflows/list-release.yml": "on:\n  - release\n" + job,
+            ".github/workflows/scalar-release.yml": "on: 'release'\n" + job}))
+        self.assertEqual(env["setup"]["own_ci"], [".github/workflows/flow.yml", ".github/workflows/list.yml",
+                                                  ".github/workflows/none.yml", ".github/workflows/quoted.yml"])
+
+    def test_a_plan_entry_naming_an_adapter_file_missing_or_unread_is_repair(self):
+        for adapter, why in (("ci/none.toml", "missing"), ("ci/bad.toml", "unread")):
+            with self.subTest(why=why):
+                repo = Repo(os.path.join(self.repo.path + "-" + why, "r"))
+                repo.commit(dict(JAVA, **{"ci/bad.toml": "format = 1\n", ".ekit/stack-plan.toml":
+                                          f'[[stack]]\nname = "api"\nfolder = "."\nadapter = "{adapter}"\n'
+                                          'status = "current"\n'}), "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                self.assertEqual(env["mode"], "repair")
+                self.assertIn((".ekit/stack-plan.toml", "fail"), [(e["file"], e["severity"]) for e in env["entries"]])
+
+    def test_an_adapter_file_the_plan_names_outside_ekit_adapters_is_the_repos_own(self):
+        adapter = self.java_adapter().replace('manifests = ["pom.xml"]', 'manifests = ["calc.json"]')
+        rc, env = self.doctor(dict(JAVA, **{"ci/calc.toml": adapter, ".ekit/adapters/java.toml": adapter,
+                                            ".ekit/stack-plan.toml":
+                                            '[[stack]]\nname = "a"\nfolder = "."\nadapter = "ci/calc.toml"\n'
+                                            'status = "planned"\n[[stack]]\nname = "b"\nfolder = "lib"\n'
+                                            'adapter = ".ekit/adapters/java.toml"\nstatus = "planned"\n'}))
+        self.assertEqual((env["mode"], [e["problem"] for e in env["entries"]]), ("repair", [
+            "no adapter lists `pom.xml` (java, maven), and the repo has its own adapter files (`.ekit/adapters/java.toml`, "
+            "`ci/calc.toml`): one may be meant for it"]))
+
     def test_two_projects_in_one_folder_are_an_ask_that_stack_answers(self):
         cases = (
             ({"package.json": '{"name": "web"}\n', "src/a.ts": ""}, "ts in ., java (maven, no adapter) in .", "maven"),
