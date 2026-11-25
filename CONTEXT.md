@@ -56,5 +56,5 @@ _Avoid_: doc rule, update rule, path lint
 ### Mutation (R3)
 
 **Unconfirmed survivor**:
-A mutant mutmut reports surviving on a changed line whose whole-suite retry the budget did not reach or cut short: one R3 `confirm` entry naming its file, line and mutation, out of the tested count, and a missed mutant until a test kills it.
+A mutant mutmut reports surviving on a changed line whose whole-suite retry the budget did not reach or cut short: one R3 `confirm` entry naming its file, line and mutation, with the id a MISSED entry of that mutation has, out of the tested count, and a missed mutant until a test kills it. A mutant mutmut never ran is not one: the partial entry counts it as untested.
 _Avoid_: untested mutant, unreached mutant

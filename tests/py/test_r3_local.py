@@ -513,22 +513,32 @@ class Output(Tmp):
     def test_an_unconfirmed_survivor_is_printed_and_is_exit_1(self):
         # #79: a survivor whose whole-suite retry did not run is a missed mutant until a test kills it
         survivor = dict(fail("calc.py", 6, "R3 unconfirmed survivor calc.py:6: c = a - b -> c = a + b"),
-                        severity="confirm")
+                        severity="confirm", unconfirmed=True)
         partial = dict(fail("", 0, "R3 partial: 2/2 mutants untested: budget hit; 1 unconfirmed survivor"),
                        severity="confirm")
         merged = env("n", status="partial", tested=0, total=2, entries=[survivor, partial])
         r = self.main(Fake(count=1, merge_rc=0, merged=merged))
         self.assertEqual(r.returncode, 1, r.stderr)
         lines = r.stdout.splitlines()
-        self.assertIn("unconfirmed R3-00000006 calc.py:6 R3 unconfirmed survivor calc.py:6: c = a - b -> c = a + b",
-                      lines)
-        self.assertFalse([l for l in lines if "R3 partial:" in l], lines)  # the partial entry is not a survivor
+        self.assertEqual(lines[lines.index(f"partial {HEAD} (summary)"):], [  # the partial entry is not a survivor
+            f"partial {HEAD} (summary)",
+            "R3 partial (0/2 tested)",
+            "shard 0/1: note of shard 0 (wall 10.0 s)",
+            "unconfirmed R3-00000006 calc.py:6 R3 unconfirmed survivor calc.py:6: c = a - b -> c = a + b",
+            "merged: " + os.path.join(self.envdir, "out", "mech-review-mutants-merged.json"),
+        ])
 
     def test_a_partial_with_no_unconfirmed_survivor_is_exit_0(self):
         partial = dict(fail("", 0, "R3 partial: 1/2 mutants untested: past the cap"), severity="confirm")
         r = self.main(Fake(count=1, merge_rc=0, merged=env("n", status="partial", tested=1, total=2, entries=[partial])))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse([l for l in r.stdout.splitlines() if l.startswith("unconfirmed ")])
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[lines.index(f"partial {HEAD} (summary)"):], [
+            f"partial {HEAD} (summary)",
+            "R3 partial (1/2 tested)",
+            "shard 0/1: note of shard 0 (wall 10.0 s)",
+            "merged: " + os.path.join(self.envdir, "out", "mech-review-mutants-merged.json"),
+        ])
 
     def test_help_names_the_exit_codes(self):
         r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))

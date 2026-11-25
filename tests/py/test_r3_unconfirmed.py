@@ -18,6 +18,8 @@ from test_mutmut_run import EDITS, SUB1, SUB2, DiffOfSub, FakeMutmut, git
 
 PARTIAL_ID = "R3-d101585d"  # the partial entry's id before #79 (docs/mech-review-ci.md: stable across heads and counts)
 M1, M2 = "c = a - b -> c = a + b", "return c -> return None"
+# the MISSED ids of M1 and M2 in calc.py, as before #79: an unconfirmed survivor of the same mutation has the same id
+M1_ID, M2_ID = "R3-5e6e619d", "R3-3e4ebc79"
 
 
 class Clock:
@@ -76,7 +78,7 @@ class Cli(DiffOfSub):
 
     @staticmethod
     def unconfirmed(env):
-        return [e for e in env["entries"] if e["problem"].startswith("R3 unconfirmed survivor")]
+        return [e for e in env["entries"] if e.get("unconfirmed") is True]
 
     @staticmethod
     def partial(env):
@@ -93,8 +95,9 @@ class TestUnconfirmedSurvivors(Cli):
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("partial", 0, 2))
         got = self.unconfirmed(env)
         self.assertEqual([mutation(e) for e in got], [("calc.py", 6, M1), ("calc.py", 7, M2)])
-        self.assertEqual({(e["check"], e["class"], e["severity"]) for e in got}, {("R3", "agent-fixable", "confirm")})
-        self.assertEqual(len({e["id"] for e in got}), 2)
+        self.assertEqual([(e["check"], e["class"], e["severity"], e["problem"]) for e in got],
+                         [("R3", "agent-fixable", "confirm", f"R3 unconfirmed survivor calc.py:6: {M1}"),
+                          ("R3", "agent-fixable", "confirm", f"R3 unconfirmed survivor calc.py:7: {M2}")])
         self.assertEqual([e for e in env["entries"] if e["severity"] == "fail"], [])
 
     def test_a_retry_the_budget_cuts_short_is_an_unconfirmed_survivor(self):
@@ -104,6 +107,17 @@ class TestUnconfirmedSurvivors(Cli):
         self.assertEqual((rc, len(fake.suite_runs), fake.applied), (0, 1, [SUB1]))  # the clean run only ends
         self.assertEqual((env["checks"]["R3"]["status"], env["checks"]["R3"]["tested"]), ("partial", 1))
         self.assertEqual([mutation(e) for e in self.unconfirmed(env)], [("calc.py", 6, M1)])
+
+    def test_a_mutmut_run_the_budget_ends_names_its_survivors_and_counts_the_mutants_it_never_ran(self):
+        statuses = {SUB1: "survived", SUB2: "survived"}
+        ample, _ = self.mutants_cli(self.fake(statuses, list_s=20, run_s=100), 10)
+        self.assertEqual([(e["id"], e["severity"], mutation(e)) for e in ample["entries"]],
+                         [(M1_ID, "fail", ("calc.py", 6, M1)), (M2_ID, "fail", ("calc.py", 7, M2))])
+        # 1 minute: mutmut's run is stopped after the first mutant; the second never ran, so it is not named
+        short, _ = self.mutants_cli(self.fake(statuses, list_s=20, run_s=100), 1)
+        self.assertEqual([(e["id"], mutation(e)) for e in self.unconfirmed(short)], [(M1_ID, ("calc.py", 6, M1))])
+        self.assertEqual([e["problem"] for e in self.partial(short)],
+                         ["R3 partial: 2/2 mutants untested: budget hit; 1 unconfirmed survivor"])
 
     def test_survivors_of_a_mutmut_run_the_budget_ends_are_unconfirmed_survivors(self):
         # mutmut's run needs 100 s of the 40 left: it is stopped after the first mutant, which survived
@@ -133,6 +147,16 @@ class TestUnconfirmedSurvivors(Cli):
         self.assertEqual((len(confirmed), self.unconfirmed(ample)), (2, []))
         self.assertEqual(sorted(confirmed), sorted(unconfirmed))
 
+    def test_an_unconfirmed_survivor_has_the_id_a_missed_one_of_its_mutation_has(self):
+        # a fast machine confirms both survivors MISSED, a slow one leaves them unconfirmed: a waiver carries over
+        statuses = {SUB1: "survived", SUB2: "no tests"}
+        fast, _ = self.mutants_cli(self.fake(statuses, list_s=30, run_s=30), 10)
+        slow, _ = self.mutants_cli(self.fake(statuses, list_s=30, run_s=30), 1)
+        self.assertEqual([(e["id"], e["severity"], mutation(e)) for e in fast["entries"]],
+                         [(M1_ID, "fail", ("calc.py", 6, M1)), (M2_ID, "fail", ("calc.py", 7, M2))])
+        self.assertEqual([(e["id"], mutation(e)) for e in self.unconfirmed(slow)],
+                         [(M1_ID, ("calc.py", 6, M1)), (M2_ID, ("calc.py", 7, M2))])
+
     def test_the_id_is_stable_across_heads_for_the_same_mutation(self):
         statuses = {SUB1: "survived", SUB2: "no tests"}
         first, _ = self.mutants_cli(self.fake(statuses, list_s=30, run_s=30), 1)
@@ -147,6 +171,11 @@ class TestUnconfirmedSurvivors(Cli):
 
 
 class TestPartialCause(Cli):
+    @staticmethod
+    def save(out, name, env):
+        with open(os.path.join(out, name + ".json"), "w") as f:
+            json.dump(env, f)
+
     def test_unconfirmed_survivors_and_the_budget_are_named_with_the_budget_hint(self):
         fake = self.fake({SUB1: "survived", SUB2: "no tests"}, list_s=30, run_s=30)
         env, _ = self.mutants_cli(fake, 1)
@@ -175,16 +204,12 @@ class TestPartialCause(Cli):
     def test_the_merged_partial_entry_names_every_shards_cause(self):
         out = os.path.join(self.repo, ".git", "out")
         os.makedirs(out)
-        flags = []
-        for k, fake in enumerate([self.fake({SUB1: "survived", SUB2: "no tests"}, list_s=30, run_s=30),
-                                  self.fake({SUB1: "killed", SUB2: "killed"})]):
-            env, _ = self.mutants_cli(fake, 1 if k == 0 else 10, "--shard", f"{k}/2", "--max-mutants", "1")
-            path = os.path.join(out, f"{k}.json")
-            with open(path, "w") as f:
-                json.dump(env, f)
-            flags += ["--envelope", f"{k}={path}"]
+        short = self.fake({SUB1: "survived", SUB2: "no tests"}, list_s=30, run_s=30)
+        self.save(out, "0", self.mutants_cli(short, 1, "--shard", "0/2", "--max-mutants", "1")[0])
+        ample = self.fake({SUB1: "killed", SUB2: "killed"})
+        self.save(out, "1", self.mutants_cli(ample, 10, "--shard", "1/2", "--max-mutants", "1")[0])
         r = _kit.run_cli(["merge", "--repo", self.repo, "--base", "HEAD~1", "--head", "HEAD", "--stack", "python",
-                          "--shards", "2", *flags])
+                          "--shards", "2", "--envelope", f"0={out}/0.json", "--envelope", f"1={out}/1.json"])
         self.assertEqual(r.returncode, 0, r.stderr)
         merged = json.loads(r.stdout)
         (p,) = self.partial(merged)
