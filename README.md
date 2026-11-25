@@ -246,7 +246,7 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail or unconfirmed survivor / 2 setup or usage. |
 | `scripts/mech-summary.py` | `<run-id \| PR>`: a mech-review run's artifacts in a few lines (checks, shard notes, fail entries by file). `--dir` for downloaded artifacts. |
 | `scripts/orch-status.py` | `<worktree>...`: commits ahead of the pushed branch, dirty files, live test/mutation processes, CI counts. |
-| `scripts/verified-commit.py` | `[--allow-behind] RESULT WORKTREE`: the mech-review result's head is the worktree's head and the pushed tip. Exit 0 same commit / 1 another commit (both named) / 2 no answer (reason given). |
+| `scripts/verified-commit.py` | `[--allow-behind] [--expect SHA] RESULT WORKTREE`: the mech-review result's head is the review request's head (`--expect`), the worktree's head and the pushed tip. Exit 0 same commit / 1 another commit (both named) / 2 no answer (reason given). |
 | `scripts/mech-rerun.py` | `--pr N`: re-runs the PR head's finished `mech-review report` job, so a waiver comment takes effect (the `mech-waive` workflow). Exit 0 / 2 usage / 3 API error. |
 
 </details>

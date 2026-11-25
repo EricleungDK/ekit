@@ -273,9 +273,12 @@ class TestVerifiedCommit(unittest.TestCase):
 
     def test_relay_runs_verified_commit_before_the_review(self):
         s = self.relay()
-        call = "`<py> -I <kit>/scripts/verified-commit.py --allow-behind <result> <worktree>`"
+        call = "`<py> -I <kit>/scripts/verified-commit.py --allow-behind --expect <head> <result> <worktree>`"
         self.assertIn(call, s)
         self.assertLess(s.index(call), s.index("Then run the code review"))
+
+    def test_relay_expects_the_head_the_review_request_names(self):
+        self.assertIn("`<head>` is the head SHA the agent's review request names", self.relay())
 
     def test_relay_runs_verified_commit_before_a_push_and_after_it(self):
         s = self.relay()

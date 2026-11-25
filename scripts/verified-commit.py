@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verified-commit: is the commit a mech-review result describes the worktree's head, and the pushed one? (#81)
 
-usage: python3 -I scripts/verified-commit.py [--allow-behind] RESULT WORKTREE
+usage: python3 -I scripts/verified-commit.py [--allow-behind] [--expect SHA] RESULT WORKTREE
 
 RESULT is a mech-review result envelope (the JSON `mech-review.py all` prints; `-` reads stdin). Its `head` must equal
 the worktree's HEAD and, when the branch is pushed, the branch's tip on its remote (its upstream, else origin/<branch>),
@@ -9,9 +9,11 @@ asked of the remote with `git ls-remote`, never read from a remote-tracking ref 
 does not have, a detached HEAD or a repo with no such remote is not pushed: the worktree's head alone decides.
 --allow-behind: the remote tip may also be an ancestor of the result's head (fixes verified and not pushed yet: the push
 to come fast-forwards it to the verified commit); a tip that is not, or that this clone does not have, is still refused.
+--expect SHA: the head the review request names (a full or short SHA, resolved in the worktree) must be the result's
+head too (#78 §4); another commit is refused, both named; a SHA that names no commit there is no answer.
 The Stop gate hashes trees; this check is about commits. git runs with --no-optional-locks.
 exit: 0 the same commit; 1 a different commit (both named); 2 no answer (the result cannot be read or has no commit
-SHA head, the path is not a git worktree, the remote cannot be asked, usage): a refusal with its reason, never a pass.
+SHA head, the path is not a git worktree, --expect names no commit, the remote cannot be asked, usage): a refusal with its reason, never a pass.
 """
 import argparse
 import json
@@ -87,20 +89,29 @@ def verify(a, run):
     rc, wt_head, err = git("rev-parse", "--verify", "HEAD")
     if rc != 0:
         raise Refusal(f"{a.worktree} is not a git worktree ({err})")
+    is_ = "the worktree's head"
+    if a.expect is not None:
+        rc, expected, err = git("rev-parse", "--verify", "-q", "--end-of-options", a.expect + "^{commit}")
+        if rc != 0:
+            raise Refusal(f"--expect {a.expect} names no commit in {a.worktree} ({err or f'git exit {rc}'})")
+        if expected != head:
+            print(f"refused: the review request's head {expected} is not the result's head {head}")
+            return 1
+        is_ = "the review request's head and the worktree's head"
     if wt_head != head:
         print(f"refused: the worktree's head {wt_head} is not the result's head {head}")
         return 1
     name, tip = remote_tip(git)
     if tip is None:
-        print(f"verified: {head} is the worktree's head; not pushed ({name})")
+        print(f"verified: {head} is {is_}; not pushed ({name})")
         return 0
     if tip == head:
-        print(f"verified: {head} is the worktree's head and the remote tip of {name}: {head}")
+        print(f"verified: {head} is {is_} and the remote tip of {name}: {head}")
         return 0
     if a.allow_behind:
         rc, _, _ = git("merge-base", "--is-ancestor", tip, head)
         if rc == 0:
-            print(f"verified: {head} is the worktree's head; the remote tip of {name} {tip} is behind it (not pushed "
+            print(f"verified: {head} is {is_}; the remote tip of {name} {tip} is behind it (not pushed "
                   f"yet: the push fast-forwards it to {head})")
             return 0
         if rc != 1:
@@ -118,6 +129,8 @@ def main(argv, run=run_cmd):
     p.add_argument("worktree", metavar="WORKTREE", help="the agent's worktree")
     p.add_argument("--allow-behind", action="store_true",
                    help="the remote tip may be an ancestor of the result's head (fixes not pushed yet)")
+    p.add_argument("--expect", metavar="SHA",
+                   help="the head the review request names: it must be the result's head too (#78)")
     a = p.parse_args(argv)
     try:
         return verify(a, run)

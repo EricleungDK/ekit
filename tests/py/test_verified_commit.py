@@ -201,6 +201,46 @@ class AllowBehind(Repos):
         self.assertIn(f"the worktree's head {later} is not the result's head {verified}", r.stdout)
 
 
+class Expect(Repos):
+    """--expect SHA: the head the review request names (#78 §4) must be the result's head too."""
+
+    def test_the_review_requests_head_at_the_result_passes_naming_it(self):
+        head = self.commit("work")
+        r = self.check("--expect", head, self.result(head), self.wt)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, f"verified: {head} is the review request's head and the worktree's head; not "
+                                   "pushed (origin has no agent/x)\n")
+
+    def test_a_short_sha_of_the_result_head_passes(self):
+        head = self.commit("work")
+        r = self.check("--expect", head[:12], self.result(head), self.wt)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_review_request_for_an_earlier_commit_is_refused_naming_both_commits(self):
+        requested = self.commit("work")
+        later = self.commit("one more commit after the review request")
+        r = self.check("--expect", requested, self.result(later), self.wt)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, f"refused: the review request's head {requested} is not the result's head "
+                                   f"{later}\n")
+
+    def test_it_is_checked_beside_the_remote_tip_with_allow_behind(self):
+        self.commit("work")
+        self.push()
+        head = self.commit("fix, not pushed yet")
+        r = self.check("--allow-behind", "--expect", head, self.result(head), self.wt)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.split(";")[0], f"verified: {head} is the review request's head and the worktree's "
+                                                 "head")
+
+    def test_an_expect_that_names_no_commit_is_no_answer(self):
+        head = self.commit("work")
+        r = self.check("--expect", "0123456789ab", self.result(head), self.wt)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(r.stderr.split(" (")[0], f"refused: --expect 0123456789ab names no commit in {self.wt}")
+
+
 class Refusals(Repos):
     """No answer is never a pass: each case exits 2 and says why."""
 
