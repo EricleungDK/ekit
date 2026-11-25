@@ -98,8 +98,9 @@ WHICH = {"r2": ("R2",), "red": ("R1", "R4"), "all": ("R0", "R1", "R2", "R4"), "m
 def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="r2", agent_prefix=None,
         head_branch=None, test_cmd=None, runner=None, mutants_cmd=None, mutation_budget=None, shard=None,
         mutant_timeout=None, mutant_runner=None, project_dir=".", adapter=None,
-        max_mutants=mutants.DEFAULT_MAX_MUTANTS, fixtures_dir=None, r0=None):
-    """adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack].
+        max_mutants=mutants.DEFAULT_MAX_MUTANTS, fixtures_dir=None, r0=None, linked_issues=()):
+    """linked_issues: the issue numbers the PR closes, for R2's spec-reversed removal (#53).
+    adapter: an Adapter instance (from an adapter file, --adapter) used in place of the built-in ADAPTERS[stack].
     `all` runs R0's static half first (#20); when it fails, the checks it blocks (r0.BLOCKS) that ran are n/a (their
     entries kept, marked `blocked`). r0 (#21, `--r0`): {dir, fixtures, raw, path, target_os}: red and all also run the
     runtime half's run part, mutants (shard 0) its R3 control, each unless dir holds a pass for its fingerprint; a
@@ -110,14 +111,14 @@ def run(repo, base_ref, head_ref, stack, test_globs, protected_globs=(), which="
     try:
         return _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, agent_prefix, head_branch,
                     test_cmd, runner, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner, project_dir,
-                    adapter, max_mutants, fixtures_dir, r0, cache)
+                    adapter, max_mutants, fixtures_dir, r0, cache, linked_issues)
     finally:
         cache.close()  # only the verdicts this run decided stay in the cache dir (#21 review B1)
 
 
 def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, agent_prefix, head_branch, test_cmd,
          runner, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner, project_dir, adapter, max_mutants,
-         fixtures_dir, r0, cache):
+         fixtures_dir, r0, cache, linked_issues=()):
     base, head, mb = merge_base(repo, base_ref, head_ref)
     rv = Review(repo, mb, head, adapter or ADAPTERS[stack](), test_paths(test_globs), project_dir)
     want = WHICH[which]
@@ -136,7 +137,7 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
                                    fixtures_dir or r0_mod.builtin_fixtures(stack))
         raw += more + _edit_rules(repo, mb, head, checks["R0"], []) + _rule_proof(repo, head, checks["R0"])
     if "R2" in want:
-        own = r2(rv, list(protected_globs), cochange.at(repo, base))  # the base branch's rules judge the PR (#83)
+        own = r2(rv, list(protected_globs), cochange.at(repo, base), linked_issues)  # the base branch's rules judge the PR (#83)
         fails = sum(1 for e in own if e["severity"] == "fail")  # R2's own: R0's entries before it are not R2's (#85)
         checks["R2"] = {"status": "fail" if fails else "pass", "note": f"{fails} fail, {len(own) - fails} confirm"}
         raw += own
