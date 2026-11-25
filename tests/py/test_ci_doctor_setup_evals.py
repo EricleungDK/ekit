@@ -241,6 +241,14 @@ class StopProofFails(Scaffold):
         self.git("checkout", "-q", "main")
         self.assertEqual(self.passing(), [])
         self.assertIn("main: untouched\nnew-commits: 1\n", self.verdict())
+        self.git("checkout", "-q", "-b", "claude/gone")
+        self.write({"more.txt": "wip\n"})
+        self.git("add", "-A")
+        self.git("commit", "-qm", "wip 2")
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "claude/gone")
+        self.assertEqual(self.passing(), [])
+        self.assertIn("main: untouched\nnew-commits: 2\n", self.verdict())
 
 
 class StopProofFailsGo(Scaffold):
