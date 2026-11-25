@@ -5,7 +5,7 @@ description: Turn one agent mistake into a mechanical check, or one line saying 
 
 One **mistake** in, one result out: the **change** that makes a machine catch it next time, or one `No check:` line saying why none is made. A rule in the agent docs was written and still broken; the result here is something that runs.
 
-`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit` (cloned once from `https://github.com/EricleungDK/ekit`). `<py>` = the Python named by the `[ekit] Python:` session line; no such line → `python3`, else `py -3`, else `python`.
+`<kit>`: the ekit checkout (the `[ekit] Scenario runner:` session line names its `scripts/`; else `~/.ekit`). `<py>`: the `[ekit] Python:` session line's Python, else `python3`.
 
 ## Input
 
@@ -92,5 +92,5 @@ One result per mistake, its change committed on a branch of its own with its pro
 | A test relied on `RecursionError` at deep nesting | `No check`: an instance; no second example, and the test that fixed it guards it |
 | A report verified one commit and a later one was pushed | Process: the `verified-commit.py` gate (#81) |
 | A new engine module was left out of the layering test's list | Made impossible: the list is derived from the package directory (#82) |
-| A behaviour change left the changelog and the two docs alone | Diff: the co-change rule `behaviour-docs` (#86) |
+| A behaviour change left the changelog and the two docs alone | Diff: the co-change rules `behaviour-changelog`, `behaviour-status-line` and `behaviour-ci-doc`, one per doc (#86) |
 | Tests failed on macOS only | Environment: no rule; macOS CI (`hooks-macos`) is the check |

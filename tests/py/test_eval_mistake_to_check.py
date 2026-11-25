@@ -50,7 +50,7 @@ class CoChangeScaffold(unittest.TestCase):
     def check(self, name, base, head):
         r = _kit.run_cli([name, "--repo", self.repo, "--base", base, "--head", head, "--stack", "python",
                           "--test-paths", "tests/**"])
-        self.assertTrue(r.stdout, r.stderr)
+        self.assertIn(r.returncode, (0, 1), r.stderr)  # 2: usage or git error, no result
         return json.loads(r.stdout)
 
     def test_the_history_holds_the_incident_and_a_second_example(self):

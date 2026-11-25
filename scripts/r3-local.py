@@ -36,7 +36,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
 from mech_review.mutants import is_unconfirmed  # noqa: E402 - imported after the sys.path line above
-from mech_review.stack import ADAPTERS  # noqa: E402
+from mech_review.stack import ADAPTERS  # noqa: E402 - imported after the sys.path line above, like the one before it
 
 EXIT = __doc__[__doc__.index("exit: "):].strip()  # the exit codes above, also in --help
 

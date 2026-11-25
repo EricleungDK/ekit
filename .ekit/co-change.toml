@@ -2,15 +2,34 @@
 # Format, keys, proof cases and guards: docs/mech-review-ci.md § Co-change rules.
 # R2 reads this file at the base branch: a rule added or changed here judges the PRs after the one that writes it.
 # A new rule starts at `confirm` (listed, never blocking); promoting it to `fail` is the orchestrator's call.
+# `require` is any-of, so each doc a behaviour change must update is a rule of its own.
+# #76: b57480e changed the python scanner (scripts/mech_review/stack.py) with no doc; 0cb6cbd added the changelog
+# and testing-standard lines after it.
 format = 1
 
 [[rule]]
-id = "behaviour-docs"
+id = "behaviour-changelog"
 trigger = ["scripts/**"]
-require = ["CHANGELOG.md", "docs/testing-standard.md", "docs/mech-review-ci.md"]
-reason = "a behaviour change updates CHANGELOG.md (## Unreleased), the status line of docs/testing-standard.md and docs/mech-review-ci.md, as AGENTS.md asks"
-# #76: b57480e changed the python scanner (scripts/mech_review/stack.py) with no doc; 0cb6cbd added the changelog
-# and testing-standard lines after it
+require = ["CHANGELOG.md"]
+reason = "a behaviour change (a change under scripts/) adds its line to the ## Unreleased section of CHANGELOG.md"
 incident = "b57480eb189e"
-flagged = ["scripts/mech_review/r2.py"]
-control = ["scripts/mech_review/r2.py", "CHANGELOG.md", "docs/testing-standard.md", "docs/mech-review-ci.md"]
+flagged = ["scripts/mech_review/r2.py", "docs/testing-standard.md", "docs/mech-review-ci.md"]
+control = ["scripts/mech_review/r2.py", "CHANGELOG.md"]
+
+[[rule]]
+id = "behaviour-status-line"
+trigger = ["scripts/**"]
+require = ["docs/testing-standard.md"]
+reason = "a behaviour change (a change under scripts/) updates the status line of docs/testing-standard.md"
+incident = "b57480eb189e"
+flagged = ["scripts/mech_review/r2.py", "CHANGELOG.md", "docs/mech-review-ci.md"]
+control = ["scripts/mech_review/r2.py", "docs/testing-standard.md"]
+
+[[rule]]
+id = "behaviour-ci-doc"
+trigger = ["scripts/**"]
+require = ["docs/mech-review-ci.md"]
+reason = "a behaviour change (a change under scripts/) updates docs/mech-review-ci.md, which describes the engine's CI inputs and per-stack behaviour"
+incident = "b57480eb189e"
+flagged = ["scripts/mech_review/r2.py", "CHANGELOG.md", "docs/testing-standard.md"]
+control = ["scripts/mech_review/r2.py", "docs/mech-review-ci.md"]

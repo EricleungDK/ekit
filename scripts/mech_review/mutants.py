@@ -346,6 +346,7 @@ def _timing(doc, rows, wall_s):
 
 PARTIAL_KEY = "partial"
 UNCONFIRMED = "R3 unconfirmed survivor"  # the problem of every unconfirmed-survivor entry starts so (#79)
+UNCONFIRMED_FIELD = "unconfirmed"  # the entry field (true) that marks one (#79; docs/testing-standard.md § Contract)
 
 
 def _plural(n, word):
@@ -354,17 +355,26 @@ def _plural(n, word):
 
 def is_unconfirmed(e):
     """the entry is an unconfirmed survivor (#79): a missed mutant until a test kills it."""
-    return e.get("check") == "R3" and str(e.get("problem", "")).startswith(UNCONFIRMED)
+    return e.get("check") == "R3" and e.get(UNCONFIRMED_FIELD) is True
+
+
+def missed_key(file, desc):
+    """the id key of a missed mutant: a MISSED one and an unconfirmed survivor of the same mutation share it, so the
+    id (and a waiver of it) is the same whether this machine's budget reached the whole-suite retry or not."""
+    return f"missed:{file}|{desc}"
 
 
 def unconfirmed_entry(file, line, desc):
     """One mutant mutmut reports surviving whose whole-suite retry the budget did not reach or cut short (#79): a
-    confirm (a slow runner must not turn the gate red), named as a MISSED one is, its id stable across heads."""
-    return entry("R3", file, line, f"unconfirmed:{file}|{desc}", "agent-fixable", "confirm",
-                 f"{UNCONFIRMED} {file}:{line}: {desc}",
-                 "no test mutmut ran kills this mutant, and the budget ended before the whole suite could try it: treat "
-                 f"it as MISSED. Add an assert that fails for this mutant: {desc}." + HOW,
-                 "treating an unconfirmed survivor as tested")
+    confirm (a slow runner must not turn the gate red), named as a MISSED one is, with the id a MISSED one of the same
+    mutation has (missed_key), and the field UNCONFIRMED_FIELD."""
+    e = entry("R3", file, line, missed_key(file, desc), "agent-fixable", "confirm",
+              f"{UNCONFIRMED} {file}:{line}: {desc}",
+              "no test mutmut ran kills this mutant, and the budget ended before the whole suite could try it: treat "
+              f"it as MISSED. Add an assert that fails for this mutant: {desc}." + HOW,
+              "treating an unconfirmed survivor as tested")
+    e[UNCONFIRMED_FIELD] = True
+    return e
 
 
 # why a partial R3 left mutants untested (#79), in this order, each with the step it calls for
@@ -918,6 +928,11 @@ SUITE = ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", 
 SUITE_FACTOR, SUITE_FLOOR = 5, 30  # one suite run on a mutant may take 5x the clean run, and at least 30 s
 
 
+def suite_state():
+    """whole_suite's state before any retry: {caught, hung, passed, unreached}"""
+    return {"caught": 0, "hung": 0, "passed": set(), "unreached": []}
+
+
 def whole_suite(runner, base, crate, project_dir, found, left):
     """mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under
     the module name mutmut derives from the file path. A test that reaches the code another way (it starts the program,
@@ -928,7 +943,7 @@ def whole_suite(runner, base, crate, project_dir, found, left):
     Returns (still missed, {caught, hung, passed, unreached}): passed holds the names the whole suite ran against and
     passed; unreached holds the items whose retry the budget did not reach or cut short: untested (#26), each an
     unconfirmed survivor (#79)."""
-    state = {"caught": 0, "hung": 0, "passed": set(), "unreached": []}
+    state = suite_state()
     spare = left()
     if spare is not None and spare <= 0:
         state["unreached"] = list(found)
@@ -1509,7 +1524,7 @@ class Mutmut:
                     outside += 1
                     continue
                 found.append((name, file, line, f"{removed} -> {after}", status))
-            suite = {"caught": 0, "hung": 0, "passed": set(), "unreached": []}
+            suite = suite_state()
             if found and rc == "timeout":  # the budget ended mutmut's run: no whole-suite retry is reached
                 suite["unreached"], found = found, []
             elif found:
@@ -1521,14 +1536,14 @@ class Mutmut:
             waiting = (f"; {_plural(len(unconfirmed), 'unconfirmed survivor')} ({BUDGET_MARK} before the whole-suite "
                        "retry): untested" if unconfirmed else "")
             ents = finalize([
-                entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
+                entry("R3", file, line, missed_key(file, desc), "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
                       (f"add an assert that fails for this mutant: {desc}." if status == "survived" else
                        "no test fails with this change, the whole suite included: add a test that calls it and asserts "
                        "the result." if name in suite["passed"] else
                        "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
-                for name, file, line, desc, status in found])
-            ents += finalize([unconfirmed_entry(file, line, desc) for _, file, line, desc, _ in unconfirmed])
+                for name, file, line, desc, status in found]
+                + [unconfirmed_entry(file, line, desc) for _, file, line, desc, _ in unconfirmed])
             if unlocated:
                 ents += finalize([entry("R3", "", 0, "unlocated", "agent-fixable", "confirm",
                                         f"R3 unlocated: {unlocated} missed mutant(s) could not be mapped to a line: not blocking",

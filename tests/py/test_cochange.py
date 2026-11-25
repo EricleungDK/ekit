@@ -61,7 +61,7 @@ class CoChange(unittest.TestCase):
                                     "from #83); a rule that misfires is changed in a PR of its own")
         self.assertEqual(e["forbidden"], "editing the co-change rule file to silence the rule that fires")
         self.assertEqual(e["id"], "R2-3ec3a5e8")  # the rule id's, as finalize derives it: what a waiver names
-        self.assertTrue(env["summary"].startswith("pass "), env["summary"])
+        self.assertEqual(env["summary"], f"pass {env['head']} (0 fail, 1 confirm; ran: R2; skipped: R1 R3 R4)")
         self.assertEqual(env["checks"]["R2"], {"status": "pass", "note": "0 fail, 1 confirm"})
 
     def test_a_required_path_changed_too_gives_no_entry(self):
@@ -71,7 +71,7 @@ class CoChange(unittest.TestCase):
                 self.setUp()
                 r, env = self.run_r2({"src/a.py": "X = 3\n", **req})
                 self.assertEqual((r.returncode, env["entries"]), (0, []), r.stderr)
-                self.assertTrue(env["summary"].startswith("pass "), env["summary"])
+                self.assertEqual(env["summary"], f"pass {env['head']} (0 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
 
     def test_no_triggering_path_changed_gives_no_entry(self):
         r, env = self.run_r2({"README.md": "hello\n"})
@@ -91,7 +91,7 @@ class CoChange(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual([(e["severity"], e["class"]) for e in env["entries"]], [("fail", "agent-fixable")])
         self.assertIn("`src/a.py` changed, and none", env["entries"][0]["problem"])
-        self.assertTrue(env["summary"].startswith("fail "), env["summary"])
+        self.assertEqual(env["summary"], f"fail {env['head']} (1 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
         self.assertEqual(env["checks"]["R2"]["status"], "fail")
 
     def test_one_entry_per_broken_rule_with_an_id_that_stays_across_heads(self):
@@ -142,7 +142,7 @@ class CoChange(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"tomllib": None}):
             r, env = self.run_r2({"src/a.py": "X = 2\n"}, rules=None)
         self.assertEqual((r.returncode, env["entries"], r.stderr), (0, [], ""))
-        self.assertTrue(env["summary"].startswith("pass "), env["summary"])
+        self.assertEqual(env["summary"], f"pass {env['head']} (0 fail, 0 confirm; ran: R2; skipped: R1 R3 R4)")
 
     def test_a_rule_file_on_a_python_without_tomllib_is_a_clean_error(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):
@@ -277,7 +277,7 @@ class Proof(unittest.TestCase):
         self.assertEqual(c["status"], "pass", c)
         self.assertEqual([(x["case"], x["status"]) for x in c["co-change"]],
                          [("x:flagged", "pass"), ("x:control", "pass"), ("y:flagged", "pass"), ("y:control", "pass")])
-        self.assertTrue(c["note"].endswith("; co-change rules: 2 of 2 proved"), c["note"])
+        self.assertEqual(c["note"].split("; co-change rules: ")[1], "2 of 2 proved")
         self.assertEqual(env["entries"], [])
 
     def test_a_rule_missing_a_case_or_whose_case_reads_wrong_fails_r0_and_is_named(self):
@@ -288,8 +288,8 @@ class Proof(unittest.TestCase):
         c = env["checks"]["R0"]
         self.assertEqual(c["status"], "fail")
         self.assertNotIn("blocks", c)  # a rule's proof is not the adapter's: R1, R2 and R4 still read
-        self.assertTrue(c["note"].endswith("; co-change rules: 1 of 6 proved; failed: no-control none blind noisy "
-                                           "bad-path"), c["note"])
+        self.assertEqual(c["note"].split("; co-change rules: ")[1],
+                         "1 of 6 proved; failed: no-control none blind noisy bad-path")
         got = {e["problem"].split("`")[1]: e for e in env["entries"]}
         self.assertEqual(sorted(got), ["bad-path", "blind", "no-control", "noisy", "none"])
         for e in got.values():
@@ -341,7 +341,7 @@ class Proof(unittest.TestCase):
             r, env = self.r0(rules(rule()), extra=("--fixtures", empty))
         c = env["checks"]["R0"]
         self.assertEqual((r.returncode, c["status"]), (0, "unproven"), r.stderr)
-        self.assertTrue(c["note"].endswith("; co-change rules: 1 of 1 proved"), c["note"])
+        self.assertEqual(c["note"].split("; co-change rules: ")[1], "1 of 1 proved")
 
     def test_no_rule_file_or_no_rules_leaves_r0_as_before(self):
         for head in (None, "format = 1\n"):

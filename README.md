@@ -243,10 +243,10 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `seeded ID`, `tree-hash`. Each scenario has one run file: `run.py` (this Python), `run.sh` (bash) or `run.ps1` (PowerShell). Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. A `- feature: <name>` line in SCENARIO.md marks a seeded scenario: a full `run` and a fresh `check` end with `N of M features working`; `seeded ID` reads one that already passes `CHECKS NOTHING YET`. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
-| `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail / 2 setup or usage. |
+| `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail or unconfirmed survivor / 2 setup or usage. |
 | `scripts/mech-summary.py` | `<run-id \| PR>`: a mech-review run's artifacts in a few lines (checks, shard notes, fail entries by file). `--dir` for downloaded artifacts. |
 | `scripts/orch-status.py` | `<worktree>...`: commits ahead of the pushed branch, dirty files, live test/mutation processes, CI counts. |
-| `scripts/verified-commit.py` | `[--allow-behind] RESULT WORKTREE`: the mech-review result's head is the worktree's head and the pushed tip. Exit 0 same commit / 1 another commit (both named) / 2 no answer (reason given). |
+| `scripts/verified-commit.py` | `[--allow-behind] [--expect SHA] RESULT WORKTREE`: the mech-review result's head is the review request's head (`--expect`), the worktree's head and the pushed tip. Exit 0 same commit / 1 another commit (both named) / 2 no answer (reason given). |
 | `scripts/mech-rerun.py` | `--pr N`: re-runs the PR head's finished `mech-review report` job, so a waiver comment takes effect (the `mech-waive` workflow). Exit 0 / 2 usage / 3 API error. |
 
 </details>
