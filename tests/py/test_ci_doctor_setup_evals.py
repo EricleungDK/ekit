@@ -28,8 +28,18 @@ BASE_JOB = ("jobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses
             "      - run: mvn -B -ntp test\n")
 
 
-def plan(status, folder="."):
-    return f'[[stack]]\nname = "calc"\nfolder = "{folder}"\nadapter = ".ekit/adapters/java.toml"\nstatus = "{status}"\n'
+def plan(status, folder=".", name="maven"):
+    return f'[[stack]]\nname = "calc"\nfolder = "{folder}"\nadapter = ".ekit/adapters/{name}.toml"\nstatus = "{status}"\n'
+
+
+def generated(text):
+    """a stand-in for a generated adapter's fixtures: the reference's, with other class names (a copy is graded down)"""
+    return text.replace("Calc", "Adder").replace("Ctl", "Control").replace("Twice", "Double")
+
+
+def generated_adapter(text):
+    """a stand-in for a generated adapter: the reference's, named `maven`, its test names joined by the default ` > `"""
+    return text.replace('name = "java"', 'name = "maven"').replace('separator = "."\n', "", 1)
 
 
 def graders(case):
@@ -66,17 +76,28 @@ class Scaffold(unittest.TestCase):
             with open(os.path.join(at or self.repo, rel), "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
 
-    def setup_commit(self, status="current", files=None, adapter=None, fixtures=True, branch="ekit-setup", at=None):
-        """the setup as one commit: the reference adapter (or `adapter`'s text) and its fixtures, the plan, a caller;
-        at: the worktree to commit it in (the main checkout's by default)"""
+    def setup_commit(self, status="current", files=None, adapter=None, fixtures=True, branch="ekit-setup", at=None,
+                     copy=False):
+        """the setup as one commit: a generated adapter (the reference's, renamed: generated_adapter; `adapter` edits
+        its text) and its fixtures, the plan, a caller; copy: the reference adapter and fixtures as they are, under
+        their own name; at: the worktree to commit it in (the main checkout's by default)"""
         repo = at or self.repo
+        name = "java" if copy else "maven"
         if branch:
             subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", branch], check=True, capture_output=True)
         with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
-            self.write({".ekit/adapters/java.toml": adapter(f.read()) if adapter else f.read()}, at=repo)
+            text = f.read() if copy else generated_adapter(f.read())
+        self.write({f".ekit/adapters/{name}.toml": adapter(text) if adapter else text}, at=repo)
         if fixtures:
-            shutil.copytree(os.path.join(ADAPTERS, "java.r0"), os.path.join(repo, ".ekit", "adapters", "java.r0"))
-        self.write(dict({".ekit/stack-plan.toml": plan(status), ".github/workflows/mech-review.yml": CALLER},
+            src = os.path.join(ADAPTERS, "java.r0")
+            for root, _, names in os.walk(src):
+                for fn in names:
+                    rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
+                    with open(os.path.join(root, fn), encoding="utf-8") as f:
+                        body = f.read()
+                    self.write({f".ekit/adapters/{name}.r0/{rel if copy else generated(rel)}":
+                                body if copy else generated(body)}, at=repo)
+        self.write(dict({".ekit/stack-plan.toml": plan(status, name=name), ".github/workflows/mech-review.yml": CALLER},
                         **(files or {})), at=repo)
         for args in (("add", "-A"), ("commit", "-qm", "ci: mech-review setup")):
             subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
@@ -100,9 +121,10 @@ class SetupJava(Scaffold):
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines(), [
             "branch: ekit-setup", "main: untouched", "new-commits: 1",
-            "entry: calc adapter .ekit/adapters/java.toml status current", "target-os: linux",
+            "entry: calc adapter .ekit/adapters/maven.toml status current", "target-os: linux",
             "r0: pass (static half: 17 of 17 cases proved)", "census: 3/3 of the repo's tests read",
-            "drift: clean (exit 0, D pass, 0 entries)", "caller: yes", "ci-kept: yes", "base-jobs: none", "setup: yes"])
+            "copied: no", "drift: clean (exit 0, D pass, 0 entries)", "caller: yes", "ci-kept: yes", "base-jobs: none",
+            "setup: yes"])
 
     def test_the_setup_branch_is_graded_wherever_head_ends(self):
         self.setup_commit()
@@ -122,7 +144,7 @@ class SetupJava(Scaffold):
     def test_an_adapter_that_misses_a_cheat_fails_the_proof(self):
         self.setup_commit(adapter=lambda text: text.replace('skip = ["Disabled",', "skip = ["))
         self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md"])
-        self.assertRegex(self.verdict(), r"(?m)^r0: not pass \(exit 1, R0 fail: R0 static half failed for the `java` "
+        self.assertRegex(self.verdict(), r"(?m)^r0: not pass \(exit 1, R0 fail: R0 static half failed for the `maven` "
                                          r"adapter: cheat `skip` gave no R2 fail")
 
     def test_an_adapter_with_no_fixtures_is_unproven_not_a_pass(self):
@@ -136,9 +158,46 @@ class SetupJava(Scaffold):
         self.assertIn("census: 0/3 of the repo's tests read; missed: CalcTest.adds, CalcTest.negates, "
                       "CalcTest.subtracts\n", self.verdict())
 
+    def test_the_reference_adapter_or_its_fixtures_copied_from_the_kit_fail(self):
+        self.setup_commit(copy=True)
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md", "r0-pass.md"])
+        self.assertIn("copied: yes (.ekit/adapters/java.toml is the kit's tests/fixtures/adapters/java.toml; 19 of 19 "
+                      "fixture files are java.r0's)\n", self.verdict())
+        self.git("checkout", "-q", "main")
+        self.setup_commit(branch="setup-2", adapter=lambda text: "\n".join(
+            "  " + line.split(" #")[0] for line in text.splitlines() if not line.startswith("#")) + "\n")
+        self.assertIn("copied: no\n", self.verdict())  # its own fixtures and an adapter that is no longer the kit's
+        with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
+            same = "\n".join("  " + line.split(" #")[0] for line in f.read().splitlines() if not line.startswith("#"))
+        self.write({".ekit/adapters/maven.toml": same.replace('name = "java"', 'name = "maven"')})
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the kit's, its comments and indent changed")
+        self.assertRegex(self.verdict(), r"(?m)^copied: no$")  # renamed: no longer the kit's file as it is
+        self.write({".ekit/adapters/maven.toml": same})
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the kit's, its comments and indent changed")
+        self.assertRegex(self.verdict(), r"(?m)^copied: yes \(\.ekit/adapters/maven\.toml is the kit's ")
+
     def test_a_planned_entry_for_a_manifest_that_is_there_is_the_wrong_status(self):
         self.setup_commit(status="planned")
         self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "r0-pass.md"])
+
+    def test_the_setup_branch_is_preferred_over_a_newer_scratch_branch(self):
+        self.setup_commit()
+        for on in ("main", "ekit-setup"):
+            with self.subTest(head=on):
+                self.git("checkout", "-q", "-B", f"scratch-{on}", "main")
+                self.write({"notes.txt": on})
+                self.git("add", "-A")
+                self.git("commit", "-qm", "notes")
+                self.git("checkout", "-q", on)
+                self.assertEqual(self.passing(), self.ALL)
+                self.assertIn("branch: ekit-setup\n", self.verdict())
+
+    def test_a_caller_in_flow_style_jobs_counts(self):
+        self.setup_commit(files={".github/workflows/mech-review.yml": "on: pull_request\njobs: {m: {uses: "
+                                                                      "EricleungDK/ekit/.github/workflows/mech-review.yml@v0}}\n"})
+        self.assertEqual(self.passing(), self.ALL)
 
     def test_a_folder_written_with_dot_slash_is_the_root(self):
         self.setup_commit(files={".ekit/stack-plan.toml": plan("current", "./")})
@@ -208,7 +267,7 @@ class SetupPlanned(Scaffold):
     def test_a_planned_entry_with_a_proven_adapter_and_base_jobs_passes(self):
         self.setup_commit(status="planned", files={".github/workflows/build.yml": BASE_JOB})
         self.assertEqual(self.passing(), ["plan-planned.md", "r0-pass.md", "setup.md"])
-        self.assertIn("census: no repo tests yet\ndrift: clean (exit 0, D pass, 0 entries)", self.verdict())
+        self.assertIn("census: no repo tests yet\ncopied: no\ndrift: clean (exit 0, D pass, 0 entries)", self.verdict())
 
     def test_a_current_entry_with_no_manifest_fails(self):
         self.setup_commit(status="current", files={".github/workflows/build.yml": BASE_JOB})
@@ -232,6 +291,14 @@ class StopProofFails(Scaffold):
         self.git("checkout", "-q", "main")
         self.git("merge", "-q", "--ff-only", "claude/setup")
         self.assertIn("main: moved\nnew-commits: 1\n", self.verdict())
+
+    def test_a_stash_is_no_commit(self):
+        self.write({"notes.txt": "wip\n", "calc.go": "package calc\n"})
+        self.git("stash", "-u")
+        self.git("stash", "list")
+        self.git("checkout", "-q", "main")  # any ref move: the hooks write the verdict
+        self.assertEqual(self.passing(), ["no-pr.md"])
+        self.assertIn("new-commits: 0\n", self.verdict())
 
     def test_a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self):
         self.git("checkout", "-q", "--detach")
@@ -259,7 +326,7 @@ class StopProofFailsGo(Scaffold):
         declared by name (`func TestAdd(t *testing.T)`), so the census reads none of them: the proof cannot pass"""
         self.git("checkout", "-q", "-b", "claude/setup")
         self.write({".ekit/adapters/go.toml": GO_SUBTESTS, ".github/workflows/mech-review.yml": CALLER,
-                    ".ekit/stack-plan.toml": plan("current").replace("java.toml", "go.toml")})
+                    ".ekit/stack-plan.toml": plan("current", name="go")})
         self.git("add", "-A")
         self.git("commit", "-qm", "setup")
         self.assertIn("census: 0/2 of the repo's tests read; missed: TestAdd, TestSub\n", self.verdict())
