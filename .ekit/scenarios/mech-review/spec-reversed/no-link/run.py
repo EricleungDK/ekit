@@ -1,10 +1,18 @@
 """mech-review/spec-reversed/no-link: a removal with no spec link keeps the R2 fail."""
+import importlib.util
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures"))
-from mrlib import branch, commit, expect, expect_fail_removed, new_repo, r2, r2_entries  # noqa: E402
-
+_spec = importlib.util.spec_from_file_location(
+    "mrlib", os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures", "mrlib.py"))
+lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lib)
+branch = lib.branch
+commit = lib.commit
+expect = lib.expect
+expect_fail_removed = lib.expect_fail_removed
+new_repo = lib.new_repo
+r2 = lib.r2
+r2_entries = lib.r2_entries
 ONE_LINE = "def test_adds(): assert 1 + 1 == 2\ndef test_keeps(): assert 2 + 2 == 4\n"
 ADDS_ONLY = "def test_adds(): assert 1 + 1 == 2\n"
 repo, base = new_repo("py", {"tests/test_m.py": ONE_LINE, "src/m.py": "X = 1\n"})

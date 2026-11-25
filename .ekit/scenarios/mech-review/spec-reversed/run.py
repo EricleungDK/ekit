@@ -1,10 +1,20 @@
 """mech-review/spec-reversed: a test removed because the linked spec reverses it is one R2 confirm, not the fail."""
+import importlib.util
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.environ["EKIT_SCENARIO_DIR"], "fixtures"))
-from mrlib import (branch, commit, expect, expect_fail_removed, expect_spec_confirm,  # noqa: E402
-                   mr, new_repo, r2, r2_entries)
+_spec = importlib.util.spec_from_file_location(
+    "mrlib", os.path.join(os.environ["EKIT_SCENARIO_DIR"], "fixtures", "mrlib.py"))
+lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lib)
+branch = lib.branch
+commit = lib.commit
+expect = lib.expect
+expect_fail_removed = lib.expect_fail_removed
+expect_spec_confirm = lib.expect_spec_confirm
+mr = lib.mr
+new_repo = lib.new_repo
+r2 = lib.r2
+r2_entries = lib.r2_entries
 
 ONE_LINE = "def test_adds(): assert 1 + 1 == 2\ndef test_keeps(): assert 2 + 2 == 4\n"
 ADDS_ONLY = "def test_adds(): assert 1 + 1 == 2\n"

@@ -1,10 +1,17 @@
 """mech-review/spec-reversed/misuse: a bad --linked-issue, or one on a subcommand that does not run R2, is a usage error."""
+import importlib.util
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures"))
-from mrlib import commit, expect, expect_spec_confirm, mr, new_repo, r2  # noqa: E402
-
+_spec = importlib.util.spec_from_file_location(
+    "mrlib", os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures", "mrlib.py"))
+lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lib)
+commit = lib.commit
+expect = lib.expect
+expect_spec_confirm = lib.expect_spec_confirm
+mr = lib.mr
+new_repo = lib.new_repo
+r2 = lib.r2
 repo, base = new_repo("py", {"tests/test_m.py": "def test_adds(): assert 1 + 1 == 2\ndef test_keeps(): assert 2 + 2 == 4\n",
                              "src/m.py": "X = 1\n"})
 head = commit(repo, {"tests/test_m.py": "def test_adds(): assert 1 + 1 == 2\n", "src/m.py": "X = 2\n"},
