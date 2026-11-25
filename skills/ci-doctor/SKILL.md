@@ -9,7 +9,13 @@ Ends in a PR a person merges. `.github/**` is a human decision, so your last act
 
 ## 1. Diagnose
 
-Run `DOCTOR` on the default branch, no hints. Several projects found → ask which, then pass `--stack` and `--project-dir`.
+Run `DOCTOR` on the default branch, no hints. Several projects found (`ambiguous`) → ask which, naming each, then pass `--project-dir` (and `--stack` for a built-in).
+
+Its result picks the mode:
+
+- `setup` set (a `no-adapter` entry), or an empty repo (`no-project`) whose user names the stack to come: setup mode: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
+- An `adapter-file` entry, or R0's `adapter-fix` entry on a PR: repair mode (#24), not built yet. Stop with a Needs-you block (finish) quoting the entry.
+- Otherwise: the steps below.
 
 Keep `inputs`, `trial` and each entry's `hint`: the hint is the exact fix.
 
