@@ -37,7 +37,7 @@ import time
 
 from . import red
 from .gitio import Die, added_lines, git
-from .report import entry, finalize, no_report
+from .report import entry, finalize
 from .stack import ts_runner
 
 DEFAULT_CMD = "cargo mutants"
@@ -1889,9 +1889,8 @@ class Stryker:
                         entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
                               "fix the failing tests first: mutation needs an unmutated tree that passes",
                               "a mutation check that did not run")])
-                if os.path.lexists(report):  # it wrote a file that is no report: as a malformed one, n/a (env)
-                    return _check("n/a", "Stryker report is malformed (env): not a JSON object; check the Stryker version"), []
-                return no_report("Stryker", STRYKER_REPORT, _first_line(text) or f"exit {rc}")
+                return _check("n/a", f"no Stryker report (env): {_first_line(text) or f'exit {rc}'}; check the test runner "
+                                     "plugin and the run log"), []
             try:
                 rows = stryker_rows(doc)
             except ValueError as e:
