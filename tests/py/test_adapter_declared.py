@@ -228,11 +228,10 @@ class RoundOne(unittest.TestCase):
 
     def test_without_unicode_escapes_nothing_is_decoded(self):
         d = adapter_file_dict()
+        d["tests"]["skip"] = ["Disabled"]
         src = "class T {\n    " + "\\" + "u0040Disabled @Test void a() {\n    }\n}\n"
         self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", [])])
         d["lexer"]["unicode_escapes"] = True
-        self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", [])])  # no skip words in d
-        d["tests"]["skip"] = ["Disabled"]
         self.assertEqual([(t.name, t.markers) for t in parse(d).test_fns(src)], [("a", ["ignore"])])
         d["lexer"]["unicode_escapes"] = "yes"
         with self.assertRaises(AdapterFileError) as cm:
