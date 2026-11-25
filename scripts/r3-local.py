@@ -15,8 +15,10 @@ max-mutants 40); pass your caller's inputs (ekit: --test-paths 'tests/**' --test
 --mutation-budget 20). The run tests the head commit: uncommitted changes are not in it. The shards share this
 machine's CPUs (CI gives each its own runner), so wall times and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
 --env-dir keeps the tool and the results (reused while the pins and requirements match); default: a temp dir, removed.
+One run at a time holds an env dir: a second run on it stops at once, naming the first's pid (the lock goes when that
+run ends, killed or not).
 exit: 0 no fail entry and no unconfirmed survivor; 1 a fail entry or an unconfirmed survivor; 2 setup failed,
-usage, git error, a step produced no usable result, or Windows.
+usage, the env dir in use by another run, git error, a step produced no usable result, or Windows.
 """
 import argparse
 import concurrent.futures
@@ -33,6 +35,11 @@ import sys
 import tarfile
 import tempfile
 
+try:
+    import fcntl
+except ImportError:  # Windows: main stops before the lock (POSIX only)
+    fcntl = None
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
 from mech_review.mutants import is_unconfirmed  # noqa: E402 - imported after the sys.path line above
@@ -42,6 +49,7 @@ EXIT = __doc__[__doc__.index("exit: "):].strip()  # the exit codes above, also i
 
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-review.py")
 MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up with
+LOCK = ".ekit-r3-env.lock"  # held (flock) by the run using the env dir; holds that run's pid
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
 EXTRACT_TAKES_FILTER = "filter" in inspect.signature(tarfile.TarFile.extract).parameters
@@ -111,6 +119,24 @@ def requirements(run, repo, head, project_dir, envdir):
         with open(os.path.join(proj, name), "rb") as f:
             got.append((name, hashlib.sha256(f.read()).hexdigest()))
     return proj, got
+
+
+def hold(envdir):
+    """Lock envdir for this run: the open lock file, which holds this pid. flock goes with the process, so a killed
+    run leaves no lock behind. Another live run's lock is a Stop naming its pid."""
+    os.makedirs(envdir, exist_ok=True)
+    f = open(os.path.join(envdir, LOCK), "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.seek(0)
+        pid = f.read().strip() or "?"
+        f.close()
+        raise Stop(f"{envdir} is in use by another r3-local run (pid {pid}): wait for it, or pass another --env-dir")
+    f.truncate(0)
+    f.write(str(os.getpid()))
+    f.flush()
+    return f
 
 
 def _setup_steps(tool, envdir, proj, reqs):
@@ -306,7 +332,11 @@ def main(argv, run=run_cmd, os_name=os.name):
     keep = bool(a.env_dir)
     a.env_dir = os.path.abspath(a.env_dir) if keep else tempfile.mkdtemp(prefix="ekit-r3-")
     try:
-        return r3(run, a, keep)
+        lock = hold(a.env_dir)
+        try:
+            return r3(run, a, keep)
+        finally:
+            lock.close()
     except Stop as e:
         print(f"r3-local: {e}", file=sys.stderr)
         return 2
