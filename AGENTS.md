@@ -17,10 +17,8 @@ ekit: a Claude Code plugin (skills, hooks) plus the mech-review engine that chec
 
 ## What no config tells you
 
-- A new module in `scripts/mech_review/` goes in the list in `tests/mech-modules.test.sh`.
 - ekit's own PRs run mech-review with the python stack: a change under `scripts/` needs a test in `tests/py/` that fails on the base.
 - Python tests of the engine call `cli.main(argv)` in-process, as `tests/py/test_adapter_cli.py` does. R3's mutmut sees only in-process calls; a subprocess-only test leaves every changed line MISSED.
-- Once per change under `scripts/`, before the final review request (not after each fix round), run R3 as CI does (commit first; POSIX or WSL): `python3 scripts/r3-local.py --base origin/main --stack python --test-paths 'tests/**' --test-paths '.ekit/scenarios/**' --mutation-budget 20`. A MISSED on a changed line is fixed before review.
-- CI runs a newer Python than WSL's 3.12: also run `uv run --python 3.14 python -m unittest discover -s tests/py`.
+- Once per change under `scripts/`, before the final review request (not after each fix round), run what CI runs (commit first; POSIX or WSL; needs `uv`): `python3 scripts/ci-local.py --base origin/main`. It runs the mech checks with this checkout's engine, the unittest suite on CI's Python 3.14, and R3 with ekit's caller inputs, and exits 0 only when all three passed. A MISSED or an unconfirmed survivor on a changed line is fixed before review; a step `not run here` is verification debt in your report.
 - `.github/**` is a protected path: the owner makes that edit and waives its entry. Plan it as the owner's step.
-- A behaviour change updates `CHANGELOG.md` (`## Unreleased`), the status line of `docs/testing-standard.md`, and `docs/mech-review-ci.md`.
+- A behaviour change (a change under `scripts/`) updates `CHANGELOG.md` (`## Unreleased`), the status line of `docs/testing-standard.md`, and `docs/mech-review-ci.md`: one rule per doc in `.ekit/co-change.toml`, and mech-review lists each one a PR breaks as an R2 entry.

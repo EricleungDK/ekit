@@ -193,8 +193,11 @@ def rust_regex_escape(text):
     return "".join("\\" + c if c in RUST_META else c for c in text)
 
 
+CAP_MARK, BUDGET_MARK = "past the cap", "budget hit"  # what a note says when the cap or the budget left mutants untested
+
+
 def cap_note(extra, max_mutants):
-    return f"; {extra} past the cap (max-mutants {max_mutants}): untested" if extra else ""
+    return f"; {extra} {CAP_MARK} (max-mutants {max_mutants}): untested" if extra else ""
 
 
 def off_note(off):
@@ -342,23 +345,78 @@ def _timing(doc, rows, wall_s):
 
 
 PARTIAL_KEY = "partial"
+UNCONFIRMED = "R3 unconfirmed survivor"  # the problem of every unconfirmed-survivor entry starts so (#79)
+UNCONFIRMED_FIELD = "unconfirmed"  # the entry field (true) that marks one (#79; docs/testing-standard.md § Contract)
 
 
-def partial_entry(check):
-    """The one confirm entry for a partial R3 (agent-fixable): its id is stable across heads and counts, the text names
-    the untested mutants (or says the total is unknown)."""
+def _plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def is_unconfirmed(e):
+    """the entry is an unconfirmed survivor (#79): a missed mutant until a test kills it."""
+    return e.get("check") == "R3" and e.get(UNCONFIRMED_FIELD) is True
+
+
+def missed_key(file, desc):
+    """the id key of a missed mutant: a MISSED one and an unconfirmed survivor of the same mutation share it, so the
+    id (and a waiver of it) is the same whether this machine's budget reached the whole-suite retry or not."""
+    return f"missed:{file}|{desc}"
+
+
+def unconfirmed_entry(file, line, desc):
+    """One mutant mutmut reports surviving whose whole-suite retry the budget did not reach or cut short (#79): a
+    confirm (a slow runner must not turn the gate red), named as a MISSED one is, with the id a MISSED one of the same
+    mutation has (missed_key), and the field UNCONFIRMED_FIELD."""
+    e = entry("R3", file, line, missed_key(file, desc), "agent-fixable", "confirm",
+              f"{UNCONFIRMED} {file}:{line}: {desc}",
+              "no test mutmut ran kills this mutant, and the budget ended before the whole suite could try it: treat "
+              f"it as MISSED. Add an assert that fails for this mutant: {desc}." + HOW,
+              "treating an unconfirmed survivor as tested")
+    e[UNCONFIRMED_FIELD] = True
+    return e
+
+
+# why a partial R3 left mutants untested (#79), in this order, each with the step it calls for
+CAUSE_HINTS = {
+    "cap": "the cap ran the riskiest max-mutants mutants on changed lines and left the rest: shrink the diff, or "
+           "raise max-mutants for a deliberate deep run.",
+    "budget": "read checks.R3.timing (wall, phase seconds, slowest mutants): shrink the diff first, then narrow the "
+              "tests the mutation tool runs, then raise mutation-budget.",
+    "unconfirmed": "each unconfirmed survivor is an R3 entry of its own: add the test that kills it, as for a MISSED "
+                   "mutant.",
+    "unrun": "read checks.R3.note: the mutation tool left mutants unrun; see the job log.",
+}
+
+
+def partial_causes(check, entries=()):
+    """[(cause, its words)] for a partial R3: past the cap and budget hit as the check's note says them, the unconfirmed
+    survivors among entries; a partial with none of these was left unrun by the tool."""
+    note = check.get("note") or ""
+    got = [("cap", CAP_MARK)] if CAP_MARK in note else []
+    if BUDGET_MARK in note:
+        got.append(("budget", BUDGET_MARK))
+    n = sum(1 for e in entries if is_unconfirmed(e))
+    if n:
+        got.append(("unconfirmed", _plural(n, "unconfirmed survivor")))
+    return got or [("unrun", "left unrun by the mutation tool")]
+
+
+def partial_entry(check, entries=()):
+    """The one confirm entry for a partial R3 (agent-fixable): its id is stable across heads, counts and causes, the
+    text names the untested mutants (or says the total is unknown) and the causes; the hint to raise the budget comes
+    only with a budget hit. entries: the run's other entries (its unconfirmed survivors)."""
     tested, total = check.get("tested"), check.get("total")
+    causes = partial_causes(check, entries)
+    why = "; ".join(words for _, words in causes)
     if total is None:
-        problem = (f"R3 partial: total unknown ({tested if tested is not None else '?'} tested): "
-                   "untested mutants unknown at budget")
+        problem = f"R3 partial: total unknown ({tested if tested is not None else '?'} tested): {why}"
     elif tested is None:
-        problem = f"R3 partial: {total} mutants, tested count unknown at budget"
+        problem = f"R3 partial: {total} mutants, tested count unknown: {why}"
     else:
-        problem = f"R3 partial: {total - tested}/{total} mutants untested at budget"
+        problem = f"R3 partial: {total - tested}/{total} mutants untested: {why}"
     e = entry("R3", "", 0, PARTIAL_KEY, "agent-fixable", "confirm", problem,
-              "read checks.R3.timing (wall, phase seconds, slowest mutants): shrink the diff first, then narrow the tests "
-              "the mutation tool runs, then raise mutation-budget",
-              "treating a partial R3 as tested")
+              " ".join(CAUSE_HINTS[c] for c, _ in causes), "treating a partial R3 as tested")
     return finalize([e])[0]
 
 
@@ -870,6 +928,11 @@ SUITE = ["python3", "-B", "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", 
 SUITE_FACTOR, SUITE_FLOOR = 5, 30  # one suite run on a mutant may take 5x the clean run, and at least 30 s
 
 
+def suite_state():
+    """whole_suite's state before any retry: {caught, hung, passed, unreached}"""
+    return {"caught": 0, "hung": 0, "passed": set(), "unreached": []}
+
+
 def whole_suite(runner, base, crate, project_dir, found, left):
     """mutmut credits a test with a mutant only when the test calls the function inside mutmut's own process, under
     the module name mutmut derives from the file path. A test that reaches the code another way (it starts the program,
@@ -878,11 +941,12 @@ def whole_suite(runner, base, crate, project_dir, found, left):
     the worktree, the whole suite runs once, and a suite that fails has caught it. The file is put back each time.
     found: [(name, repo file, line, desc, status)]; left(): seconds of budget left, or None.
     Returns (still missed, {caught, hung, passed, unreached}): passed holds the names the whole suite ran against and
-    passed; unreached counts the mutants whose retry the budget did not reach or cut short (#26): untested, not missed."""
-    state = {"caught": 0, "hung": 0, "passed": set(), "unreached": 0}
+    passed; unreached holds the items whose retry the budget did not reach or cut short: untested (#26), each an
+    unconfirmed survivor (#79)."""
+    state = suite_state()
     spare = left()
     if spare is not None and spare <= 0:
-        state["unreached"] = len(found)
+        state["unreached"] = list(found)
         return [], state
     t0 = time.monotonic()
     rc, _ = runner(SUITE, crate, spare)
@@ -890,7 +954,7 @@ def whole_suite(runner, base, crate, project_dir, found, left):
         print(f"mech-review: R3: whole suite not used for {len(found)} missed mutant(s): `{' '.join(SUITE)}` "
               f"ends with {rc} on the unmutated tree", file=sys.stderr)
         if rc == "timeout":  # the budget ended the clean run: no retry was reached
-            state["unreached"] = len(found)
+            state["unreached"] = list(found)
             return [], state
         return found, state
     limit = max(SUITE_FLOOR, SUITE_FACTOR * (time.monotonic() - t0))
@@ -898,7 +962,7 @@ def whole_suite(runner, base, crate, project_dir, found, left):
     for turn, item in enumerate(found, 1):
         spare = left()
         if spare is not None and spare <= 0:
-            state["unreached"] += 1  # out of budget: the retry is not reached, so the mutant is untested
+            state["unreached"].append(item)  # out of budget: the retry is not reached, so the mutant is untested
             continue
         path = os.path.join(crate, _crate_path(project_dir, item[1]))
         with open(path, "rb") as f:
@@ -920,7 +984,7 @@ def whole_suite(runner, base, crate, project_dir, found, left):
         if rc == "timeout" and not cut:
             state["hung"] += 1  # as mutmut and cargo-mutants treat a timeout: neither caught nor missed
         elif rc == "timeout":
-            state["unreached"] += 1  # the budget cut the retry short: untested
+            state["unreached"].append(item)  # the budget cut the retry short: untested
         elif isinstance(rc, int) and rc != 0:
             state["caught"] += 1
         else:
@@ -1460,24 +1524,26 @@ class Mutmut:
                     outside += 1
                     continue
                 found.append((name, file, line, f"{removed} -> {after}", status))
-            suite = {"caught": 0, "hung": 0, "passed": set(), "unreached": 0}
+            suite = suite_state()
             if found and rc == "timeout":  # the budget ended mutmut's run: no whole-suite retry is reached
-                suite["unreached"], found = len(found), []
+                suite["unreached"], found = found, []
             elif found:
                 found, suite = whole_suite(runner, base, crate, project_dir, found,
                                            lambda: None if budget is None else budget - (time.monotonic() - t0))
                 wall = time.monotonic() - t0
-            tested -= suite["unreached"]
-            waiting = (f"; {suite['unreached']} missed by mutmut, whole-suite retry not reached at budget: untested"
-                       if suite["unreached"] else "")
+            unconfirmed = suite["unreached"]  # #79: named one by one, out of the tested count as before (#26)
+            tested -= len(unconfirmed)
+            waiting = (f"; {_plural(len(unconfirmed), 'unconfirmed survivor')} ({BUDGET_MARK} before the whole-suite "
+                       "retry): untested" if unconfirmed else "")
             ents = finalize([
-                entry("R3", file, line, f"missed:{file}|{desc}", "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
+                entry("R3", file, line, missed_key(file, desc), "agent-fixable", "fail", f"MISSED mutant {file}:{line}: {desc}",
                       (f"add an assert that fails for this mutant: {desc}." if status == "survived" else
                        "no test fails with this change, the whole suite included: add a test that calls it and asserts "
                        "the result." if name in suite["passed"] else
                        "no test reaches this line: add a test that calls it and asserts the result.") + HOW,
                       f"MISSED mutant `{desc}` in `{file}`")
-                for name, file, line, desc, status in found])
+                for name, file, line, desc, status in found]
+                + [unconfirmed_entry(file, line, desc) for _, file, line, desc, _ in unconfirmed])
             if unlocated:
                 ents += finalize([entry("R3", "", 0, "unlocated", "agent-fixable", "confirm",
                                         f"R3 unlocated: {unlocated} missed mutant(s) could not be mapped to a line: not blocking",
@@ -1978,5 +2044,5 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
         return _check("skipped", "no production file changed"), []
     check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
     if check["status"] == "partial":
-        ents = ents + [partial_entry(check)]
+        ents = ents + [partial_entry(check, ents)]
     return check, ents
