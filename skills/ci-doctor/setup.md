@@ -14,7 +14,7 @@ An empty repo (`no-project`) where the user names the stack to come ("a Java API
 
 Written before any adapter exists, by a second agent that sees the language, build tool and test framework and never the adapter. Harness with a subagent tool: start one with that brief and the categories below. Harness without one: write it yourself now, as a pass of its own, before step 3; it stands as written. Either way the writer reads the repo's test files (step 3's idioms), never an adapter draft.
 
-The writer lists every way, in each category, that a PR in this language can skip a test or hide a mutant, and writes the R0 fixtures for them (`.ekit/adapters/<name>.r0/`: `seed`, `skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts` and the three `source-` cases; the runtime fixtures `runtime/`), in the repo's own idioms:
+The writer lists every way, in each category, that a PR in this language can skip a test or hide a mutant, and writes the R0 fixtures for them (`.ekit/adapters/<name>.r0/`: `seed`, `skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts` and the three `source-` cases; the runtime fixtures `runtime/`; their rules: the Fixtures bullets of R0 adapter proof and Runtime half), in the repo's own idioms:
 
 - **Marker skips**: each marker, annotation, attribute or call that disables a test, conditional ones too (OS, runtime version, env).
 - **Composed markers**: a marker the project defines that carries a skip or a test marker (meta-annotation, alias, macro, decorator factory).

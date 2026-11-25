@@ -539,7 +539,7 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
     inputs, tried, setup = {}, {"tests": "skipped"}, None
     known = {m for a in [*ADAPTERS.values(), *mine.values()] for m in a.manifests}
     new = [] if stack else detect.projects(repo, head, paths, known, project_dir)
-    if found and new and not project_dir and detect.depth(new[0]["project_dir"]) > detect.depth(found[0][1]):
+    if found and new and detect.depth(new[0]["project_dir"]) > detect.depth(found[0][1]):
         new = []  # a built-in project above: the uncovered ones below it are its tools, as for candidates
     if new:
         setup = {"projects": new, "own_ci": own_ci(repo, head, paths)}
