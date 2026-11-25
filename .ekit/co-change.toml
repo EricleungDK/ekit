@@ -1,0 +1,16 @@
+# ekit's co-change rules: "when these paths change, at least one of those must change too".
+# Format, keys, proof cases and guards: docs/mech-review-ci.md § Co-change rules.
+# R2 reads this file at the base branch: a rule added or changed here judges the PRs after the one that writes it.
+# A new rule starts at `confirm` (listed, never blocking); promoting it to `fail` is the orchestrator's call.
+format = 1
+
+[[rule]]
+id = "behaviour-docs"
+trigger = ["scripts/**"]
+require = ["CHANGELOG.md", "docs/testing-standard.md", "docs/mech-review-ci.md"]
+reason = "a behaviour change updates CHANGELOG.md (## Unreleased), the status line of docs/testing-standard.md and docs/mech-review-ci.md, as AGENTS.md asks"
+# #76: b57480e changed the python scanner (scripts/mech_review/stack.py) with no doc; 0cb6cbd added the changelog
+# and testing-standard lines after it
+incident = "b57480eb189e"
+flagged = ["scripts/mech_review/r2.py"]
+control = ["scripts/mech_review/r2.py", "CHANGELOG.md", "docs/testing-standard.md", "docs/mech-review-ci.md"]
