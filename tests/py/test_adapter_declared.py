@@ -160,6 +160,7 @@ class RoundOne(unittest.TestCase):
                "    int x = a > b;\n    @Test void c() {\n    }\n}\n")
         self.assertEqual([t.name for t in self.a.test_fns(src)], ["T.adds", "T.c"])
         self.assertEqual(self.a.test_fns("class T {\n    @Test x> void a() {\n    }\n}\n"), [])
+        self.assertEqual([t.name for t in self.a.test_fns("class T {\n    @Test <TT> void a() {\n    }\n}\n")], ["T.a"])
 
     def test_junits_condition_annotations_skip(self):  # B4
         for ann in ("DisabledOnOs(OS.LINUX)", "EnabledOnOs(OS.WINDOWS)", "EnabledIfEnvironmentVariable(named = \"CI\")",
@@ -174,6 +175,8 @@ class RoundOne(unittest.TestCase):
                '    @ CoverageIgnore void i() {}\n}\n')
         self.assertEqual(self.a.mutation_skips(src), [(2, 2, "@DoNotMutate"), (4, 4, "@lombok.Generated")])
         self.assertEqual(self.a.mutation_skips("@"), [])
+        self.assertEqual(self.a.mutation_skips("@DoNotMutate class A {}\n"), [(1, 1, "@DoNotMutate")])
+        self.assertEqual(self.a.mutation_skips("int x;\n@Generated.;\n"), [(2, 2, "@Generated")])
         self.assertEqual(self.a.mutation_config("pom.xml", None), "PIT config (pom.xml)")
         self.assertEqual(self.a.mutation_config("sub/pom.xml", None), "PIT config (pom.xml)")
 
@@ -204,6 +207,9 @@ class SkipAnnotationsValidation(unittest.TestCase):
         d = adapter_file_dict()
         d["mutation"] = {"skip_annotations": ["DoNotMutate"]}
         self.assertEqual(parse(d).mutation_skips("class A {\n    @DoNotMutate void a() {}\n}\n"), [(2, 2, "@DoNotMutate")])
+        d["mutation"] = {"skip_annotations": ["DoNotMutate"], "skip_comments": ["mut off"]}
+        self.assertEqual(parse(d).mutation_skips("// mut off\nclass A {\n    @DoNotMutate void a() {}\n}\n"),
+                         [(1, 1, "mut off"), (3, 3, "@DoNotMutate")])
         d["mutation"] = {"skip_annotations": []}
         self.assertEqual(self.err(d), "mutation.skip_annotations: want at least one entry")
         d["mutation"] = {"skip_annotations": ["a b"]}

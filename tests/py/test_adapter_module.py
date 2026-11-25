@@ -5,6 +5,7 @@ controls.json's `test-paths` for R0's runtime fixtures (a project whose tests si
 import copy
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -95,17 +96,17 @@ class ModuleRun(Case):
     def test_a_changed_file_under_no_root_is_left_out_and_named_the_rest_still_runs(self):
         """review round 1, B1: a stray tools/Stray.java made R3 n/a (env); the build compiles no such file, so it is
         not mutated, it is named, and the changed classes keep their MISSED."""
-        other = "tools/Stray.java"
-        self.pr(base={"mini.json": "{}", JAVA: SRC, other: SRC, "tests/calc.mini": "\n"},
+        other, first = "tools/Stray.java", "lib/Stray.java"  # lib/ sorts before the root's file, tools/ after it
+        self.pr(base={"mini.json": "{}", JAVA: SRC, other: SRC, first: SRC, "tests/calc.mini": "\n"},
                 head={JAVA: SRC.replace("// 5\n", "int a;\n").replace("// 9\n", "int b;\n"),
-                      other: SRC.replace("// 5\n", "x\n")})
+                      other: SRC.replace("// 5\n", "x\n"), first: SRC.replace("// 5\n", "x\n")})
         r, env = self.cli("mutants", self.adapter_java(),
                           env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual([(e["file"], e["line"]) for e in env["entries"]], [(JAVA, 5), (JAVA, 9)])
         self.assertIn("| pit -DtargetClasses=com.example.Calc,com.example.Calc$*\n", self.calls())
         self.assertEqual(env["checks"]["R3"]["status"], "fail")
-        self.assertIn(f"; not mutated: {other} (under none of mutation.tool.module_roots: src/main/java, gen)",
+        self.assertIn(f"; not mutated: {first}, {other} (under none of mutation.tool.module_roots: src/main/java, gen)",
                       env["checks"]["R3"]["note"])
         self.assertNotIn("(env)", env["checks"]["R3"]["note"])
 
@@ -119,6 +120,19 @@ class ModuleRun(Case):
                                       "mutation.tool.module_roots: src/main/java, gen)", "tested": 0, "total": 0})
         self.assertNotIn("| pit", self.calls())
 
+    def test_a_file_name_holding_mutate_join_is_n_a_naming_it(self):
+        odd = "src/main/java/a,b/X.java"
+        self.pr(base={"mini.json": "{}", odd: SRC, "tests/calc.mini": "\n"}, head={odd: SRC.replace("// 5\n", "x\n")})
+        r, env = self.cli("mutants", self.adapter_java())
+        self.assertEqual(env["checks"]["R3"], {"status": "n/a", "note": f"{odd}: a file name with `,` in it cannot be "
+                                                                         "passed to pit (env): mutation.tool.mutate_join"})
+        self.assertNotIn("| pit", self.calls())
+
+    def test_a_changed_file_with_only_deleted_lines_has_no_range(self):
+        self.pr(base={"mini.json": "{}", JAVA: SRC, "tests/calc.mini": "\n"}, head={JAVA: SRC.replace("// 5\n", "")})
+        r, env = self.cli("mutants", self.adapter_java())
+        self.assertEqual(env["checks"]["R3"], {"status": "pass", "note": "0 mutants in the diff", "tested": 0, "total": 0})
+
     def test_package_is_the_dotted_dir_of_each_changed_file(self):
         """review round 1, S6: `{package}*` reaches a second top-level class in a changed file (Helper in Calc.java)."""
         self.pr(base={"mini.json": "{}", JAVA: SRC, "src/main/java/Top.java": SRC, "tests/calc.mini": "\n"},
@@ -127,6 +141,27 @@ class ModuleRun(Case):
                                          '[".mini", ".java"]'))
         self.cli("mutants", path, env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
         self.assertIn("| pit -DtargetClasses=*,com.example.*\n", self.calls())
+
+
+class AllProvesTheFile(unittest.TestCase):
+    def test_all_with_the_shipped_ts_file_keeps_the_ts_fixtures(self):
+        """review round 1, S8: `all --adapter F` proves F as `r0 --adapter` does; a file named like a built-in keeps the
+        built-in's fixtures (ts.toml has no ts.r0/ beside it)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = tmp.name
+        with open(os.path.join(repo, "package.json"), "w") as f:
+            f.write("{}\n")
+        git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+        subprocess.run(git[:3] + ["init", "-q"], check=True)
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-qm", "b"], check=True)
+        r = _kit.run_cli(["all", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", "ts", "--adapter",
+                          os.path.join(_kit.ROOT, "scripts", "mech_review", "adapters", "ts.toml")])
+        c = json.loads(r.stdout)["checks"]["R0"]
+        self.assertEqual((c["status"], c["note"]), ("pass", "static half: 17 of 17 cases proved"), c)
+        r = _kit.run_cli(["all", "--repo", repo, "--base", "HEAD", "--head", "HEAD", "--stack", "python"])
+        self.assertEqual(json.loads(r.stdout)["checks"]["R0"]["status"], "pass", r.stdout[-500:])
 
 
 class RuntimeTestPaths(unittest.TestCase):

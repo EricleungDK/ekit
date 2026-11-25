@@ -242,6 +242,11 @@ class RunSideBehaviour(unittest.TestCase):
         self.assertEqual(a.outcome(1, "suite a: 0 passed\nsuite b: 1 failed\n"), "fail")
         self.assertEqual(a.outcome(0, "suite a: 0 passed\nsuite b: 2 passed\n"), "pass")
         self.assertEqual(a.outcome(0, "suite a: 0 passed\n"), "none")
+        s = self.adapter(outcome={"passed": r"(\d+) passed", "failed": r"(\d+) failed", "skipped": r"(\d+) skipped",
+                                  "env": r"^runtime missing"})
+        self.assertEqual(s.outcome(0, "1 skipped\n"), "none")  # a skipped count alone is a count read
+        self.assertEqual(s.outcome(0, "runtime missing\n1 skipped\n"), "none")
+        self.assertEqual(s.outcome(0, "runtime missing\n"), "env")
         self.assertEqual(a.outcome(1, "suite a: 0 passed\n"), "error")  # no skipped pattern: no skipped count
         self.assertEqual(a.outcome(0, "nothing counted\n"), "error")
 
