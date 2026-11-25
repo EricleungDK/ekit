@@ -3,7 +3,7 @@ import os
 
 import copy
 
-from . import mutants, mutation_tool, r0 as r0_mod, r0_runtime, red, report, stack_plan
+from . import cochange, mutants, mutation_tool, r0 as r0_mod, r0_runtime, red, report, stack_plan
 from . import gitio
 from .gitio import Review, merge_base
 from .r2 import r2
@@ -43,10 +43,21 @@ def r0(repo, base_ref, head_ref, stack, test_globs, adapter=None, adapter_path=N
         adapter = adapter.in_checkout(repo)
     check, raw = prove(stack, test_globs, adapter, adapter_path, fixtures_dir,
                        r0_mod.parser_hold(repo, mb, adapter, adapter_path))
-    raw += _edit_rules(repo, mb, head, check, [adapter_path] if adapter_path else [])
+    raw += _edit_rules(repo, mb, head, check, [adapter_path] if adapter_path else []) + _rule_proof(repo, head, check)
     checks = {c: {"status": "skipped", "note": "not run by r0"} for c in CHECKS}
     checks["R0"] = check
     return envelope(base, head, finalize(raw), checks)
+
+
+def _rule_proof(repo, head, check):
+    """R0's co-change part (#85, cochange.prove) folded into the static half's check: the worse status, its note and
+    cases (under `co-change`); its entries, raw. It sets no `blocks`: a rule's proof is not the adapter's."""
+    part, raw = cochange.prove(repo, head)
+    if part is not None:
+        check["status"] = min(check["status"], part["status"], key=r0_mod.ORDER.index)
+        check["note"] += "; " + part["note"]
+        check["co-change"] = part["cases"]
+    return raw
 
 
 def _edit_rules(repo, mb, head, check, adapter_paths):
@@ -123,11 +134,12 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
         # built-in of its name ships some (ts.toml keeps the ts fixtures)
         checks["R0"], more = prove(stack, test_globs, adapter, getattr(adapter, "source_path", None),
                                    fixtures_dir or r0_mod.builtin_fixtures(stack))
-        raw += more + _edit_rules(repo, mb, head, checks["R0"], [])
+        raw += more + _edit_rules(repo, mb, head, checks["R0"], []) + _rule_proof(repo, head, checks["R0"])
     if "R2" in want:
-        raw += r2(rv, list(protected_globs))
-        fails = sum(1 for e in raw if e["severity"] == "fail")
-        checks["R2"] = {"status": "fail" if fails else "pass", "note": f"{fails} fail, {len(raw) - fails} confirm"}
+        own = r2(rv, list(protected_globs), cochange.at(repo, base))  # the base branch's rules judge the PR (#83)
+        fails = sum(1 for e in own if e["severity"] == "fail")  # R2's own: R0's entries before it are not R2's (#85)
+        checks["R2"] = {"status": "fail" if fails else "pass", "note": f"{fails} fail, {len(own) - fails} confirm"}
+        raw += own
     if "R1" in want or "R4" in want:
         cmd = test_cmd  # None: each checkout resolves its stack's command (red.r1/r4)
         run_test = runner or red.default_runner()

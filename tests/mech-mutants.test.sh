@@ -618,10 +618,10 @@ chk3, _ = M.verdict(os.path.join(FX, "no-such-dir"), "timeout", "", A, TG, wall_
 check("no outcomes: timing is wall only", chk3.get("timing") == {"wall_s": 5.0}, str(chk3.get("timing")))
 
 # ---- partial confirm: one entry, stable id, text names the untested count, timing hint ----
-pe = M.partial_entry({"status": "partial", "tested": 7, "total": 15})
+pe = M.partial_entry({"status": "partial", "tested": 7, "total": 15, "note": "7/15 tested: budget hit, no MISSED so far"})
 check("partial confirm: severity confirm, class agent-fixable", pe["severity"] == "confirm" and pe["class"] == "agent-fixable", str(pe))
 check("partial confirm: check R3", pe["check"] == "R3", str(pe))
-check("partial confirm: problem names untested/total", pe["problem"] == "R3 partial: 8/15 mutants untested at budget", pe["problem"])
+check("partial confirm: problem names untested/total", pe["problem"] == "R3 partial: 8/15 mutants untested: budget hit", pe["problem"])
 check("partial confirm: hint names timing and the fix order",
       "timing" in pe["hint"] and "diff" in pe["hint"] and "budget" in pe["hint"], pe["hint"])
 check("partial confirm: forbidden", pe["forbidden"] == "treating a partial R3 as tested", pe["forbidden"])
@@ -664,7 +664,7 @@ mp = merge.combine_shards(B, H, 2, envs, {})
 guards = [e for e in mp["entries"] if e["id"] == M.partial_entry({})["id"]]
 check("two partial shards: exactly one partial confirm", len(guards) == 1, str([e["problem"] for e in mp["entries"]]))
 check("two partial shards: merged status partial", mp["checks"]["R3"]["status"] == "partial", str(mp["checks"]["R3"]))
-check("two partial shards: problem counts merged untested", guards and guards[0]["problem"] == "R3 partial: 16/30 mutants untested at budget",
+check("two partial shards: problem counts merged untested", guards and guards[0]["problem"] == "R3 partial: 16/30 mutants untested: budget hit",
       str(guards and guards[0]["problem"]))
 check("two partial shards: merged summary is pass with one confirm", mp["summary"].startswith("pass ")
       and "(0 fail, 1 confirm;" in mp["summary"], mp["summary"])
@@ -680,7 +680,7 @@ out=$(MUT_FIXTURE=partial MUT_RC=0 MUT_HANG=1 mut --mutation-budget 0.02); rc=$?
 eq "$rc" 0 "single partial: still exit 0"
 eq "$(jq -r '[.entries[] | select(.id=="'"$PID"'")] | length' <<<"$out")" 1 "single partial: exactly one partial confirm"
 eq "$(jq -r '[.entries[] | select(.id=="'"$PID"'")][0].severity' <<<"$out")" confirm "single partial: confirm, not fail"
-eq "$(jq -r '[.entries[] | select(.id=="'"$PID"'")][0].problem' <<<"$out")" "R3 partial: 8/15 mutants untested at budget" "single partial: problem counts untested"
+eq "$(jq -r '[.entries[] | select(.id=="'"$PID"'")][0].problem' <<<"$out")" "R3 partial: 8/15 mutants untested: budget hit" "single partial: problem counts untested"
 eq "$(jq -r .summary <<<"$out")" "pass $H (0 fail, 1 confirm; ran: R3; partial: R3 (7/15); skipped: R1 R2 R4)" "single partial: summary counts the confirm"
 [[ "$(jq -r .checks.R3.timing.wall_s <<<"$out")" != null ]] && ok "single partial: wall time in checks.R3.timing" || fail "single partial: wall time in checks.R3.timing"
 eq "$(jq -r '.checks.R3.timing.slowest | length' <<<"$out")" 5 "single partial: five slowest mutants"

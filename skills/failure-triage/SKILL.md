@@ -24,6 +24,10 @@ Check them in this order; the first that fits wins.
 5. **real bug**: none of the above holds.
    → Reproduce it in a failing test, then fix it red→green (TDD; for a hard one, a diagnosis loop first: reproduce, narrow, name the cause). If a user would hit the symptom through the installed deliverable and no scenario covers it, also hand it to the taste-it skill (Bug from use) before the fix, so a scenario guards it beside the test: the symptom only (user steps, seen, expected), no cause or diff.
 
+## An agent's mistake
+
+Some reds come from what an agent did, not from the code: green locally but red in CI, the wrong commit verified, a step of the agent docs skipped, a list or doc not updated. Once the failure is classified and fixed, after the class's own next action, hand it to the mistake-to-check skill: the mistake in one line, the failing run and the commit. Its result line (a rule, an environment fix, or `No check:`) goes into the finish report.
+
 ## Evidence
 
 One line per failure, carried into the finish report:

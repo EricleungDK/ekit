@@ -655,5 +655,5 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
         return _check("skipped", "no production file changed"), []
     check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
     if check["status"] == "partial":
-        ents = ents + [partial_entry(check)]
+        ents = ents + [partial_entry(check, ents)]
     return check, ents

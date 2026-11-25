@@ -3,6 +3,7 @@ import difflib
 import re
 from collections import Counter
 
+from . import cochange
 from .gitio import added_lines, blob, changes
 from .globs import any_glob
 from .parser_cmd import ParserError
@@ -22,8 +23,9 @@ def unmatched(xs, ys):
     return out
 
 
-def r2(rv, protected_globs):
-    """R2 over mb..head: path rules (protected paths, mutation config) per change, then r2_file per source file.
+def r2(rv, protected_globs, rules=()):
+    """R2 over mb..head: path rules (protected paths, mutation config) per change, the co-change rules over the range's
+    changed paths (rules: cochange.Rule list, #83), then r2_file per source file.
     An adapter file's parser command that fails (ParserError, #27) makes every file's entries one blocking CI entry,
     never a fallback; the path rules stay."""
     repo, mb, head, adapter, test_globs, _ = rv
@@ -31,7 +33,10 @@ def r2(rv, protected_globs):
         adapter = adapter.in_checkout(repo)
     entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
-    for ch in changes(repo, mb, head):
+    changed = changes(repo, mb, head)
+    paths = [p for ch in changed for p in (ch.old, ch.new) if p]
+    entries += cochange.check(rules, paths) + cochange.guards(repo, mb, head, rules, paths)
+    for ch in changed:
         if any_glob(ch.old or "", protected_globs) or any_glob(ch.new or "", protected_globs):
             entries.append(entry("R2", ch.new or ch.old, 0, "protected-path", "needs-human", "fail",
                                  f"protected path changed: {ch.new or ch.old}",

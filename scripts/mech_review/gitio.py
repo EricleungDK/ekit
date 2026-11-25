@@ -13,8 +13,9 @@ class Die(Exception):
     """usage or git error: CLI exits 2."""
 
 
-def git(repo, *args):
-    r = subprocess.run(["git", "-c", "core.quotepath=off", "-C", repo, *args], capture_output=True)
+def git(repo, *args, data=None):
+    """git's stdout; data: bytes for its stdin (#85: update-index --index-info). Die: git failed, its stderr."""
+    r = subprocess.run(["git", "-c", "core.quotepath=off", "-C", repo, *args], input=data, capture_output=True)
     if r.returncode:
         raise Die(r.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed")
     return r.stdout.decode("utf-8", "surrogateescape")  # non-utf8 names/content survive; re-encoded on the way back to git

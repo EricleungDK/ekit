@@ -201,6 +201,7 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 | [`failure-triage`](skills/failure-triage/SKILL.md) | A test, build or CI job goes red: classify it (sandbox/env, stale, flaky, unowned, real bug) before editing code. Reads mech-review JSON directly. |
 | [`taste-it`](skills/taste-it/SKILL.md) | Verify a deliverable by using it: black-box taster, `.ekit/scenarios/` regression suite, fix/human verdicts. A bug from use is checked with a scenario before any fix. A new app's features are seeded as scenarios from the user's stories before the code (only the approved wording; each must fail until its feature works). |
 | [`finish`](skills/finish/SKILL.md) | End-of-work report: done (evidence per criterion) or blocked (Needs-you block). With seeded scenarios, the `N of M features working` line copied from the runner. |
+| [`mistake-to-check`](skills/mistake-to-check/SKILL.md) | An agent mistake should become a check: filter it (decidable, a class, visible at check time, worth its upkeep), make it impossible where it can, else route it to a linter rule, a co-change rule, a gate or an environment fix; or one line saying why none. Also promotes and removes the rules it made. |
 | [`ci-doctor`](skills/ci-doctor/SKILL.md) | Set up or repair a repo's mech-review CI; ends in a PR a person merges. |
 | [`orchestrate-agent`](skills/orchestrate-agent/SKILL.md) | `/ekit:orchestrate-agent`: divide a task, delegate to subagents, verify acceptance. User-invoked only. |
 
@@ -242,9 +243,10 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `seeded ID`, `tree-hash`. Each scenario has one run file: `run.py` (this Python), `run.sh` (bash) or `run.ps1` (PowerShell). Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. A `- feature: <name>` line in SCENARIO.md marks a seeded scenario: a full `run` and a fresh `check` end with `N of M features working`; `seeded ID` reads one that already passes `CHECKS NOTHING YET`. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
-| `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail / 2 setup or usage. |
+| `scripts/r3-local.py` | The workflow's R3 jobs locally, pinned as CI: `--base REF --stack S` plus the caller's inputs. Prints the merged R3. Exit 0 / 1 fail or unconfirmed survivor / 2 setup or usage. |
 | `scripts/mech-summary.py` | `<run-id \| PR>`: a mech-review run's artifacts in a few lines (checks, shard notes, fail entries by file). `--dir` for downloaded artifacts. |
 | `scripts/orch-status.py` | `<worktree>...`: commits ahead of the pushed branch, dirty files, live test/mutation processes, CI counts. |
+| `scripts/verified-commit.py` | `[--allow-behind] [--expect SHA] RESULT WORKTREE`: the mech-review result's head is the review request's head (`--expect`), the worktree's head and the pushed tip. Exit 0 same commit / 1 another commit (both named) / 2 no answer (reason given). |
 | `scripts/mech-rerun.py` | `--pr N`: re-runs the PR head's finished `mech-review report` job, so a waiver comment takes effect (the `mech-waive` workflow). Exit 0 / 2 usage / 3 API error. |
 
 </details>
@@ -271,7 +273,7 @@ in PowerShell or Git Bash. `python tests/windows-smoke.py` (run by `tests/run.sh
 (every hook in plain PowerShell with no Git Bash on PATH, verify commands in their own shells, a scenario timeout);
 the unit tests fake those shells and run on every OS.
 
-ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml`, python stack): a change to `scripts/` needs a test in `tests/py` that fails without it.
+ekit runs its own checks on its own PRs (`.github/workflows/mech-review-self.yml`, python stack): a change to `scripts/` needs a test in `tests/py` that fails without it. `python3 scripts/ci-local.py --base origin/main` runs those checks here (needs `uv`; POSIX or WSL): see [the CI doc](docs/mech-review-ci.md#developer-machine).
 
 Skill evals (kit dev only):
 

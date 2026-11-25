@@ -254,7 +254,7 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     if r0_parts:
         checks["R0"] = combine(r0_parts)
     if status == "partial":
-        kept.append(partial_entry(check))
+        kept.append(partial_entry(check, kept))
     ci = finalize(ci)
     entries = sorted(kept + ci, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"]))
     return envelope(base, head, entries, checks)
