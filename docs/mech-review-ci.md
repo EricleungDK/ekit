@@ -768,6 +768,7 @@ python3 -I scripts/mech-review.py r0 --repo . --base main --head HEAD --stack mi
   - a changed mutation tool (#19): an adapter file's [`[mutation.tool]`](#r3-side-mutation-tool) added, removed or with any value changed (`[mutation.tool] of the stack in folder `lib` changed (build/m.toml)`).
 
   Stacks are matched by folder (normalised as the plan reads it: `./svc`, `svc/` and `svc` are one), and each side's adapter is read through that side's plan: pointing a stack at a new adapter file, or renaming the stack, is still compared (a file missing on one side reads the defaults). A head stack in a folder the base has no stack for compares with the defaults (linux and the default limits). A side with no plan reads its adapter files at the other side's plan paths, so deleting the plan never hides an adapter edit. An adapter file that does not load at head is named too. A tighter limit, a removed `ignore` folder, and a removed stack give none. The entry fails `R0` but blocks nothing. On python < 3.11 (no TOML reader) a changed plan or adapter file is the entry: it cannot be read, so it never passes silently.
+- **Co-change rules** (#85). The static half also runs each [co-change rule](#co-change-rules)'s two proof cases, at the head: a rule that lacks one, or whose case reads wrong, is one `fail` entry of class `agent-fixable` that blocks nothing; a rule file at the head that does not read leaves R0 `unproven`. In `all`, R2's status counts R2's own entries only, so an R0 entry never turns R2 red.
 - **Test paths.** `.ekit/scenarios/**` is a test path for every stack, added by the core beside `test-paths`.
 - Exit: 0 pass or unproven, 1 a fail entry, 2 usage (an adapter file that does not load, a fixture dir with mixed extensions) or git error.
 
@@ -809,6 +810,8 @@ trigger = ["scripts/mech_review/**"]
 require = ["CHANGELOG.md", "docs/mech-review-ci.md"]
 reason = "a behaviour change updates the changelog's Unreleased section and the CI doc"
 incident = "#76"
+flagged = ["scripts/mech_review/r2.py"]                   # a PR the rule must flag
+control = ["scripts/mech_review/r2.py", "CHANGELOG.md"]   # a PR it must leave alone
 # severity = "confirm"   # the default; "fail" once promoted
 ```
 
@@ -818,8 +821,9 @@ Keys (top level: `format`, required, `1`; `rule`, an array of tables, may be emp
 - `trigger` (required): globs, at least one; a change to a matching path triggers the rule.
 - `require` (required): globs, at least one; the rule holds when any changed path matches one.
 - `reason` (required): why the rule exists; the entry quotes it.
-- `incident` (required): the commit or PR of the mistake the rule came from.
+- `incident` (required): the commit or PR of the mistake the rule came from: a commit's sha (7 to 40 hex digits), or `#N` for a PR.
 - `severity`: `confirm` (default: listed, never blocking) or `fail` (a promoted rule: the check fails).
+- `flagged`, `control` (#85): the rule's two proof cases, each the paths one PR changes (at least one; repo paths, `/`-separated): `flagged` is a PR the rule must flag, `control` one it must leave alone. Neither is required by the format: [R0](#r0-adapter-proof) fails a rule that lacks one, and R2 fails a new rule that lacks one (below).
 
 Globs are repo-root paths (`**` any depth, `*` one segment, `?` one character), as for `protected-paths`. A changed path is either side of a change over `merge-base..head`: a renamed file counts under its old and its new path, a deleted one under its old.
 
@@ -827,7 +831,20 @@ Each broken rule (a changed path matches `trigger`, none matches `require`) is o
 
 - A repo without the file runs exactly as before; the file is read only when it exists, so `tomllib` is needed only then.
 - A file that is unreadable, not TOML or invalid is a usage error (exit 2, nothing on stdout) that names the field, as for an adapter file: ``co-change rule file .ekit/co-change.toml at 1a2b3c4d5e6f: rule[1].trigger[0]: want a glob, a non-empty string``. An unknown key, a missing required key, a glob that is not text, an empty list and a duplicate `id` are each such an error. Reading it needs python 3.11 or newer (`tomllib`); on an older python a repo with the file gets that usage error, named.
-- `r2` and `all` run the rules (the `guard` job). Proof cases per rule and guards on editing the rule file are a follow-up (#85).
+- `r2` and `all` run the rules (the `guard` job).
+
+**Proof cases** (#85). [R0's static half](#r0-adapter-proof) runs both cases of every rule in the file at the **head** (the PR's version, as R0 proves the PR's adapter file), each as one PR in a throwaway repo: the case's paths seeded on base, changed on head, built in git's index (never as files). `flagged` must give the rule's entry, `control` none. A rule that lacks a case, or whose case reads wrong, is one R0 `fail` entry of class `agent-fixable` naming the rule and each cause: ``co-change rule `x` fails its proof: no `control` case``, ``… `flagged` case (`README.md`) gave no entry (want the rule's entry)``, ``… `control` case (`src/a.py`) gave the rule's entry (want none)``, or a case git does not build as given (a `..` segment, a path that is a folder of another). It blocks no check: a rule's proof is not the adapter's. R0's note adds `co-change rules: 2 of 3 proved; failed: x`, and `checks.R0["co-change"]` lists each case. A head file that does not read leaves the rules `unproven` (R0's note names the error; R2's guard is the entry). No file, or no rule, adds nothing to R0.
+
+**Guards** (#85). When the range (`merge-base..head`) changes `.ekit/co-change.toml`, R2 checks the change. Each is one entry on the rule file:
+
+| The change | Entry |
+|---|---|
+| The file at the head does not read (any load error above, also on python < 3.11) | `fail`, `agent-fixable`: ``the co-change rule file this range writes does not read: <the error>``; not a usage error, since the PR wrote it |
+| A new rule (an `id` the merge base's file has not) whose `incident` resolves to no commit or PR | `fail`, `agent-fixable`. A sha resolves when it names a commit the head reaches; `#N` when the message of a commit the head reaches names `#N` (a merge or squash commit names its PR). Git only, no network: anything else resolves to nothing |
+| A new rule without both cases | `fail`, `agent-fixable`: ``new co-change rule `x` has no `control` case`` |
+| A rule that fires in the range (the base's rule, as R2 applies it) and that the range weakens or removes, against the merge base's version | `fail`, `needs-human`: ``co-change rule `x` fires in this range, and this range weakens it (severity fail -> confirm; trigger loses `lib/**`; require gains `docs/**`)`` or ``… removes it``. Weaker is a lower severity, a `trigger` glob gone or a `require` glob added, compared as text whatever the globs match; a renamed `id` or a deleted file removes the rule. The weakening goes in a PR of its own, where the rule does not fire |
+
+Adding a rule with its cases and an incident that resolves, promoting one to `fail`, adding a trigger glob, removing a require glob, and editing `reason`, `incident` or the cases of an existing rule give no entry; so do a weakening and a removal in a range where the rule does not fire. A rule the base adds after the merge base is not one the PR removed. A file at the merge base that does not read is a usage error, as at the base.
 
 ## Limits
 
