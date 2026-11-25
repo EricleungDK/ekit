@@ -58,9 +58,8 @@ class TestFilterAndRoute(unittest.TestCase):
 
     def test_the_filter_asks_the_four_questions_in_order(self):
         s = flat(section(skill(), "1. Filter"))
-        names = ["**Decidable**", "**A class**", "**Visible at check time**", "**Worth its upkeep**"]
-        at = [s.index(n) for n in names]
-        self.assertEqual(at, sorted(at))
+        self.assertRegex(s, r"(?s)\*\*Decidable\*\*.*\*\*A class\*\*.*\*\*Visible at check time\*\*.*"
+                            r"\*\*Worth its upkeep\*\*")
         self.assertIn("with no judgment", s)
         self.assertIn("name a second, different example", s)
         self.assertIn("stop at the first no with `No check: <mistake>: <the question>: <why>`", s)

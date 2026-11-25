@@ -133,20 +133,20 @@ class Pushed(Repos):
 
 
 class NotPushed(Repos):
-    def test_branch_the_remote_does_not_have(self):
+    def test_a_branch_the_remote_does_not_have_is_verified_on_the_worktree_head_alone(self):
         head = self.commit("work")
         r = self.check(self.result(head), self.wt)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(r.stdout, f"verified: {head} is the worktree's head; not pushed (origin has no agent/x)\n")
 
-    def test_repo_without_the_remote(self):
+    def test_a_repo_without_the_remote_is_verified_on_the_worktree_head_alone(self):
         head = self.commit("work")
         git(self.wt, "remote", "remove", "origin")
         r = self.check(self.result(head), self.wt)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("not pushed (no remote origin)", r.stdout)
 
-    def test_detached_head(self):
+    def test_a_detached_head_is_verified_on_the_worktree_head_alone_whatever_the_remote_tip(self):
         head = self.commit("work")
         self.push()
         git(self.wt, "checkout", "-q", "--detach")
