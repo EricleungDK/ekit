@@ -15,7 +15,7 @@ import os
 import time
 from collections import namedtuple
 
-from . import adapter_file, gitio, report
+from . import adapter_file, gitio, report, tomlfile
 from .resolve import SKIP_DIRS
 from .stack import ADAPTERS
 
@@ -171,18 +171,7 @@ def parse(data, read, vanished):
 
 
 def _toml(raw, where):
-    try:
-        import tomllib
-    except ImportError:
-        raise PlanError(f"{where}: reading the stack plan needs python 3.11 or newer (tomllib)") from None
-    try:
-        return tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        raise PlanError(f"{where}: not valid TOML: {e}") from None
-    except UnicodeDecodeError as e:
-        raise PlanError(f"{where}: not valid TOML: not UTF-8 ({e.reason} at byte {e.start})") from None
-    except RecursionError:
-        raise PlanError(f"{where}: not valid TOML: arrays or tables nested too deep") from None
+    return tomlfile.loads(raw, where, PlanError, "the stack plan")
 
 
 def _blob(repo, sha, path):

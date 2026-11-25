@@ -15,7 +15,7 @@ import re
 import tempfile
 from typing import NamedTuple, Tuple
 
-from . import gitio
+from . import gitio, tomlfile
 from .globs import any_glob
 from .report import entry
 
@@ -26,6 +26,10 @@ TOP_KEYS = ("format", "rule")
 CASES = ("flagged", "control")  # the paths of a PR the rule must flag, and of one it must leave alone (#85)
 RULE_KEYS = ("id", "trigger", "require", "reason", "severity", "incident") + CASES
 RULE_REQUIRED = ("id", "trigger", "require", "reason", "incident")
+SILENCING = "editing the co-change rule file to silence the rule that fires"  # the shortcut of a rule that fires
+# per case: does the rule's entry show for it, and its verdict when it reads right and when it reads wrong
+CASE_READS = {"flagged": (True, "the rule's entry", "gave no entry (want the rule's entry)"),
+              "control": (False, "no entry", "gave the rule's entry (want none)")}
 
 class Rule(NamedTuple):
     """one rule. trigger: globs whose change triggers it; require: globs of which at least one must change in the same
@@ -49,15 +53,6 @@ def _err(field, msg):
     raise RuleFileError(f"{field}: {msg}" if field else msg)
 
 
-def _keys(d, field, allowed, required):
-    for k in d:
-        if k not in allowed:
-            _err(f"{field}.{k}" if field else k, "unknown key")
-    for k in required:
-        if k not in d:
-            _err(f"{field}.{k}" if field else k, "missing")
-
-
 def _text(v, field):
     if not isinstance(v, str) or not v.strip():
         _err(field, "want a non-empty string")
@@ -76,7 +71,7 @@ def _globs(v, field, what="glob"):
 def parse(data):
     """the Rules a parsed rule file (a dict, as tomllib reads it) describes, in file order. RuleFileError names the
     field."""
-    _keys(data, "", TOP_KEYS, ("format",))
+    tomlfile.keys(data, "", TOP_KEYS, ("format",), _err)
     if type(data["format"]) is not int or data["format"] != FORMAT:
         _err("format", f"`{data['format']}`: want {FORMAT}")
     rules = data.get("rule", [])
@@ -85,7 +80,7 @@ def parse(data):
     out, seen = [], {}
     for i, r in enumerate(rules):
         f = f"rule[{i}]"
-        _keys(r, f, RULE_KEYS, RULE_REQUIRED)
+        tomlfile.keys(r, f, RULE_KEYS, RULE_REQUIRED, _err)
         rid = _text(r["id"], f + ".id")
         if not all(ch.isalnum() or ch in "_-." for ch in rid):
             _err(f + ".id", f"`{rid}`: want letters, digits, _, - or .")
@@ -103,18 +98,7 @@ def parse(data):
 
 def loads(raw, where):
     """the Rules of a rule file's bytes; where names it in errors (the path, and the commit it is read at)."""
-    try:
-        import tomllib
-    except ImportError:
-        raise RuleFileError(f"{where}: reading the co-change rule file needs python 3.11 or newer (tomllib)") from None
-    try:
-        data = tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        raise RuleFileError(f"{where}: not valid TOML: {e}") from None
-    except UnicodeDecodeError as e:  # tomllib decodes the bytes as UTF-8 and lets this through
-        raise RuleFileError(f"{where}: not valid TOML: not UTF-8 ({e.reason} at byte {e.start})") from None
-    except RecursionError:  # tomllib nests one python frame per array or inline table
-        raise RuleFileError(f"{where}: not valid TOML: arrays or tables nested too deep") from None
+    data = tomlfile.loads(raw, where, RuleFileError, "the co-change rule file")
     try:
         return parse(data)
     except RuleFileError as e:
@@ -160,8 +144,7 @@ def check(rules, paths):
                          f"co-change rule `{rule.id}`: `{hit[0]}`{more} changed, and none of "
                          f"{_names(rule.require)} did: {rule.reason}",
                          f"change one of {_names(rule.require)} in this range as the rule asks (it came from "
-                         f"{rule.incident}); a rule that misfires is changed in a PR of its own",
-                         "editing the co-change rule file to silence the rule that fires"))
+                         f"{rule.incident}); a rule that misfires is changed in a PR of its own", SILENCING))
     return out
 
 
@@ -240,8 +223,7 @@ def guards(repo, mb, head, rules, paths):
             out.append(entry("R2", PATH, 0, f"co-change-weakened:{rule.id}", "needs-human", "fail",
                              f"co-change rule `{rule.id}` fires in this range, and this range {why}",
                              "a person decides: keep the rule as the merge base has it in this PR, and weaken or "
-                             "remove it in a PR of its own", "editing the co-change rule file to silence the rule that "
-                                                             "fires"))
+                             "remove it in a PR of its own", SILENCING))
     return out
 
 
@@ -271,11 +253,12 @@ def _proof(rule, repo, blobs):
             out.append((case, "fail", f"`{case}` case ({_names(paths)}) builds a PR that changes "
                                       f"{_names(changed) or 'no path'} (want each path as given: a repo path, no `.` "
                                       f"or `..` segment)"))
-        elif bool(_hit(rule, changed)) != (case == "flagged"):
-            out.append((case, "fail", f"`{case}` case ({_names(paths)}) " + (
-                "gave no entry (want the rule's entry)" if case == "flagged" else "gave the rule's entry (want none)")))
         else:
-            out.append((case, "pass", "the rule's entry" if case == "flagged" else "no entry"))
+            want, right, wrong = CASE_READS[case]
+            if bool(_hit(rule, changed)) == want:
+                out.append((case, "pass", right))
+            else:
+                out.append((case, "fail", f"`{case}` case ({_names(paths)}) {wrong}"))
     return out
 
 

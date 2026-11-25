@@ -9,7 +9,7 @@ import re
 import shlex
 import string
 
-from . import parser_cmd
+from . import parser_cmd, tomlfile
 from .data_adapter import DataAdapter, ParserAdapter
 from .scan import Lexer, ShapeError
 
@@ -33,12 +33,7 @@ def _table(d, field, allowed, required=()):
     """field: the table's dotted name, "" for the top level (its keys are named bare)."""
     if not isinstance(d, dict):
         _err(field, "want a table")
-    for k in d:
-        if k not in allowed:
-            _err(f"{field}.{k}".removeprefix("."), "unknown key")
-    for k in required:
-        if k not in d:
-            _err(f"{field}.{k}".removeprefix("."), "missing")
+    tomlfile.keys(d, field, allowed, required, _err)
     return d
 
 
@@ -780,19 +775,7 @@ def load(path):
 
 def loads(raw, path):
     """the DataAdapter of an adapter file's bytes (path names it in errors: a file on disk, or a repo path at a ref)."""
-    try:
-        import tomllib
-    except ImportError:
-        raise AdapterFileError(f"adapter file {path}: reading an adapter file needs python 3.11 or newer (tomllib)") from None
-    try:
-        # a UTF-8 BOM (some Windows editors write one) is not part of the TOML text
-        data = tomllib.loads((raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw).decode("utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        raise AdapterFileError(f"adapter file {path}: not valid TOML: {e}") from None
-    except UnicodeDecodeError as e:  # tomllib decodes the bytes as UTF-8 and lets this through
-        raise AdapterFileError(f"adapter file {path}: not valid TOML: not UTF-8 ({e.reason} at byte {e.start})") from None
-    except RecursionError:  # tomllib nests one python frame per array or inline table
-        raise AdapterFileError(f"adapter file {path}: not valid TOML: arrays or tables nested too deep") from None
+    data = tomlfile.loads(raw, f"adapter file {path}", AdapterFileError, "an adapter file")
     try:
         return parse(data)
     except AdapterFileError as e:
