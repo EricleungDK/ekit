@@ -10,7 +10,7 @@ import signal
 import sys
 import tempfile
 
-from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, r0_runtime, red,
+from . import (adapter_file, detect, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, r0_runtime, red,
                report, resolve, stack_plan)
 from .stack import ADAPTERS
 
@@ -391,7 +391,8 @@ def _merge(parser, args):
 def _doctor(argv):
     p = argparse.ArgumentParser(prog="mech-review.py doctor", description="find a repo's mech-review setup; see the main --help")
     p.add_argument("--repo", default=".", help="git repo (default .)")
-    p.add_argument("--stack", choices=sorted(ADAPTERS), help="settles several candidate projects")
+    p.add_argument("--stack", choices=sorted({*ADAPTERS, *detect.BUILDS}),
+                   help="settles several candidate projects: a built-in, or the build of a project no adapter covers")
     p.add_argument("--project-dir", type=project_dir_arg, metavar="DIR", help="settles several candidate projects")
     p.add_argument("--no-trial", action="store_true", help="read the tree only; run nothing")
     args = p.parse_args(argv)

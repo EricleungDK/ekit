@@ -4,8 +4,10 @@ manifests, language, build tool, test framework and target OS, and the repo's ow
 `cli.main(["doctor", ...])`, read-only (`--no-trial`)."""
 import json
 import os
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import _kit
 from test_adapter_cli import Repo
@@ -16,6 +18,11 @@ JAVA = {"pom.xml": POM, "src/main/java/com/example/Calc.java": "class Calc {}\n"
         "src/test/java/com/example/CalcTest.java": "class CalcTest {}\n"}
 LINUX = "no Windows- or Apple-only project file"
 CALLER = "EricleungDK/ekit/.github/workflows/"
+WPF = ("`{}` is a WPF app (UseWPF, the WPF project type or a PresentationFramework reference): it builds and runs on "
+       "Windows only")
+ASK = "pick one with --project-dir, --stack (a built-in, or the build of a project with no adapter) or both"
+PUSH_TEST = ("on: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n"
+             "      - run: mvn -B test\n")
 
 
 class SetupDetection(unittest.TestCase):
@@ -28,6 +35,10 @@ class SetupDetection(unittest.TestCase):
         self.repo.commit(files, "c")
         return self.again(*flags)
 
+    def java_adapter(self):
+        with open(os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "java.toml"), encoding="utf-8") as f:
+            return f.read()
+
     def again(self, *flags):
         r = _kit.run_cli(["doctor", "--repo", self.repo.path, "--no-trial", *flags])
         return r.returncode, json.loads(r.stdout)
@@ -38,7 +49,7 @@ class SetupDetection(unittest.TestCase):
     def test_a_maven_repo_reports_its_project_for_setup(self):
         rc, env = self.doctor(JAVA)
         self.assertEqual(rc, 1)
-        self.assertEqual(env["detected"], {"stack": None, "project_dir": None})
+        self.assertEqual((env["detected"], env["mode"]), ({"stack": None, "project_dir": None}, "setup"))
         self.assertEqual(env["setup"], {"projects": [{
             "project_dir": ".", "manifests": ["pom.xml"], "language": "java", "build": "maven",
             "test_framework": "junit5", "target_os": "linux", "target_os_why": LINUX}], "own_ci": []})
@@ -46,9 +57,26 @@ class SetupDetection(unittest.TestCase):
             "adapter-fix", "fail", "pom.xml", "no built-in or adapter file covers `pom.xml` (java, maven)",
             "set up its adapter with ci-doctor's setup mode, starting from `setup`")])
 
+    def test_own_ci_counts_workflows_with_a_build_or_test_job_on_push_or_pull_request(self):
+        rc, env = self.doctor(dict(JAVA, **{
+            ".github/workflows/ci.yml": PUSH_TEST.replace("jobs:", f"jobs:\n  m:\n    uses: {CALLER}mech-review.yml@v0"),
+            ".github/workflows/release.yml": "on:\n  release:\n    types: [published]\njobs:\n  r:\n    steps: []\n",
+            ".github/workflows/tags.yml": "on:\n  push:\n    tags: ['v*']\njobs:\n  r:\n    steps: []\n",
+            ".github/workflows/only-ekit.yml": f"on: pull_request\njobs:\n  m:\n    uses: {CALLER}mech-review.yml@v0\n",
+            ".github/workflows/nightly.yaml": "'on':\n  schedule:\n    - cron: '0 3 * * *'\njobs:\n  t:\n    steps: []\n",
+            ".github/workflows/pr.yaml": "\"on\":\n  pull_request:\n  # a comment\n\njobs:\n  build:  # the build\n"
+                                        "    steps: []\n",
+            ".github/workflows/branches.yml": "on:\n  push:\n    branches: [main]\n    tags: ['v*']\njobs:\n  t:\n"
+                                              "    steps: []\n",
+            ".github/workflows/merge.yml": "on: merge_group\njobs:\n  t:\n    steps: []\n",
+            ".github/workflows/scalar.yml": "on: push # every push\njobs:\n  t:\n    steps: []\n"}))
+        self.assertEqual(env["setup"]["own_ci"], [".github/workflows/branches.yml", ".github/workflows/ci.yml",
+                                                  ".github/workflows/merge.yml", ".github/workflows/pr.yaml",
+                                                  ".github/workflows/scalar.yml"])
+
     def test_own_ci_lists_the_workflows_that_call_no_ekit_workflow(self):
         rc, env = self.doctor(dict(JAVA, **{
-            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: mvn -B test\n",
+            ".github/workflows/ci.yml": PUSH_TEST,
             ".github/workflows/mech-review.yml": f"jobs:\n  m:\n    uses: {CALLER}mech-review.yml@v0\n",
             ".github/workflows/mech-waive.yml": f"jobs:\n  w:\n    uses: {CALLER}mech-waive.yml@v0\n",
             ".github/workflows/notes.txt": "not a workflow\n"}))
@@ -67,7 +95,7 @@ class SetupDetection(unittest.TestCase):
         self.assertEqual(env["setup"]["projects"], [{
             "project_dir": ".", "manifests": ["App.sln"], "language": "csharp", "build": "dotnet",
             "test_framework": "xunit", "target_os": "windows",
-            "target_os_why": "`App/App.csproj` sets UseWPF: a WPF app builds and runs on Windows only"}])
+            "target_os_why": WPF.format("App/App.csproj")}])
 
     def test_an_ios_app_runs_on_macos(self):
         rc, env = self.doctor({"Shop.xcodeproj/project.pbxproj": "SDKROOT = iphoneos;\n",
@@ -93,11 +121,12 @@ class SetupDetection(unittest.TestCase):
         files = dict({f"backend/{k}": v for k, v in JAVA.items()},
                      **{"frontend/package.json": '{"name": "web"}\n', "frontend/src/a.ts": "export const a = 1\n"})
         rc, env = self.doctor(files)
-        self.assertEqual((rc, env["detected"], env["inputs"]), (1, {"stack": None, "project_dir": None}, {}))
+        self.assertEqual((rc, env["detected"], env["inputs"], env["mode"]),
+                         (1, {"stack": None, "project_dir": None}, {}, "ask"))
         self.assertEqual([p["project_dir"] for p in env["setup"]["projects"]], ["backend"])
         self.assertEqual(self.entries(env), [(
             "needs-human", "fail", "", "several projects: ts in frontend, java (maven, no adapter) in backend",
-            "pick one with --project-dir, and --stack for a built-in")])
+            ASK)])
 
     def test_the_answer_picks_one_project(self):
         files = dict({f"backend/{k}": v for k, v in JAVA.items()},
@@ -106,7 +135,8 @@ class SetupDetection(unittest.TestCase):
         self.assertEqual([(p["project_dir"], p["language"]) for p in env["setup"]["projects"]], [("backend", "java")])
         self.assertEqual([e["file"] for e in env["entries"]], ["backend/pom.xml"])
         rc, env = self.again("--project-dir", "frontend")
-        self.assertEqual((env["detected"], env["setup"]), ({"stack": "ts", "project_dir": "frontend"}, None))
+        self.assertEqual((env["detected"], env["setup"], env["mode"]),
+                         ({"stack": "ts", "project_dir": "frontend"}, None, "adopt"))
 
     def test_two_projects_no_built_in_covers_are_an_ask(self):
         rc, env = self.doctor(dict({f"api/{k}": v for k, v in JAVA.items()},
@@ -119,10 +149,49 @@ class SetupDetection(unittest.TestCase):
         self.assertEqual([e["problem"] for e in env["entries"]],
                          ["several projects: java (maven, no adapter) in api, csharp (dotnet, no adapter) in app"])
 
-    def test_a_built_in_project_above_an_uncovered_one_keeps_the_adopt_flow(self):
-        rc, env = self.doctor({"Cargo.toml": "[package]\nname = \"a\"\n", "src/lib.rs": "",
-                               "tools/gen/pom.xml": POM})
-        self.assertEqual((env["detected"], env["setup"]), ({"stack": "rust", "project_dir": "."}, None))
+    def test_a_built_in_and_an_uncovered_project_at_any_depth_are_an_ask_both_ways(self):
+        for files, names in (
+                ({"Cargo.toml": "[package]\nname = \"a\"\n", "src/lib.rs": "", "tools/gen/pom.xml": POM},
+                 "rust in ., java (maven, no adapter) in tools/gen"),
+                (dict(JAVA, **{"web/package.json": '{"name": "web"}\n', "web/src/a.ts": ""}),
+                 "ts in web, java (maven, no adapter) in .")):
+            with self.subTest(names=names):
+                repo = Repo(os.path.join(self.repo.path + "-" + str(len(names)), "r"))
+                repo.commit(files, "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                self.assertEqual([e["problem"] for e in env["entries"]], [f"several projects: {names}"])
+                built_in = names.split(" in ")[0]
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial", "--stack", built_in]).stdout)
+                self.assertEqual((env["detected"]["stack"], env["setup"]), (built_in, None))
+
+    def test_two_projects_in_one_folder_are_an_ask_that_stack_answers(self):
+        cases = (
+            ({"package.json": '{"name": "web"}\n', "src/a.ts": ""}, "ts in ., java (maven, no adapter) in .", "maven"),
+            ({"build.gradle": ""}, "java (gradle, no adapter) in ., java (maven, no adapter) in .", "gradle"))
+        for extra, names, build in cases:
+            with self.subTest(names=names):
+                repo = Repo(os.path.join(self.repo.path + "-" + build, "r"))
+                repo.commit(dict(JAVA, **extra), "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                self.assertEqual([(e["problem"], e["hint"]) for e in env["entries"]], [(f"several projects: {names}", ASK)])
+                r = _kit.run_cli(["doctor", "--repo", repo.path, "--no-trial", "--stack", build, "--project-dir", "."])
+                env = json.loads(r.stdout)
+                self.assertEqual(([p["build"] for p in env["setup"]["projects"]], [e["file"] for e in env["entries"]]),
+                                 ([build], [{"maven": "pom.xml", "gradle": "build.gradle"}[build]]))
+        rc, env = self.doctor({"Package.swift": "let package = Package(name: \"Kit\")\n",
+                               "Kit.xcodeproj/project.pbxproj": ""})
+        self.assertEqual([e["problem"] for e in env["entries"]],
+                         ["several projects: swift (swiftpm, no adapter) in ., swift (xcode, no adapter) in ."])
+        rc, env = self.again("--stack", "xcode")
+        self.assertEqual([(p["build"], p["target_os"]) for p in env["setup"]["projects"]], [("xcode", "macos")])
+
+    def test_a_build_named_with_stack_and_none_there_is_no_match(self):
+        rc, env = self.doctor(JAVA, "--stack", "gradle")
+        self.assertEqual([(e["class"], e["problem"]) for e in env["entries"]],
+                         [("needs-human", "no project found for gradle")])
+        rc, env = self.again("--stack", "gradle", "--project-dir", ".")
+        self.assertEqual((env["setup"], [e["problem"] for e in env["entries"]]),
+                         (None, ["no project found for gradle in ."]))
 
     def test_a_go_module_tests_with_go_test(self):
         rc, env = self.doctor({"go.mod": "module example.com/calc\n", "calc.go": "package calc\n",
@@ -136,7 +205,8 @@ class SetupDetection(unittest.TestCase):
                                "settings.gradle.kts": "", "src/main/kotlin/Calc.kt": "", "src/main/kotlin/Add.kt": "",
                                "src/main/java/Legacy.java": ""})
         self.assertEqual([(p["manifests"], p["language"], p["build"], p["test_framework"])
-                          for p in env["setup"]["projects"]], [(["build.gradle.kts"], "kotlin", "gradle", "testng")])
+                          for p in env["setup"]["projects"]],
+                         [(["build.gradle.kts", "settings.gradle.kts"], "kotlin", "gradle", "testng")])
 
     def test_a_groovy_gradle_build_with_junit_4(self):
         rc, env = self.doctor({"build.gradle": "dependencies { testImplementation 'junit:junit:4.13.2' }\n",
@@ -163,8 +233,9 @@ class SetupDetection(unittest.TestCase):
 
     def test_fixture_and_vendored_folders_hold_no_project_and_no_evidence(self):
         rc, env = self.doctor({"tests/fixtures/app/pom.xml": POM, "vendor/lib/go.mod": "module lib\n"})
-        self.assertEqual((env["setup"], [e["problem"] for e in env["entries"]]),
-                         (None, ["no project found: no pyproject.toml, setup.py, setup.cfg, Cargo.toml, package.json"]))
+        self.assertEqual((env["setup"], env["mode"], [e["problem"] for e in env["entries"]]),
+                         (None, None, ["no project found: no pyproject.toml, setup.py, setup.cfg, Cargo.toml, "
+                                       "package.json"]))
         rc, env = self.doctor({"App.sln": "", "App/App.csproj": "<Project />\n",
                                "examples/Demo/Demo.csproj": "<UseWPF>true</UseWPF> <Package Include=\"xunit\" />"})
         self.assertEqual([(p["test_framework"], p["target_os"]) for p in env["setup"]["projects"]], [(None, "linux")])
@@ -176,6 +247,118 @@ class SetupDetection(unittest.TestCase):
                                ".ekit/adapters/ts.toml": adapter})
         self.assertEqual((env["detected"], env["setup"]), ({"stack": "ts", "project_dir": "."}, None))
         self.assertFalse([e for e in env["entries"] if "adapter file" in e["problem"]])
+
+    def test_junit_platform_is_junit_5(self):
+        cases = {"gradle": {"build.gradle.kts": "dependencies { testImplementation(libs.junit.jupiter) }\n"
+                                                "tasks.test { useJUnitPlatform() }\n// junit:junit was dropped\n"},
+                 "spring": {"pom.xml": "<project><artifactId>spring-boot-starter-test</artifactId></project>\n"},
+                 "platform": {"build.gradle": "test { useJUnitPlatform() }\n"}}
+        for name, files in cases.items():
+            with self.subTest(name=name):
+                repo = Repo(os.path.join(self.repo.path + "-" + name, "r"))
+                repo.commit(files, "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                self.assertEqual([p["test_framework"] for p in env["setup"]["projects"]], ["junit5"])
+
+    def test_every_wpf_signal_reads_windows(self):
+        guid = "<ProjectTypeGuids>{60DC8134-EBA5-43B8-BCC9-BB4BC16C2548};{FAE04EC0}</ProjectTypeGuids>"
+        cases = {"classic-guid": {"App/App.csproj": f"<Project>{guid}</Project>"},
+                 "presentation": {"App/App.csproj": '<Project><Reference Include="PresentationFramework" /></Project>'},
+                 "props": {"Directory.Build.props": "<Project><PropertyGroup><UseWPF> True </UseWPF></PropertyGroup>"
+                                                    "</Project>", "App/App.csproj": "<Project />"},
+                 "utf16": {"App/App.csproj": None}}
+        for name, files in cases.items():
+            with self.subTest(name=name):
+                repo = Repo(os.path.join(self.repo.path + "-" + name, "r"))
+                files = dict({"App.sln": ""}, **files)
+                if name == "utf16":
+                    os.makedirs(os.path.join(repo.path, "App"))
+                    with open(os.path.join(repo.path, "App", "App.csproj"), "wb") as f:
+                        f.write("<Project><UseWPF>true</UseWPF></Project>".encode("utf-16"))
+                    del files["App/App.csproj"]
+                repo.commit(files, "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                file = "Directory.Build.props" if name == "props" else "App/App.csproj"
+                self.assertEqual([(p["target_os"], p["target_os_why"]) for p in env["setup"]["projects"]],
+                                 [("windows", WPF.format(file))])
+
+    def test_a_wpf_or_ios_word_in_a_comment_or_another_name_is_not_one(self):
+        rc, env = self.doctor({"App.csproj": "<Project><!-- <UseWPF>true</UseWPF> --></Project>"})
+        self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["linux"])
+        rc, env = self.doctor({"App.csproj": "<Project />", "Package.swift": "", "go.mod": ""}, "--stack", "swiftpm")
+        for text in ("// platforms: [.iOS(.v15)]\nlet p = 1\n", "/* .iOS(.v15) */\n",
+                     "let ext = Product.Kind.iOSApplicationExtension\n", "let p = Package(platforms: [.macOS(.v13)])\n"):
+            with self.subTest(text=text):
+                self.repo.commit({"Package.swift": text}, "c")
+                env = self.again("--stack", "swiftpm")[1]
+                self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["linux"])
+
+    def test_settings_gradle_is_the_build_root(self):
+        rc, env = self.doctor({"settings.gradle.kts": 'include("app")\n', "app/build.gradle.kts": "",
+                               "buildSrc/build.gradle.kts": "", "app/src/main/kotlin/A.kt": ""})
+        self.assertEqual([(p["project_dir"], p["manifests"], p["language"]) for p in env["setup"]["projects"]],
+                         [(".", ["settings.gradle.kts"], "kotlin")])
+        self.assertEqual([e["file"] for e in env["entries"]], ["settings.gradle.kts"])
+
+    def test_a_plan_entry_naming_an_adapter_file_outside_ekit_adapters_is_the_repos_adapter(self):
+        with open(os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "java.toml"), encoding="utf-8") as f:
+            adapter = f.read()
+        rc, env = self.doctor(dict(JAVA, **{"ci/java.toml": adapter, ".ekit/stack-plan.toml":
+                                            '[[stack]]\nname = "api"\nfolder = "."\nadapter = "ci/java.toml"\n'
+                                            'status = "current"\n'}))
+        self.assertEqual((env["detected"], env["setup"], env["mode"]),
+                         ({"stack": "java", "project_dir": "."}, None, "repair"))
+        self.assertEqual([(e["file"], e["severity"]) for e in env["entries"]], [("ci/java.toml", "confirm")])
+
+    def test_a_stack_plan_that_does_not_read_is_named(self):
+        rc, env = self.doctor(dict(JAVA, **{".ekit/stack-plan.toml": "[[stack]]\nname = 1\n"}))
+        self.assertEqual([(e["class"], e["severity"], e["file"]) for e in env["entries"]][0],
+                         ("adapter-fix", "fail", ".ekit/stack-plan.toml"))
+        self.assertRegex(env["entries"][0]["problem"], r"^the stack plan does not read: \.ekit/stack-plan\.toml at ")
+        self.assertEqual(env["mode"], "repair")
+
+    def test_an_existing_adapter_file_that_lists_no_manifest_routes_to_repair_not_setup(self):
+        rc, env = self.doctor(dict(JAVA, **{".ekit/adapters/java.toml": self.java_adapter().replace(
+            'manifests = ["pom.xml"]', "manifests = []")}))
+        self.assertEqual([(e["class"], e["severity"], e["file"], e["problem"]) for e in env["entries"]], [(
+            "adapter-fix", "fail", "pom.xml",
+            "no adapter lists `pom.xml` (java, maven), and the repo has its own adapter files "
+            "(`.ekit/adapters/java.toml`): one may be meant for it")])
+        self.assertEqual(env["entries"][0]["hint"], "repair or extend that adapter file (ci-doctor's repair mode, #24) "
+                                                    "rather than set up a second one; the owner decides")
+        self.assertEqual(env["mode"], "repair")
+
+    def test_an_xcode_adapter_listing_project_pbxproj_is_no_second_project(self):
+        adapter = self.java_adapter().replace('name = "java"', 'name = "xcode"').replace(
+            'manifests = ["pom.xml"]', 'manifests = ["project.pbxproj"]').replace('extensions = [".java"]',
+                                                                              'extensions = [".swift"]')
+        rc, env = self.doctor({"Shop.xcodeproj/project.pbxproj": "", ".ekit/adapters/xcode.toml": adapter})
+        self.assertEqual((env["setup"], [e["file"] for e in env["entries"]]), (None, [".ekit/adapters/xcode.toml"]))
+
+    def test_doctor_reads_a_built_in_named_adapter_file_as_resolve_does(self):
+        override = open(os.path.join(_kit.SCRIPTS, "mech_review", "adapters", "ts.toml"), encoding="utf-8").read()
+        override = override.replace('manifests = ["package.json"]', 'manifests = ["deno.json"]')
+        self.assertIn('manifests = ["deno.json"]', override)
+        rc, env = self.doctor({"deno.json": "{}\n", "src/a.ts": "", ".ekit/adapters/ts.toml": override})
+        got = json.loads(_kit.run_cli(["resolve", "--repo", self.repo.path, "--base", "HEAD", "--head", "HEAD"]).stdout)
+        self.assertEqual((got["stack"], got["project_dir"]), ("ts", "."))
+        self.assertEqual(env["detected"], {"stack": "ts", "project_dir": "."})
+        self.repo.commit({".ekit/adapters/ts.toml": "format = 1\n"}, "broken")
+        got = json.loads(_kit.run_cli(["resolve", "--repo", self.repo.path, "--base", "HEAD", "--head", "HEAD"]).stdout)
+        self.assertIn(".ekit/adapters/ts.toml", got["error"])
+        rc, env = self.again()
+        self.assertIn((".ekit/adapters/ts.toml", "fail"), [(e["file"], e["severity"]) for e in env["entries"]])
+        self.assertEqual(env["mode"], "repair")
+
+    def test_with_no_toml_reader_doctor_names_this_machine_and_routes_nothing(self):
+        self.repo.commit(dict(JAVA, **{".ekit/adapters/java.toml": self.java_adapter()}), "c")
+        with mock.patch.dict(sys.modules, {"tomllib": None}):
+            rc, env = self.again()
+        self.assertEqual((env["detected"], env["setup"], env["mode"]),
+                         ({"stack": None, "project_dir": None}, None, None))
+        self.assertEqual([(e["class"], e["severity"], e["file"], e["problem"], e["hint"]) for e in env["entries"]], [(
+            "env", "fail", "", "this python cannot read the repo's adapter files and stack plan (tomllib, python 3.11 "
+            "or newer): doctor cannot tell which manifests they cover", "rerun doctor with python 3.11 or newer")])
 
     def test_a_manifest_the_repos_adapter_file_lists_is_no_setup_candidate(self):
         with open(os.path.join(_kit.ROOT, "tests", "fixtures", "adapters", "java.toml"), encoding="utf-8") as f:
