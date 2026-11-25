@@ -92,5 +92,5 @@ One result per mistake, its change committed on a branch of its own with its pro
 | A test relied on `RecursionError` at deep nesting | `No check`: an instance; no second example, and the test that fixed it guards it |
 | A report verified one commit and a later one was pushed | Process: the `verified-commit.py` gate (#81) |
 | A new engine module was left out of the layering test's list | Made impossible: the list is derived from the package directory (#82) |
-| A behaviour change left the changelog and the two docs alone | Diff: the co-change rule `behaviour-docs` (#86) |
+| A behaviour change left the changelog and the two docs alone | Diff: the co-change rules `behaviour-changelog`, `behaviour-status-line` and `behaviour-ci-doc`, one per doc (#86) |
 | Tests failed on macOS only | Environment: no rule; macOS CI (`hooks-macos`) is the check |
