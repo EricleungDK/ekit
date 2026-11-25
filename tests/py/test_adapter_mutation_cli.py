@@ -323,7 +323,7 @@ class NotRun(Case):
                                      "stack's target-os is windows"}), r.stderr)
         self.assertEqual(self.calls(), "")
 
-    def test_no_report_is_a_fail_and_a_failing_baseline_is_a_fail(self):
+    def test_no_report_is_n_a_and_a_failing_baseline_is_a_fail(self):  # name kept (#22: the verdict is now a fail)
         """#22 review round 2: the tool ran and left no report: R3 did not judge the change, and the tool is there, so
         it is a fail with one entry, never n/a (env) (a toolchain absence) and never a pass."""
         self.pr()
