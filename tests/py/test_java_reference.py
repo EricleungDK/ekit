@@ -211,6 +211,23 @@ class RoundOneR2(Fixture):
             ("fail", "test `CalcTest.subtracts` marked @Disabled, or with a condition that can skip it"),
             ("fail", "test `CalcTest.negates` marked @Disabled, or with a condition that can skip it")])
 
+    def test_an_escaped_line_break_cannot_move_a_marker_off_its_line(self):  # #22 final, the reviewer's repro
+        """ten escaped line breaks on the class line put `@DoNotMutate` (raw line 16) ten lines down for the compiler:
+        R2 read it off the diff's added lines and gave nothing. The file is now unparseable: R2's needs-human fail."""
+        nl = "\\u000a" * 10
+        head = self.branch("shifted", "weak", {CALC: ("public final class Calc {", "public final class Calc { // c" + nl)})
+        head = self.branch("shifted2", head, {CALC: ("    public static int mul(", "    @DoNotMutate\n    public static int mul(")})
+        got = [(e["severity"], e["class"], e["file"], e["problem"]) for e in self.cli("r2", head)["entries"]]
+        self.assertIn(("fail", "needs-human", CALC, "file does not parse: a unicode escape decodes to a line break: the "
+                       "file's lines are not the compiler's (line 3)"), got)
+
+    def test_an_escaped_line_break_cannot_hide_a_bare_suppression(self):  # #22 final
+        nl = "\\u000a" * 10
+        head = self.branch("nopmd", "main", {CALC: ("public final class Calc {", "public final class Calc { // c" + nl)})
+        head = self.branch("nopmd2", head, {CALC: ("        return a + b;", "        return a + b; // NOPMD")})
+        got = [(e["severity"], e["class"], e["file"]) for e in self.cli("r2", head)["entries"]]
+        self.assertIn(("fail", "needs-human", CALC), got)
+
     def test_maven_config_and_suffix_named_skip_annotations_are_named(self):  # round 2, B2 and B4
         head = self.branch("mvncfg", "weak", {".mvn/maven.config": "-DexcludedMethods=mul\n",
                                               ".mvn/jvm.config": "-Dx=y\n", ".mvn/extensions.xml": "<extensions/>\n",

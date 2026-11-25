@@ -332,6 +332,19 @@ class NotRun(Case):
         self.assertEqual((r.returncode, env["checks"]["R3"]), (1, {"status": "fail", "note": problem}))
         self.assertEqual([(e["class"], *x) for e, x in zip(env["entries"], ents(env))],
                          [("agent-fixable", "fail", "", 0, problem)])
+        self.assertEqual([e["check"] for e in env["entries"]], ["R3"])
+
+    def test_no_report_after_a_dependency_fetch_failed_is_a_ci_entry(self):  # #22 final
+        """the runner could not fetch the tool or a dependency: still a fail, never a pass, and the entry is CI's (check
+        CI, class env, as a job with no result), not the PR's."""
+        self.pr()
+        for out in ("[INFO] Scanning\n[ERROR] Failed: Could not resolve dependencies for project x\n",
+                    "[ERROR] Could not transfer artifact org.pitest:pitest:jar:1.17.4 from/to central\n",
+                    "[ERROR] ... Unknown host repo.maven.apache.org\n"):
+            with self.subTest(out):
+                r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_OUT": out, "STUB_RC": "1"})
+                self.assertEqual((r.returncode, env["checks"]["R3"]["status"]), (1, "fail"))
+                self.assertEqual([(e["check"], e["class"], e["severity"]) for e in env["entries"]], [("CI", "env", "fail")])
         r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)),
                           env={"STUB_OUT": "x\ninitial test run failed\n", "STUB_RC": "1"})
         self.assertEqual((r.returncode, ents(env)), (1, [("fail", "", 0, "baseline tests fail at head: mutants not run")]))

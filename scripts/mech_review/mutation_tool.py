@@ -445,7 +445,7 @@ def _no_report(r, rc, text, timing):
             entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
                   "fix the failing tests first: mutation needs an unmutated tree that passes",
                   "a mutation check that did not run")])
-    return no_report(t["name"], t["report"], _first_line(text) or f"exit {rc}")
+    return no_report(t["name"], t["report"], _first_line(text) or f"exit {rc}", text)
 
 
 def _report_rows(t, crate, report):

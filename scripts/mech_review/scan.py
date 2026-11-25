@@ -34,6 +34,15 @@ def unicode_unescape(text):
     return UNICODE_ESCAPE.sub(sub, text)
 
 
+def escaped_line_break(text):
+    """position of the first escape javac decodes to a line break (`\\u000a`, `\\u000d`), or None: it moves the
+    lines after it, so the compiler's lines are no longer the file's (#22 final)."""
+    for mt in UNICODE_ESCAPE.finditer(text):
+        if len(mt.group(1)) % 2 and mt.group(2).lower() in ("000a", "000d"):
+            return mt.start() + len(mt.group(1)) - 1
+    return None
+
+
 def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 

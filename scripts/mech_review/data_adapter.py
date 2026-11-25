@@ -14,7 +14,7 @@ import shlex
 
 from . import declared, parser_cmd
 from .globs import any_glob
-from .scan import Call, line_of, norm, unicode_unescape
+from .scan import Call, escaped_line_break, line_of, norm, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -136,6 +136,9 @@ class DataAdapter(Adapter):
         return "test" if any_glob(path, test_globs) else "prod"
 
     def parse_error(self, text):
+        at = escaped_line_break(text) if self.lexer.unicode_escapes else None
+        if at is not None:  # every line after it would read one off the diff's: unparseable, never misread
+            return line_of(text, at), "a unicode escape decodes to a line break: the file's lines are not the compiler's"
         text = self._source(text)
         m, _, errors, _, _, _ = self._parse(text)
         if errors:

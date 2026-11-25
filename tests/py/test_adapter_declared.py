@@ -218,6 +218,20 @@ class RoundOne(unittest.TestCase):
                 got = self.a.mutation_skips("class T {\n    " + skip + " int a() { return 1; }\n}\n")
                 self.assertEqual([m for _, _, m in got], ["@DoNotMutate"])
 
+    def test_an_escape_that_decodes_to_a_line_break_is_unparseable(self):  # #22 final
+        """the compiler's lines would not be the file's: every R2 rule reads lines, so the file is not read at all"""
+        b = "\\"
+        for esc in (b + "u000a", b + "u000D", b + "uu000a", b * 3 + "u000a"):
+            with self.subTest(esc):
+                src = "class T {\n    // c" + esc + "\n    @Test void a() {\n    }\n}\n"
+                self.assertEqual(self.a.parse_error(src),
+                                 (2, "a unicode escape decodes to a line break: the file's lines are not the compiler's"))
+        for esc in (b * 2 + "u000a", b + "u0040", b + "u000b"):  # an escaped backslash; no line break
+            with self.subTest(esc):
+                self.assertIsNone(self.a.parse_error("class T {\n    // c" + esc + "\n}\n"))
+        d = adapter_file_dict()  # without unicode_escapes the text is read as it is
+        self.assertIsNone(parse(d).parse_error("class T {\n    // c" + b + "u000a\n}\n"))
+
     def test_unicode_unescape(self):
         from scripts.mech_review.scan import unicode_unescape
         b = "\\"  # one backslash
