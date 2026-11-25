@@ -208,7 +208,8 @@ class TestUnconfirmedSurvivor(unittest.TestCase):
     def test_the_review_relay_hands_it_back_as_a_missed_mutant(self):
         s = flat(section(read("SKILL.md"), "Review relay"))
         self.assertIn(self.RULE, s)
-        self.assertIn("goes back verbatim, as a `fail` does", s)
+        self.assertIn("`fail` entries go back verbatim, and so do R3's unconfirmed survivors: " + self.RULE
+                      + ", never confirmed or rejected", s)
 
     def test_finish_reads_it_as_a_missed_mutant_not_as_debt(self):
         with open(os.path.join(_kit.ROOT, "skills", "finish", "mech.md"), encoding="utf-8") as f:
@@ -217,7 +218,8 @@ class TestUnconfirmedSurvivor(unittest.TestCase):
         self.assertIn("not done while one is open", t)
 
     def test_the_brief_fixes_one_before_review(self):
-        self.assertIn("and so is an unconfirmed survivor (`r3-local.py` exits 1 on either)", flat(read("brief-template.md")))
+        self.assertIn("final review request; an unconfirmed survivor is fixed the same way (`r3-local.py` exits 1 on "
+                      "either)", flat(read("brief-template.md")))
 
 
 class TestCiMonitor(unittest.TestCase):

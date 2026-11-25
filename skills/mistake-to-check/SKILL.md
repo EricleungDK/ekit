@@ -5,7 +5,7 @@ description: Turn one agent mistake into a mechanical check, or one line saying 
 
 One **mistake** in, one result out: the **change** that makes a machine catch it next time, or one `No check:` line saying why none is made. A rule in the agent docs was written and still broken; the result here is something that runs.
 
-`<kit>` = the `scripts/` parent named by the `[ekit] Scenario runner:` session line, else `~/.ekit` (cloned once from `https://github.com/EricleungDK/ekit`). `<py>` = the Python named by the `[ekit] Python:` session line; no such line → `python3`, else `py -3`, else `python`.
+`<kit>`: the ekit checkout (the `[ekit] Scenario runner:` session line names its `scripts/`; else `~/.ekit`). `<py>`: the `[ekit] Python:` session line's Python, else `python3`.
 
 ## Input
 
