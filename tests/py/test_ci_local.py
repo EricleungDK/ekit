@@ -12,6 +12,7 @@ import _kit
 
 ci = _kit.load("ci-local")
 SELF = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review-self.yml")
+CALLED = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml")
 ENGINE = os.path.join(_kit.ROOT, "scripts", "mech-review.py")
 R3_LOCAL = os.path.join(_kit.ROOT, "scripts", "r3-local.py")
 BASE, HEAD = "b" * 40, "a" * 40
@@ -30,6 +31,8 @@ class Fake:
 
     def __init__(self, mech=None, probe=None, suite=None, r3=None, dirty="", branch="claude/x", leave=()):
         self.calls = []
+        self.kinds = []  # the step command each call was, in order: mech, probe, suite, r3
+        self.r0_dir = self.r0_dir_was = None  # the engine's --r0 dir, and what it was when the engine ran
         self.mech = mech or (0, envelope(f"all pass {HEAD}"), "")
         self.probe = probe or (0, "3.14\n", "")
         self.suite = suite or (0, "", "....\n----\nRan 4 tests in 0.1s\n\nOK\n")
@@ -47,15 +50,23 @@ class Fake:
         if argv[:2] == ["git", "-C"] and argv[3] == "status":
             return 0, self.dirty, ""
         if argv[1:3] == ["-I", ENGINE]:
+            self.kinds.append("mech")
+            if "--r0" in argv:
+                self.r0_dir = argv[argv.index("--r0") + 1]
+                self.r0_dir_was = "an empty dir" if os.path.isdir(self.r0_dir) and not os.listdir(self.r0_dir) \
+                    else "not an empty dir"
             return self.mech
         if argv[:5] == ["uv", "run", "--no-project", "--python", "3.14"] and "-c" in argv:
+            self.kinds.append("probe")
             return self.probe
         if argv == SUITE:
+            self.kinds.append("suite")
             for name in self.leave:  # what a careless uv run would leave in the repo
                 p = os.path.join(cwd, name)
                 os.makedirs(p) if name.endswith("venv") else open(p, "w").close()
             return self.suite
         if argv[1:3] == ["-I", R3_LOCAL]:
+            self.kinds.append("r3")
             return self.r3
         raise AssertionError(f"unexpected command {argv}")
 
@@ -90,8 +101,7 @@ class AllPass(Tmp):
             "suite: passed: Ran 4 tests in 0.1s (Python 3.14)",
             f"r3: passed: all pass {HEAD}",
         ])
-        order = [w for a, _ in fake.calls for w in ("mech", "suite", "r3") if (a, _) in fake.step(w)]
-        self.assertEqual(order, ["mech", "suite", "suite", "r3"])
+        self.assertEqual(fake.kinds, ["mech", "probe", "suite", "r3"])
 
 
 class Inputs(Tmp):
@@ -100,20 +110,30 @@ class Inputs(Tmp):
     def test_the_caller_inputs_are_the_workflows(self):
         with open(SELF, encoding="utf-8") as f:
             wf = f.read()
-        self.assertIn(f"stack: {ci.STACK}\n", wf)
-        self.assertIn("test-paths: |\n" + "".join(f"        {g}\n" for g in ci.TEST_PATHS), wf)
-        self.assertIn(f"protected-paths: '{ci.PROTECTED_PATHS[0]}'\n", wf)
-        self.assertEqual(len(ci.PROTECTED_PATHS), 1)
-        self.assertIn(f"mutation-budget: '{ci.MUTATION_BUDGET}'\n", wf)
+        self.assertIn("stack: python\n", wf)
+        self.assertIn("test-paths: |\n        tests/**\n        .ekit/scenarios/**\n      protected-paths", wf)
+        self.assertIn("protected-paths: '.github/**'\n", wf)
+        self.assertIn("mutation-budget: '20'\n", wf)
+
+    def test_the_red_first_job_runs_r0s_runtime_half(self):
+        with open(CALLED, encoding="utf-8") as f:
+            wf = f.read()
+        self.assertIn('args+=(--r0 "$HOME/.cache/ekit-r0")  # R0\'s runtime half, run part (#21)\n', wf)
 
     def test_the_mech_step_runs_the_checkouts_engine_on_the_base_and_head_commits(self):
         fake = Fake(branch="worktree-agent-1")
         self.main(fake)
         (argv, _), = fake.step("mech")
         self.assertEqual(argv, [sys.executable, "-I", ENGINE, "all", "--repo", self.tmp, "--base", BASE, "--head", HEAD,
-                                "--stack", "python", "--head-branch", "worktree-agent-1", "--agent-prefix", "*",
-                                "--test-paths", "tests/**", "--test-paths", ".ekit/scenarios/**",
-                                "--protected-paths", ".github/**"])
+                                "--stack", "python", "--test-paths", "tests/**", "--test-paths", ".ekit/scenarios/**",
+                                "--head-branch", "worktree-agent-1", "--agent-prefix", "*",
+                                "--protected-paths", ".github/**", "--r0", fake.r0_dir])
+
+    def test_the_mech_step_proves_r0s_runtime_half_in_a_fresh_dir_as_a_ci_cache_miss_does(self):
+        fake = Fake()
+        self.main(fake)
+        self.assertEqual(fake.r0_dir_was, "an empty dir")
+        self.assertEqual(os.path.lexists(fake.r0_dir), False)  # removed after the step
 
     def test_a_detached_head_is_passed_as_head(self):
         fake = Fake(branch="")

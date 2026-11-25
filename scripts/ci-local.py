@@ -7,7 +7,8 @@ usage: python3 -I scripts/ci-local.py [--base REF] [--head-branch NAME] [--r3-en
 Steps, each run whatever the one before gave, with the inputs of .github/workflows/mech-review-self.yml:
   mech   the mech checks (R1, R2, R4: mech-review.py all) with this checkout's engine, the mech-review.py beside this
          file, never an installed copy: --stack python, test paths tests/** and .ekit/scenarios/**, protected paths
-         .github/**. R1 runs on every branch (--agent-prefix '*'): a local branch is often not named as the PR's.
+         .github/**, and R0's runtime half (--r0, as the red-first job passes it) in a fresh dir, as on a cache miss.
+         R1 runs on every branch (--agent-prefix '*'): a local branch is often not named as the PR's.
   suite  python -m unittest discover -s tests/py on CI's Python (3.14) through uv with no project
          (uv run --no-project): no uv.lock and no .venv in the repo; one left there anyway is a failed step.
   r3     scripts/r3-local.py with the same inputs and --mutation-budget 20: a fail entry or an unconfirmed survivor
@@ -22,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 EXIT = __doc__[__doc__.index("exit: "):].strip()
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
@@ -67,16 +69,22 @@ def _show(out, err):
         print(err.rstrip(), file=sys.stderr)
 
 
+def _inputs(a):
+    """the arguments the engine's `all` and r3-local share: the commits, the stack and the test paths"""
+    return (["--repo", a.repo, "--base", a.base_sha, "--head", a.head_sha, "--stack", STACK]
+            + [x for g in TEST_PATHS for x in ("--test-paths", g)])
+
+
 def mech(run, a):
     branch = a.head_branch
     if branch is None:
         rc, out, _ = run(["git", "-C", a.repo, "rev-parse", "--abbrev-ref", "HEAD"])
         branch = out.strip() if rc == 0 and out.strip() else "HEAD"
-    argv = [sys.executable, "-I", ENGINE, "all", "--repo", a.repo, "--base", a.base_sha, "--head", a.head_sha,
-            "--stack", STACK, "--head-branch", branch, "--agent-prefix", "*"]
-    argv += [x for g in TEST_PATHS for x in ("--test-paths", g)]
+    argv = [sys.executable, "-I", ENGINE, "all"] + _inputs(a) + ["--head-branch", branch, "--agent-prefix", "*"]
     argv += [x for g in PROTECTED_PATHS for x in ("--protected-paths", g)]
-    rc, out, err = run(argv)
+    # CI's red-first job passes --r0 a cache dir it first empties; a miss proves the runtime half there, as this does
+    with tempfile.TemporaryDirectory(prefix="ekit-ci-local-r0-") as r0:
+        rc, out, err = run(argv + ["--r0", r0])
     if err.strip():
         print(err.rstrip(), file=sys.stderr)
     if rc > 1:
@@ -118,10 +126,8 @@ def suite(run, a):
 
 
 def r3(run, a):
-    argv = [sys.executable, "-I", R3_LOCAL, "--repo", a.repo, "--base", a.base_sha, "--head", a.head_sha,
-            "--stack", STACK]
-    argv += [x for g in TEST_PATHS for x in ("--test-paths", g)]
-    argv += ["--mutation-budget", MUTATION_BUDGET] + (["--env-dir", a.r3_env_dir] if a.r3_env_dir else [])
+    argv = [sys.executable, "-I", R3_LOCAL] + _inputs(a) + ["--mutation-budget", MUTATION_BUDGET]
+    argv += ["--env-dir", a.r3_env_dir] if a.r3_env_dir else []
     rc, out, err = run(argv)
     _show(out, err)
     summary = next(iter(out.splitlines()), "")
