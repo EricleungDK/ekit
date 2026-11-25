@@ -123,6 +123,10 @@ class SpecReversed(unittest.TestCase):
         plain = json.loads(r2(self.repo, self.base, head, adapter=None, stack="python").stdout)["entries"]
         self.assertEqual([e["id"] for e in ents], [e["id"] for e in plain if e["check"] == "R2"])
 
+    def test_issue_1_is_an_issue(self):
+        rc, ents, _ = self.entries(f"drop it\n\nspec: #1 reverses {NAME}\n", "--linked-issue", "#1")
+        self.assertConfirm(rc, ents, n="1")
+
     def test_linked_issue_wants_a_positive_ascii_number(self):
         for bad in ("0", "#0", "\u0665\u0663", "#\u0665\u0663", "\u00b2"):
             with self.subTest(bad=bad):
