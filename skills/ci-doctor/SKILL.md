@@ -12,10 +12,13 @@ Ends in a PR a person merges. `.github/**` is a human decision, so your last act
 Run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
 
 - `ask`: several projects. Ask the user which, naming each as the entry does, then rerun with `--project-dir`, `--stack` or both (the entry's hint).
-- `repair`: the repo's own adapter file or stack plan is there, unread or unproven by doctor (or R0's `adapter-fix` entry on a PR). Repair mode (#24) is not built yet: stop with a Needs-you block (finish) quoting the entries.
-- `setup`: a project no adapter covers, or an empty repo (`no-project`, mode null) whose user names the stack to come: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
+- `repair`: the repo's own adapter file or stack plan does not read, an adapter file of its own finds no project (it may be meant for the one found), or a stack is the repo's adapter file's, which doctor does not trial; or R0's `adapter-fix` entry on a PR. Repair mode (#24) is not built yet: stop with a Needs-you block (finish) quoting the entries.
+- `setup`: a project no adapter covers: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
 - `adopt`: the steps below.
-- null otherwise: the entries say why (no project, no TOML reader here); report them.
+- null: read the entry.
+  - `no project found: no ...`: the repo holds no manifest. If the user named the stack to come ("a Java API"), that is setup mode for a planned stack: follow [setup.md](setup.md). Else ask what the repo will hold.
+  - `no project found for <stack or folder>`: what you passed matched nothing. Ask again, naming the projects the hint lists.
+  - `this python cannot read the repo's adapter files ...`: rerun `DOCTOR` with a Python 3.11 or newer; with none here, stop and report it.
 
 Keep `inputs`, `trial` and each entry's `hint`: the hint is the exact fix.
 

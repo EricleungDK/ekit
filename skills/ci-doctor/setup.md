@@ -8,13 +8,13 @@ The proof gates the PR: a setup PR goes out only with every R0 case passing.
 
 Start from `DOCTOR`'s `setup.projects[0]` (mode `setup`): folder, manifests, language, build tool, test framework, target OS and its reason, and `setup.own_ci`, the repo's own workflows.
 
-An empty repo (`no-project`) where the user names the stack to come ("a Java API"): take language, build tool and test framework from their words (ask for what they leave open), folder `.`, and the target OS by doctor's rule: windows for a WPF app, macos for an iOS app, else linux. Its plan entry is `planned`.
+An empty repo (`no project found: no ...`, mode null) where the user names the stack to come ("a Java API"): take language, build tool and test framework from their words (ask for what they leave open), folder `.`, and the target OS by doctor's rule: windows for a WPF app, macos for an iOS app, else linux. Its plan entry is `planned`.
 
 ## 2. Cheat list, from the language alone
 
 Written before any adapter exists, by a second agent that sees the language, build tool and test framework and never the adapter. Harness with a subagent tool: start one with that brief and the categories below. Harness without one: write it yourself now, as a pass of its own, before step 3; it stands as written. Either way the writer reads the repo's test files (step 3's idioms), never an adapter draft.
 
-The writer lists every way, in each category, that a PR in this language can skip a test or hide a mutant, and writes the R0 fixtures for them (`.ekit/adapters/<name>.r0/`: `seed`, `skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts` and the three `source-` cases; the runtime fixtures `runtime/`; their rules: the Fixtures bullets of R0 adapter proof and Runtime half), in the repo's own idioms:
+The fixtures are written for this repo, never copied from the kit's test fixtures. The writer lists every way, in each category, that a PR in this language can skip a test or hide a mutant, and writes the R0 fixtures for them (`.ekit/adapters/<name>.r0/`: `seed`, `skip`, `expected-value`, `weaken-assert`, `suppression`, `helper-asserts` and the three `source-` cases; the runtime fixtures `runtime/`; their rules: the Fixtures bullets of R0 adapter proof and Runtime half), in the repo's own idioms:
 
 - **Marker skips**: each marker, annotation, attribute or call that disables a test, conditional ones too (OS, runtime version, env).
 - **Composed markers**: a marker the project defines that carries a skip or a test marker (meta-annotation, alias, macro, decorator factory).
@@ -29,7 +29,7 @@ Java, as an example of the categories: a composed `@Disabled` or `@Test`, `assum
 
 ## 3. Draft the adapter
 
-Read how the repo writes its tests (test files, the manifest's test and lint setup), then write `.ekit/adapters/<name>.toml`: `name`, `manifests`, `extensions`, `target-os` (step 1's), the lexer, tests, asserts, suppressions and mutation tables, `[mutation.tool]`, `[commands]` (install, build, lint, test: the repo's own toolchain), `[run]`, `[run.list]` and `[run.outcome]`.
+Read how the repo writes its tests (test files, the manifest's test and lint setup), then write `.ekit/adapters/<name>.toml` for this repo: generated from what it holds, never copied from the kit's own test fixtures (`<kit>/tests/fixtures/adapters/`, ekit's tests of the format; the graders fail a copy). Its keys: `name`, `manifests` (every manifest of the build in the folder, e.g. both `build.gradle.kts` and `settings.gradle.kts`: one it leaves out reads as a second project), `extensions`, `target-os` (step 1's), the lexer, tests, asserts, suppressions and mutation tables, `[mutation.tool]`, `[commands]` (install, build, lint, test: the repo's own toolchain), `[run]`, `[run.list]` and `[run.outcome]`.
 
 ## 4. Prove it with R0
 

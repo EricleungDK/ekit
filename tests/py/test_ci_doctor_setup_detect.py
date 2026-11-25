@@ -263,8 +263,10 @@ class SetupDetection(unittest.TestCase):
 
     def test_a_build_named_with_stack_and_none_there_is_no_match(self):
         rc, env = self.doctor(JAVA, "--stack", "gradle")
-        self.assertEqual([(e["class"], e["problem"]) for e in env["entries"]],
-                         [("needs-human", "no project found for gradle")])
+        self.assertEqual([(e["class"], e["problem"], e["hint"]) for e in env["entries"]],
+                         [("needs-human", "no project found for gradle",
+                           "projects here: java (maven, no adapter) in .; passing both --stack and --project-dir "
+                           "overrides detection")])
         rc, env = self.again("--stack", "gradle", "--project-dir", ".")
         self.assertEqual((env["setup"], [e["problem"] for e in env["entries"]]),
                          (None, ["no project found for gradle in ."]))

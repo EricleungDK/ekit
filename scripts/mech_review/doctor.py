@@ -671,7 +671,9 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
                                         "pick one with --stack and --project-dir", "guessing the project"))
         elif stack or project_dir:
             asked = " in ".join(x for x in (stack, project_dir) if x)
-            names = ", ".join(f"{s} in {d}" for s, d in candidates(paths)) or "none"
+            names = ", ".join([f"{s} in {d}" for s, d in candidates(scan, adapters)]
+                              + [f"{p['language']} ({p['build']}, no adapter) in {p['project_dir']}"
+                                 for p in detect.projects(repo, head, scan, known)]) or "none"
             entries.append(report.entry("doctor", "", 0, "no-match", "needs-human", "fail", f"no project found for {asked}",
                                         f"projects here: {names}; passing both --stack and --project-dir overrides detection",
                                         "guessing the project"))

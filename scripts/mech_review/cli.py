@@ -92,12 +92,13 @@ doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base 
   names one exact fix. The repo's adapters are read as resolve reads them (the built-ins, .ekit/adapters/<name>.toml,
   the adapter files the stack plan names); one that does not read is an entry. `mode` (#23): adopt (one built-in
   project), setup, repair (a stack of the repo's adapter file, which doctor does not trial; an adapter file or plan that
-  does not read; an uncovered project beside the repo's own adapter files: repair mode, #24), ask (several projects:
-  one `ambiguous` entry naming them all, built-in or not, at any depth), or null. `setup` is null unless a project no
+  does not read; an uncovered project while an own adapter file finds no project and nothing was picked: repair mode,
+  #24), ask (several projects: one `ambiguous` entry naming them all; built-in and uncovered share one pool, the
+  shallowest wins), or null. `setup` is null unless a project no
   adapter covers is found (pom.xml, build.gradle[.kts], settings.gradle[.kts], *.sln, *.csproj, Package.swift,
-  *.xcodeproj, go.mod; the shallowest): then {projects: [{project_dir, manifests, language, build, test_framework,
+  *.xcodeproj, go.mod; outside the plan's ignore folders; a build's manifests in one folder are one project): then {projects: [{project_dir, manifests, language, build, test_framework,
   target_os, target_os_why}], own_ci: [the team's CI workflows: run on push, pull_request, pull_request_target or
-  merge_group, with a job that calls no ekit workflow]}. target_os: windows for a WPF app (UseWPF, the WPF project
+  merge_group, with a job that calls no ekit workflow; what it cannot parse counts]}. target_os: windows for a WPF app (UseWPF, the WPF project
   type, PresentationFramework), macos for an Xcode project or a Package.swift naming .iOS, else linux. --stack takes a
   built-in or such a project's build (maven, gradle, dotnet, swiftpm, xcode, go): every ask has an answer.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
