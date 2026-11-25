@@ -164,7 +164,7 @@ def max_mutants_arg(value):
 def issue_arg(value):
     """--linked-issue: an issue number, N or #N (#53)."""
     n = value[1:] if value.startswith("#") else value
-    if n.isdigit() and int(n) >= 1:
+    if re.fullmatch(r"[0-9]+", n) and int(n) >= 1:  # ASCII digits only: str.isdigit takes ² and ٥٣
         return int(n)
     raise argparse.ArgumentTypeError(f"{value!r}: want an issue number, N or #N")
 

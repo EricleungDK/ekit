@@ -23,7 +23,7 @@ def unmatched(xs, ys):
     return out
 
 
-SPEC_LINE = re.compile(r"^spec:[ \t]*#(\d+)[ \t]+reverses[ \t]+(\S(?:.*\S)?)[ \t]*$", re.M)
+SPEC_LINE = re.compile(r"^spec:[ \t]*#(\d+)[ \t]+reverses[ \t]+(\S(?:.*\S)?)[ \t]*$", re.M | re.ASCII)
 
 
 def spec_reversed(text, linked):
@@ -76,7 +76,19 @@ def r2(rv, protected_globs, rules=(), linked=()):
                              {ln for ln, _ in added.get(new, [])}, spec)
         except ParserError as e:
             failed = parser_entry(new or old, e)
-    return entries + ([failed] if failed else files)
+    return entries + ([failed] if failed else _one_file_only(files))
+
+
+def _one_file_only(files):
+    """a spec line names one test: when its name is removed from several files the line is ambiguous, and each of
+    those removals stays the fail (#53 review F5)."""
+    seen = {}
+    for e in files:
+        if e["_key"].startswith(SPEC_KEY):
+            seen.setdefault(e["_key"][len(SPEC_KEY):], set()).add(e["file"])
+    many = {n for n, fs in seen.items() if len(fs) > 1}
+    return [_removed_fail(e["file"], e["line"], e["_key"][len(SPEC_KEY):], True)
+            if e["_key"].startswith(SPEC_KEY) and e["_key"][len(SPEC_KEY):] in many else e for e in files]
 
 
 def parser_entry(path, err):
@@ -212,17 +224,26 @@ def _renamed_changed(path, changed):
                   "renaming a test to hide a changed or weakened assertion") for rf, nf in changed]
 
 
+SPEC_KEY = "spec-removed:"
+
+
 def _removed(path, gone, spec):
     """a removed test is a fail, unless spec (#53) names it: then a confirm the reviewer decides against issue #N."""
-    return [entry("R2", path, f.line, f"spec-removed:{f.name}", "agent-fixable", "confirm",
+    return [entry("R2", path, f.line, SPEC_KEY + f.name, "agent-fixable", "confirm",
                   f"test `{f.name}` removed, spec #{spec[f.name]} reverses it",
                   f"confirm only against a quoted sentence of #{spec[f.name]} that reverses this test's assertion; "
                   "with no such sentence, restore the test",
                   "removing a test the spec does not reverse, or citing a spec that does not say so")
-            if f.name in spec else
-            entry("R2", path, f.line, f.name, "agent-fixable", "fail", f"test fn `{f.name}` removed",
-                  "restore the test and make the code satisfy it; a removed test is not a fix",
-                  "deleting or renaming a test to hide a failure") for f in gone]
+            if f.name in spec else _removed_fail(path, f.line, f.name) for f in gone]
+
+
+def _removed_fail(path, line, name, several=False):
+    """the removed test's fail; several: a spec line named it, but tests of that name are removed in several files."""
+    hint = "restore the test and make the code satisfy it; a removed test is not a fix"
+    if several:
+        hint += " (the `spec: #N reverses` line names tests removed from several files, so it applies to none)"
+    return entry("R2", path, line, name, "agent-fixable", "fail", f"test fn `{name}` removed", hint,
+                 "deleting or renaming a test to hide a failure")
 
 
 def _markers(adapter, path, afns, bfns, renamed):

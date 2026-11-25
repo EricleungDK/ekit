@@ -36,7 +36,7 @@ class SpecReversed(unittest.TestCase):
                                      "base")
 
     def entries(self, msg, *extra, check="r2", text=HEAD):
-        head = self.repo.commit({"tests/test_calc.py": text}, msg)
+        head = self.repo.commit(text if isinstance(text, dict) else {"tests/test_calc.py": text}, msg)
         r = r2(self.repo, self.base, head, *extra, adapter=None, stack="python", check=check)
         self.assertIn(r.returncode, (0, 1), r.stderr)
         got = json.loads(r.stdout)
@@ -94,6 +94,41 @@ class SpecReversed(unittest.TestCase):
         r = r2(self.repo, self.base, self.base, "--linked-issue", "abc", adapter=None, stack="python")
         self.assertEqual(r.returncode, 2)
         self.assertIn("want an issue number", r.stderr)
+
+
+    def test_several_linked_lines_for_one_test_name_the_lowest_issue(self):
+        rc, ents, _ = self.entries(f"drop it\n\nspec: #53 reverses {NAME}\nspec: #9 reverses {NAME}\n"
+                                   f"spec: #61 reverses {NAME}\n",
+                                   "--linked-issue", "53", "--linked-issue", "9", "--linked-issue", "61")
+        self.assertConfirm(rc, ents, n="9")
+
+    def test_trailing_whitespace_after_the_name_still_matches(self):
+        rc, ents, _ = self.entries(f"drop it\n\nspec: #53 reverses {NAME}  \t\n", "--linked-issue", "53")
+        self.assertConfirm(rc, ents)
+
+    def test_a_spec_line_with_non_ascii_digits_stays_the_fail(self):
+        self.assertFail(*self.entries(f"drop it\n\nspec: #\u0665\u0663 reverses {NAME}\n", "--linked-issue", "53")[:2])
+
+    def test_one_spec_line_for_removals_in_several_files_downgrades_none(self):
+        self.base = self.repo.commit({"tests/test_other.py": BASE}, "base 2")
+        rc, ents, _ = self.entries(f"drop it\n\nspec: #53 reverses {NAME}\n", "--linked-issue", "53",
+                                   text={"tests/test_calc.py": HEAD, "tests/test_other.py": HEAD})
+        self.assertEqual(rc, 1)
+        self.assertEqual([(e["file"], e["severity"], e["line"], e["problem"]) for e in ents],
+                         [("tests/test_calc.py", "fail", 7, f"test fn `{NAME}` removed"),
+                          ("tests/test_other.py", "fail", 7, f"test fn `{NAME}` removed")])
+        self.assertIn("several files", ents[0]["hint"])
+        # the fail keeps its id: the same one the removal gets with no linked issue
+        head = self.repo.git("rev-parse", "HEAD").strip()
+        plain = json.loads(r2(self.repo, self.base, head, adapter=None, stack="python").stdout)["entries"]
+        self.assertEqual([e["id"] for e in ents], [e["id"] for e in plain if e["check"] == "R2"])
+
+    def test_linked_issue_wants_a_positive_ascii_number(self):
+        for bad in ("0", "#0", "\u0665\u0663", "#\u0665\u0663", "\u00b2"):
+            with self.subTest(bad=bad):
+                r = r2(self.repo, self.base, self.base, "--linked-issue", bad, adapter=None, stack="python")
+                self.assertEqual(r.returncode, 2)
+                self.assertIn("want an issue number", r.stderr)
 
 
 class SpecReversedRepoAdapter(unittest.TestCase):
