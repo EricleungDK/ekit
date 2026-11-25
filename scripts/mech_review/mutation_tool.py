@@ -22,7 +22,7 @@ from .gitio import added_lines, git
 from .mutants import (DEFAULT_MAX_MUTANTS, HOW, PROBE_TIMEOUT, _check, _crate_path, _files_baseline, _first_line,
                       _payload, _repo_path, _under, crate_check, default_runner, line_ranges, partial_entry, shard_files,
                       shard_index, stryker_desc)
-from .report import entry, finalize
+from .report import entry, finalize, no_report
 
 MAX_REPORT_BYTES = 64 * 1024 * 1024  # a report larger than this is not read (n/a): no tool's real report comes near it
 # Found: one mutant of a report. file: crate-relative path (suffix True: a path tail, PIT's package path), or None for a
@@ -362,7 +362,8 @@ def _ranges(r):
         if module == "":
             outside.append(f)
             continue
-        package = module.rpartition(".")[0] + "." if module and "." in module else ""
+        # a file directly under a root (the default package) is its own glob: PIT refuses a bare `*`
+        package = (module.rpartition(".")[0] + "." if "." in module else module) if module else ""
         for a, _, b in (x.partition("-") for x in line_ranges(ln for ln, _ in r.changed.get(f, []))):
             ranges.append(t["mutate"].format(file=crate_f, first=a, last=b, module=module, package=package)
                           if "mutate" in t else crate_f)
@@ -433,7 +434,8 @@ def _capped(t):
 
 
 def _no_report(r, rc, text, timing):
-    """the result of a run that left no report: partial on a budget hit, the baseline fail, else n/a (env)."""
+    """the result of a run that left no report: partial on a budget hit, the baseline fail, else a fail (the tool
+    ran: no toolchain absence, report.no_report)."""
     t = r.tool
     if rc == "timeout":
         return {"status": "partial", "note": f"budget hit before {t['name']} wrote its report: ? mutants, none read"
@@ -443,8 +445,7 @@ def _no_report(r, rc, text, timing):
             entry("R3", "", 0, "baseline", "agent-fixable", "fail", "baseline tests fail at head: mutants not run",
                   "fix the failing tests first: mutation needs an unmutated tree that passes",
                   "a mutation check that did not run")])
-    return _check("n/a", f"no {t['name']} report at {t['report']} (env): {_first_line(text) or f'exit {rc}'}; "
-                         "check the tool's run log"), []
+    return no_report(t["name"], t["report"], _first_line(text) or f"exit {rc}")
 
 
 def _report_rows(t, crate, report):

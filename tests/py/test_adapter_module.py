@@ -59,6 +59,7 @@ class ModuleValidation(unittest.TestCase):
         t = {"module_roots": ["src/main/java", "gen"]}
         self.assertEqual(mutation_tool.module_name(t, "src/main/java/com/x/Calc.java"), "com.x.Calc")
         self.assertEqual(mutation_tool.module_name(t, "gen/A.kt"), "A")
+        self.assertEqual(mutation_tool.module_name(t, "src/main/java/a/b/C.java"), "a.b.C")
         self.assertEqual(mutation_tool.module_name(t, "src/main/javax/B.java"), "")
         self.assertEqual(mutation_tool.module_name(t, "other/B.java"), "")
         self.assertIsNone(mutation_tool.module_name({}, "src/main/java/B.java"))
@@ -140,7 +141,7 @@ class ModuleRun(Case):
         path = self.adapter(adapter_text(PIT_TOML.replace('mutate = "{module},{module}$*"', 'mutate = "{package}*"'),
                                          '[".mini", ".java"]'))
         self.cli("mutants", path, env=self.report("mutations.xml", "target/pit-reports/mutations.xml"))
-        self.assertIn("| pit -DtargetClasses=*,com.example.*\n", self.calls())
+        self.assertIn("| pit -DtargetClasses=Top*,com.example.*\n", self.calls())  # round 2, B3: never a bare `*`
 
 
 class AllProvesTheFile(unittest.TestCase):

@@ -200,8 +200,25 @@ class RoundOneR2(Fixture):
                                                                    "    public static int mul(")})
         got = [(e["severity"], e["class"], e["file"], e["problem"]) for e in self.cli("r2", head)["entries"]]
         self.assertEqual(len(got), 2, got)
-        self.assertTrue(any(f == "pom.xml" and c == "needs-human" and "PIT config (pom.xml)" in p for _, c, f, p in got), got)
+        self.assertTrue(any(f == "pom.xml" and c == "needs-human" and "PIT config (pom.xml or .mvn/)" in p for _, c, f, p in got), got)
         self.assertTrue(any(f == CALC and c == "needs-human" and "@DoNotMutate" in p for _, c, f, p in got), got)
+
+    def test_a_spaced_or_commented_marker_is_still_a_skip(self):  # round 2, B1
+        head = self.branch("spaced", "main", {TEST: ("    @Test\n    void subtracts", "    @ /* later */ Disabled\n"
+                                                     "    @Test\n    void subtracts")})
+        head = self.branch("escaped", head, {TEST: ("    @Test\n    void negates", "    @Test \\u0040Disabled\n    void negates")})
+        self.assertEqual([(s, p) for s, _, _, p in ents(self.cli("r2", head), "R2")], [
+            ("fail", "test `CalcTest.subtracts` marked @Disabled, or with a condition that can skip it"),
+            ("fail", "test `CalcTest.negates` marked @Disabled, or with a condition that can skip it")])
+
+    def test_maven_config_and_suffix_named_skip_annotations_are_named(self):  # round 2, B2 and B4
+        head = self.branch("mvncfg", "weak", {".mvn/maven.config": "-DexcludedMethods=mul\n",
+                                              ".mvn/jvm.config": "-Dx=y\n", ".mvn/extensions.xml": "<extensions/>\n",
+                                              CALC: ("    public static int mul(", "    @ MyGenerated\n"
+                                                     "    public static int mul(")})
+        got = sorted((e["file"], e["class"]) for e in self.cli("r2", head)["entries"])
+        self.assertEqual(got, [(".mvn/extensions.xml", "needs-human"), (".mvn/jvm.config", "needs-human"),
+                               (".mvn/maven.config", "needs-human"), (CALC, "needs-human")])
 
     def test_all_with_the_adapter_proves_it_with_its_fixtures(self):  # S8
         c = self.cli("all", "main", "--head-branch", "claude/t22")["checks"]["R0"]
@@ -276,6 +293,15 @@ class Mutation(Fixture):
         self.assertEqual([(e["line"], e["problem"].split(": ", 1)[1]) for e in env["entries"]], [
             (22, "PrimitiveReturnsMutator in twice: replaced int return with 0 for com/example/Helper::twice"),
             (22, "MathMutator in twice: Replaced integer addition with subtraction")])
+
+    def test_a_file_in_the_default_package_leaves_r3_on(self):  # round 2, B3: `{package}*` was a bare `*`
+        head = self.branch("toplevel", "weak", {"src/main/java/Top.java": "public final class Top {\n    private Top() {\n"
+                                                "    }\n}\n"})
+        env = self.cli("mutants", head)
+        if not TOOLCHAIN:
+            return self.check_env(env["checks"]["R3"])
+        self.assertEqual(env["checks"]["R3"]["status"], "fail", env["checks"]["R3"])
+        self.assertEqual([(e["file"], e["line"]) for e in env["entries"]], [(CALC, 16), (CALC, 16)])
 
     def test_a_strong_test_leaves_none(self):
         env = self.cli("mutants", "red")

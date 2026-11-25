@@ -323,11 +323,15 @@ class NotRun(Case):
                                      "stack's target-os is windows"}), r.stderr)
         self.assertEqual(self.calls(), "")
 
-    def test_no_report_is_n_a_and_a_failing_baseline_is_a_fail(self):
+    def test_no_report_is_a_fail_and_a_failing_baseline_is_a_fail(self):
+        """#22 review round 2: the tool ran and left no report: R3 did not judge the change, and the tool is there, so
+        it is a fail with one entry, never n/a (env) (a toolchain absence) and never a pass."""
         self.pr()
-        _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_OUT": "boom\n", "STUB_RC": "2"})
-        self.assertEqual(env["checks"]["R3"], {"status": "n/a", "note": "no mut report at out/report.json (env): boom; "
-                                                                        "check the tool's run log"})
+        r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_OUT": "boom\n", "STUB_RC": "2"})
+        problem = "mut ran and wrote no report (out/report.json): mutants not read: boom"
+        self.assertEqual((r.returncode, env["checks"]["R3"]), (1, {"status": "fail", "note": problem}))
+        self.assertEqual([(e["class"], *x) for e, x in zip(env["entries"], ents(env))],
+                         [("agent-fixable", "fail", "", 0, problem)])
         r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)),
                           env={"STUB_OUT": "x\ninitial test run failed\n", "STUB_RC": "1"})
         self.assertEqual((r.returncode, ents(env)), (1, [("fail", "", 0, "baseline tests fail at head: mutants not run")]))
@@ -358,8 +362,8 @@ class NotRun(Case):
     def test_a_committed_report_is_never_read_as_the_runs(self):
         self.pr(head={"src/calc.mini": HEAD_SRC, "out/report.json": read(os.path.join(FX, "elements.json"))})
         _, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)))
-        self.assertEqual(env["checks"]["R3"]["status"], "n/a")
-        self.assertTrue(env["checks"]["R3"]["note"].startswith("no mut report at out/report.json (env)"))
+        self.assertEqual(env["checks"]["R3"]["status"], "fail")
+        self.assertTrue(env["checks"]["R3"]["note"].startswith("mut ran and wrote no report (out/report.json)"))
 
     def pr_with(self, plant):
         """base, then a head that changes calc.mini and lets plant(repo dir) put things in the checkout."""

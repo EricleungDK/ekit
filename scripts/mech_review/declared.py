@@ -45,15 +45,25 @@ def _word_before(lx, m, j):
     return j + 1
 
 
+def _ws_before(m, k):
+    """k moved back over whitespace (masked comments are whitespace too): the end of the code before k."""
+    while k > 0 and m[k - 1].isspace():
+        k -= 1
+    return k
+
+
 def _marker_at(lx, m, start, prefix):
-    """start of the marker whose word starts at start (`a.b.Name`: the chain back to the prefix), or None."""
-    k = start
-    while lx.member and k >= len(lx.member) and m.startswith(lx.member, k - len(lx.member)):
-        w = _word_before(lx, m, k - len(lx.member) - 1)
-        if w == k - len(lx.member):
+    """start of the marker whose word starts at start (`a.b.Name`: the chain back to the prefix), or None. Whitespace
+    and comments may sit after the prefix and around each member character, as javac allows (`@ Disabled`,
+    `@/**/Disabled`, `@org . junit . Disabled`)."""
+    k = _ws_before(m, start)
+    while lx.member and m.startswith(lx.member, k - len(lx.member)) and k >= len(lx.member):
+        j = _ws_before(m, k - len(lx.member))
+        w = _word_before(lx, m, j - 1)
+        if w == j:
             return None
-        k = w
-    return k - len(prefix) if k >= len(prefix) and m.startswith(prefix, k - len(prefix)) else None
+        k = _ws_before(m, w)
+    return k - len(prefix) if m.startswith(prefix, k - len(prefix)) and k >= len(prefix) else None
 
 
 def markers(lx, m, start, prefix):
@@ -131,17 +141,30 @@ def body(text, m, lx, span):
     return (first, last) if first <= last else None
 
 
+def _chain(lx, m, k):
+    """(the last word, its end) of a dotted name starting at k, whitespace allowed around each member character, or
+    (None, k): no word there."""
+    w = lx.word_re.match(m, lx.skip_ws(m, k))
+    if not w:
+        return None, k
+    while lx.member:
+        dot = lx.skip_ws(m, w.end())
+        nxt = lx.word_re.match(m, lx.skip_ws(m, dot + len(lx.member))) if m.startswith(lx.member, dot) else None
+        if not nxt:
+            break
+        w = nxt
+    return w.group(), w.end()
+
+
 def annotations(lx, m, prefix, names):
-    """[(start, end, marker)] of each marker in masked m whose (last) word is one of names: `@DoNotMutate`,
-    `@lombok.Generated`, `@Generated("x")` (its group not included)."""
+    """[(start, end, marker)] of each marker in masked m whose last word ends with one of names, as PIT matches them
+    (an annotation's name ending in the configured one: `@DoNotMutate`, `@lombok.Generated`, `@MyGenerated`), with
+    whitespace and comments allowed after the prefix and around each member character. The marker text is
+    `<prefix><word>`; its group is not included."""
     out, at = [], m.find(prefix)
     while at >= 0:
-        w = lx.word_re.match(m, at + len(prefix))
-        end = w.end() if w else at + len(prefix)
-        while w and lx.member and m.startswith(lx.member, end) and lx.word_re.match(m, end + len(lx.member)):
-            w = lx.word_re.match(m, end + len(lx.member))
-            end = w.end()
-        if w and w.group() in names:
-            out.append((at, end, m[at:end]))
-        at = m.find(prefix, end)
+        word, end = _chain(lx, m, at + len(prefix))
+        if word and word.endswith(tuple(names)):
+            out.append((at, end, prefix + word))
+        at = m.find(prefix, max(end, at + len(prefix)))
     return out

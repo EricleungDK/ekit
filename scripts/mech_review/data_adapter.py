@@ -14,7 +14,7 @@ import shlex
 
 from . import declared, parser_cmd
 from .globs import any_glob
-from .scan import Call, line_of, norm
+from .scan import Call, line_of, norm, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -125,6 +125,10 @@ class DataAdapter(Adapter):
             out.append((sep.join([g.name for g in encl] + [t.name]), t, markers))
         return out
 
+    def _source(self, text):
+        """the text as the compiler reads it: [lexer] unicode_escapes (#22, Java) decodes `\\uXXXX` first."""
+        return unicode_unescape(text) if self.lexer.unicode_escapes else text
+
     # ---- the Adapter interface ----
     def classify(self, path, test_globs):
         if not path.endswith(self.extensions):
@@ -132,6 +136,7 @@ class DataAdapter(Adapter):
         return "test" if any_glob(path, test_globs) else "prod"
 
     def parse_error(self, text):
+        text = self._source(text)
         m, _, errors, _, _, _ = self._parse(text)
         if errors:
             pos, msg = errors[0]
@@ -139,6 +144,7 @@ class DataAdapter(Adapter):
         return self.lexer.balance(text, m)
 
     def test_fns(self, text):
+        text = self._source(text)
         m, _, _, _, tests, _ = self._parse(text)
         return [TestFn(name, line_of(text, t.start), markers, self._body(text, m, t)) for name, t, markers in tests]
 
@@ -148,11 +154,13 @@ class DataAdapter(Adapter):
     def test_bodies(self, text):
         """a declared test (declared.Span) keeps its body when skipped; a skipped call (`xit("x")`) has one only with
         a callback."""
+        text = self._source(text)
         _, _, _, _, tests, _ = self._parse(text)
         return {name: (line_of(text, t.start), norm(text[t.start:t.end])) for name, t, _ in tests
                 if self._declared or not t.skip or t.args[1:]}
 
     def calls(self, text):
+        text = self._source(text)
         m, _, _, _, tests, fns = self._parse(text)
         out = {}
         for name, t, _ in tests:
@@ -162,6 +170,7 @@ class DataAdapter(Adapter):
         return out
 
     def assertions(self, text):
+        text = self._source(text)
         m, _, _, _, tests, fns = self._parse(text)
         lx = self.lexer
         spans = [(n, t.start, t.end) for n, t, _ in tests]
@@ -237,6 +246,7 @@ class DataAdapter(Adapter):
         return w.start(), end, "other", None, None
 
     def suppressions(self, text):
+        text = self._source(text)
         _, comments, _, _, _, _ = self._parse(text)
         total = text.count("\n") + 1
         out = []
@@ -283,18 +293,22 @@ class DataAdapter(Adapter):
 
     def mutation_skips(self, text):
         """comments that start with a skip_comments phrase, and (#22) markers named in skip_annotations."""
+        text = self._source(text)
         m, comments, _, _, _, _ = self._parse(text)
         out = [(line_of(text, start), line_of(text, end), " ".join(body.split())) for start, end, body in comments
                if any(r.match(body) for r in self._skip_res)]
         names = self.mutation.get("skip_annotations")
         if names:
             out += [(line_of(text, a), line_of(text, b), mark)
-                    for a, b, mark in declared.annotations(self.lexer, m, self.tests["prefix"], set(names))]
+                    for a, b, mark in declared.annotations(self.lexer, m, self.tests["prefix"], names)]
         return sorted(out)
 
     def mutation_config(self, path, load):
-        if os.path.basename(path) in self.mutation.get("config_files", []):
-            return self.mutation["config_name"]
+        """a config_files entry names a file in any dir: a name (`pom.xml`) matches the path's last part, a path
+        (`.mvn/maven.config`, #22) its last parts."""
+        for c in self.mutation.get("config_files", []):
+            if path == c or path.endswith("/" + c) or ("/" not in c and os.path.basename(path) == c):
+                return self.mutation["config_name"]
         return None
 
     # ---- the run side: [run] and [commands] (R1, R4) ----

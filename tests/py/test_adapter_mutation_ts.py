@@ -193,7 +193,7 @@ class Suite(unittest.TestCase):
             f.write(text.replace('report = "reports/mutation/mutation.json"', 'report = "reports/elsewhere.json"'))
         r = self.run_suite(moved)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("FAIL ts MISSED mutants: exit 1", r.stdout)
+        self.assertIn("FAIL ts MISSED: one entry per mutant in the diff", r.stdout)  # the file's report path is read
 
 
 if __name__ == "__main__":

@@ -335,11 +335,13 @@ out=$(st "$R" "$B" "$H"); rc=$?
 eq "$(jq -r '[.entries[] | select(.problem | test("unlocated"))][0].severity' <<<"$out")" confirm "ts unlocated: a confirm entry"
 has "$(jq -r .checks.R3.note <<<"$out")" "1 unlocated" "ts unlocated: the note counts it"
 
-# a report that cannot be read is n/a (env): a Stryker run that wrote no report never passes
+# a Stryker run that wrote no report is a fail (#22: Stryker ran, so no toolchain absence), never a pass
 mrepo noreport
 export MUT_REPORT= MUT_STDOUT="$FX/missed/stdout.txt" MUT_RC=1
 out=$(st "$R" "$B" "$H"); rc=$?
-eq "$(jq -r .checks.R3.status <<<"$out")" n/a "ts no report: R3 n/a (env)"
+eq "$(jq -r .checks.R3.status <<<"$out")" fail "ts no report: R3 fail"
+has "$(jq -r .checks.R3.note <<<"$out")" "ran and wrote no report (reports/mutation/mutation.json)" "ts no report: the note says so"
+eq "$rc" 1 "ts no report: exit 1"
 lacks "$(jq -r .summary <<<"$out")" "all pass" "ts no report: never all pass"
 
 # a covered mutant that the runner completed no test for (vitest 5 nested describe with the vitest plugin): n/a, not MISSED

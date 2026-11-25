@@ -19,6 +19,7 @@ brackets = ["()", "[]", "{}"]
 ident_chars = "$"
 line_comments = ["//"]
 block_comments = [["/*", "*/"]]
+unicode_escapes = true  # javac decodes \uXXXX before it lexes: `\u0040Disabled` is `@Disabled`
 
 # a text block first: `"""` would otherwise read as an empty string and an open one
 [[lexer.strings]]
@@ -90,12 +91,13 @@ reason_strip = [" -:"]
 problem = "`{lints}` added without a reason"
 hint = "fix the PMD finding, or give the suppression a reason after it: `// NOPMD - why`"
 
-# what hides code from R3: PIT's config is the pitest-maven plugin's in pom.xml (excludedMethods, excludedClasses, ...),
-# so a pom edit is R2's needs-human entry; PIT skips code under an annotation named DoNotMutate, Generated or
-# CoverageIgnore
+# what hides code from R3: PIT's config is the pitest-maven plugin's in any pom.xml (excludedMethods, excludedClasses,
+# ...), and Maven reads more options from .mvn/ (maven.config: `-DexcludedMethods=mul`; jvm.config: system properties;
+# extensions.xml: build extensions), so an edit to any of them is R2's needs-human entry. PIT skips code under an
+# annotation whose name ends with DoNotMutate, Generated or CoverageIgnore (`@MyGenerated` too)
 [mutation]
-config_files = ["pom.xml"]
-config_name = "PIT config (pom.xml)"
+config_files = ["pom.xml", ".mvn/maven.config", ".mvn/jvm.config", ".mvn/extensions.xml"]
+config_name = "PIT config (pom.xml or .mvn/)"
 skip_annotations = ["DoNotMutate", "Generated", "CoverageIgnore"]
 
 # R3 (#19) through PIT, pinned here: pitest-maven 1.17.4. The PR's pom still gives the plugin's config and its

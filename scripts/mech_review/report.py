@@ -33,6 +33,18 @@ def entry(check, file, line, key, cls, severity, problem, hint, forbidden):
             "problem": problem, "hint": hint, "forbidden": forbidden, "_key": key}
 
 
+def no_report(tool, where, why):
+    """(R3 check, entries) when the mutation tool ran and left no report (#22 review round 2): the run did not judge the
+    change, and the tool is installed, so it is no toolchain absence: R3 fails with one entry, never n/a (env) or a
+    pass. why: the first line of its output, or its exit code."""
+    problem = f"{tool} ran and wrote no report ({where}): mutants not read: {why}"
+    return {"status": "fail", "note": problem}, finalize([entry(
+        "R3", "", 0, "no-report", "agent-fixable", "fail", problem,
+        "read the tool's run log: the code at head must build and its tests pass under the tool; if the tool or its "
+        "setup is at fault, a person repairs it, and a rerun follows a network failure",
+        "a mutation check that did not run")])
+
+
 def finalize(entries):
     """id = <check>-<sha1(check+file+key)[:8]>. The n-th entry (line order, n>=1) with the same check+file+key
     gets key '#n' so repeats are kept; n=0 keeps the plain id. Line numbers never enter an id."""

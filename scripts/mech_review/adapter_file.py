@@ -102,7 +102,7 @@ def _idents(v, field, lexer, nonempty=False):
 def _lexer(d):
     f = "lexer"
     _table(d, f, ("block_style", "brackets", "ident_chars", "member", "line_comments", "block_comments", "strings",
-                  "regex"), ("block_style", "brackets"))
+                  "regex", "unicode_escapes"), ("block_style", "brackets"))
     style = _str(d["block_style"], f + ".block_style")
     if style not in BLOCK_STYLES:
         _err(f + ".block_style", f"unknown block style `{style}`: want braces")
@@ -174,7 +174,8 @@ def _lexer(d):
                else "a comment opener" if ch in openers else "the member character" if ch == member else None)
         if why:
             _err(f + ".ident_chars", f"`{ch}` cannot be part of a word ({why})")
-    return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx)
+    return Lexer(brackets, ident, member, d.get("line_comments", []), blocks, strings, rx,
+                 _bool(d.get("unicode_escapes", False), f + ".unicode_escapes"))
 
 
 def _tests(d, lexer, functions):
@@ -325,7 +326,9 @@ def _mutation(d, run=None, tests=None, lexer=None):
         if (tests or {}).get("style") != "declared":
             _err(f + ".skip_annotations", "needs tests.style declared: an annotation is a marker, its prefix the tests'")
         _idents(d["skip_annotations"], f + ".skip_annotations", lexer, nonempty=True)
-    if _strs(d.get("config_files", []), f + ".config_files"):
+    for i, c in enumerate(_strs(d.get("config_files", []), f + ".config_files")):
+        _filepath(c, f"{f}.config_files[{i}]")
+    if d.get("config_files"):
         if "config_name" not in d:
             _err(f + ".config_name", "missing: config_files needs a name for the entry")
     if "config_name" in d:

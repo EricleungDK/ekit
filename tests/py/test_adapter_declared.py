@@ -173,12 +173,57 @@ class RoundOne(unittest.TestCase):
         src = ('class A {\n    @DoNotMutate\n    int x() { return 1; }\n    @lombok.Generated("y") void g() {}\n'
                '    // @Generated in a comment\n    String s = "@CoverageIgnore";\n    @Generatedx void h() {}\n'
                '    @ CoverageIgnore void i() {}\n}\n')
-        self.assertEqual(self.a.mutation_skips(src), [(2, 2, "@DoNotMutate"), (4, 4, "@lombok.Generated")])
+        self.assertEqual(self.a.mutation_skips(src), [(2, 2, "@DoNotMutate"), (4, 4, "@Generated"),
+                                                      (8, 8, "@CoverageIgnore")])
         self.assertEqual(self.a.mutation_skips("@"), [])
         self.assertEqual(self.a.mutation_skips("@DoNotMutate class A {}\n"), [(1, 1, "@DoNotMutate")])
         self.assertEqual(self.a.mutation_skips("int x;\n@Generated.;\n"), [(2, 2, "@Generated")])
-        self.assertEqual(self.a.mutation_config("pom.xml", None), "PIT config (pom.xml)")
-        self.assertEqual(self.a.mutation_config("sub/pom.xml", None), "PIT config (pom.xml)")
+        for path in ("pom.xml", "sub/pom.xml", ".mvn/maven.config", "sub/.mvn/jvm.config", ".mvn/extensions.xml"):
+            with self.subTest(path):
+                self.assertEqual(self.a.mutation_config(path, None), "PIT config (pom.xml or .mvn/)")
+        for path in ("maven.config", "x.mvn/maven.config", "extensions.xml", "src/pom.xml.bak"):
+            with self.subTest(path):
+                self.assertIsNone(self.a.mutation_config(path, None))
+
+    def test_a_skip_annotation_matches_by_suffix_as_pit_does(self):  # round 2, B2
+        """PIT (ExcludedAnnotationInterceptor): an annotation whose name ends with a configured one is avoided."""
+        src = ("class A {\n    @NoCoverageIgnore void a() {}\n    @MyGenerated void b() {}\n"
+               "    @GeneratedX void c() {}\n    @x.y.MyDoNotMutate void d() {}\n}\n")
+        self.assertEqual(self.a.mutation_skips(src), [(2, 2, "@NoCoverageIgnore"), (3, 3, "@MyGenerated"),
+                                                      (5, 5, "@MyDoNotMutate")])
+
+    def test_every_marker_spelling_javac_accepts(self):  # round 2, B1: whitespace, comments, line breaks, escapes
+        variants = {
+            "space after the prefix": "@ Disabled",
+            "a block comment after the prefix": "@/**/Disabled",
+            "a line break after the prefix": "@\n    Disabled",
+            "a line comment after the prefix": "@ // why\n    Disabled",
+            "a dotted name with spaces and comments": "@org . junit/* x */.jupiter . api\n.Disabled",
+            "empty arguments": "@Disabled()",
+            "arguments after a space": '@Disabled ("why")',
+            "a unicode-escaped prefix": "\\u0040Disabled",
+            "a unicode escape in the name": "@Dis\\u0061bled",
+            "a multi-u escape": "\\uuu0040Disabled",
+        }
+        for why, ann in variants.items():
+            for order in ("{a} @Test", "@Test {a}"):
+                with self.subTest(why, order=order):
+                    src = "class T {\n    " + order.format(a=ann) + " void a() {\n    }\n}\n"
+                    self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(src)], [("T.a", ["ignore"])])
+            with self.subTest(why, on="class"):
+                src = ann + "\nclass T {\n    @Test void a() {\n    }\n}\n"
+                self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(src)], [("T.a", ["ignore"])])
+            with self.subTest(why, as_="skip annotation"):
+                skip = ann.replace("Dis\\u0061bled", "DoNotM\\u0075tate").replace("Disabled", "DoNotMutate")
+                got = self.a.mutation_skips("class T {\n    " + skip + " int a() { return 1; }\n}\n")
+                self.assertEqual([m for _, _, m in got], ["@DoNotMutate"])
+
+    def test_an_escaped_backslash_is_no_unicode_escape(self):
+        """JLS 3.3: a backslash is an escape only after an even run of backslashes: `\\u0040` stays."""
+        src = "class T {\n    \\\\u0040Disabled @Test void a() {\n    }\n}\n"
+        self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(src)], [("T.a", [])])
+        odd = "class T {\n    \\\\\\u0040Disabled @Test void a() {\n    }\n}\n"
+        self.assertEqual([(t.name, t.markers) for t in self.a.test_fns(odd)], [("T.a", ["ignore"])])
 
     def test_a_test_that_prints_the_toolchains_message_is_judged_by_its_counts(self):  # B2
         fail = ("[INFO] Running com.example.CalcTest\nThe JAVA_HOME environment variable is not defined correctly\n"
