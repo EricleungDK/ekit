@@ -1,6 +1,6 @@
 ---
 name: mistake-to-check
-description: Turn one agent mistake into a mechanical check, or one line saying why none. Use when an agent mistake should become a check (retro hands each one over), and to promote or remove a rule it made.
+description: Turn one agent mistake into a mechanical check, or one line saying why none. Use when an agent mistake should become a check (failure-triage, the review relay and finish hand each one over; so can retro), and to promote or remove a rule it made.
 ---
 
 One **mistake** in, one result out: the **change** that makes a machine catch it next time, or one `No check:` line saying why none is made. A rule in the agent docs was written and still broken; the result here is something that runs.
@@ -12,7 +12,9 @@ One **mistake** in, one result out: the **change** that makes a machine catch it
 - **The mistake**, one line: what the agent did, and the rule or expectation it broke.
 - **Its evidence**: the failing run (CI run, check entry, transcript) and the commit or PR that carries the mistake. Find what is missing with `git log` and `gh`; a mistake with no commit or PR to name gets `No check: <mistake>: no commit or PR to name as its incident`.
 
-**From `retro`.** The owner's `retro` skill (outside this kit) finds a run's mistakes and hands them here one at a time, each with the mistake line, its evidence and, when it knows one, a second example. Run this skill once per mistake and give retro back that mistake's result line (step 4).
+**From ekit's own skills.** An agent invokes this skill itself at three moments: failure-triage, the orchestrator's review relay and finish each hand over an agent's mistake when they meet one. No retro run is needed for that.
+
+**From `retro`** (optional). The owner's `retro` skill (outside this kit) finds a run's mistakes and hands them here one at a time, each with the mistake line, its evidence and, when it knows one, a second example. Run this skill once per mistake and give retro back that mistake's result line (step 4).
 
 ## 1. Filter
 

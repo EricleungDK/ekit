@@ -171,3 +171,26 @@ class TestChangelog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEkitsOwnSkillsHandOver(unittest.TestCase):
+    """The agent self-invokes mistake-to-check at three moments ekit owns; retro is optional."""
+
+    def test_failure_triage_hands_over_a_red_that_is_an_agent_mistake(self):
+        s = flat(section(read("failure-triage", "SKILL.md"), "An agent's mistake"))
+        self.assertIn("hand it to the mistake-to-check skill", s)
+        self.assertIn("after the class's own next action", s)
+
+    def test_the_review_relay_hands_over_a_process_mistake(self):
+        s = flat(section(read("orchestrate-agent", "SKILL.md"), "Review relay"))
+        self.assertIn("6. A refusal or finding that shows an agent's process mistake", s)
+        self.assertIn("hand it to the mistake-to-check skill", s)
+
+    def test_finish_hands_over_a_fix_round_caused_by_the_agents_own_mistake(self):
+        s = flat(section(read("finish", "SKILL.md"), "2. Close the loop"))
+        self.assertIn("hand it to the mistake-to-check skill before the report", s)
+
+    def test_the_skill_names_its_three_callers_and_retro_as_optional(self):
+        s = flat(section(skill(), "Input"))
+        self.assertIn("failure-triage, the orchestrator's review relay and finish", s)
+        self.assertIn("No retro run is needed", s)

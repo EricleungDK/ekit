@@ -23,6 +23,7 @@ Done when: every criterion has a fresh result or a reason it can't run here.
 - GitHub issue in scope: comment with the evidence; close it if the work completes it (`gh issue close <N> --comment ...`), else update it.
 - Remove worktrees and branches you created that are merged or abandoned.
 - Uncommitted files: commit them if the flow commits, else list them as intentionally uncommitted.
+- A fix round in this run that answered the agent's own mistake (green locally but red in CI, a wrong commit, a skipped step), not a bug in the task, and that mistake-to-check has not seen yet: hand it to the mistake-to-check skill before the report. Its rule lines go in the report.
 
 ## 3. Report
 
