@@ -55,7 +55,7 @@ flagged = ["<a path the incident changed>"]
 control = ["<a path the incident changed>", "<a path require matches>"]
 ```
 
-Leave `severity` out: a new rule is `confirm` (listed, never blocking). Commit, then prove it: `<py> -I <kit>/scripts/mech-review.py r0 --repo . --base <base> --head HEAD --stack <stack>` shows `<id>:flagged` and `<id>:control` as `pass` under `checks.R0["co-change"]`, and `r2` over the same range (add `--test-paths` as the repo's CI does) gives no entry on `.ekit/co-change.toml` (the incident resolves, both cases are there). A case that reads wrong is a rule that does not work: fix the globs or the case until both pass.
+Leave `severity` out: a new rule is `confirm` (listed, never blocking). Commit, then prove it (`<base>`: the commit before the rule's; `<stack>`: the repo's, `python`, `rust` or `ts`): `<py> -I <kit>/scripts/mech-review.py r0 --repo . --base <base> --head HEAD --stack <stack>` shows `<id>:flagged` and `<id>:control` as `pass` under `checks.R0["co-change"]`, and `r2` over the same range (add `--test-paths` as the repo's CI does) gives no entry on `.ekit/co-change.toml` (the incident resolves, both cases are there). A case that reads wrong is a rule that does not work: fix the globs or the case until both pass.
 
 ### The process: a gate
 
