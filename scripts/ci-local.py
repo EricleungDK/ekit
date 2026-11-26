@@ -186,7 +186,8 @@ def scenarios(run, a):
         if sc.not_here(r):  # the runner's own: no shell for the run file
             unrunnable.append(f"{r['id']}: {r['reason']}")
             continue
-        m = UNRUNNABLE.match(sc.last_said(r["transcript"]))
+        # only a plain exit-code failure can be a missing tool: a timeout or a bad folder is the runner's own FAIL
+        m = r["reason"] == f"exit {r.get('exit')}" and UNRUNNABLE.match(sc.last_said(r["transcript"]))
         if m:
             unrunnable.append(f"{r['id']}: {m.group(1)}")
         else:

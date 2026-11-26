@@ -419,6 +419,21 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(line, "scenarios: failed: 1 of 1 failed: later (exit 1)")
 
+    def test_a_timeout_is_the_runners_failure_whatever_the_scenario_said_before(self):
+        os.environ["EKIT_SCENARIO_TIMEOUT"] = "1"  # setUp's patch restores it
+        self.scenario("slow", 'echo "ASSERT FAILED: unrunnable here: foo" >&2; sleep 5')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: slow (timeout after 1s)")
+
+    def test_a_bad_feature_line_is_the_runners_failure_whatever_the_scenario_said(self):
+        self.scenario("marked", 'echo "ASSERT FAILED: unrunnable here: foo" >&2; exit 1',
+                      "- feature: a\n- feature: b\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: marked (SCENARIO.md has more than one feature line "
+                               "(a, b): keep one)")
+
     def test_a_run_that_modified_the_repo_fails_the_step(self):
         self.scenario("writer", 'touch "$EKIT_REPO/left-behind"; exit 0')
         r, line = self.run_scenarios()
