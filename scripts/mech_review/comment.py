@@ -6,6 +6,7 @@ Stdlib only.
 import json
 import re
 
+from .mutants import risk_text
 from .waiver import MARKER, PLACEHOLDER
 COMMENT_LIMIT = 60000  # GitHub caps a comment at 65536 chars; keep headroom
 OVERSIZE_ROWS = 50
@@ -65,7 +66,8 @@ def _fmt(x):
 
 
 def _timing_lines(env):
-    """One human line under the headline when R3 ran (its count and timing), and the slowest mutants when it is partial.
+    """One human line under the headline when R3 ran (its count and timing); its tested/total per risk class when the
+    cap cut the run (checks.R3.by_risk, #122; malformed or absent: no line); the slowest mutants when it is partial.
     The JSON block carries every field; a field that is not there is left out here too."""
     c = (env.get("checks") or {}).get("R3") or {}
     if c.get("status") not in ("pass", "fail", "partial"):
@@ -99,6 +101,9 @@ def _timing_lines(env):
     if base:
         parts.append(f"baseline ({', '.join(base)})")
     lines = ["R3 timing: " + ", ".join(parts)] if parts else []
+    risk = risk_text(c.get("by_risk"))  # what the count stands for, when the cap cut the run (#122)
+    if risk:
+        lines.append(f"R3 by risk class, tested/total: {risk}")
     slow = [x for x in (t.get("slowest") or []) if isinstance(x, dict) and _num(x.get("s"))]
     if c.get("status") == "partial" and slow:
         names = [f"{_cell(x.get('name', '')).replace('`', chr(39))} {_fmt(x['s'])}s" for x in slow[:5]]

@@ -162,11 +162,15 @@ def in_condition(lines, offset):
 def py_order(names, files):
     """mutmut names riskiest first; ties by the function and the mutant's number. files: MutantFiles (the edits)."""
     def key(name):
-        got = files.change(name)
-        risk = py_risk(got[2], got[3], files.condition(name, got[1])) if got else RISK_REST
         fn, _, num = name.rpartition("__mutmut_")
-        return (risk, fn, int(num) if num.isdigit() else 0, name)
+        return (py_class(name, files), fn, int(num) if num.isdigit() else 0, name)
     return sorted(names, key=key)
+
+
+def py_class(name, files):
+    """risk class of a mutmut mutant from its edit; one whose edit cannot be read is the rest."""
+    got = files.change(name)
+    return py_risk(got[2], got[3], files.condition(name, got[1])) if got else RISK_REST
 
 
 def shard_index(shard):
@@ -198,6 +202,64 @@ CAP_MARK, BUDGET_MARK = "past the cap", "budget hit"  # what a note says when th
 
 def cap_note(extra, max_mutants):
     return f"; {extra} {CAP_MARK} (max-mutants {max_mutants}): untested" if extra else ""
+
+
+# the risk classes as a capped run's check names them (#122): checks.R3.by_risk {key: {tested, total}}, riskiest first
+RISK_KEYS = ("branch", "return", "arithmetic", "rest", "string")
+RISK_LABELS = {"branch": "branch conditions", "return": "returns", "arithmetic": "arithmetic", "rest": "rest",
+               "string": "strings and arguments"}
+
+
+def by_risk(counted, tested):
+    """{key: {tested, total}} per risk class (RISK_*), a class with no mutant left out. counted: the class of each
+    mutant the check counts in its total (its share of the cap, and those past it it reports); tested: the class of
+    each it tested."""
+    return {key: {"tested": tested.count(r), "total": counted.count(r)}
+            for r, key in enumerate(RISK_KEYS) if counted.count(r)}
+
+
+def _whole(x):
+    return isinstance(x, int) and not isinstance(x, bool) and x >= 0
+
+
+def risk_counts(x):
+    """by_risk as read from a result (a shard's, a cached one, an older engine's): the dict when it is
+    {known key: {tested, total}} of whole numbers with tested <= total, else None."""
+    if not isinstance(x, dict) or not all(
+            k in RISK_KEYS and isinstance(v, dict) and _whole(v.get("tested")) and _whole(v.get("total"))
+            and v["tested"] <= v["total"] for k, v in x.items()):
+        return None
+    return x
+
+
+def risk_text(counts):
+    """`branch conditions 12/12, returns 20/31, ...` in risk order; "" for none."""
+    counts = risk_counts(counts) or {}
+    return ", ".join(f"{RISK_LABELS[k]} {counts[k]['tested']}/{counts[k]['total']}" for k in RISK_KEYS if k in counts)
+
+
+def risk_note(counts, prefix=""):
+    text = risk_text(counts)
+    return f"; {prefix}by risk class, tested/total: {text}" if text else ""
+
+
+def cap_counted(ordered, own, extra, max_mutants):
+    """The mutants a capped shard counts in its total: its own share, and those past the cap when it reports them
+    (cap_share). None when the cap took every mutant: a run within the cap has no per-class counts (#122)."""
+    if len(ordered) <= max_mutants:
+        return None
+    return list(own) + (list(ordered[max_mutants:]) if extra else [])
+
+
+def with_risk(check, counted, ran, risk_of):
+    """check with its per-class counts (#122) when the cap cut the run (counted is not None): by_risk from the class
+    (risk_of) of each mutant counted and each one tested (ran), and the same in its note. A check that is no count
+    (n/a, or one with no total) is left as it is."""
+    if counted is None or check.get("tested") is None or check.get("total") is None:
+        return check
+    check["by_risk"] = by_risk([risk_of(m) for m in counted], [risk_of(m) for m in ran])
+    check["note"] += risk_note(check["by_risk"])
+    return check
 
 
 def off_note(off):
@@ -628,9 +690,12 @@ class CargoMutants:
                                          "see the job log"), []
                 capped = len(listed) > max_mutants
                 if capped:
-                    own, extra = cap_share(rust_order(listed), max_mutants, shard)
+                    ordered = rust_order(listed)
+                    own, extra = cap_share(ordered, max_mutants, shard)
+                    counted = cap_counted(ordered, own, extra, max_mutants)
                     if not own:
-                        return apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra, max_mutants), []
+                        return with_risk(apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra,
+                                                   max_mutants), counted, [], rust_risk), []
                     for m in own:
                         argv += ["--re", "^" + rust_regex_escape(str(m.get("name", ""))) + "$"]
                 elif shard:
@@ -656,6 +721,10 @@ class CargoMutants:
                     check = apply_cap(check, own, extra, max_mutants)
                     if check["status"] == "n/a":
                         ents = []
+                    else:  # the mutants outcomes.json says ran: the ones the check counts as tested
+                        outcomes = _mutant_outcomes(_load(os.path.join(mo, "outcomes.json")))
+                        tested = {m.get("name") for _, m, _ in outcomes if isinstance(m, dict)}
+                        check = with_risk(check, counted, [m for m in own if m.get("name") in tested], rust_risk)
             if check["status"] != "pass":
                 _diagnose(mo, text, check["status"])
             return check, ents
@@ -1445,7 +1514,7 @@ class Mutmut:
             if stop:
                 return stop
             ranks = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])  # each mutant's edit: its risk
-            keep, extra, off = None, 0, 0
+            keep, extra, off, counted = None, 0, 0, None
 
             def on_changed_lines(cands):
                 return changed_line_mutants(cands, ranks, sources, changed, project_dir)
@@ -1466,12 +1535,14 @@ class Mutmut:
                     return _check("pass", f"0 mutants on changed lines ({off} on unchanged lines of touched functions: "
                                           "not run)", 0, 0), []
                 # the cap (#26): the riskiest max_mutants of those on changed lines, dealt round-robin over the shards
-                own, extra = cap_share(py_order(eligible, ranks), max_mutants, shard)
+                ordered = py_order(eligible, ranks)
+                own, extra = cap_share(ordered, max_mutants, shard)
+                counted = cap_counted(ordered, own, extra, max_mutants)
                 keep = set(own)
                 if not own:
                     check = apply_cap(_check("pass", "0 mutants in this shard" + off_note(off), 0, 0), own, extra,
                                       max_mutants)
-                    return check, []
+                    return with_risk(check, counted, [], lambda n: py_class(n, ranks)), []
                 # step 2: only the mutants of the touched functions run (this shard's share, when that is not all)
                 filters = touched if len(own) == len(inside) else [_glob_escape(n) for n in own]
                 left = None if budget is None else max(1.0, budget - (time.monotonic() - t0))
@@ -1489,7 +1560,9 @@ class Mutmut:
             dealt_from_cut = keep is None and shard_index(shard)[1] > 1
             if keep is None:  # the budget ended step 1: deal what mutmut listed, so no two shards report one mutant
                 eligible, off = on_changed_lines([n for n, _ in inside])
-                own, extra = cap_share(py_order(eligible, ranks), max_mutants, shard)
+                ordered = py_order(eligible, ranks)
+                own, extra = cap_share(ordered, max_mutants, shard)
+                counted = cap_counted(ordered, own, extra, max_mutants)
                 keep = set(own)
             rows = [(name, _kind(status, early), status) for name, status in inside if name in keep]
             unrun = len(listed) - len(inside)
@@ -1574,6 +1647,10 @@ class Mutmut:
                 status = "fail" if fails else "partial" if tested < total else "pass"
                 check = _check(status, note, tested, total)
             check["timing"] = timing
+            if total is not None:  # a shard whose total is unknown has no per-class totals either
+                held = {n for n, *_ in unconfirmed}
+                ran = [n for n, k, _ in rows if k != "untested" and n not in held]
+                check = with_risk(check, counted, ran, lambda n: py_class(n, ranks))
             return check, ents
 
 

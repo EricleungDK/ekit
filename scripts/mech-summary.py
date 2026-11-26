@@ -27,6 +27,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
 from mech_review import merge, report  # noqa: E402 - imported after the sys.path line above
+from mech_review.mutants import risk_text  # noqa: E402
 
 REPORT = "mech-review report"
 BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
@@ -134,7 +135,8 @@ def mutants_env(d, jobs, ends):
 def _check_line(name, c):
     if name == "R3" and c.get("tested") is not None:
         total = "?" if c.get("total") is None else c["total"]
-        return f"R3 {c['status']} ({c['tested']}/{total} tested)"
+        risk = risk_text(c.get("by_risk"))  # per risk class when the cap cut the run (#122)
+        return f"R3 {c['status']} ({c['tested']}/{total} tested" + (f"; by risk class: {risk}" if risk else "") + ")"
     return f"{name} {c['status']}: {c['note']}"
 
 
