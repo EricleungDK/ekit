@@ -305,8 +305,10 @@ class RepairDrift(Scaffold):
         file under .ekit/adapters/), lets `ignore` gain web/ at most, and adds files under .ekit/adapters/ only"""
         base = self.git("show", f"main:{PLAN}")
         web = WEB.format("planned")
-        dot = lambda name, adapter, status: (f'\n[[stack]]\nname = "{name}"\nfolder = "."\nadapter = "{adapter}"\n'  # noqa: E731
-                                             f'status = "{status}"\n')
+
+        def dot(name, adapter, status):
+            return f'\n[[stack]]\nname = "{name}"\nfolder = "."\nadapter = "{adapter}"\nstatus = "{status}"\n'
+
         shapes = {
             "a decoy entry first": {PLAN: dot("decoy", "python", "planned").lstrip("\n") + base + web},
             "retiring + current for the base folder": {PLAN: base.replace('"current"', '"retiring"') + web

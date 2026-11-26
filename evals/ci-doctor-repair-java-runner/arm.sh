@@ -226,7 +226,10 @@ else:
                 refused.append(f"an entry {s.get('name')!r} for folder {s.get('folder')!r}, not the cover folder")
             elif ref not in BUILTINS and not (ref.startswith(".ekit/adapters/") and ref.endswith(".toml")):
                 refused.append(f"the cover entry's adapter {ref!r} is neither a built-in nor a file under .ekit/adapters/")
-        norm = lambda xs: sorted({folder(x) for x in xs if isinstance(x, str)}) if isinstance(xs, list) else xs  # noqa: E731
+
+        def norm(xs):
+            return sorted({folder(x) for x in xs if isinstance(x, str)}) if isinstance(xs, list) else xs
+
         if norm(tip_plan.get("ignore", [])) not in (norm(base.get("ignore", [])),
                                                     sorted(set(norm(base.get("ignore", [])) or []) | {cover})):
             refused.append("`ignore` changes beyond gaining the cover folder")
