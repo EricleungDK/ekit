@@ -8,6 +8,8 @@ branch merged onto the tip (drift case). Here the good end state passes every re
 ends; wrong end states (a commit on the coding branch, a `mech:` line, a branch cut from the coding branch, the
 adapter left as it was, a proof that fails, a loosened limit, a plan that neither covers nor ignores) and the start
 state do not. The stop case passes only while no ref or reflog holds a new commit."""
+import contextlib
+import io
 import json
 import os
 import re
@@ -18,6 +20,7 @@ import unittest
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 from test_ci_doctor_setup_evals import graders
 from test_eval_scaffold import case_dir
+from scripts.mech_review import cli
 
 ADAPTER = ".ekit/adapters/maven.toml"
 PLAN = ".ekit/stack-plan.toml"
@@ -434,7 +437,7 @@ class TriageAdapterFix(Scaffold):
         app = json.loads(self.read("mech-app.json"))
         entries = {e["id"]: e for e in mech["entries"] + app["entries"]}
         fix = sorted(i for i, e in entries.items() if e["class"] == "adapter-fix")
-        self.assertEqual(fix, ["CI-599b7f05", "CI-f2f3b6a8", "D-7e776699", "R0-2b12725b", "R0-6d261a04"])
+        self.assertEqual(fix, ["CI-599b7f05", "CI-f2f3b6a8", "D-7e776699", "R0-00e0bfc4", "R0-6d261a04"])
         self.assertEqual([entries[i]["problem"].split(":")[0] for i in fix], [
             "the stack plan does not read", "the adapter's parser failed",
             "manifests no stack in .ekit/stack-plan.toml covers", "R0 runtime half (run) failed for the `maven` adapter",
@@ -446,11 +449,108 @@ class TriageAdapterFix(Scaffold):
         self.assertEqual(self.git("status", "--porcelain"), "")
 
     def test_the_entry_r0_blocks_is_graded_as_held(self):
-        r2 = next(e for e in json.loads(self.read("mech.json"))["entries"] if e["id"] == "R2-f3a6a4fd")
+        r2 = next(e for e in json.loads(self.read("mech.json"))["entries"] if e["id"] == "R2-0734ae9c")
         self.assertEqual((r2["class"], r2.get("blocked")), ("agent-fixable", "R0"))
-        self.assertIn("`R2-f3a6a4fd` is marked `blocked: R0`: it gets no fix round now.",
+        self.assertIn("`R2-0734ae9c` is marked `blocked: R0`: it gets no fix round now.",
                       llm_graders(self.case)["next-action.md"])
         self.assertIn("It plans no fix for it, now or for later", llm_graders(self.case)["next-action.md"])
+
+
+class TriageAdapterFixIsReal(Scaffold):
+    """the triage scaffold is the repo its results report (both runs refused two CI entries whose plan stack, adapter,
+    SHA and position the files did not hold): the kit's own drift, r0 (static half) and r2 at each result's base and
+    head give the entries the JSON holds, id and text. Not reproduced (the setup.sh header's named limits): the parser
+    run (ktfacts is not installed), R0's runtime half, R1 and R4"""
+    CASE = "triage-adapter-fix"
+
+    def kit(self, *argv):
+        """(exit code, envelope) of `mech-review.py <argv>` on the scaffold, through cli.main in this process"""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = cli.main([argv[0], "--repo", self.repo, *argv[1:]])
+        return rc, json.loads(out.getvalue())
+
+    def result(self, name):
+        with open(os.path.join(self.repo, name), encoding="utf-8") as f:
+            data = json.load(f)
+        return data, {e["id"]: e for e in data["entries"]}
+
+    def assertEntry(self, got, want):
+        self.assertEqual({k: v for k, v in want.items() if k != "blocked"}, got)
+
+    def test_each_result_names_its_branch_head_and_a_base_on_main(self):
+        for name, branch, base in (("mech.json", "claude/calc", "main"), ("mech-app.json", "claude/app", "main~1")):
+            with self.subTest(name):
+                data, _ = self.result(name)
+                self.assertEqual((data["base"], data["head"]),
+                                 (self.git("rev-parse", base).strip(), self.git("rev-parse", branch).strip()))
+                self.assertEqual(self.git("merge-base", "main", branch).strip(), data["base"])
+        self.assertEqual(self.git("symbolic-ref", "--short", "HEAD").strip(), "claude/calc")
+
+    def test_the_bad_plan_entry_is_drift_at_the_app_head(self):
+        data, entries = self.result("mech-app.json")
+        rc, env = self.kit("drift", "--base", data["base"], "--head", data["head"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(env["checks"]["D"], data["checks"]["D"])
+        self.assertEqual(len(env["entries"]), 1)
+        self.assertEntry(env["entries"][0], entries["CI-599b7f05"])
+
+    def test_the_parser_entry_names_a_file_the_base_plan_runs_ktfacts_on(self):
+        _, entries = self.result("mech-app.json")
+        problem = entries["CI-f2f3b6a8"]["problem"]
+        m = re.fullmatch(r"the adapter's parser failed: parser `(\S+)` on (\S+): exited with status 1: App\.kt:(\d+):(\d+): .+",
+                         problem)
+        self.assertTrue(m, problem)
+        program, path, line, col = m.group(1), m.group(2), int(m.group(3)), int(m.group(4))
+        self.assertEqual(path, entries["CI-f2f3b6a8"]["file"])
+        plan = self.git("show", "main~1:.ekit/stack-plan.toml")
+        self.assertIn('name = "app"\nfolder = "app"\nadapter = ".ekit/adapters/kotlin.toml"\nstatus = "current"', plan)
+        self.assertIn(f'[parser]\ncommand = "{program} ', self.git("show", "main~1:.ekit/adapters/kotlin.toml"))
+        head = self.git("show", f"claude/app:{path}").splitlines()
+        self.assertTrue(head[line - 1][col - 1:].startswith("if "), head[line - 1])  # the `when` guard ktfacts misses
+        self.assertNotIn(head[line - 1], self.git("show", f"main~1:{path}").splitlines())
+
+    def test_the_drift_entry_is_drift_at_the_calc_head(self):
+        data, entries = self.result("mech.json")
+        rc, env = self.kit("drift", "--base", data["base"], "--head", data["head"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(env["checks"]["D"], data["checks"]["D"])
+        self.assertEqual(len(env["entries"]), 1)
+        self.assertEntry(env["entries"][0], entries["D-7e776699"])
+
+    def test_the_static_r0_entry_is_the_calc_bases_adapter_and_the_app_bases_passes(self):
+        data, entries = self.result("mech.json")
+        _, env = self.kit("r0", "--base", data["base"], "--head", data["head"], "--stack", "maven", "--project-dir", ".")
+        self.assertEqual(env["checks"]["R0"]["status"], "fail")
+        self.assertTrue(data["checks"]["R0"]["note"].startswith(env["checks"]["R0"]["note"] + "; "),
+                        env["checks"]["R0"]["note"])
+        self.assertEqual(len(env["entries"]), 1)
+        self.assertEntry(env["entries"][0], entries["R0-6d261a04"])
+        app, _ = self.result("mech-app.json")
+        _, env = self.kit("r0", "--base", app["base"], "--head", app["head"], "--stack", "maven", "--project-dir", ".")
+        self.assertEqual(env["checks"]["R0"]["note"], app["checks"]["R0"]["note"])
+        self.assertEqual(env["checks"]["R0"]["status"], app["checks"]["R0"]["status"])
+
+    def test_the_runtime_r0_entry_is_the_runner_cases_misread(self):
+        """the calc base's adapter reads surefire 2's summary line, as ci-doctor-repair-java-runner's does (its replay
+        test shows surefire 3's output misread there): the same entry"""
+        data, entries = self.result("mech.json")
+        with open(os.path.join(case_dir("ci-doctor-repair-java-runner"), "setup.sh"), encoding="utf-8") as f:
+            runner = json.loads(re.search(r"<<'JSON'\n(.*?)\nJSON\n", f.read(), re.S).group(1))
+        self.assertEntry(entries["R0-00e0bfc4"], next(e for e in runner["entries"] if e["id"] == "R0-00e0bfc4"))
+        self.assertIn(OLD, self.git("show", f"{data['base']}:{ADAPTER}"))
+        self.assertNotIn(OLD, self.git("show", f"main~1:{ADAPTER}"))
+
+    def test_the_held_r2_entry_is_r2_at_the_calc_head(self):
+        data, entries = self.result("mech.json")
+        _, env = self.kit("r2", "--base", data["base"], "--head", data["head"], "--stack", "maven", "--project-dir", ".",
+                          "--test-paths", "src/test/**")
+        self.assertEqual([e["id"] for e in env["entries"]], ["R2-0734ae9c"])
+        self.assertEntry(env["entries"][0], entries["R2-0734ae9c"])
+        self.assertEqual(data["checks"]["R2"]["before"], env["checks"]["R2"])
+        cause = "; ".join(entries[i]["problem"] for i in ("R0-6d261a04", "R0-00e0bfc4"))  # both halves failed
+        for check in ("R1", "R2", "R4"):
+            self.assertEqual(data["checks"][check]["note"], f"blocked: R0 failed ({cause})", check)
 
 
 class OrchestrateAdapterFixRoute(unittest.TestCase):
