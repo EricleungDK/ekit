@@ -7,7 +7,7 @@ Coding agents finish fast, and some of that speed comes from skipping a failing 
 - **In the session**: skills and hooks that make the agent classify a red test before touching code, try the result the way a user would, and end with a report where every claim has a command and its output next to it.
 - **On the pull request**: a GitHub workflow that checks the diff mechanically. Did a test get deleted or weakened? Does a new test actually fail without the fix? Would the tests notice if the changed code were wrong?
 
-Works in Claude Code, Codex, GitHub Copilot, and any agent that reads [Agent Skills](https://skills.sh). The PR checks support any language: Rust, Python and TypeScript/JavaScript are built in, and any other language gets an adapter file that `/ekit:ci-doctor` generates and proves for your repo ([adding a language](docs/adding-a-language.md)).
+Works in Claude Code, Codex, GitHub Copilot, and any agent that reads [Agent Skills](https://skills.sh). The PR checks support any language the adapter format, or a parser command, can describe: Rust, Python and TypeScript/JavaScript are built in, and any other such language gets an adapter file that `/ekit:ci-doctor` generates and proves for your repo, with R3 where a mutation tool exists ([adding a language](docs/adding-a-language.md)).
 
 ## What it looks like
 
@@ -230,7 +230,7 @@ A reusable GitHub workflow. It posts one comment per PR and sets one check, `mec
 | `red-first` | R1: new tests fail before the fix. R4: results are deterministic. |
 | `mutants` | R3: mutation testing on the changed lines (cargo-mutants, mutmut, Stryker, or the tool an adapter file declares; `n/a` with none). Runs only when production code changed. |
 
-- **Stacks**: any language. Rust, Python and TypeScript/JavaScript are built in; any other language through an adapter file that ci-doctor generates and proves ([adding a language](docs/adding-a-language.md)). R3 reads `n/a` for a language whose adapter declares no mutation tool.
+- **Stacks**: any language the adapter format, or a parser command, can describe. Rust, Python and TypeScript/JavaScript are built in; any other language through an adapter file that ci-doctor generates and proves ([adding a language](docs/adding-a-language.md)). R3 reads `n/a` for a language whose adapter declares no mutation tool.
 - **Agent branches**: R1 runs on branches starting with `agent/`, `claude/`, `codex/`, `copilot/` or `cursor/` (configurable; `*` for all).
 - **Waivers**: a person with write access can let one entry through with `/mech-waive <id> <reason>`; the comment offers the line ready to copy, and the waiver shows with their name. A placeholder reason or an edited comment does not waive. With the [re-run caller](docs/mech-review-ci.md#waiver-re-run), the check updates on its own. Nothing in the PR itself can waive.
 - **Forks**: on a read-only token the result goes to the job summary and the check still passes or fails on it.

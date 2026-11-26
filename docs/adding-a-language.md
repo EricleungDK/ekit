@@ -1,14 +1,23 @@
 # Adding a language
 
-mech-review ships three built-in stacks: Rust, Python and TypeScript/JavaScript. Any other language gets the same PR
-checks through an **adapter file**: a TOML file in your repo that describes the language's tests, asserts, skips,
-lint suppressions, test runner and mutation tool. `/ekit:ci-doctor` writes it for your repo, proves it against a list
-of cheats, and opens a setup PR that you merge.
+mech-review ships three built-in stacks: Rust, Python and TypeScript/JavaScript. Any other language the format can
+describe ([what it can describe today](#before-you-start)) gets the same PR checks through an **adapter file**: a
+TOML file in your repo that describes the language's tests, asserts, skips, lint suppressions, test runner and
+mutation tool. `/ekit:ci-doctor` writes it for your repo, proves it against a list of cheats, and opens a setup PR
+that you merge.
 
 This guide follows one repo from install to merged setup PR, then covers what comes after: the stack plan, the
 editing rules, a failed proof and its repair, and fixing the adapter by hand. It links to the
 [CI doc](mech-review-ci.md) for every detail. The example is a Java repo built with Maven and tested with JUnit 5.
 Other languages go the same way.
+
+| Word | Meaning |
+|---|---|
+| **R0** | The adapter's proof, run as a check: the adapter must catch a fixed list of cheats and find every test the runner lists ([R0 adapter proof](mech-review-ci.md#r0-adapter-proof)). R1 to R4 are in [README § Words used here](../README.md#words-used-here) |
+| **drift check** | Check `D`: every manifest (`pom.xml`, `package.json`, ...) in the repo must be covered by a stack plan entry ([Stack plan](mech-review-ci.md#stack-plan)) |
+| **`needs-human`** | An entry class: a `fail` only a person settles, by a waiver or by their own PR |
+| **`adapter-fix`** | An entry class: the adapter file or the stack plan needs a change, in a PR of its own, never by the PR's own agent |
+| **Java reference adapter** | `tests/fixtures/adapters/java.toml`, a hand-written Java adapter that is a test fixture of ekit's, not a built-in. ci-doctor writes yours from your repo and must not copy this one ([Java reference adapter](mech-review-ci.md#java-reference-adapter)) |
 
 ## The short version
 
@@ -22,8 +31,9 @@ Other languages go the same way.
 
 ## Before you start
 
-- **Python 3.11 or newer** where ci-doctor runs. The plugin itself needs 3.9, but adapter files and the stack plan are
-  TOML, and reading TOML needs 3.11: on an older Python, proving an adapter (`--adapter`) is a usage error that says
+- **Python 3.11 or newer** where ci-doctor runs: the Python the `[ekit] Python:` session line names. The plugin's
+  launcher takes the first 3.9+ it finds ([README § Setup per OS](../README.md#setup-per-os)), but adapter files and
+  the stack plan are TOML, and reading TOML needs 3.11: on an older Python, proving an adapter (`--adapter`) is a usage error that says
   so, and `doctor` on a repo that already has an adapter file or a plan names it too
   ([Adapter file](mech-review-ci.md#adapter-file)).
 - **The language's toolchain**, if you have it (a JDK and Maven for the example). Without it, the proof's runtime half
@@ -87,18 +97,28 @@ The PR body has these parts ([setup.md step 8](../skills/ci-doctor/setup.md)):
 | Cheat list | each item caught, or a limit | Each language-specific cheat from step 2: caught by an R0 case or an `r2` run, or a limit the CI doc names (quoted) |
 | `## Limits (owner decides)` | present only when needed | Cheats the proof cannot catch that the CI doc does not name. You accept or reject each before merging |
 
+The body also quotes doctor's summary at the setup branch's head. It reads `fail <sha> (1 problems)`, mode `repair`,
+with one `confirm` entry,
+`` `java` in . is checked through the repo's adapter file: doctor trial-runs the built-in stacks only ``.
+That is expected: doctor does not trial an adapter file, and the proof report stands in for its trial.
+
 ### Before you merge
 
 - Every count is full: `17 of 17`, not `16 of 17`. A missing count is a gap, not a pass.
 - The census count matches the number of tests you know your repo has.
-- `not run here` for the runtime half: the runtime half runs in CI on your first PRs after the merge, and its result
-  is in that PR's comment (`R0:` line). Plan to read it once.
+- `not run here` for the runtime half: it runs in CI on the first PR after the merge, and its result is in that PR's
+  comment (`R0:` line). Read it once.
 - Each item under `## Limits (owner decides)`: you either accept it, or you ask for another round.
 - The adapter names your real commands in `[commands]` ([the commands](#the-commands-each-adapter-names)), and its
   `target-os` is right.
 - The stack plan entry names the right folder.
-- The caller's `setup-command` provides what the runner lacks for your tests (the toolchain version, dependency
-  install, env values): nothing in mech-review's jobs runs the adapter's `install` command.
+- The caller's `test-paths` covers your test folder (`src/test/**` for Maven), beside `.ekit/scenarios/**` if you have
+  scenarios.
+- The caller's `setup-command` provides what the runner lacks for your tests, by the rules in
+  [the commands](#the-commands-each-adapter-names): nothing in mech-review's jobs runs the adapter's `install` command.
+- If the adapter runs PIT, as the Java reference adapter does: the pom has `pitest-junit5-plugin` (PIT takes its
+  configuration and dependencies from your pom), and `[mutation] config_files` lists `pom.xml`, so every later pom
+  edit is an R2 `needs-human` entry a person settles. That is by design: a pom can switch mutators off.
 - If base CI jobs were added and they ran on the PR, they are green: that shows the adapter's commands work on the
   runner.
 
@@ -113,31 +133,55 @@ branch, and the base has neither. So the `stack` job finds no project at the bas
 reason: stack auto, base: no project found (no pyproject.toml, setup.py, setup.cfg, Cargo.toml, package.json); set the stack and project-dir inputs in the mech-review caller
 ```
 
-This is expected, and setting `stack` in the caller does not help: an explicit `stack: java` reads
-`stack java: want auto, python, rust or ts` at that base. It is not an entry, so there is nothing to waive. The proof report is
-the evidence: merge on it. ci-doctor's PR body may say that the check goes red `needs-human` and that you merge on
-green after a waiver. That describes the built-in stacks. For a setup PR, merge on the proof report. Require
-`mech-review report` in branch protection only after the merge, once the checks run (in an empty repo, once the first
-manifest has landed: see [an empty repo](#an-empty-repo)).
+The check is red, and that is expected. Ignore the hint at the end and keep `stack` at `auto`: an explicit
+`stack: java` reads `stack java: want auto, python, rust or ts` at that base. A no-result comment is not an entry, so
+there is nothing to waive. Merge on the proof report. Require `mech-review report` in branch protection only after the
+merge, once the checks run (in an empty repo, once the first manifest has landed: see [an empty repo](#an-empty-repo)).
+This is a [known gap](#known-gaps).
 
 ## The commands each adapter names
 
-`[commands]` in the adapter file holds four shell commands, each required (`""` means the stack has none). The Java
-reference adapter's: install `mvn -B -ntp dependency:go-offline`, build `mvn -B -ntp test-compile`, lint the same with
-`-Dmaven.compiler.failOnWarning=true`, test `mvn -B -ntp test`.
+`[commands]` in the adapter file holds four shell commands, each required (`""` means the stack has none). ci-doctor
+generates them from your repo's own toolchain, so read yours in the adapter. As an example only, the Java reference
+adapter's, quoted:
+
+```toml
+[commands]
+install = "mvn -B -ntp dependency:go-offline"
+build = "mvn -B -ntp test-compile"
+lint = "mvn -B -ntp test-compile -Dmaven.compiler.showWarnings=true -Dmaven.compiler.failOnWarning=true"
+test = "mvn -B -ntp test"
+```
 
 - **`test`** is the one the engine runs. R1 and R4 start each one-test run from it, with the adapter's `[run]` words
   after it. [Run side](mech-review-ci.md#run-side-r1-and-r4).
 - **`install`, `build`, `lint`** are never run by the engine. The base CI jobs ci-doctor writes run all four in order
   (install, build, lint, test) on the target OS's runner.
-- **In mech-review's own jobs**, the reusable workflow sets up toolchains for the built-ins only. For your language,
-  whatever the runner image lacks (a JDK version, Maven, an env value the tests need) goes into the caller's
-  `setup-command`, which runs before the tests in `red-first` and `mutants`. That includes installing dependencies:
-  nothing in mech-review's jobs runs the adapter's `install`. Your existing workflows show what the tests need.
-  [Inputs](mech-review-ci.md#inputs).
+- **In mech-review's own jobs**, the reusable workflow sets up toolchains for the built-ins only, and nothing runs the
+  adapter's `install`. Whatever your tests need beyond the runner image goes into the caller's `setup-command`
+  ([Inputs](mech-review-ci.md#inputs)). The workflow runs it with bash as a step of its own in `red-first` and
+  `mutants`, at the workspace root, before the tests; your repo is checked out in `caller/` there. Two rules follow:
+  - A command that needs your project runs in it: `cd caller && ...`.
+  - An `export` ends with the step. An env value or a `PATH` entry for the test steps goes through GitHub's files:
+    `echo "NAME=value" >> "$GITHUB_ENV"`, `echo "<dir>" >> "$GITHUB_PATH"`. They apply from the next step on, so a
+    command later in the same `setup-command` that needs them exports them too.
+
+  A plain Maven repo may need nothing, since `mvn test` fetches its own dependencies. A repo that needs another JDK and
+  a prefetch would set:
+
+  ```yaml
+      with:
+        setup-command: |
+          echo "JAVA_HOME=<jdk dir>" >> "$GITHUB_ENV"
+          echo "<jdk dir>/bin" >> "$GITHUB_PATH"
+          export JAVA_HOME="<jdk dir>" PATH="<jdk dir>/bin:$PATH"
+          cd caller && mvn -B -ntp dependency:go-offline
+  ```
+
+  Your existing workflows show what the tests need.
 - **In your agent sessions**, the adapter's lint and test commands are the natural verify command to agree on: under
-  `/ekit:orchestrate-agent` you agree one per unit in the checklist (`mvn -B -ntp test-compile -Dmaven.compiler.failOnWarning=true && mvn -B -ntp test`).
-  Nothing copies them for you: give them when the checklist is agreed.
+  `/ekit:orchestrate-agent` you agree one per unit in the checklist, for example the reference adapter's lint and test
+  joined with `&&`. Nothing copies them for you: give them when the checklist is agreed.
 
 ## Target OS
 
@@ -166,8 +210,8 @@ path), status (`planned`, `current` or `retiring`) and optional `target-os`. For
   nothing ([Stack resolution](mech-review-ci.md#stack-resolution)). Keep `stack` at `auto` in the caller. A plan with
   several stacks runs one set of checks per stack, reported as one comment and one check
   ([Several stacks](mech-review-ci.md#several-stacks)).
-- **The drift check** (check `D`) runs on every PR once a plan exists. It fails a PR whose manifest (`pom.xml`, `package.json`, ...) no
-  entry covers, and adds notes (`Stack plan:` lines) for planned, retiring and gone stacks. The same check runs at
+- **The drift check** (check `D`) runs on every PR whose checks run, once a plan exists. It fails a PR whose manifest
+  (`pom.xml`, `package.json`, ...) no entry covers, and adds notes (`Stack plan:` lines) for planned, retiring and gone stacks. The same check runs at
   session start: a `[ekit] Stack plan drift at HEAD` line when something is off, nothing when clean.
 - **Who edits it.** You or ci-doctor, as part of the work that changes the repo's stacks. No person is needed for
   each edit ([editing rules](#editing-rules)). A PR's own agent never edits it to get its PR past `D`.
@@ -190,9 +234,13 @@ adapter = ".ekit/adapters/java.toml"
 status = "planned"
 ```
 
-Dormant means no check runs. Until a manifest is there, every PR's mech-review comment reads **no result**, with the
-reason `the stack plan has no stack to run (no current, retiring or planned stack whose manifest is here)`. Do not make
-the check required yet. The PR that adds `pom.xml` starts the checks, and drift tells you the next step:
+Dormant means no check runs, and the check is red. Until a manifest is there, every PR's mech-review comment reads
+**no result**, with the reason `stack auto: the stack plan has no stack to run (no current, retiring or planned stack
+whose manifest is here); set the stack and project-dir inputs in the mech-review caller`. Ignore that hint and keep
+`stack` at `auto`. An explicit `stack: java` does resolve to `java` on this plan, but it pins the caller to that one
+stack: once the plan has two stacks, the explicit stack checks only the one it names and drops the other. Do not make
+the check required yet ([known gaps](#known-gaps)). The PR that adds `pom.xml` starts the checks, and drift tells you
+the next step:
 
 ```
 message: planned stack `api` (.): its manifest pom.xml is here and its adapter `.ekit/adapters/java.toml` is proven, so its checks start: set its status to current
@@ -228,9 +276,9 @@ edit the plan as its [Stack plan](../skills/ci-doctor/SKILL.md#stack-plan) secti
 
 ### Adding a stack
 
-A TS frontend in `web/` beside the Java backend: first a PR that adds only the entry, with `status = "planned"` and
-`adapter = "ts"` (a built-in; for a language with none, an adapter file ci-doctor's setup mode writes), then the
-code. The code PR starts the stack's checks, and drift asks you to set it `current`. Added together, the PR
+A TS frontend in `web/` beside the Java backend: first a PR that adds the entry and no manifest, with
+`status = "planned"` and `adapter = "ts"` (a built-in), then the code. For a language with no built-in, that first PR
+also adds the adapter file and its fixtures, which ci-doctor's setup mode writes and proves. The code PR starts the stack's checks, and drift asks you to set it `current`. Added together, the PR
 fails `D`:
 
 ```
@@ -245,11 +293,18 @@ or templates goes in `ignore` instead.
 
 The plan says Maven, the team picks Gradle, and no code exists yet. Ask ci-doctor for the new stack, as for an empty
 repo, and have it replace the planned entry's adapter and delete the old adapter file and its fixtures in the same PR.
-Nothing runs on that PR, as on every PR before the first manifest. Checked locally, R0's editing rules call the swap a
-person's call: deleting the old adapter file counts as removing its mutation tool
-(`a person decides: adapter file .ekit/adapters/java.toml: [mutation.tool] changed`), and a different tool or target OS
-in the new file counts too. You are that person:
-review the swap and merge it.
+Nothing runs on that PR, as on every PR before the first manifest. Run R0's editing rules locally instead, naming the
+base plan's stack:
+
+```bash
+$MR r0 --repo . --base origin/main --head HEAD --stack java --project-dir .
+```
+
+(`$MR` as in [fixing it by hand](#fixing-it-by-hand).) It calls the swap a person's call:
+`fail R0-… .ekit/adapters/java.toml:0 a person decides: adapter file .ekit/adapters/java.toml: [mutation.tool] changed`.
+Deleting the old adapter file counts as removing its mutation tool, even when the new file declares the same tool,
+and a different tool or target OS in the new file counts too ([known gaps](#known-gaps)). You are that person: review
+the swap and merge it.
 
 ## Editing rules
 
@@ -274,8 +329,9 @@ If the adapter lists the mutation tool's config files (the Java reference lists 
 ## When R0 fails: the fixing round
 
 **R0** is the adapter's proof, run as a CI check. Its static half runs in `guard` on every PR, in seconds. Its runtime
-half runs in `red-first` and `mutants` when its fingerprint changes (the adapter, its fixtures, the ekit version, the
-target OS, the toolchain's version lines, among others). It is mechanical: frozen inputs, no model.
+half runs in `red-first` and `mutants` once on every new PR (a passed proof is cached per PR), and again on that PR
+when its fingerprint changes (the adapter, its fixtures, the ekit version, the target OS, the toolchain's version
+lines, among others). It is mechanical: frozen inputs, no model.
 
 **When it fails**, most often: a toolchain or test-framework upgrade changes the runner's output; the repo adopts a new
 test style or assert library, so the census stops matching; or a new ekit release adds a cheat your fixtures lack,
@@ -347,7 +403,10 @@ $MR r0 --repo . --base HEAD --head HEAD --stack java --project-dir .
 $MR drift --repo . --base HEAD --head HEAD --format text
 ```
 
-Pass is `checks.R0.status` `pass` in the JSON, not the exit code (exit 0 also covers `unproven`). Then open the PR and
+Pass for `r0` is `checks.R0.status` `pass` in the JSON, not the exit code (exit 0 also covers `unproven`). The census
+`r2` exits 1 when it works: it names every removed test (`test fn ... removed`), each a `fail` entry, and a test it
+does not name is a miss. Some subcommands' `--help` lists `--stack {python,rust,ts}`; `--stack java` still works with
+`--adapter`, or when the repo has `.ekit/adapters/java.toml`. Then open the PR and
 handle it as an adapter-fix PR: its CI proves the base's copy, so it reads the old result until it merges
 ([step 4](#when-r0-fails-the-fixing-round)). A change that hits an [editing rule](#editing-rules) is a person's call.
 
@@ -364,3 +423,14 @@ R3 (mutation on the changed lines) depends on the tool the stack has:
 There is no mutation for a language with no mutation tool yet: R3 reads `n/a` until ekit's own lexical mutator lands
 (a later round). [What each stack mutates](mech-review-ci.md#what-each-stack-mutates) compares the tools, with a column
 for a declared tool.
+
+## Known gaps
+
+These are documented behaviour today, with follow-ups to come:
+
+- **The setup PR's own check** reads `no result` and is red, with nothing to waive: the base has no adapter yet
+  ([the setup PR's own check](#the-setup-prs-own-check)). Merge on the proof report.
+- **A planned-only plan** (an empty repo) makes every PR's check red with `no result` until the first manifest lands
+  ([an empty repo](#an-empty-repo)).
+- **A swap before code** is flagged `[mutation.tool] changed` even when the new adapter declares the same tool,
+  because deleting the old adapter file counts as removing its tool ([a swap before any code](#a-swap-before-any-code)).
