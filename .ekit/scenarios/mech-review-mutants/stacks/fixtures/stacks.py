@@ -163,7 +163,7 @@ def r3(out):
     return out["checks"]["R3"]["status"]
 
 
-def tested(out):
+def count_tested(out):
     c = out["checks"]["R3"]
     return f"{c.get('tested')}/{c.get('total')}"
 

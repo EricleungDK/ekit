@@ -1,9 +1,24 @@
+import importlib.util
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures"))
-from stacks import (FakeGitHub, R2, checkout_untouched, edit, entry_rows, eq, has, hasnt, merge,  # noqa: E402
-                    problems, r3, save, shard, tested)
+_spec = importlib.util.spec_from_file_location(
+    "stacks", os.path.join(os.environ["EKIT_PARENT_DIR"], "fixtures", "stacks.py"))
+lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lib)
+FakeGitHub = lib.FakeGitHub
+R2 = lib.R2
+checkout_untouched = lib.checkout_untouched
+edit = lib.edit
+entry_rows = lib.entry_rows
+eq = lib.eq
+has = lib.has
+hasnt = lib.hasnt
+merge = lib.merge
+problems = lib.problems
+r3 = lib.r3
+save = lib.save
+shard = lib.shard
+count_tested = lib.count_tested
 
 api = [shard("api", 0, 2), shard("api", 1, 2, survive="f2")]
 web = [shard("web", k, 2) for k in (0, 1)]
@@ -36,7 +51,7 @@ for name, fn, want in BAD:
         has(f"{what}: names the shard and the field", ps[0], f"mutants shard 1/2 produced no result: {want}")
         eq(f"{what}: the entry is CI", problems(out, "CI"), ps)
         eq(f"{what}: its MISSED mutant not counted", problems(out, "R3"), [])
-        eq(f"{what}: only shard 0 counted", tested(out), "1/1")
+        eq(f"{what}: only shard 0 counted", count_tested(out), "1/1")
 # every shard without the field: nothing counted, one entry per shard, never pass
 bare = [edit(api[k], f"api-{k}-bare.json", lambda d: d.pop("stack")) for k in (0, 1)]
 rc, out = merge("api", 2, list(enumerate(bare)))

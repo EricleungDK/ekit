@@ -1,10 +1,27 @@
+import importlib.util
 import json
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.environ["EKIT_SCENARIO_DIR"], "fixtures"))
-from stacks import (B, H, FakeGitHub, R2, checkout_untouched, edit, entry_rows, eq, has, hasnt,  # noqa: E402
-                    merge, problems, r3, save, shard, tested)
+_spec = importlib.util.spec_from_file_location(
+    "stacks", os.path.join(os.environ["EKIT_SCENARIO_DIR"], "fixtures", "stacks.py"))
+lib = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lib)
+B = lib.B
+H = lib.H
+FakeGitHub = lib.FakeGitHub
+R2 = lib.R2
+checkout_untouched = lib.checkout_untouched
+edit = lib.edit
+entry_rows = lib.entry_rows
+eq = lib.eq
+has = lib.has
+hasnt = lib.hasnt
+merge = lib.merge
+problems = lib.problems
+r3 = lib.r3
+save = lib.save
+shard = lib.shard
+count_tested = lib.count_tested
 
 # 1. each mutants result names the stack and folder it ran for
 api = [shard("api", k, 2) for k in (0, 1)]
@@ -20,12 +37,12 @@ for leg, files, want in (("api", api, {"stack": "python", "project_dir": "api"})
 rc, mapi = merge("api", 2, list(enumerate(api)))
 eq("api merge exit", rc, 0)
 eq("api R3", r3(mapi), "pass")
-eq("api tested", tested(mapi), "2/2")
+eq("api tested", count_tested(mapi), "2/2")
 eq("api entries", problems(mapi), [])
 rc, mweb = merge("web", 2, list(enumerate(web)))
 eq("web merge exit", rc, 1)
 eq("web R3", r3(mweb), "fail")
-eq("web tested", tested(mweb), "12/12")
+eq("web tested", count_tested(mweb), "12/12")
 eq("web entries", problems(mweb), ["MISSED mutant web/src/lib.rs:1:7: replace > with == in f0"])
 # the same, merged without --project-dir: the stack alone is compared, still clean
 rc, out = merge("api", 2, list(enumerate(api)), project_dir=False)
@@ -39,7 +56,7 @@ eq("crossed R3", r3(crossed), "fail")
 eq("crossed: exactly one CI entry naming the stack and folder", problems(crossed),
    ["mutants shard 1/2 produced no result: result is for stack rust in web, not python in api"])
 eq("crossed: web's MISSED mutant not counted", problems(crossed, "R3"), [])
-eq("crossed: only api's own shard counted", tested(crossed), "1/1")
+eq("crossed: only api's own shard counted", count_tested(crossed), "1/1")
 # the other way round: api's result in web's merge
 rc, out = merge("web", 2, [(0, web[0]), (1, api[1])])
 eq("crossed web exit", rc, 1)
@@ -84,8 +101,11 @@ try:
     eq("web clean merge exit", rc, 0)
     MAPI, MWEB, MWEBC, MCROSS = (save(n, d) for n, d in (("m-api.json", mapi), ("m-web.json", mweb),
                                                        ("m-web-clean.json", mweb_clean), ("m-cross.json", crossed)))
-    rows = lambda api_m, web_m: [("api", "python", "api", {"r2": R2["api"], "mutants": api_m}),  # noqa: E731
-                                 ("web", "rust", "web", {"r2": R2["web"], "mutants": web_m})]
+
+    def rows(api_m, web_m):
+        return [("api", "python", "api", {"r2": R2["api"], "mutants": api_m}),
+                ("web", "rust", "web", {"r2": R2["web"], "mutants": web_m})]
+
     rc, body = gh.report(rows(MAPI, MWEBC))
     eq("clean report exit (check passes)", rc, 0)
     has("clean: api row", body, "| api | python | api | pass ")
