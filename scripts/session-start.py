@@ -201,10 +201,11 @@ def _task_verify():
     return mod
 
 
-def declare(top, stacks, session):
+def declare(top, stacks, session, py):
     """Declare each stack's commands as the session's verify commands, through task-verify's own code (the same
     string `run` and the Stop gate match); the context lines that name what the store then holds, each step a stack has
-    no command for, and each it has one that task-verify would change."""
+    no command for, and each it has one that task-verify would change. py: the python the hook found (launcher.command(),
+    found once: finding it again starts a probe)."""
     if not session:
         return _none("the hook got no session_id")
     tv = _task_verify()
@@ -239,7 +240,7 @@ def declare(top, stacks, session):
         error = f"task-verify's store cannot be written ({shown(e.filename)}: {shown(e.strerror)})"
     held = set(tv.commands(top, session))  # what the store holds, read back: the context says no more than that
     done = [cmd for cmd in named if cmd in held]
-    run = launcher.line(VERIFY, "--repo", launcher.shown(top), "run", "--")
+    run = " ".join([py, launcher.shown(VERIFY), "--repo", launcher.shown(top), "run", "--"])  # launcher.line's form
     lines = [f"{DEFAULTS} (#61): this session's verify commands, from the stacks at HEAD; run each as shown before "
              f"calling the work done (the Stop gate checks them). Declare more per task as before."] if done else []
     for cmd in done:
@@ -250,17 +251,17 @@ def declare(top, stacks, session):
     return lines + notes
 
 
-def defaults(cwd, session):
+def defaults(cwd, session, py):
     """The `[ekit] Verify defaults` lines (#61), within the drift check's deadline: the stacks resolve on a worker,
     git only; past the deadline nothing is declared. The declaring itself runs here, so none lands after the line."""
     git_env()
     out = []
     worker = threading.Thread(target=lambda: out.append(_stacks(cwd)), daemon=True)
     worker.start()
-    return lambda deadline: _settled(worker, out, deadline, session)
+    return lambda deadline: _settled(worker, out, deadline, session, py)
 
 
-def _settled(worker, out, deadline, session):
+def _settled(worker, out, deadline, session, py):
     worker.join(max(0, deadline - time.monotonic()))
     if not out:
         return _none(f"resolving the stacks did not finish in {DRIFT_SECONDS} s here")
@@ -268,7 +269,7 @@ def _settled(worker, out, deadline, session):
     if isinstance(got, list):
         return got
     try:
-        return declare(*got, session)
+        return declare(*got, session, py)
     except Exception as e:  # noqa: BLE001 - a bug in declaring must not fail the hook
         return _none(f"declaring them failed here ({type(e).__name__}: {shown(e)})")
 
@@ -280,8 +281,9 @@ def main():
     subprocess.run([sys.executable, "-I", os.path.join(HERE, "finish-gate.py"), "--baseline"], input=raw, text=True)
     pf = "\n".join(preflight.checks(cwd, quiet=True))
     deadline = time.monotonic() + DRIFT_SECONDS  # the drift check's and the stacks' alike: they run side by side
-    verify = defaults(cwd, data.get("session_id"))
-    ctx = "\n".join([RULES, f"[ekit] Python: {launcher.command()}",
+    py = launcher.command()
+    verify = defaults(cwd, data.get("session_id"), py)
+    ctx = "\n".join([RULES, f"[ekit] Python: {py}",
                      f"[ekit] Scenario runner: {launcher.line(os.path.join(HERE, 'scenarios.py'))}",
                      f"[ekit] Preflight (this env):\n{pf}", *drift(cwd), *verify(deadline)])
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}))
