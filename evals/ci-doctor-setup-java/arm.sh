@@ -125,6 +125,8 @@ def same(text):
 def copied(path):
     """`copied: no`, or `copied: yes (...)` when the adapter file is the kit's reference, or more than half of the
     reference's fixture files are there, the same, under the same name in the adapter's fixture dir"""
+    # A known limit (the owner's call, #23): a text check, so a renamed copy (the stack's name and the fixtures' class
+    # names changed) reads `copied: no`. The orchestrator reads the run's trace before it uses a generated adapter.
     ref_dir = os.path.join(kit, "tests", "fixtures", "adapters")
     if not os.path.isfile(os.path.join(ref_dir, "java.toml")):
         return "copied: not checked: harness: the kit's tests/fixtures/adapters/java.toml is not there"
