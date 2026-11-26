@@ -4,7 +4,8 @@ of the plugin, and no other OS is simulated (the macOS job stays CI's).
 
 usage: python3 -I scripts/ci-local.py [--base REF] [--head-branch NAME] [--r3-env-dir DIR] [--repo DIR]
 
-Steps, each run whatever the one before gave, with the inputs of .github/workflows/mech-review-self.yml:
+Steps, each run whatever the one before gave, with the inputs of .github/workflows/mech-review-self.yml, then the
+scenarios:
   mech   the mech checks (R1, R2, R4: mech-review.py all) with this checkout's engine, the mech-review.py beside this
          file, never an installed copy: --stack python, test paths tests/** and .ekit/scenarios/**, protected paths
          .github/**, and R0's runtime half (--r0, as the red-first job passes it) in a fresh dir, as on a cache miss.
@@ -13,14 +14,20 @@ Steps, each run whatever the one before gave, with the inputs of .github/workflo
          (uv run --no-project): no uv.lock and no .venv in the repo; one left there anyway is a failed step.
   r3     scripts/r3-local.py with the same inputs and --mutation-budget 20: a fail entry or an unconfirmed survivor
          fails the step.
-mech and r3 test the HEAD commit (uncommitted changes are not in them); suite runs the working tree.
+  scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file), which no CI job runs (#115):
+         a FAIL fails the step, naming each; one this machine cannot run is not run here, naming it and what is
+         missing: the runner's NOT-RUN (no shell for its run file), or a scenario whose last line is
+         `unrunnable here: <what>` (lib.sh: fail "unrunnable here: strace is missing ..."). No verdict is not run here.
+mech and r3 test the HEAD commit (uncommitted changes are not in them); suite and scenarios run the working tree.
 Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that could not run is not a pass.
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
 exit: 0 every step passed; 1 a step failed or could not run here; 2 usage, or a base that is not a commit (no step ran).
 """
 import argparse
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,6 +37,7 @@ SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SCRIPTS)
 ENGINE = os.path.join(SCRIPTS, "mech-review.py")
 R3_LOCAL = os.path.join(SCRIPTS, "r3-local.py")
+RUNNER = os.path.join(SCRIPTS, "scenarios.py")
 
 # ekit's caller inputs (.github/workflows/mech-review-self.yml) and CI's Python (ubuntu-latest's python3)
 STACK = "python"
@@ -41,6 +49,9 @@ UV = ["uv", "run", "--no-project", "--python", CI_PYTHON]
 LEFT_BEHIND = ("uv.lock", ".venv")  # what a uv run with a project writes into the repo
 
 PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
+# the last line a scenario wrote when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
+UNRUNNABLE = re.compile(r"^(?:ASSERT FAILED: )?unrunnable here: (.+)$")
+VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): (\d+/\d+ scenarios)$")  # the runner's last line, once every scenario ran
 
 
 class Stop(Exception):
@@ -139,7 +150,50 @@ def r3(run, a):
     return NOT_RUN, f"r3-local.py exit {rc}: {_last(err, 'no result')}"
 
 
-STEPS = (("mech", mech), ("suite", suite), ("r3", r3))
+def _runner():
+    """scripts/scenarios.py as a module: where its run wrote results.json, and how it reads a scenario's transcript"""
+    spec = importlib.util.spec_from_file_location("ekit_scenarios", RUNNER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def scenarios(run, a):
+    rc, out, err = run([sys.executable, "-I", RUNNER, "--repo", a.repo, "run"])
+    _show(out, err)
+    verdict = VERDICT.match(_last(out, ""))
+    if not verdict:  # no scenarios, or the runner stopped before its verdict
+        return NOT_RUN, f"scenarios.py run exit {rc}: {_last(err, _last(out, 'no result'))}"
+    if rc == 0:
+        return PASSED, verdict.group(2)
+    sc = _runner()
+    try:  # each scenario's reason and transcript: what tells a missing tool from a failure
+        with open(os.path.join(sc.outdir(a.repo), "results.json"), encoding="utf-8") as f:
+            doc = json.load(f)
+        rows = doc["scenarios"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        return NOT_RUN, f"{verdict.group(0)}, but no readable results.json ({type(e).__name__}: {e})"
+    if doc.get("reason"):  # the run itself wrote into the repo: none of its verdicts proves anything
+        return FAILED, doc["reason"]
+    failed, unrunnable = [], []
+    for r in rows:
+        if not r.get("reason"):
+            continue
+        if sc.not_here(r):  # the runner's own: no shell for the run file
+            unrunnable.append(f"{r['id']}: {r['reason']}")
+            continue
+        m = UNRUNNABLE.match(sc.last_said(r["transcript"]))
+        if m:
+            unrunnable.append(f"{r['id']}: {m.group(1)}")
+        else:
+            failed.append(f"{r['id']} ({r['reason']})")
+    if failed:
+        also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
+        return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
+    return NOT_RUN, "; ".join(unrunnable)
+
+
+STEPS = (("mech", mech), ("suite", suite), ("r3", r3), ("scenarios", scenarios))
 
 
 def _sha(run, repo, ref):
