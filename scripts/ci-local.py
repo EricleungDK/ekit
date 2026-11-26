@@ -16,8 +16,10 @@ scenarios:
          fails the step.
   scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file), which no CI job runs (#115):
          a FAIL fails the step, naming each; one this machine cannot run is not run here, naming it and what is
-         missing: the runner's NOT-RUN (no shell for its run file), or a scenario whose last line is
-         `unrunnable here: <what>` (lib.sh: fail "unrunnable here: strace is missing ..."). No verdict is not run here.
+         missing: the runner's NOT-RUN (no shell for its run file), or a scenario that exits non-zero with its own one
+         fail message on stderr, `ASSERT FAILED: unrunnable here: <what>` (lib.sh: fail "unrunnable here: ..."), as its
+         last stderr line and its only ASSERT FAILED line. A timeout or a bad folder stays a FAIL. No verdict line, or
+         PASS: 0/0, is not run here.
 mech and r3 test the HEAD commit (uncommitted changes are not in them); suite and scenarios run the working tree.
 Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that could not run is not a pass.
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
@@ -49,8 +51,8 @@ UV = ["uv", "run", "--no-project", "--python", CI_PYTHON]
 LEFT_BEHIND = ("uv.lock", ".venv")  # what a uv run with a project writes into the repo
 
 PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
-# the last line a scenario wrote when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
-UNRUNNABLE = re.compile(r"^(?:ASSERT FAILED: )?unrunnable here: (.+)$")
+# a scenario's own fail message when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
+UNRUNNABLE = re.compile(r"^ASSERT FAILED: unrunnable here: (.+)$")
 # the runner's verdict line, once every scenario ran; an unfiltered run may print `N of M features working` after it
 VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): ((\d+)/(\d+) scenarios)$")
 
@@ -152,11 +154,21 @@ def r3(run, a):
 
 
 def _runner():
-    """scripts/scenarios.py as a module: where its run wrote results.json, and how it reads a scenario's transcript"""
+    """scripts/scenarios.py as a module: where its run wrote results.json, and which rows it could not run (env)"""
     spec = importlib.util.spec_from_file_location("ekit_scenarios", RUNNER)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _fail_message(transcript):
+    """the scenario's own fail message: the last line it wrote to stderr, when that is its only `ASSERT FAILED: ` line
+    (lib.sh's fail writes one, then exits). Else "": a tail of captured output, or a quoted failure, is no message."""
+    with open(transcript, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    err = text.partition("\n--- stderr ---\n")[2].rsplit("\n--- exit:", 1)[0]
+    lines = [x.strip() for x in err.splitlines() if x.strip()]
+    return lines[-1] if lines and [x for x in lines if x.startswith("ASSERT FAILED: ")] == lines[-1:] else ""
 
 
 def scenarios(run, a):
@@ -187,7 +199,7 @@ def scenarios(run, a):
             unrunnable.append(f"{r['id']}: {r['reason']}")
             continue
         # only a plain exit-code failure can be a missing tool: a timeout or a bad folder is the runner's own FAIL
-        m = r["reason"] == f"exit {r.get('exit')}" and UNRUNNABLE.match(sc.last_said(r["transcript"]))
+        m = r["reason"] == f"exit {r.get('exit')}" and UNRUNNABLE.match(_fail_message(r["transcript"]))
         if m:
             unrunnable.append(f"{r['id']}: {m.group(1)}")
         else:

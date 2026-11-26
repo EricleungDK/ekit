@@ -419,6 +419,34 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(line, "scenarios: failed: 1 of 1 failed: later (exit 1)")
 
+    def test_an_assertion_whose_captured_output_ends_in_an_unrunnable_line_is_a_failure(self):
+        # lib.sh: fail "has: expected [PASS] got [$out]", $out two lines: the tail is captured text, not the message
+        self.scenario("quoted", 'echo "ASSERT FAILED: has: expected [PASS] got [x" >&2; '
+                                'echo "unrunnable here: strace is missing]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: quoted (exit 1)")
+
+    def test_an_assertion_that_quotes_an_unrunnable_line_is_a_failure(self):
+        self.scenario("inline", 'echo "ASSERT FAILED: has: got [unrunnable here: strace is missing]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: inline (exit 1)")
+
+    def test_a_captured_unrunnable_assertion_after_the_scenarios_own_is_a_failure(self):
+        # a scenario of the runner quotes a nested scenario's transcript in its own failure
+        self.scenario("nested", 'echo "ASSERT FAILED: transcript: got [" >&2; '
+                                'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: nested (exit 1)")
+
+    def test_an_unrunnable_line_on_stdout_is_no_fail_message(self):
+        self.scenario("loud", 'echo "ASSERT FAILED: unrunnable here: strace is missing"; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: loud (exit 1)")
+
     def test_a_timeout_is_the_runners_failure_whatever_the_scenario_said_before(self):
         os.environ["EKIT_SCENARIO_TIMEOUT"] = "1"  # setUp's patch restores it
         self.scenario("slow", 'echo "ASSERT FAILED: unrunnable here: foo" >&2; sleep 5')
