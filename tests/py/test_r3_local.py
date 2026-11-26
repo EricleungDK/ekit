@@ -714,6 +714,22 @@ class EnvDirLock(Tmp):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(len(fake.engine("merge")), 1)
 
+    def test_the_next_run_replaces_a_killed_runs_pid_with_its_own(self):
+        os.makedirs(self.envdir)
+        with open(os.path.join(self.envdir, r3.LOCK), "w") as f:
+            f.write("4242")
+        seen = []
+        fake = Fake(count=1)
+
+        def run(argv, env=None, cwd=None):
+            if not seen:
+                with open(os.path.join(self.envdir, r3.LOCK)) as f:
+                    seen.append(f.read())
+            return fake(argv, env, cwd)
+
+        self.main(run)
+        self.assertEqual(seen, [str(os.getpid())])
+
     def test_a_second_run_after_the_first_ends_reuses_the_env(self):
         self.main(Fake())
         r = self.main(Fake())
