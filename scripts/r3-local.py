@@ -16,11 +16,12 @@ max-mutants 40); pass your caller's inputs (ekit: --test-paths 'tests/**' --test
 machine's CPUs (CI gives each its own runner), so wall times and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
 --env-dir keeps the tool and the results (reused while the pins and requirements match); default: a temp dir, removed.
 One run at a time on this machine (#120): a second run, any user's and any env dir's, waits for the first, naming its
-pid, up to --wait-limit minutes (default 90), then stops with exit 3; the lock file is /tmp/ekit-r3-local.lock.
+pid, up to --wait-limit minutes (default 90, at most 1440), then stops with exit 3; the lock file is /tmp/ekit-r3-local.lock.
 One run at a time holds an env dir: a second run on it stops at once, naming the first's pid, without waiting for the
 machine. Both locks go when the run that holds them ends, killed or not.
 exit: 0 no fail entry and no unconfirmed survivor; 1 a fail entry or an unconfirmed survivor; 2 setup failed,
-usage, the env dir in use by another run, git error, a step produced no usable result, or Windows; 3 waited past
+usage, the env dir in use by another run, git error, a step produced no usable result, Windows, or a machine
+lock path that holds no plain file this run can open (a link, a dir); 3 waited past
 --wait-limit for another run on this machine (R3 not run).
 """
 import argparse
@@ -58,6 +59,7 @@ MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up 
 LOCK = ".ekit-r3-env.lock"  # held (flock) by the run using the env dir; holds that run's pid
 # held (flock) by the one run on this machine; holds its pid. /tmp, not $TMPDIR (per user on macOS): every user's runs
 MACHINE_LOCK = "/tmp/ekit-r3-local.lock"
+MAX_WAIT_MIN = 1440  # --wait-limit's largest value: a day
 POLL_S = 0.1  # how often a waiting run tries the machine lock again
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
@@ -408,14 +410,16 @@ def r3(run, a, keep):
 
 
 def _minutes(text):
-    """--wait-limit: a finite number of minutes, 0 or more (nan would wait for ever)."""
+    """--wait-limit: a number of minutes from 0 to a day (nan or 1e308 would wait for ever)."""
     try:
         v = float(text)
     except ValueError:
         v = -1.0
     if not 0 <= v < float("inf"):
         raise argparse.ArgumentTypeError("want minutes, a number 0 or more")
-    return v
+    if v > MAX_WAIT_MIN:  # a finite 1e308 minutes is no finite number of seconds
+        raise argparse.ArgumentTypeError(f"want minutes, at most {MAX_WAIT_MIN} (a day)")
+    return abs(v)  # -0 is 0
 
 
 def parse(argv):

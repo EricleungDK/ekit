@@ -1041,6 +1041,25 @@ class MachineLock(Tmp):
                 self.assertEqual((r.returncode, fake.calls), (2, []))
                 self.assertIn("--wait-limit: want minutes, a number 0 or more", r.stderr)
 
+    def test_a_wait_limit_past_a_day_is_a_usage_error(self):
+        """1e308 minutes is finite, but not in seconds: the wait would never end."""
+        for bad in ("1e308", "1440.5"):
+            with self.subTest(bad=bad):
+                fake = Fake()
+                r = self.main(fake, "--wait-limit", bad)
+                self.assertEqual((r.returncode, fake.calls), (2, []))
+                self.assertIn("--wait-limit: want minutes, at most 1440 (a day)", r.stderr)
+
+    def test_a_day_is_the_longest_wait_limit(self):
+        self.assertEqual(r3.parse(["--base", "main", "--stack", "python", "--wait-limit", "1440"]).wait_limit, 1440)
+
+    def test_a_wait_limit_of_minus_zero_is_zero(self):
+        self.held("4242")
+        r = self.main(Fake(), "--wait-limit", "-0")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("), up to 0 min\n", r.stderr)
+        self.assertIn("r3-local: waited 0 min for the r3-local run of pid 4242", r.stderr)
+
     def test_help_names_the_wait_limit_and_its_exit_code(self):
         r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
         t = flat(r.stdout)
