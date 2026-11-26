@@ -441,6 +441,14 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(line, "scenarios: failed: 1 of 1 failed: nested (exit 1)")
 
+    def test_an_assert_line_on_stdout_does_not_hide_the_fail_message_on_stderr(self):
+        # stdout is the scenario's output, not its fail message: only stderr counts its ASSERT FAILED lines
+        self.scenario("traced", 'echo "ASSERT FAILED: nested: quoted from an inner run"; '
+                                'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: not run here: traced: strace is missing")
+
     def test_an_unrunnable_line_on_stdout_is_no_fail_message(self):
         self.scenario("loud", 'echo "ASSERT FAILED: unrunnable here: strace is missing"; exit 1')
         r, line = self.run_scenarios()
@@ -533,6 +541,12 @@ class Scenarios(Tmp):
         r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
         self.assertEqual(r.returncode, 1)
         self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable ")
+
+    def test_exit_0_with_a_fail_verdict_for_every_scenario_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 1/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 1/1 scenarios, but no readable ")
 
     def test_a_pass_verdict_short_of_every_scenario_is_no_pass(self):
         self.evidence(None)
