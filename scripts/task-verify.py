@@ -14,7 +14,13 @@ The agent runs it, through the Bash tool, so the command passes the session's pe
 A command line means what its shell makes of it (bash, zsh, PowerShell): the first `declare` or `run` of a command
 keeps the shell it was given in (shells.current()), and every later `run` of it uses that shell, whichever shell
 calls `run`. A command whose shell this machine lacks is not run: `run` exits 5, and the command reads
-`n/a (env)`, never a pass.
+`n/a (env)`, never a pass. So does a run that failed because its runner is not installed (#117), naming what to
+install: `<python> -m <module>` whose whole stderr is the interpreter's `No module named <module>` line (`install
+pytest for python3 (python3 -m pip install pytest)`), or the shell's own not-found line for a word of the command,
+with that shell's exit code for it (`install <name> (not found on PATH)`: bash and sh 127, cmd 9009, PowerShell any
+failure). A runner that is there and fails is a failed run, whatever its output says: a test whose import fails
+prints a traceback, not that one line. The run's stdout goes straight through; its stderr is shown as it comes, and
+read for that.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command becomes a command of the session.
@@ -42,6 +48,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
@@ -159,6 +166,87 @@ def spelled(words):
     return " ".join((words[0] if len(words) == 1 else shlex.join(words)).split())
 
 
+EXE = r"(?:python[\d.]*|py)(?:\.exe)?"  # python3, python3.12, py, python.exe
+PYTHON = (r"(?:'[^']*[\\/]" + EXE + r"'"  # a quoted path, or a bare name or path
+          r'|"[^"]*[\\/]' + EXE + r'"'
+          r"""|(?:[^\s'"]*[\\/])?""" + EXE + ")")
+# `<python> [flags] -m <module>`: the interpreter as the line spells it (flags kept: `py -3`), and the module
+PY_M = re.compile(r"(?<![^\s;&|(])(" + PYTHON + r"(?:\s+-(?!m(?:\s|$))\S+)*)\s+-m\s+([A-Za-z_][\w.]*)", re.I)
+# a shell saying it found no such command; each with the exit code that shell gives it (None: any failing one)
+NOT_FOUND = (
+    (127, re.compile(r"(?:^|: )([^\s:]+): (?:command )?not found$")),       # bash, sh (dash)
+    (127, re.compile(r"command not found: (\S+)$")),                        # zsh
+    (9009, re.compile(r"^'(.+?)' is not recognized as an internal or external command")),  # cmd
+    (None, re.compile(r"The term '(.+?)' is not recognized as (?:the|a) name of a cmdlet")),  # PowerShell
+)
+
+
+def mentions(cmd, word):
+    """`word` stands in the command line as a whole word (a name, or the end of a path)"""
+    return re.search(r"(?<![\w.-])" + re.escape(word) + r"(?![\w.-])", cmd) is not None
+
+
+def missing_runner(cmd, rc, err):
+    """What to install when the run failed because its runner is not there; None when it ran (and failed) or passed.
+    Only the runner's own absence counts: `<python> -m <module>` whose whole stderr is the interpreter's one line
+    `No module named <module>` (a test whose import fails prints a traceback), or the shell's not-found line for a
+    word of the command with that shell's exit code for it."""
+    if not rc:
+        return None
+    lines = [line.strip() for line in err.splitlines() if line.strip()]
+    for interp, module in PY_M.findall(cmd):
+        top = module.split(".")[0]
+        said = re.escape(module) + "|" + re.escape(top) if top != module else re.escape(module)
+        if len(lines) == 1 and re.search(r"(?:: No module named (?:" + said + r")|"
+                                         r"\(ModuleNotFoundError: No module named '" + re.escape(top) + r"'\))$",
+                                         lines[0]):
+            return f"install {top} for {interp} ({interp} -m pip install {top})"
+    for code, pattern in NOT_FOUND:
+        for line in lines:
+            m = pattern.search(line)
+            if m and (code is None or rc == code) and mentions(cmd, m.group(1)):
+                return f"install {m.group(1)} (not found on PATH)"
+    return None
+
+
+KEPT = 65536  # bytes of a run's stderr kept to read: the start and the end
+
+
+class Stderr:
+    """The run's stderr: shown as it comes, where task-verify's own stderr goes, and its start and end kept.
+    It is a pipe read by a thread, so the run itself is the plain subprocess.run it always was."""
+
+    def __init__(self):
+        self.r, self.w = os.pipe()
+        self.head, self.tail, self.cut = b"", b"", False
+        self.thread = threading.Thread(target=self.pump, daemon=True)
+        self.thread.start()
+
+    def pump(self):
+        out = getattr(sys.stderr, "buffer", None)
+        while True:
+            data = os.read(self.r, KEPT)
+            if not data:
+                break
+            if out is not None:
+                out.write(data)
+                out.flush()
+            else:
+                sys.stderr.write(data.decode("utf-8", "replace"))
+            if len(self.head) < KEPT:
+                data, self.head = data[KEPT - len(self.head):], self.head + data[:KEPT - len(self.head)]
+            self.cut = self.cut or len(self.tail) + len(data) > KEPT
+            self.tail = (self.tail + data)[-KEPT:]
+        os.close(self.r)
+
+    def text(self):
+        """All that was read once the run is over; a process it left behind that holds the pipe open gets 5s."""
+        os.close(self.w)
+        self.thread.join(5)
+        text = self.head + (b"\n...\n" if self.cut else b"") + self.tail
+        return text.decode("utf-8", "replace")
+
+
 def cmd_run(top, words):
     cmd = spelled(words)
     sh = shell_of(top, cmd)
@@ -169,7 +257,19 @@ def cmd_run(top, words):
         keep_shell(top, cmd, sh)
         print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
         return 5
-    rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"])).returncode
+    # stdout goes straight through; stderr is shown as it comes and read, to tell a runner that is not there
+    err = Stderr()
+    try:
+        rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"]),
+                            stderr=err.w).returncode
+    finally:
+        said = err.text()
+    na = missing_runner(cmd, rc, said)
+    if na:
+        record(top, cmd, None, sh["name"], na)
+        keep_shell(top, cmd, sh)
+        print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
+        return 5
     record(top, cmd, rc, sh["name"])  # hashed after the run: what the command left is what the hook will see
     keep_shell(top, cmd, sh)
     print(f"task-verify: `{cmd}` exited {rc} in {sh['name']}", file=sys.stderr)

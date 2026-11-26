@@ -6,7 +6,9 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -540,6 +542,111 @@ class VerifyLine(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertEqual(tv.declared(text), want)
+
+
+PY = shlex.quote(sys.executable)  # this Python, as a bash line spells it
+
+
+class MissingRunner(VerifyCase):
+    """A run that fails because its test runner is not installed is n/a (env) naming what to install (#117); a runner
+    that is installed and fails is a failed run, whatever its output says."""
+
+    def module(self, name, body):
+        with open(os.path.join(self.repo, f"{name}.py"), "w") as f:
+            f.write(body)
+
+    def test_python_m_of_a_module_not_installed_is_n_a_env_naming_the_install(self):
+        cmd = f"{PY} -m ekit_absent_runner -q"
+        fix = f"install ekit_absent_runner for {PY} ({PY} -m pip install ekit_absent_runner)"
+        rc, err = self.call(["--repo", self.repo, "run", "--", cmd])
+        self.assertEqual(rc, 5)
+        self.assertTrue(err.endswith(f"task-verify: `{cmd}` is n/a (env): {fix}\n"), err)
+        self.assertIn("No module named ekit_absent_runner", err)  # what the runner said is still shown
+        self.assertEqual(self.complete(f"Verify: `{cmd}`"), self.blocked(f"n/a (env): {fix}", cmd))
+        self.assertEqual(self.check(), (1, f"`{cmd}`: n/a (env): {fix}\n"))
+
+    def test_a_submodule_of_a_package_not_installed_names_the_package(self):
+        cmd = f"{PY} -m ekit_absent_pkg.cli"
+        self.assertEqual(self.run_cmd(cmd), 5)
+        self.complete(f"Verify: `{cmd}`")
+        self.assertEqual(self.check(), (1, f"`{cmd}`: n/a (env): install ekit_absent_pkg for {PY} ({PY} -m pip "
+                                           "install ekit_absent_pkg)\n"))
+
+    def test_a_command_not_on_path_is_n_a_env_naming_it(self):
+        cmd = "ekit_absent_tool117 --version"
+        rc, err = self.call(["--repo", self.repo, "run", "--", cmd])
+        self.assertEqual(rc, 5)
+        self.assertTrue(err.endswith(f"task-verify: `{cmd}` is n/a (env): install ekit_absent_tool117 (not found on "
+                                     "PATH)\n"), err)
+        self.complete(f"Verify: `{cmd}`")
+        self.assertEqual(self.check(), (1, f"`{cmd}`: n/a (env): install ekit_absent_tool117 (not found on PATH)\n"))
+
+    def test_a_long_stderr_is_shown_whole_and_its_last_line_still_read(self):
+        cmd = f"{PY} -c \"import sys; sys.stderr.write('x' * 300000)\"; echo >&2; ekit_absent_tool117"
+        rc, err = self.call(["--repo", self.repo, "run", "--", cmd])
+        self.assertEqual((rc, err.count("x" * 1000) >= 300), (5, True))
+        self.assertTrue(err.endswith("n/a (env): install ekit_absent_tool117 (not found on PATH)\n"), err[-300:])
+
+    def failed(self, cmd, rc):
+        """`cmd` ran and failed: its exit code, never n/a"""
+        self.assertEqual(self.run_cmd(cmd), rc)
+        self.complete(f"Verify: `{cmd}`")
+        self.assertEqual(self.check(), (1, f"`{cmd}`: the run exited {rc}\n"))
+
+    def test_an_installed_runner_whose_test_cannot_import_is_a_failed_run(self):
+        self.module("ekit_runner", "import ekit_absent_dep\n")
+        self.failed(f"{PY} -m ekit_runner", 1)
+
+    def test_an_installed_runner_whose_output_says_no_module_named_is_a_failed_run(self):
+        self.module("ekit_chatty", "import sys\nprint('No module named ekit_chatty')\n"
+                                   "sys.stderr.write('ekit_chatty: No module named ekit_chatty\\nFAILED test_x\\n')\n"
+                                   "sys.exit(1)\n")
+        self.failed(f"{PY} -m ekit_chatty", 1)
+
+    def test_a_runner_saying_another_module_is_missing_is_a_failed_run(self):
+        self.module("ekit_other", "import sys\nsys.stderr.write('x: No module named ekit_absent_dep\\n')\n"
+                                  "sys.exit(1)\n")
+        self.failed(f"{PY} -m ekit_other", 1)
+
+    def test_exit_127_without_a_not_found_line_is_a_failed_run(self):
+        self.failed("exit 127", 127)
+
+    def test_a_not_found_line_for_a_word_not_in_the_command_is_a_failed_run(self):
+        self.failed("echo 'bash: ekit_elsewhere: command not found' | sed s/elsewhere/other/ >&2; exit 127", 127)
+
+    def test_a_not_found_line_with_another_exit_code_is_a_failed_run(self):
+        self.failed("ekit_absent_tool117 || exit 3", 3)
+
+    def faked(self, shell, rc, stderr):
+        """`shell` found and its process faked: it exits `rc` and says `stderr`; git still runs for real."""
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if argv[0] != "git":
+                os.write(kw["stderr"], stderr)  # what the shell would write there
+                return subprocess.CompletedProcess(argv, rc)
+            return real(argv, **kw)
+        return mock.patch.object(tv.shells, "find", return_value=f"/fake/{shell}"), \
+            mock.patch.object(tv.subprocess, "run", side_effect=run), \
+            mock.patch.dict(os.environ, {"EKIT_SHELL": shell})
+
+    def test_powershell_and_cmd_not_recognizing_the_runner_is_n_a_env(self):
+        ps = (b"pytest : The term 'pytest' is not recognized as the name of a cmdlet, function, script file, or "
+              b"operable program.\r\nAt line:1 char:1\r\n")
+        pwsh = b"pytest: The term 'pytest' is not recognized as a name of a cmdlet, function, script file, or executable program.\n"
+        cmd_exe = b"'pytest' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"
+        for shell, rc, err in (("powershell", 1, ps), ("pwsh", 1, pwsh), ("cmd", 9009, cmd_exe)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc, err)
+                with find, run, env:
+                    self.assertEqual(self.call(["--repo", self.repo, "run", "--", f"pytest -q {shell}"])[0], 5)
+                self.complete(f"Verify: `pytest -q {shell}`", task=shell)
+                self.assertIn(f"`pytest -q {shell}`: n/a (env): install pytest (not found on PATH)\n", self.check()[1])
+
+    def test_cmd_saying_not_recognized_with_another_exit_code_is_a_failed_run(self):
+        find, run, env = self.faked("cmd", 1, b"'pytest' is not recognized as an internal or external command,\r\n")
+        with find, run, env:
+            self.assertEqual(self.run_cmd("pytest -q"), 1)
 
 
 class Usage(VerifyCase):
