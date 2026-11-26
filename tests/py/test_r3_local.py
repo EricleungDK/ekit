@@ -945,6 +945,21 @@ class MachineLock(Tmp):
         os.mkdir(self.machine)
         self.assert_refused("not a regular file")
 
+    def test_a_fifo_at_the_lock_path_is_exit_2(self):
+        os.mkfifo(self.machine)
+        self.assert_refused("not a regular file")
+
+    def test_a_fifo_this_user_may_only_read_is_exit_2_not_a_hang(self):
+        """Another user's mkfifo -m 644: the read-write open is refused (simulated: root here), and a read-only open of
+        a fifo with no writer blocks unless it is non-blocking."""
+        os.mkfifo(self.machine)
+
+        def answer(flags):
+            return PermissionError(13, "Permission denied", self.machine) if flags & os.O_RDWR else None
+
+        with self.opens(answer):
+            self.assert_refused("not a regular file")
+
     def test_a_lock_file_with_another_hard_link_is_exit_2_and_left_alone(self):
         other = os.path.join(self.tmp, "other")
         with open(other, "w") as f:

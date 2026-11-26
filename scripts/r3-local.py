@@ -159,10 +159,11 @@ def _refused(path, why):
 
 
 def _open_fd(path, flags, mode=0o666):
-    """os.open that never follows a link at path: a link there (any user can make one in /tmp) is a Stop, as is any
+    """os.open that never follows a link at path and never blocks (a fifo there; the fstat in _open_shared refuses it,
+    and on a regular file O_NONBLOCK changes nothing): a link there (any user can make one in /tmp) is a Stop, as is any
     other error but a missing file (FileNotFoundError) or, for an existing file, the right to write it."""
     try:
-        return os.open(path, flags | os.O_NOFOLLOW, mode)
+        return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode)  # a fifo there must not block the open
     except (FileNotFoundError, FileExistsError):
         raise
     except PermissionError:
