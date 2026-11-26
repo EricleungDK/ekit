@@ -61,6 +61,11 @@ class Defaults(unittest.TestCase):
         self.assertEqual(self.declared(), ["python3 -m pytest"])  # at the repo root: the plain command
         self.assertIn("`python3 -m pytest`", "\n".join(self.lines(ctx)))
 
+    def test_with_no_plan_the_stack_is_named_by_the_stack_auto_finds(self):
+        self.commit({"pyproject.toml": "[project]\n"})
+        self.assertIn("[ekit] Verify defaults: stack `python` (at the repo root) names no build or lint command, so none "
+                      "is declared for those steps.", self.lines(self.context()))
+
     def test_a_built_in_gives_its_test_command_as_r1_and_r4_run_it(self):
         self.commit({"web/package.json": '{"devDependencies": {"jest": "29"}}'})
         self.context()
