@@ -1,0 +1,10 @@
+# stack-plan/session-start/verify-defaults/gate: the finish gate holds `## Finish: done` until each declared default ran green with its shown line
+
+- story: As a developer in an orchestrate session whose stack declares build, lint and test at session start, I cannot report the work done until I have run each of them green, with the `task-verify.py ... run` line the session context showed, on the files as they are; my own per-task verify command stays beside the defaults and counts too.
+- covers: #61 the Stop gate (finish gate) holds `## Finish: done` until each declared default was run green with the shown `task-verify.py ... run -- '<cmd>'` line; the agent's own per-task declared commands stay alongside the defaults (also across a resumed session start); 61.1 (one stack in a folder: `cd app && <cmd>` for build, lint and test, install never)
+- steps:
+  1. Parent's install (kit clone). Plan `app` (folder `app`, adapter file `.ekit/adapters/tool.toml`: install `touch INSTALLED`, build `test -f build.gradle.kts`, lint `test -s src.kt`, test `grep -q ok src.kt`); `app/src.kt` holds `bad`. Every hook is the clone's `hooks/hooks.json` command, payload on stdin, `CLAUDE_PLUGIN_ROOT` = the clone.
+  2. SessionStart `g1`; UserPromptSubmit `/ekit:orchestrate-agent fix the app` (arms the gate); the agent declares its own `python3 -c pass` with `task-verify.py declare`; SessionStart again with source `resume`.
+  3. Edit a file; Stop with the `## Finish: done` report. Run the own command; Stop. Run each default with its shown line (the test red); Stop.
+  4. Fix `src.kt`; Stop. Run the defaults' shown lines again; Stop. Run the own command; Stop.
+- expected: step 2 the store holds the three `cd app && ...` defaults, and after the resume those and `python3 -c pass`; no install anywhere. Step 3 every Stop blocks: first naming each default, then the test (and not the own command), then the test alone (not the green build). Step 4 blocks after the fix (passes are stale), blocks naming the own command while only the defaults were re-run, and allows (no output) once all four are green.

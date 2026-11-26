@@ -55,12 +55,20 @@ grep -E '^execve\("[^"]*/python[0-9.]*"' <<<"$WITH" | grep -qE 'pytest|unittest|
 grep -E '^execve\("[^"]*/git"' <<<"$WITH" | grep -qE '"(fetch|pull|clone|ls-remote|push|fetch-pack|lfs|submodule)"' && fail "the hook made git reach the network"
 [[ $(grep -c '^execve("[^"]*/git"' <<<"$WITH") -gt $(grep -c '^execve("[^"]*/git"' <<<"$WITHOUT") ]] || fail "the plan added no git read: is the drift check running?"
 
-# a clean repo adds nothing: the context is the same as a repo with no plan
+# a clean repo: the drift check adds nothing, so the context is the same as a repo with no plan once the #61
+# Verify defaults lines (which differ by design: a plan names the stacks, no plan with two projects names none) are out
 newrepo clean; put web/package.json '{}'; put api/pyproject.toml '[project]'; stack web web ts current; stack api api python current; commit base
 start "$R"; CLEAN=$CTX; hasnt "clean: no Stack plan line" "$CLEAN" "Stack plan"
 newrepo none; put web/package.json '{}'; put api/pyproject.toml '[project]'; commit base
 start "$R"; hasnt "no plan: no Stack plan line" "$CTX" "Stack plan"
-eq "clean adds nothing" "$(sed "s#$PWD/clean#REPO#g" <<<"$CLEAN")" "$(sed "s#$PWD/none#REPO#g" <<<"$CTX")"
+novd() { grep -v '^\[ekit\] Verify defaults' | sed "s#$1#REPO#g"; }
+eq "clean adds nothing" "$(novd "$PWD/clean" <<<"$CLEAN")" "$(novd "$PWD/none" <<<"$CTX")"
+# #61: the clean plan declares each stack's test; no plan with two projects, one line, none declared
+CV=$(grep '^\[ekit\] Verify defaults' <<<"$CLEAN")
+has "clean: web's test declared" "$CV" "\`cd web && node_modules/.bin/vitest run\` (test of stack \`web\`"
+has "clean: api's test declared" "$CV" "\`cd api && python3 -m pytest\` (test of stack \`api\`"
+eq "no plan: one Verify defaults line" "$(grep -c '^\[ekit\] Verify defaults' <<<"$CTX")" 1
+has "no plan: none declared, several projects" "$CTX" "[ekit] Verify defaults: none declared: several projects"
 
 # misuse: a plan that does not read is one Stack plan line naming it, never clean, never a failed hook
 newrepo bad; put web/package.json '{}'; stack web web ts done; commit base
