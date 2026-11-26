@@ -643,6 +643,18 @@ class MissingRunner(VerifyCase):
                 self.complete(f"Verify: `pytest -q {shell}`", task=shell)
                 self.assertIn(f"`pytest -q {shell}`: n/a (env): install pytest (not found on PATH)\n", self.check()[1])
 
+    def test_the_install_line_keeps_the_py_launchers_version_and_drops_run_flags(self):
+        self.assertEqual(self.run_cmd(f"{PY} -I -S -m ekit_absent_runner"), 5)
+        find, run, env = self.faked("powershell", 1, b"C:\\Py312\\python.exe: No module named pytest\r\n")
+        with find, run, env:
+            self.assertEqual(self.run_cmd("py -3.12 -X utf8 -m pytest -q"), 5)
+        self.complete(f"Verify: `{PY} -I -S -m ekit_absent_runner`", task="a")
+        self.complete("Verify: `py -3.12 -X utf8 -m pytest -q`", task="b")
+        self.assertEqual(self.check()[1].splitlines(), sorted([
+            f"`{PY} -I -S -m ekit_absent_runner`: n/a (env): install ekit_absent_runner for {PY} ({PY} -m pip install "
+            "ekit_absent_runner)",
+            "`py -3.12 -X utf8 -m pytest -q`: n/a (env): install pytest for py -3.12 (py -3.12 -m pip install pytest)"]))
+
     def test_cmd_saying_not_recognized_with_another_exit_code_is_a_failed_run(self):
         find, run, env = self.faked("cmd", 1, b"'pytest' is not recognized as an internal or external command,\r\n")
         with find, run, env:

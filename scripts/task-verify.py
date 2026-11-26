@@ -170,8 +170,10 @@ EXE = r"(?:python[\d.]*|py)(?:\.exe)?"  # python3, python3.12, py, python.exe
 PYTHON = (r"(?:'[^']*[\\/]" + EXE + r"'"  # a quoted path, or a bare name or path
           r'|"[^"]*[\\/]' + EXE + r'"'
           r"""|(?:[^\s'"]*[\\/])?""" + EXE + ")")
-# `<python> [flags] -m <module>`: the interpreter as the line spells it (flags kept: `py -3`), and the module
-PY_M = re.compile(r"(?<![^\s;&|(])(" + PYTHON + r"(?:\s+-(?!m(?:\s|$))\S+)*)\s+-m\s+([A-Za-z_][\w.]*)", re.I)
+# `<python> [flags] -m <module>`: the interpreter as the line spells it, its flags, and the module
+FLAGS = r"(?:\s+-[XW]\s+\S+|\s+-(?![mc](?:\s|$))\S+)*"  # options before -m: `-X utf8`, `-I`, never -c
+PY_M = re.compile(r"(?<![^\s;&|(])(" + PYTHON + ")(" + FLAGS + r")\s+-m\s+([A-Za-z_][\w.]*)", re.I)
+VERSION_FLAG = re.compile(r"-\d+(?:\.\d+)?(?:-(?:32|64))?")  # the py launcher's `-3`, `-3.12`, `-3.12-64`
 # a shell saying it found no such command; each with the exit code that shell gives it (None: any failing one)
 NOT_FOUND = (
     (127, re.compile(r"(?:^|: )([^\s:]+): (?:command )?not found$")),       # bash, sh (dash)
@@ -194,7 +196,8 @@ def missing_runner(cmd, rc, err):
     if not rc:
         return None
     lines = [line.strip() for line in err.splitlines() if line.strip()]
-    for interp, module in PY_M.findall(cmd):
+    for exe, flags, module in PY_M.findall(cmd):
+        interp = " ".join([exe] + [f for f in flags.split() if VERSION_FLAG.fullmatch(f)])  # pip runs without -I, -S
         top = module.split(".")[0]
         said = re.escape(module) + "|" + re.escape(top) if top != module else re.escape(module)
         if len(lines) == 1 and re.search(r"(?:: No module named (?:" + said + r")|"
