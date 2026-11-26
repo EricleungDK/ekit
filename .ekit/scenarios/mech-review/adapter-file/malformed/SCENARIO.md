@@ -7,5 +7,5 @@
   2. With the good file: exit 1, the cheat named.
   3. One edited copy per mistake, each through `r2 --stack ktspec --adapter <copy>`; then `--stack ts` and `--stack KtSpec` with the good file; `merge` with the shipped `ts.toml` and `--stack ts`; `red`, `all` with the good file (no `[run]`); `--stack ktspec` with no `--adapter`.
   4. The good file with CRLF line ends, and by a relative path from a subdir.
-- expected: step 3 every run exit 2, empty stdout, no `Traceback`, stderr naming the field and the problem (e.g. `tests.cases: missing`, `format: \`1\`: want 1`, `tests.casse: unknown key`, `cannot read`, `not valid TOML`, `describes stack \`ktspec\`, not \`ts\``, `--adapter applies to r2, red and all`, `--adapter applies to r2 only for good.toml: it has no [run] table`). Step 4 exit 1 with the cheat named.
+- expected: step 3 every run exit 2, empty stdout, no `Traceback`, stderr naming the field and the problem (e.g. `tests.cases: missing`, `format: \`1\`: want 1`, `tests.casse: unknown key`, `cannot read`, `not valid TOML`, `describes stack \`ktspec\`, not \`ts\``, `--adapter applies to r2, red, all, mutants, baseline and plan (merge reads no tree)`, `--adapter applies to r2 only for good.toml: it has no [run] table`). Step 4 exit 1 with the cheat named.
 - children: bracket-pair
