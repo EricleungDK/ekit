@@ -1,7 +1,7 @@
 ---
 type: llm
-# a claim only the trace shows: what the written workflow holds (its path is the agent's choice). It is written late
-# in the run (setup.md step 6), in the part a long trace keeps when the judge's view drops its middle
+# a claim only the trace shows: what the written workflow holds (its path is the agent's choice; setup.md step 6). A
+# known limit: the judge's view of a long trace drops its middle, which may hold that write
 focus: trace
 weight: 1
 ---

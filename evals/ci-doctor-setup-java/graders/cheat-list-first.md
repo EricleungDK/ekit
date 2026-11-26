@@ -1,7 +1,7 @@
 ---
 type: llm
-# a claim only the trace shows: the order of two steps. Both come early in the run (setup.md steps 2 and 3), so they
-# sit in the part a long trace keeps when the judge's view drops its middle
+# a claim only the trace shows: the order of two steps (setup.md steps 2 and 3). A known limit: the judge's view of a
+# long trace drops its middle, which may hold either step
 focus: trace
 weight: 1
 ---
