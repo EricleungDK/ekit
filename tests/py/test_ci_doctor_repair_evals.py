@@ -176,5 +176,96 @@ class RepairJavaRunner(Scaffold):
         self.assertNotIn("repair.md", self.passing())
 
 
+PLAN = ".ekit/stack-plan.toml"
+WEB = '\n[[stack]]\nname = "web"\nfolder = "web"\nadapter = "ts"\nstatus = "{}"\n'
+
+
+class RepairDrift(Scaffold):
+    CASE = "ci-doctor-repair-drift"
+    ALL = ["own-branch.md", "plan.md", "repair.md"]
+
+    def plan(self, extra="", ignore=None):
+        text = self.git("show", f"main:{PLAN}") + extra
+        return {PLAN: (f"ignore = {json.dumps(ignore)}\n\n" if ignore else "") + text}
+
+    def test_the_scaffold_is_the_drift_block(self):
+        mech = json.loads(self.read("mech.json"))
+        self.assertEqual([(e["id"], e["check"], e["class"]) for e in mech["entries"]],
+                         [("D-7e776699", "D", "adapter-fix")])
+        self.assertEqual(self.git("symbolic-ref", "--short", "HEAD").strip(), "claude/web")
+        self.assertEqual(self.passing(), [])
+
+    def test_a_planned_entry_for_the_folder_passes_every_grader(self):
+        self.commit(self.plan(WEB.format("planned")))
+        self.assertEqual(self.passing(), self.ALL)
+        self.assertEqual(self.verdict().splitlines()[6:], [
+            "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
+            "drift: clean (exit 0, D pass, 0 entries)",
+            "merged: clean (drift on the coding branch merged onto the repair tip: exit 0, D pass, 0 entries)",
+            "repair: yes"])
+
+    def test_the_folder_in_ignore_passes_and_names_the_person_it_needs(self):
+        self.commit(self.plan(ignore=["web"]))
+        self.assertEqual(self.passing(), self.ALL)
+        self.assertIn("person: a person decides: `ignore` gains `web` in .ekit/stack-plan.toml\n"
+                      "plan: ignores web (ignore 'web')\n", self.verdict())
+
+    def test_a_current_entry_for_a_manifest_not_there_yet_is_the_wrong_status(self):
+        self.commit(self.plan(WEB.format("current")))
+        self.assertEqual(self.passing(), ["own-branch.md", "repair.md"])
+
+    def test_a_plan_that_neither_covers_nor_ignores_the_folder_fails(self):
+        self.commit(self.plan(WEB.format("planned").replace('folder = "web"', 'folder = "site"')))
+        self.assertEqual(self.passing(), ["own-branch.md"])
+        self.assertIn("plan: neither (no entry for 'web' and no ignore folder holding it)\n", self.verdict())
+        self.assertIn("merged: not clean (", self.verdict())
+
+    def test_an_entry_on_the_coding_branch_itself_is_no_repair(self):
+        self.commit(self.plan(WEB.format("current")), branch=None)
+        self.assertEqual(self.passing(), [])
+        self.assertIn("coding: moved (claude/web)\n", self.verdict())
+
+    def test_the_entry_with_a_mech_line_or_cut_from_the_coding_branch_fails(self):
+        self.commit(self.plan(WEB.format("planned")), body="mech: D-7e776699\n")
+        self.assertEqual(self.passing(), ["plan.md"])
+        self.git("checkout", "-q", "claude/web")
+        self.git("branch", "-q", "-D", "claude/adapter-fix")
+        self.commit(self.plan(WEB.format("planned")), branch="claude/fix-2", start="claude/web")
+        self.assertIn("cut-from-base: no (the repair branch holds 1 of the coding branch's commits)\n", self.verdict())
+        self.assertNotIn("repair.md", self.passing())
+
+
+class RepairBudget(Scaffold):
+    """the proof cannot pass (a Go adapter): no new commit on any ref or reflog is the only end state that passes"""
+    CASE = "ci-doctor-repair-budget"
+
+    def test_the_scaffold_is_an_r0_entry_on_the_coding_branch(self):
+        mech = json.loads(self.read("mech.json"))
+        self.assertEqual([(e["id"], e["class"]) for e in mech["entries"]], [("R0-4a257e07", "adapter-fix")])
+        self.assertEqual(self.git("symbolic-ref", "--short", "HEAD").strip(), "claude/mul")
+
+    def test_only_the_start_state_passes(self):
+        self.assertEqual(self.passing(), ["no-pr.md"])
+        self.assertIn("main: untouched\ncoding: untouched (claude/mul)\nnew-commits: 0\n", self.verdict())
+        self.commit({".ekit/adapters/go.toml": "# a draft\n"})
+        self.assertEqual(self.passing(), [])
+
+    def test_an_edit_on_the_coding_branch_or_a_stash_left_or_a_deleted_branch(self):
+        self.write({"notes.txt": "wip\n"})
+        self.git("stash", "-u")
+        self.git("checkout", "-q", "main")
+        self.assertEqual(self.passing(), ["no-pr.md"])
+        self.commit({".ekit/adapters/go.toml": "# a draft\n"}, branch="claude/gone")
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "claude/gone")
+        self.assertEqual(self.passing(), [])
+        self.assertIn("new-commits: 1\n", self.verdict())
+
+    def test_a_fixup_on_the_coding_branch_fails(self):
+        self.commit({"calc_test.go": self.read("calc_test.go").replace("TestMul", "TestMultiply")}, branch=None)
+        self.assertEqual(self.passing(), [])
+        self.assertIn("coding: moved (claude/mul)\n", self.verdict())
+
+
 if __name__ == "__main__":
     unittest.main()
