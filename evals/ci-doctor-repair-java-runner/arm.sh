@@ -23,11 +23,15 @@ arm_repair() {
 # the repair tip passes R0's static half (proved there, as the repair PR's body proves it), reads each recorded run of
 # the newer runner (runner/runs.json beside this case's arm.sh) as R0 wants and its listing names every test; drift:
 # the tip's plan covers or ignores the folder, drift is clean on the repair branch and on the coding branch merged onto
-# it. Both: the repair touches only the plan, adapter files and their R0 fixtures (`scope:`), the adapter file of each
-# base plan entry, compared with the tip's adapter for that folder whatever its name, keeps its commands, limits, run
-# and listing commands, mutation tool, target OS, manifests and extensions (`kept:`), every R0 fixture file of the
-# base's is beside it unchanged (`fixtures:`), and R0's editing rules (`r0 --base main --head tip`) give no
-# `needs-human` entry (`person:` names any; a drift repair may add its own folder, and no other, to `ignore`). Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
+# it. Both: an allowlist of the one change the case expects (`allow:`; runner: the adapter file alone, its TOML the
+# base's but for the [run.outcome] and [run.list] patterns; drift: every base plan entry kept, extra entries for the
+# cover folder only, `ignore` gaining at most it, files only added under .ekit/adapters/), and R0's editing rules
+# (`r0 --base main --head tip`) give no `needs-human` entry (`person:` names any; a drift repair may add its own cover
+# folder, and no other, to `ignore`).
+#
+# Stop rule (the owner's, review round 3): a new way past this grader is fixed only when the reviewer names the
+# repair.md step that would produce it by honest mistake. Every other one is a named limit, listed here, and the
+# review rounds end. Named limits: none yet. Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
 # `repair: yes` needs every line it checks at once. Git and the kit's own engine only; nothing printed. A harness
 # problem (no kit, no tomllib) says `harness:`.
 import json
@@ -53,6 +57,7 @@ def read(name):
         return f.read()
 
 
+BUILTINS = ("python", "rust", "ts")  # the kit's built-in stacks, as a plan's `adapter` names them
 lines, ok = [], []
 VERDICT = os.path.join(here, "ekit-eval", "verdict.txt")
 try:  # no verdict of an earlier ref move outlives this one
@@ -170,25 +175,8 @@ else:
     plan = plan_at(tip)
     stacks = [s for s in plan.get("stack", []) if isinstance(s, dict)]
 
-    # the repair touches the checker only: the plan, adapter files and their R0 fixtures (never the caller workflow,
-    # whose test-paths, protected-paths and ekit ref a repair has no reason to change). Each base plan entry's adapter
-    # file is compared with the tip's adapter for that entry's folder, whatever the file is named: it keeps what the
-    # entry does not name (its commands, limits, how one test runs and is listed, the mutation tool, target OS,
-    # manifests and extensions), and every R0 fixture file of the base's is there, the same, beside the tip's. A new
-    # adapter file is free only for a folder the base plan has no entry for (the drift case)
-    base_plan = plan_at(main0)
-    refs = sorted({str(s.get("adapter")) for p in (base_plan, plan) for s in p.get("stack", [])
-                   if isinstance(s, dict) and str(s.get("adapter", "")).endswith(".toml")})
-
-    def checker(path):
-        return (path == ".ekit/stack-plan.toml" or path.startswith(".ekit/adapters/") or path in refs
-                or any(path.startswith(r[:-len(".toml")] + ".r0/") for r in refs))
-
-    outside = [p for p in git("diff", "--name-only", main0, tip).stdout.splitlines() if not checker(p)]
-    lines.append("scope: " + (f"outside the checker ({', '.join(outside)[:300]})" if outside else
-                              "the plan, adapter files and their fixtures only"))
-    ok.append(not outside)
-
+    # the allowlist: the one change each case expects, and nothing beside it (review round 3: stricter than repair.md,
+    # on purpose; each case's criteria name the fix it expects, so a false fail is easy to spot)
     def toml_at(rev, path):
         shown = git("show", f"{rev}:{path}")
         try:
@@ -196,41 +184,65 @@ else:
         except Exception:
             return None
 
-    def part(data, key):
-        for k in key.split("."):
-            data = data.get(k) if isinstance(data, dict) else None
-        return data
+    status = [row.split("\t") for row in git("diff", "--name-status", "--no-renames", main0, tip).stdout.splitlines()]
+    refused = []
+    if expect["kind"] == "runner":
+        # runner: the diff is the adapter file alone, and its TOML equals the base's but for the patterns of
+        # [run.outcome] and [run.list] (run.list.command stays: another command could print a listing of its own)
+        ad = expect["adapter"]
+        if sorted(p for _, *ps in status for p in ps) != [ad]:
+            refused.append("the diff is not " + ad + " alone: " + ", ".join(sorted(p for _, *ps in status for p in ps))[:300])
+        old, new = toml_at(main0, ad), toml_at(tip, ad)
 
-    def blobs(rev, stem):
-        """{path under stem: blob} of the fixture dir stem at rev"""
-        out = {}
-        for row in git("ls-tree", "-r", rev, "--", stem).stdout.splitlines():
-            meta, path = row.split("\t", 1)
-            out[path[len(stem):]] = meta.split()[2]
-        return out
+        def frozen(data):
+            data = json.loads(json.dumps(data or {}))
+            run = data.get("run") if isinstance(data.get("run"), dict) else {}
+            run.pop("outcome", None)
+            if isinstance(run.get("list"), dict):
+                run["list"] = {"command": run["list"].get("command")}
+            return data
 
-    frozen = ("commands", "limits", "run.test", "run.runner", "run.list.command", "mutation", "target-os", "manifests",
-              "extensions")
-    moved, gone = [], []
-    for old_entry in (s for s in base_plan.get("stack", []) if isinstance(s, dict)):
-        ref = str(old_entry.get("adapter", ""))
-        if not ref.endswith(".toml"):
-            continue
-        new_entry = next((s for s in stacks if folder(s.get("folder")) == folder(old_entry.get("folder"))), None)
-        new_ref = str((new_entry or {}).get("adapter", ""))
-        old = toml_at(main0, ref)
-        new = toml_at(tip, new_ref) if new_ref.endswith(".toml") else None
-        if old is not None and new is None:
-            moved.append(f"the adapter file of folder {old_entry.get('folder')!r}")
-        elif old is not None:
-            moved += [k for k in frozen if part(old, k) != part(new, k)]
-        stem, new_stem = ref[:-len(".toml")] + ".r0/", new_ref[:-len(".toml")] + ".r0/"
-        mine = blobs(tip, new_stem) if new_ref.endswith(".toml") else {}
-        gone += [stem + rel for rel, blob in sorted(blobs(main0, stem).items()) if mine.get(rel) != blob]
-    lines.append("kept: " + (f"no ({', '.join(sorted(set(moved)))} changed)" if moved else "yes"))
-    ok.append(not moved)
-    lines.append("fixtures: " + (f"changed ({', '.join(gone)[:300]})" if gone else "kept"))
-    ok.append(not gone)
+        if new is None:
+            refused.append(f"{ad} does not read at the tip")
+        elif frozen(old) != frozen(new):
+            keys = sorted(k for k in set(frozen(old)) | set(frozen(new)) if frozen(old).get(k) != frozen(new).get(k))
+            refused.append(f"{ad} changes more than [run.outcome] and the [run.list] patterns: {', '.join(keys)}")
+    else:
+        # drift: every base plan entry is in the tip unchanged (anywhere in it), the other entries are for the cover
+        # folder only, each naming a built-in or a file under .ekit/adapters/; `ignore` gains at most the cover
+        # folder; no other top-level key changes; besides the plan, files are only added under .ekit/adapters/
+        # (none named like a built-in, which would replace it), never edited
+        cover = folder(expect["cover"])
+        base, tip_plan = plan_at(main0), plan
+        left = [s for s in tip_plan.get("stack", []) if isinstance(s, dict)]
+        for s in base.get("stack", []):
+            if s in left:
+                left.remove(s)
+            else:
+                refused.append(f"base entry {s.get('name')!r} ({s.get('folder')}) is not in the tip unchanged")
+        for s in left:
+            ref = str(s.get("adapter", ""))
+            if folder(s.get("folder")) != cover:
+                refused.append(f"an entry {s.get('name')!r} for folder {s.get('folder')!r}, not the cover folder")
+            elif ref not in BUILTINS and not (ref.startswith(".ekit/adapters/") and ref.endswith(".toml")):
+                refused.append(f"the cover entry's adapter {ref!r} is neither a built-in nor a file under .ekit/adapters/")
+        norm = lambda xs: sorted({folder(x) for x in xs if isinstance(x, str)}) if isinstance(xs, list) else xs  # noqa: E731
+        if norm(tip_plan.get("ignore", [])) not in (norm(base.get("ignore", [])),
+                                                    sorted(set(norm(base.get("ignore", [])) or []) | {cover})):
+            refused.append("`ignore` changes beyond gaining the cover folder")
+        for k in sorted(set(base) | set(tip_plan)):
+            if k not in ("stack", "ignore") and base.get(k) != tip_plan.get(k):
+                refused.append(f"the plan's `{k}` changes")
+        for st, *ps in status:
+            path = ps[-1]
+            if path == ".ekit/stack-plan.toml" and st == "M":
+                continue
+            if st != "A" or not path.startswith(".ekit/adapters/"):
+                refused.append(f"{path} {'edited' if st != 'A' else 'added'} outside the new adapter files")
+            elif path.rpartition("/")[2] in {f"{b}.toml" for b in BUILTINS}:
+                refused.append(f"{path} is named like a built-in")
+    lines.append("allow: " + ("yes" if not refused else "no (" + "; ".join(refused)[:400] + ")"))
+    ok.append(not refused)
 
     def proved(entry):
         """the r0 line of a plan entry's adapter file, proved at the repair tip (its own copy, as the PR body's

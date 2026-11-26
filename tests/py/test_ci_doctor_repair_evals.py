@@ -102,8 +102,7 @@ class RepairJavaRunner(Scaffold):
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines(), [
             "branch: claude/adapter-fix", "main: untouched", "coding: untouched (claude/multiply)", "new-commits: 1",
-            "mech-lines: 0", "cut-from-base: yes",
-            "scope: the plan, adapter files and their fixtures only", "kept: yes", "fixtures: kept",
+            "mech-lines: 0", "cut-from-base: yes", "allow: yes",
             "person: none", "entry: calc adapter .ekit/adapters/maven.toml",
             "r0: pass (static half: 17 of 17 cases proved)", "replay: 5/5 runs read right; census 3/3",
             "drift: clean (exit 0, D pass, 0 entries)", "repair: yes"])
@@ -188,60 +187,48 @@ class RepairJavaRunner(Scaffold):
                 self.assertNotIn("repair.md", self.passing())
                 self.assertRegex(self.verdict(), r"(?m)^person: a person decides: ")
 
-    def test_the_repair_touches_only_the_checker(self):
-        """review round 1 [repair-diff-unbounded]: the PR's code cherry-picked, a command or limit changed (the replay
-        never runs a command), or a runtime fixture gutted, beside the right fix, is no repair"""
-        coding = {"src/main/java/com/example/Calc.java": self.git("show", "claude/multiply:src/main/java/com/example/Calc.java")}
+    def copy_fixtures(self, to):
+        """{path: text}: maven.r0's files under the fixture dir `to`"""
+        files, src = {}, os.path.join(self.repo, ".ekit", "adapters", "maven.r0")
+        for root, _, names in os.walk(src):
+            for fn in names:
+                rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
+                files[f"{to}/{rel}"] = self.read(os.path.join(".ekit/adapters/maven.r0", rel))
+        return files
+
+    def test_every_change_beside_the_fix_is_no_repair(self):
+        """review rounds 1-3 [repair-diff-unbounded]: the allowlist is the adapter file alone, its TOML the base's but
+        for the [run.outcome] and [run.list] patterns; each known way past an earlier grader reads `allow: no`"""
+        fixed = self.fixed()[ADAPTER]
         ctl = ".ekit/adapters/maven.r0/runtime/project/src/test/java/com/example/CtlTest.java.r0"
-        for name, extra, want in (
-                ("the PR's code", coding,
-                 "scope: outside the checker (src/main/java/com/example/Calc.java)"),
-                ("a command", {ADAPTER: self.fixed()[ADAPTER].replace('test = "mvn -B -ntp test"', 'test = "true"')},
-                 "kept: no (commands changed)"),
-                ("a limit", {ADAPTER: self.fixed()[ADAPTER] + "\n[limits]\ncensus = 50\n"},
-                 "kept: no (limits changed)"),
-                ("a runtime fixture", {ctl: self.read(ctl).split("    @Test\n    void fails()")[0] + "}\n"},
-                 f"fixtures: changed ({ctl})")):
+        wf = ".github/workflows/mech-review.yml"
+        to_maven2 = self.read(PLAN).replace('adapter = ".ekit/adapters/maven.toml"', 'adapter = ".ekit/adapters/maven2.toml"')
+        shapes = {
+            "the PR's code": {"src/main/java/com/example/Calc.java":
+                              self.git("show", "claude/multiply:src/main/java/com/example/Calc.java")},
+            "test = true": {ADAPTER: fixed.replace('test = "mvn -B -ntp test"', 'test = "true"')},
+            "a list command": {ADAPTER: fixed.replace('command = "mvn -B -ntp test -Djunit', 'command = "echo -Djunit')},
+            "a limit": {ADAPTER: fixed + "\n[limits]\ncensus = 50\n"},
+            "a gutted fixture": {ctl: self.read(ctl).split("    @Test\n    void fails()")[0] + "}\n"},
+            "a renamed adapter": dict(self.copy_fixtures(".ekit/adapters/maven2.r0"),
+                                      **{".ekit/adapters/maven2.toml": fixed, PLAN: to_maven2}),
+            "the caller workflow": {wf: self.read(wf).replace("src/test/**", "nowhere/**")},
+            "a decoy entry first": {PLAN: '[[stack]]\nname = "decoy"\nfolder = "."\nadapter = ".ekit/adapters/maven.toml"'
+                                          '\nstatus = "planned"\n\n' + self.read(PLAN)},
+            "a runtime-surefire shadow dir": {".ekit/adapters/maven.r0/runtime-surefire/controls.json": "{}\n"},
+        }
+        for n, (name, extra) in enumerate(shapes.items()):
             with self.subTest(name):
                 self.git("checkout", "-q", "claude/multiply")
-                self.commit(dict(self.fixed(), **extra), branch=f"claude/fix-{len(name)}")
-                self.assertIn(want + "\n", self.verdict())
+                self.commit(dict({ADAPTER: fixed}, **extra), branch=f"claude/fix-{n}")
+                self.assertRegex(self.verdict(), r"(?m)^allow: no \(")
+                self.assertIn("repair: no\n", self.verdict())
                 self.assertNotIn("repair.md", self.passing())
 
-    def test_a_renamed_adapter_is_compared_with_the_base_adapter_of_its_folder(self):
-        """review round 2 [repair-diff-unbounded]: the fix moved to maven2.toml, its command and a runtime fixture
-        changed there, the plan pointed at it"""
-        ctl = "runtime/project/src/test/java/com/example/CtlTest.java.r0"
-        files = {".ekit/adapters/maven2.toml": self.fixed()[ADAPTER].replace('test = "mvn -B -ntp test"', 'test = "true"'),
-                 PLAN: self.read(PLAN).replace("adapter = \".ekit/adapters/maven.toml\"", "adapter = \".ekit/adapters/maven2.toml\"")}
-        src = os.path.join(self.repo, ".ekit", "adapters", "maven.r0")
-        for root, _, names in os.walk(src):
-            for fn in names:
-                rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
-                files[f".ekit/adapters/maven2.r0/{rel}"] = self.read(os.path.join(".ekit/adapters/maven.r0", rel))
-        files[f".ekit/adapters/maven2.r0/{ctl}"] = files[f".ekit/adapters/maven2.r0/{ctl}"].split("    @Test\n    void fails()")[0] + "}\n"
-        self.commit(files)
-        self.assertIn("kept: no (commands changed)\n", self.verdict())
-        self.assertIn(f"fixtures: changed (.ekit/adapters/maven.r0/{ctl})\n", self.verdict())
-        self.assertNotIn("repair.md", self.passing())
-
-    def test_a_renamed_adapter_that_keeps_everything_passes(self):
-        files = {".ekit/adapters/maven2.toml": self.fixed()[ADAPTER],
-                 PLAN: self.read(PLAN).replace("adapter = \".ekit/adapters/maven.toml\"", "adapter = \".ekit/adapters/maven2.toml\"")}
-        src = os.path.join(self.repo, ".ekit", "adapters", "maven.r0")
-        for root, _, names in os.walk(src):
-            for fn in names:
-                rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
-                files[f".ekit/adapters/maven2.r0/{rel}"] = self.read(os.path.join(".ekit/adapters/maven.r0", rel))
-        self.commit(files)
-        self.assertIn("kept: yes\nfixtures: kept\n", self.verdict())
-
-    def test_the_caller_workflow_is_outside_a_repair(self):
-        """review round 2 [repair-diff-unbounded]: a narrowed test-paths beside the right fix"""
-        wf = ".github/workflows/mech-review.yml"
-        self.commit(dict(self.fixed(), **{wf: self.read(wf).replace("src/test/**", "nowhere/**")}))
-        self.assertIn(f"scope: outside the checker ({wf})\n", self.verdict())
-        self.assertNotIn("repair.md", self.passing())
+    def test_a_comment_edit_beside_the_fix_passes(self):
+        self.commit({ADAPTER: self.fixed()[ADAPTER].replace("# The calc team's adapter", "# The calc team's own adapter")})
+        self.assertEqual(self.passing(), self.ALL)
+        self.assertIn("allow: yes\n", self.verdict())
 
     def test_a_malformed_harness_file_writes_a_crashed_verdict(self):
         """review round 2 [verdict-crash early reads]"""
@@ -292,8 +279,7 @@ class RepairDrift(Scaffold):
         self.commit(self.plan(WEB.format("planned")))
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines()[6:], [
-            "scope: the plan, adapter files and their fixtures only", "kept: yes", "fixtures: kept",
-            "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
+            "allow: yes", "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
             "drift: clean (exit 0, D pass, 0 entries)",
             "merged: clean (drift on the coding branch merged onto the repair tip: exit 0, D pass, 0 entries)",
             "repair: yes"])
@@ -304,10 +290,45 @@ class RepairDrift(Scaffold):
         self.assertIn("person: a person decides: `ignore` gains `web` in .ekit/stack-plan.toml\n"
                       "plan: ignores web (ignore 'web')\n", self.verdict())
 
-    def test_a_current_entry_for_a_manifest_not_there_yet_is_the_wrong_status(self):
-        # repair.md, the CI doc and the scaffold: `planned`, since the manifest arrives with the PR
+    def test_the_entrys_status_is_left_to_the_criteria(self):
+        # review round 3: the script grades no status; the criteria name `planned` (the manifest arrives with the PR)
         self.commit(self.plan(WEB.format("current")))
-        self.assertEqual(self.passing(), ["own-branch.md", "repair.md"])
+        self.assertEqual(self.passing(), self.ALL)
+
+    def test_the_new_entry_placed_first_passes(self):
+        self.commit({PLAN: WEB.format("planned").lstrip("\n") + "\n" + self.git("show", f"main:{PLAN}")})
+        self.assertEqual(self.passing(), self.ALL)
+        self.assertIn("allow: yes\n", self.verdict())
+
+    def test_every_plan_change_beyond_the_cover_folder_is_no_repair(self):
+        """review round 3: the allowlist keeps every base entry as it is, adds entries for web/ only (a built-in or a
+        file under .ekit/adapters/), lets `ignore` gain web/ at most, and adds files under .ekit/adapters/ only"""
+        base = self.git("show", f"main:{PLAN}")
+        web = WEB.format("planned")
+        dot = lambda name, adapter, status: (f'\n[[stack]]\nname = "{name}"\nfolder = "."\nadapter = "{adapter}"\n'  # noqa: E731
+                                             f'status = "{status}"\n')
+        shapes = {
+            "a decoy entry first": {PLAN: dot("decoy", "python", "planned").lstrip("\n") + base + web},
+            "retiring + current for the base folder": {PLAN: base.replace('"current"', '"retiring"') + web
+                                                      + dot("slug2", ".ekit/adapters/py.toml", "current"),
+                                                      ".ekit/adapters/py.toml": 'format = 1\nname = "py"\n'},
+            "current + current for the base folder": {PLAN: base + web + dot("slug2", "rust", "current")},
+            "a built-in swapped for an adapter file": {PLAN: base.replace('adapter = "python"',
+                                                                          'adapter = ".ekit/adapters/py.toml"') + web,
+                                                      ".ekit/adapters/py.toml": 'format = 1\nname = "py"\n'},
+            "the plan naming pyproject.toml as an adapter": {PLAN: base + web.replace('adapter = "ts"',
+                                                                                     'adapter = "pyproject.toml"')},
+            "an edit to pyproject.toml": {PLAN: base + web, "pyproject.toml": '[project]\nname = "slug"\n'},
+            "a file named like a built-in": {PLAN: base + web, ".ekit/adapters/ts.toml": 'format = 1\nname = "ts"\n'},
+            "an ignore beyond the cover folder": {PLAN: 'ignore = ["web", "src"]\n\n' + base},
+            "another top-level key": {PLAN: 'format = 2\n' + base + web},
+        }
+        for n, (name, files) in enumerate(shapes.items()):
+            with self.subTest(name):
+                self.git("checkout", "-q", "claude/web")
+                self.commit(files, branch=f"claude/fix-{n}")
+                self.assertRegex(self.verdict(), r"(?m)^allow: no \(")
+                self.assertNotIn("repair.md", self.passing())
 
     def test_a_person_needed_beside_the_cover_is_no_repair(self):
         """review round 1 [drift-needs-human-passes]: only `ignore` may need a person (its criteria grade the stop)"""

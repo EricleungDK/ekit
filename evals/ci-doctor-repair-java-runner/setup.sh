@@ -191,4 +191,5 @@ sed "s/HEAD_SHA/$head/g; s/BASE_SHA/$base/g" > mech.json <<'JSON'
 }
 JSON
 source "$here/arm.sh"
-arm_repair '{"kind": "runner", "folder": ".", "test_files": ["src/test/java/com/example/CalcTest.java"]}'
+arm_repair '{"kind": "runner", "folder": ".", "adapter": ".ekit/adapters/maven.toml",
+  "test_files": ["src/test/java/com/example/CalcTest.java"]}'
