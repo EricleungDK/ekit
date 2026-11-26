@@ -3,7 +3,6 @@ import contextlib
 import io
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -741,7 +740,8 @@ class TestRunnerNotInstalled(GateCase):
             return self.stop(DONE)
 
     def test_a_python_runner_not_installed_names_what_to_install(self):
-        py = shlex.quote(sys.executable)
+        py = os.path.basename(sys.executable)  # a plain word, its folder first on PATH below
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
         out = self.gate_on(f"{py} -m ekit_absent_runner -q")
         self.assertEqual(out["decision"], "block")
         self.assertIn(f"A verify command cannot run on this host: `{py} -m ekit_absent_runner -q`: n/a (env): install "
@@ -752,7 +752,8 @@ class TestRunnerNotInstalled(GateCase):
     def test_an_installed_runner_that_fails_is_not_green(self):
         with open(os.path.join(self.repo, "ekit_runner.py"), "w") as f:
             f.write("import ekit_absent_dep\n")
-        out = self.gate_on(f"{shlex.quote(sys.executable)} -m ekit_runner")
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
+        out = self.gate_on(f"{os.path.basename(sys.executable)} -m ekit_runner")
         self.assertIn("Verify commands not green for the current files: ", out["reason"])
         self.assertIn("-m ekit_runner`: the run exited 1", out["reason"])
 

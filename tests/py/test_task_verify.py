@@ -6,7 +6,6 @@ import hashlib
 import io
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -545,7 +544,8 @@ class VerifyLine(unittest.TestCase):
                 self.assertEqual(tv.declared(text), want)
 
 
-PY = shlex.quote(sys.executable)  # this Python, as a bash line spells it
+# this Python by its name, its folder first on PATH (setUp): a plain word, which a full path quoted is not
+PY = os.path.basename(sys.executable)
 
 
 class MissingRunner(VerifyCase):
@@ -553,8 +553,13 @@ class MissingRunner(VerifyCase):
     failing exit task-verify asks whether the runner is there. A runner that is there and fails is a failed run,
     whatever it printed."""
 
-    def module(self, name, body):
-        with open(os.path.join(self.repo, f"{name}.py"), "w") as f:
+    def setUp(self):
+        super().setUp()
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
+
+    def module(self, name, body, folder=""):
+        os.makedirs(os.path.join(self.repo, folder), exist_ok=True)
+        with open(os.path.join(self.repo, folder, f"{name}.py"), "w") as f:
             f.write(body)
 
     def call(self, argv, payload=None):
@@ -675,6 +680,36 @@ class MissingRunner(VerifyCase):
         with mock.patch.object(tv, "PROBE_SECONDS", 0.5):
             self.failed("python3 -m pytest", 1)
 
+    def test_the_default_command_with_its_runner_missing_is_n_a(self):
+        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 1\n')  # 3: what the probe exits for no such module
+        self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's README "
+                                     "§ Development names the version CI installs)")
+
+    def test_a_line_that_is_not_one_plain_command_is_never_asked_about(self):
+        """only a plain simple command is parsed: a separator, redirect, subshell, quote or expansion anywhere in it
+        (assignments included) and the run is a failed run, as it was before #117"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        self.module("ekit_pkg", "import sys\nsys.exit(1)\n", folder="src")
+        os.mkdir(os.path.join(self.repo, "sub"))
+        for i, (cmd, rc) in enumerate((
+                (f"{PY} -m ekit_runner&&echo ok", 1),
+                (f"{PY} -m ekit_runner;echo $? >/dev/null; exit 1", 1),
+                ("true; ekit_absent_tool117", 127),
+                ("(cd sub && ekit_absent_tool117)", 127),
+                ("2>/dev/null ekit_absent_tool117", 127),
+                (f"PYTHONPATH=$PWD/src {PY} -m ekit_pkg", 1),
+                (f'PYTHONPATH="$(pwd)/src" {PY} -m ekit_pkg', 1),
+                ("ekit_absent_tool117 'a b'", 127))):
+            with self.subTest(cmd=cmd):
+                self.failed(cmd, rc, task=f"t{i}")
+
+    def test_a_probe_with_an_answer_it_does_not_know_is_a_failed_run(self):
+        for shell, rc, probe_rc in (("bash", 127, 2), ("powershell", 1, 7)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc, probe_rc)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(f"ekit_absent_tool117 {shell}"), rc)
+
     def test_a_probe_that_errors_is_a_failed_run(self):
         self.fake_python('case "$1" in -c) exit 2;; esac\nexit 1\n')
         self.failed("python3 -m pytest", 1)
@@ -708,14 +743,16 @@ class MissingRunner(VerifyCase):
     # PowerShell and cmd, their processes faked
 
     def faked(self, shell, rc, probe_rc=3):
-        """`shell` found and its process faked: the run exits `rc`, a Get-Command probe `probe_rc`; git runs for real"""
+        """`shell` found and its process faked: the run exits `rc`, a probe (Get-Command, command -v) `probe_rc`;
+        git runs for real"""
         real = subprocess.run
 
         def run(argv, **kw):
             if argv[0] == "git":
                 return real(argv, **kw)
             line = argv if isinstance(argv, str) else " ".join(argv)
-            return subprocess.CompletedProcess(argv, probe_rc if "Get-Command" in line else rc, "", "")
+            probing = "Get-Command" in line or "command -v" in line
+            return subprocess.CompletedProcess(argv, probe_rc if probing else rc, "", "")
         return mock.patch.object(tv.shells, "find", return_value=f"/fake/{shell}"), \
             mock.patch.object(tv.subprocess, "run", side_effect=run), \
             mock.patch.dict(os.environ, {"EKIT_SHELL": shell})
