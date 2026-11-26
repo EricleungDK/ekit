@@ -14,9 +14,9 @@ if [[ " $* " == *" --mutate "* ]]; then
   cat "$MECH_FX/stryker/missed/stdout.txt"; exit 0
 fi
 pat=""; prev=""; for a in "$@"; do [[ "$prev" == "-t" ]] && pat="$a"; prev="$a"; done
-leaf="${pat#^}"; leaf="${leaf%\$}"; leaf="${leaf##* > }"
+full="${pat#^}"; full="${full%\$}"  # vitest's -t: describe and test names joined with a space (`^Calc fresh$`)
 f=outcomes; [[ -f $f ]] || f=tests/outcomes.base  # R1's checkout: the base's code + the PR's test files
-o=$(awk -v n="$leaf" '$1 == n { print $2 }' "$f" 2>/dev/null); o="${o:-pass}"
+o=$(awk -v t="$full" '{ n = length(t) - length($1) } t == $1 || (n > 0 && substr(t, n) == " " $1) { print $2 }' "$f" 2>/dev/null); o="${o:-pass}"
 case "$o" in
   pass) cat "$MECH_FX/vitest/pass.txt"; exit 0 ;;
   fail) cat "$MECH_FX/vitest/fail.txt"; exit 1 ;;
