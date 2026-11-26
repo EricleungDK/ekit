@@ -557,9 +557,29 @@ class MissingRunner(VerifyCase):
         with open(os.path.join(self.repo, f"{name}.py"), "w") as f:
             f.write(body)
 
+    def call(self, argv, payload=None):
+        """VerifyCase.call, with what the run's own processes write to fd 1 and 2 kept in self.child_output, not
+        passed on: a runner's `No module named pytest` would otherwise land in this suite's own output"""
+        with tempfile.TemporaryFile() as out:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            saved = os.dup(1), os.dup(2)
+            os.dup2(out.fileno(), 1)
+            os.dup2(out.fileno(), 2)
+            try:
+                return super().call(argv, payload)
+            finally:
+                os.dup2(saved[0], 1)
+                os.dup2(saved[1], 2)
+                os.close(saved[0])
+                os.close(saved[1])
+                out.seek(0)
+                self.child_output = out.read().decode("utf-8", "replace")
+
     def na(self, cmd, fix, task="t1"):
         """`cmd` reads n/a (env) with `fix`: in run (exit 5, its line last on stderr), check and the task hook"""
         rc, err = self.call(["--repo", self.repo, "run", "--", cmd])
+        self.ran = self.child_output  # what the run itself wrote, before the check below replaces it
         self.assertEqual(rc, 5, err)
         self.assertTrue(err.endswith(f"task-verify: `{cmd}` is n/a (env): {fix}\n"), err)
         self.assertEqual(self.complete(f"Verify: `{cmd}`", task=task), self.blocked(f"n/a (env): {fix}", cmd))
@@ -591,6 +611,7 @@ class MissingRunner(VerifyCase):
         self.na(f"{PY} -I -S -m pytest -q",  # -S: no site-packages, so this Python finds no pytest
                 f"install module pytest for {PY} -I -S (that Python finds no pytest; ekit's README § Development "
                 "names the version CI installs)")
+        self.assertTrue("No module named pytest" in self.ran)  # the runner's own line is shown, not read
 
     def test_a_submodule_of_a_package_not_installed_names_the_package(self):
         self.na(f"{PY} -m ekit_absent_pkg.cli",
