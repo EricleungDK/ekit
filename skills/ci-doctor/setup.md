@@ -64,6 +64,8 @@ On a new branch, commit it all, then prove the committed files the way CI reads 
 
 Push and open it, as SKILL.md step 5. Its body, beside step 5's:
 
+- How its own check reads: `no result`, red with nothing to waive (the base has no stack for its CI to run). The owner merges on the proof report below, then makes the mech-review check required.
+
 - Files: the adapter and its fixtures, the stack plan entry, the callers, the base CI jobs or why none (`own_ci` names the team's).
 - Detection: doctor's `setup` (language, build, test framework, target OS and why).
 - Proof report: the static half (`N of N cases`), the census (`N of N tests`), the runtime half's result or not run here and why, and the cheat list, each item caught (its R0 case, or the r2 run) or a limit the CI doc names (quoted).

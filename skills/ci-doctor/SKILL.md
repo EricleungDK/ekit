@@ -75,7 +75,7 @@ Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry 
 
 ## 5. Open the PR
 
-Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say the PR's own mech-review check goes red `needs-human` by design (it edits `.github/**`): the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green.
+Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say how the PR's own mech-review check reads. A repo with a built-in stack: red `needs-human` by design (it edits `.github/**`); the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green. A setup PR for a repo with no built-in stack (setup.md): `no result`, red with nothing to waive, since its CI finds no stack on the base; the owner merges on the proof report and makes the check required only after the merge.
 
 Report the PR URL via finish. Stopped before the PR (blocked, no remote, asked to) → the final report itself carries the full caller YAML and PR body.
 

@@ -96,6 +96,28 @@ class Repair(unittest.TestCase):
         self.assertIn("this deviates from #24's", s)
 
 
+class SetupPrCheck(unittest.TestCase):
+    """the owner's setup-gap decision (#24 round 3): a setup PR for a repo with no built-in stack reads `no result`,
+    red with nothing to waive; the owner merges on the proof report and makes the check required after the merge"""
+
+    def test_the_setup_pr_body_says_its_check_reads_no_result(self):
+        s = flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR"))
+        self.assertIn("`no result`, red with nothing to waive", s)
+        self.assertIn("The owner merges on the proof report below, then makes the mech-review check required", s)
+
+    def test_skill_step_5_tells_the_two_checks_apart(self):
+        s = flat(section(read("ci-doctor"), "5. Open the PR"))
+        self.assertIn("A repo with a built-in stack: red `needs-human` by design", s)
+        self.assertIn("A setup PR for a repo with no built-in stack (setup.md): `no result`", s)
+
+    def test_the_setup_evals_grade_the_same(self):
+        for case in ("ci-doctor-setup-java", "ci-doctor-setup-java-no-ci", "ci-doctor-setup-planned"):
+            with open(os.path.join(_kit.ROOT, "evals", case, "graders", "criteria.md"), encoding="utf-8") as f:
+                text = f.read()
+            self.assertNotIn("goes red `needs-human` by design", text, case)
+            self.assertIn("reads `no result`", text, case)
+
+
 class TriageLabel(unittest.TestCase):
     def setUp(self):
         self.text = read("failure-triage", "mech.md")
