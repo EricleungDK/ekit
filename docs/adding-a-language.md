@@ -17,6 +17,7 @@ Other languages go the same way.
 | **drift check** | Check `D`: every manifest (`pom.xml`, `package.json`, ...) in the repo must be covered by a stack plan entry ([Stack plan](mech-review-ci.md#stack-plan)) |
 | **`needs-human`** | An entry class: a `fail` only a person settles, by a waiver or by their own PR |
 | **`adapter-fix`** | An entry class: the adapter file or the stack plan needs a change, in a PR of its own, never by the PR's own agent |
+| **target OS** | The OS of the CI runner that runs your tests (`linux`, `macos`, `windows`), not your own computer's ([target OS](#target-os)) |
 | **Java reference adapter** | `tests/fixtures/adapters/java.toml`, a hand-written Java adapter that is a test fixture of ekit's, not a built-in. ci-doctor writes yours from your repo and must not copy this one ([Java reference adapter](mech-review-ci.md#java-reference-adapter)) |
 
 ## The short version
@@ -270,9 +271,10 @@ While `pom.xml` is there the old stack is still checked; the new one starts when
 ``retiring stack `api` (.): its manifest pom.xml is still here: finish the migration, then remove its entry``. After 30
 days the note adds a reminder. When the PR that deletes `pom.xml` lands, the note becomes
 ``stack `api` (.): no pom.xml in . any more: remove the entry `api` from .ekit/stack-plan.toml``. Remove the entry
-once the old code is gone and you agree the migration is done. To get the new adapter, run `/ekit:ci-doctor` and name
-the stack to come ("we are moving to Gradle"); ask it to generate and prove that adapter as for a planned stack, and to
-edit the plan as its [Stack plan](../skills/ci-doctor/SKILL.md#stack-plan) section says.
+once the old code is gone and you agree the migration is done. The new entry needs a person only if it changes the
+target OS, loosens a limit or changes the mutation tool against the old one ([editing rules](#editing-rules)). To get
+the new adapter, run `/ekit:ci-doctor` and name the stack to come ("we are moving to Gradle"); ask it to generate and
+prove that adapter as for a planned stack, and to edit the plan as its [Stack plan](../skills/ci-doctor/SKILL.md#stack-plan) section says.
 
 ### Adding a stack
 
@@ -316,11 +318,24 @@ check ([R0 adapter proof § Editing rules](mech-review-ci.md#r0-adapter-proof)):
 
 - a looser limit: an adapter's `[limits]` (`max-mutants`, `mutation-budget` or `census` lower, `assert-density`
   higher), or a caller's `max-mutants` or `mutation-budget` input lower;
-- a changed target OS, in a plan entry or an adapter file;
+- a changed target OS (the CI runner's OS), in a plan entry or an adapter file;
 - a folder added to the plan's `ignore` list;
 - a test accepted with no recognised assert (a name added to `.ekit/r0-accepted.json`);
 - a changed mutation tool (`[mutation.tool]` added, removed or edited);
 - a changed `[parser]` command: R0 does not run it until a person reviews it ([Parser](mech-review-ci.md#parser)).
+
+**Several entries in one folder.** Each new or changed plan entry is compared with its **twin**: the base entry with
+the same folder and adapter. A new entry in a folder that already has entries (a second stack beside the first, or
+the new stack of a migration) has no twin, so it is compared against every base entry of that folder, and needs a
+person only if it changes the target OS, loosens a limit or changes the mutation tool. So a migration (the old stack
+`retiring`, the new one `current`) needs a person only in those three cases. An entry in a folder new to the plan
+needs none.
+
+**Named limit: an unproven adapter needs no person.** Swapping a proven adapter for one with unproven cases, or
+editing a fixture so that a case turns `unproven`, gives no `needs-human` entry today. After the merge, R0 on later
+PRs reads `unproven`, which exits 0 and blocks nothing, so those PRs are checked by an adapter nobody proved. Read
+`unproven` in the comment's `R0:` line as a gap to close, and run the proof yourself before merging such a change
+([fixing it by hand](#fixing-it-by-hand)). It is a [known gap](#known-gaps), for the head-proof follow-up.
 
 Separately, every edit under `.github/**` (the callers, the base CI jobs) is a protected-path `needs-human` entry.
 If the adapter lists the mutation tool's config files (the Java reference lists `pom.xml`), an edit to one is an R2
@@ -434,3 +449,6 @@ These are documented behaviour today, with follow-ups to come:
   ([an empty repo](#an-empty-repo)).
 - **A swap before code** is flagged `[mutation.tool] changed` even when the new adapter declares the same tool,
   because deleting the old adapter file counts as removing its tool ([a swap before any code](#a-swap-before-any-code)).
+- **Named limit: an unproven adapter needs no person.** Swapping a proven adapter for an unproven one, or editing a
+  fixture so that a case turns `unproven`, needs no person, and later PRs are then checked by an adapter nobody proved
+  (R0 `unproven` exits 0). This belongs to the head-proof follow-up ([editing rules](#editing-rules)).
