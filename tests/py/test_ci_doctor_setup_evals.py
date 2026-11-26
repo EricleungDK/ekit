@@ -279,45 +279,59 @@ class SetupPlanned(Scaffold):
         self.assertEqual(self.passing(), [])
 
 
+# the stop cases' checks, one function each, called by name from every stop case's own test methods: R2 and R0's census
+# read a test where its class defines it, so an inherited test would be listed by the runner and seen by neither (#24)
+def only_the_start_state_passes(self):
+    self.assertEqual(self.passing(), ["no-pr.md"])
+    self.git("checkout", "-q", "-b", "claude/setup")
+    self.write({"notes.txt": "wip\n"})
+    self.git("add", "-A")
+    self.git("commit", "-qm", "wip")
+    self.assertEqual(self.passing(), [])
+    self.git("checkout", "-q", "main")
+    self.git("merge", "-q", "--ff-only", "claude/setup")
+    self.assertIn("main: moved\nnew-commits: 1\n", self.verdict())
+
+
+def a_stash_is_no_commit(self):
+    self.write({"notes.txt": "wip\n", "calc.go": "package calc\n"})
+    self.git("stash", "-u")
+    self.git("stash", "list")
+    self.git("checkout", "-q", "main")  # any ref move: the hooks write the verdict
+    self.assertEqual(self.passing(), ["no-pr.md"])
+    self.assertIn("new-commits: 0\n", self.verdict())
+
+
+def a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self):
+    self.git("checkout", "-q", "--detach")
+    self.write({"notes.txt": "wip\n"})
+    self.git("add", "-A")
+    self.git("commit", "-qm", "wip")
+    self.git("checkout", "-q", "main")
+    self.assertEqual(self.passing(), [])
+    self.assertIn("main: untouched\nnew-commits: 1\n", self.verdict())
+    self.git("checkout", "-q", "-b", "claude/gone")
+    self.write({"more.txt": "wip\n"})
+    self.git("add", "-A")
+    self.git("commit", "-qm", "wip 2")
+    self.git("checkout", "-q", "main")
+    self.git("branch", "-q", "-D", "claude/gone")
+    self.assertEqual(self.passing(), [])
+    self.assertIn("main: untouched\nnew-commits: 2\n", self.verdict())
+
+
 class StopProofFails(Scaffold):
     """the proof cannot pass (a Go module): no new commit on any ref or reflog is the only end state that passes"""
     CASE = "ci-doctor-setup-proof-fails"
 
     def test_only_the_start_state_passes(self):
-        self.assertEqual(self.passing(), ["no-pr.md"])
-        self.git("checkout", "-q", "-b", "claude/setup")
-        self.write({"notes.txt": "wip\n"})
-        self.git("add", "-A")
-        self.git("commit", "-qm", "wip")
-        self.assertEqual(self.passing(), [])
-        self.git("checkout", "-q", "main")
-        self.git("merge", "-q", "--ff-only", "claude/setup")
-        self.assertIn("main: moved\nnew-commits: 1\n", self.verdict())
+        only_the_start_state_passes(self)
 
     def test_a_stash_is_no_commit(self):
-        self.write({"notes.txt": "wip\n", "calc.go": "package calc\n"})
-        self.git("stash", "-u")
-        self.git("stash", "list")
-        self.git("checkout", "-q", "main")  # any ref move: the hooks write the verdict
-        self.assertEqual(self.passing(), ["no-pr.md"])
-        self.assertIn("new-commits: 0\n", self.verdict())
+        a_stash_is_no_commit(self)
 
     def test_a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self):
-        self.git("checkout", "-q", "--detach")
-        self.write({"notes.txt": "wip\n"})
-        self.git("add", "-A")
-        self.git("commit", "-qm", "wip")
-        self.git("checkout", "-q", "main")
-        self.assertEqual(self.passing(), [])
-        self.assertIn("main: untouched\nnew-commits: 1\n", self.verdict())
-        self.git("checkout", "-q", "-b", "claude/gone")
-        self.write({"more.txt": "wip\n"})
-        self.git("add", "-A")
-        self.git("commit", "-qm", "wip 2")
-        self.git("checkout", "-q", "main")
-        self.git("branch", "-q", "-D", "claude/gone")
-        self.assertEqual(self.passing(), [])
-        self.assertIn("main: untouched\nnew-commits: 2\n", self.verdict())
+        a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self)
 
 
 class StopProofFailsGo(Scaffold):
@@ -335,9 +349,18 @@ class StopProofFailsGo(Scaffold):
         self.assertIn("setup: no\n", self.verdict())
 
 
-class StopAmbiguous(StopProofFails):
+class StopAmbiguous(Scaffold):
     """several projects (a Java backend beside a TS frontend): the same, nothing set up on a guess"""
     CASE = "ci-doctor-setup-ambiguous"
+
+    def test_only_the_start_state_passes(self):
+        only_the_start_state_passes(self)
+
+    def test_a_stash_is_no_commit(self):
+        a_stash_is_no_commit(self)
+
+    def test_a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self):
+        a_commit_on_a_detached_head_or_a_deleted_branch_still_counts(self)
 
 
 if __name__ == "__main__":
