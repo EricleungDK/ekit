@@ -27,7 +27,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # -I drops the script dir from sys.path
 
 from mech_review import merge, report  # noqa: E402 - imported after the sys.path line above
-from mech_review.mutants import risk_text  # noqa: E402
+from mech_review.mutants import risk_text  # noqa: E402 - imported after the sys.path line above
 
 REPORT = "mech-review report"
 BASELINE_JOB = "mech-review baseline (R3, once)"  # job names as in mech-review.yml (a test pins them)
