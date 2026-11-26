@@ -31,6 +31,22 @@ class TestRiskLine(summary.Run):
         r = self.main("555")
         self.assertIn("R3 partial (3/5 tested)", r.stdout.splitlines(), r.stdout)
 
+    def test_a_merged_result_whose_counts_do_not_add_up_prints_the_count_alone(self):
+        self.capped([(SHARD0, 1, 3), (SHARD1, 2, 2)])
+        merged = summary.env("mutants", {"R3": ("partial", "3/5 tested")}, tested=3, total=5,
+                             by_risk={"branch": {"tested": 100, "total": 10 ** 12}})
+        self.put("mech-review-mutants-merged-json", "mutants-merged.json", merged)
+        r = self.main("555")
+        self.assertIn("R3 partial (3/5 tested)", r.stdout.splitlines(), r.stdout)
+
+    def test_a_merged_result_whose_counts_add_up_prints_them(self):
+        self.capped([(SHARD0, 1, 3), (SHARD1, 2, 2)])
+        merged = summary.env("mutants", {"R3": ("partial", "3/5 tested")}, tested=3, total=5,
+                             by_risk={"rest": {"tested": 3, "total": 5}})
+        self.put("mech-review-mutants-merged-json", "mutants-merged.json", merged)
+        r = self.main("555")
+        self.assertIn("R3 partial (3/5 tested; by risk class: rest 3/5)", r.stdout.splitlines(), r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

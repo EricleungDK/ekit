@@ -8,6 +8,7 @@ import unittest
 
 import test_r3_cap as cap
 import test_r3_risk_counts as counts
+from scripts.mech_review import comment
 
 N_MUTANTS = len(cap.PY_MUTANTS)  # 5
 
@@ -82,6 +83,15 @@ class TestPythonSums(Side, cap.PyCli):
             files += ["--envelope", f"{k}={self.save(d, f's{k}.json', env)}"]
         return self.cli("merge", "--shards", "2", *files)["checks"]["R3"]
 
+    def test_a_shard_whose_counts_do_not_add_up_to_its_count_is_not_summed(self):
+        for bad in ({"branch": {"tested": 100, "total": 10 ** 12}},  # more than the shard holds
+                    {"branch": {"tested": 0, "total": 1}},            # tested short of the shard's
+                    {"branch": {"tested": 1, "total": 2}}):           # total past the shard's
+            r3 = self.merged_with(lambda c: c.update(by_risk=bad))
+            self.assertEqual((r3["tested"], r3["total"]), (3, 5), bad)
+            self.assertNotIn("by_risk", r3, bad)
+            self.assertNotIn("all shards, by risk class", r3["note"], bad)
+
     def test_a_shard_whose_total_is_unknown_is_not_summed_whatever_its_counts(self):
         r3 = self.merged_with(lambda c: c.update(total=None))
         self.assertEqual((r3["tested"], r3["total"]), (3, None))
@@ -102,6 +112,18 @@ class TestRustSums(cap.RustCap):
         r3 = self.cli("mutants", "--max-mutants", str(len(cap.LISTED)))["checks"]["R3"]
         self.assertEqual((r3["status"], r3["tested"], r3["total"]), ("pass", 7, 7))
         self.assertNotIn("by_risk", r3)
+
+
+class TestCommentSums(unittest.TestCase):
+    def test_counts_that_do_not_add_up_to_the_count_get_no_line(self):
+        r3 = {"status": "partial", "note": "3/5 tested", "tested": 3, "total": 5, "timing": {"wall_s": 2.0}}
+        for bad in ({"branch": {"tested": 100, "total": 10 ** 12}}, {"branch": {"tested": 3, "total": 4}},
+                    {"branch": {"tested": 2, "total": 5}}):
+            body = comment.render(counts.env_with(dict(r3, by_risk=bad))).split("### JSON")[0]
+            self.assertIn("R3 timing: 3/5 mutants, 2s wall", body, bad)
+            self.assertNotIn("by risk class", body, bad)
+        body = comment.render(counts.env_with(dict(r3, total=None, by_risk={"branch": {"tested": 3, "total": 5}})))
+        self.assertNotIn("by risk class", body.split("### JSON")[0])
 
 
 if __name__ == "__main__":

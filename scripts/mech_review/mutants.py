@@ -232,6 +232,21 @@ def risk_counts(x):
     return x
 
 
+def risk_of(check):
+    """A check's per-class counts (by_risk) when they are well formed (risk_counts) and are its own count split by
+    class: their tested counts add up to its tested count, their totals to its total. Else None: counts that do not
+    add up say nothing about that count, wherever they are read (a shard in the merge, the comment, the summary)."""
+    if not isinstance(check, dict):
+        return None
+    counts = risk_counts(check.get("by_risk"))
+    if counts is None or not (_whole(check.get("tested")) and _whole(check.get("total"))):
+        return None
+    if (sum(v["tested"] for v in counts.values()), sum(v["total"] for v in counts.values())) != (
+            check["tested"], check["total"]):
+        return None
+    return counts
+
+
 def risk_text(counts):
     """`branch conditions 12/12, returns 20/31, ...` in risk order; "" for none."""
     counts = risk_counts(counts) or {}
@@ -251,14 +266,16 @@ def cap_counted(ordered, own, extra, max_mutants):
     return list(own) + (list(ordered[max_mutants:]) if extra else [])
 
 
-def with_risk(check, counted, ran, risk_of):
+def with_risk(check, counted, ran, class_of):
     """check with its per-class counts (#122) when the cap cut the run (counted is not None): by_risk from the class
-    (risk_of) of each mutant counted and each one tested (ran), and the same in its note. A check that is no count
-    (n/a, or one with no total) is left as it is."""
+    (class_of) of each mutant counted and each one tested (ran), and the same in its note. A check that is no count
+    (n/a, or one with no total) is left as it is. The counts add up to the check's tested/total (test_r3_risk_sums);
+    readers check that again (risk_of)."""
     if counted is None or check.get("tested") is None or check.get("total") is None:
         return check
-    check["by_risk"] = by_risk([risk_of(m) for m in counted], [risk_of(m) for m in ran])
-    check["note"] += risk_note(check["by_risk"])
+    counts = by_risk([class_of(m) for m in counted], [class_of(m) for m in ran])
+    check["by_risk"] = counts
+    check["note"] += risk_note(counts)
     return check
 
 
