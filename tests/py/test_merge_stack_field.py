@@ -115,7 +115,8 @@ class MergeCountsOnlyItsLeg(Case):
 
     def test_a_malformed_stack_field_is_named_and_not_counted_never_a_crash(self):
         for bad in ({"stack": 1, "project_dir": "."}, {"stack": "python"}, {"stack": "python", "project_dir": None},
-                    "python", ["python", "."], None):
+                    "python", ["python", "."], None, {"stack": "", "project_dir": ""}, {"stack": "python", "project_dir": ""},
+                    {"stack": "", "project_dir": "."}):
             s1 = dict(self.mutants("1/2"), stack=bad)
             rc, env, ci = self.merge(2, self.mutants("0/2"), s1)
             self.assertEqual(rc, 1, bad)
@@ -123,11 +124,21 @@ class MergeCountsOnlyItsLeg(Case):
                              ["mutants shard 1/2 produced no result: result has a malformed stack field "
                               + json.dumps(bad)], bad)
 
-    def test_results_of_an_older_engine_none_with_a_stack_field_are_not_compared(self):
+    def test_results_none_of_which_has_a_stack_field_are_each_named_and_not_counted(self):
         s0, s1 = self.mutants("0/2"), self.mutants("1/2")
         del s0["stack"], s1["stack"]
         rc, env, ci = self.merge(2, s0, s1)
-        self.assertEqual((rc, ci), (0, []))
+        self.assertEqual(rc, 1)
+        self.assertEqual(sorted(e["problem"] for e in ci),  # entries sort by id
+                         ["mutants shard 0/2 produced no result: result has no stack field",
+                          "mutants shard 1/2 produced no result: result has no stack field"])
+
+    def test_a_lone_result_of_another_stack_with_its_stack_field_dropped_is_not_counted(self):
+        s0 = self.mutants("0/1", stack="rust")
+        del s0["stack"]
+        rc, env, ci = self.merge(1, s0)
+        self.assertEqual((rc, env["checks"]["R3"]["status"]), (1, "fail"))
+        self.assertEqual([e["problem"] for e in ci], ["mutants shard 0/1 produced no result: result has no stack field"])
 
 
 if __name__ == "__main__":

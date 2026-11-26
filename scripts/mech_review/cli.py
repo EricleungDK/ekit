@@ -387,9 +387,8 @@ def _merge(parser, args):
         else:
             shards[k] = env
     # a result for another stack or folder (#62) is not this leg's: it fails its shard, named, and is not counted
-    any_field = any("stack" in env for env in shards.values())
     for k in list(shards):
-        why = merge.stack_problem(shards[k], args.stack, args.project_dir, any_field)
+        why = merge.stack_problem(shards[k], args.stack, args.project_dir)
         if why is not None:
             del shards[k]
             reasons[k] = why

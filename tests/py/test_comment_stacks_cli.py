@@ -130,8 +130,8 @@ class TestStacksPoster(unittest.TestCase):
             api = tc.Api()
             p = self.call(["--stacks", bad, "--head", SHA], api)
             self.assertEqual(p.returncode, 4, text)
-            self.assertIn(f"reason: --stacks {bad}: want a list of distinct {{name, stack, project_dir, envelopes}} "
-                          "(one per stack: no name, and no stack and project dir, twice)", api.writes[0])
+            self.assertIn(f"reason: --stacks {bad}: want a non-empty list of {{name, stack, project_dir, envelopes: "
+                          "{JOB: FILE}}, one per stack", api.writes[0])
 
     def test_a_drift_result_for_another_head_is_a_ci_entry_as_for_one_stack(self):
         path, _ = tc.TestPoster.drift_result(self)

@@ -137,16 +137,16 @@ def _count(x):
     return isinstance(x, int) and not isinstance(x, bool) and x >= 0
 
 
-def stack_problem(env, stack, project_dir, any_field):
+def stack_problem(env, stack, project_dir):
     """Why a shard envelope is not this leg's result (#62), or None when it is. Each envelope names the stack and project
     dir it ran for (`stack: {stack, project_dir}`, set by `mutants`). A result for another stack, or for another project
-    dir when project_dir is given (None: the stack alone is compared), is not this leg's. A field that is not
-    {stack, project_dir} of strings is malformed, named, never a crash. One with no field (an older engine's) is
-    compared only when another envelope carries it (any_field), as shard_problems does for the shard field."""
+    dir when project_dir is given (None: the stack alone is compared), is not this leg's. One with no field is not this
+    leg's either (the mutants and merge steps run one engine, so there is no older one to read), and a field that is not
+    {stack, project_dir} of non-empty strings is malformed: each named, never a crash."""
     if "stack" not in env:
-        return "result has no stack field" if any_field else None
+        return "result has no stack field"
     st = env["stack"]
-    if not (isinstance(st, dict) and all(isinstance(st.get(x), str) for x in ("stack", "project_dir"))):
+    if not (isinstance(st, dict) and all(isinstance(st.get(x), str) and st[x] for x in ("stack", "project_dir"))):
         return f"result has a malformed stack field {json.dumps(st)}"  # a JSON value: it came from a JSON file
     if st["stack"] != stack or (project_dir is not None and st["project_dir"] != project_dir):
         leg = stack if project_dir is None else f"{stack} in {project_dir}"
@@ -343,17 +343,24 @@ def _what(leg):
 
 def _distinct(legs):
     """(legs with each stack once, CI entries): a leg whose name, or stack and project dir, an earlier leg has (#62) is
-    not counted (its ids would be the earlier one's), and is one CI fail entry naming both, never a crash."""
-    kept, ci = [], []
+    not counted (its ids would be the earlier one's). Each stack given more than once is one CI fail entry, however
+    many repeats, naming the stack and each repeat that reads differently; never a crash."""
+    kept, again = [], {}
     for leg, env in legs:
         first = next((k for k, _ in kept if k["name"] == leg["name"]
                       or (k["stack"], k["project_dir"]) == (leg["stack"], leg["project_dir"])), None)
         if first is None:
             kept.append((leg, env))
-            continue
-        again = "" if _what(first) == _what(leg) else f": again as {_what(leg)}"
-        ci.append(dict(entry("CI", "", 0, f"duplicate-stack:{_what(first)}", "env", "fail",
-                             f"{_what(first)} given twice{again}; the second is not counted",
+        else:
+            again.setdefault(id(first), (first, []))[1].append(leg)
+    ci = []
+    for first, repeats in again.values():
+        n = len(repeats) + 1
+        other = list(dict.fromkeys(_what(r) for r in repeats if _what(r) != _what(first)))
+        problem = (f"{_what(first)} given {'twice' if n == 2 else f'{n} times'}"
+                   + (f": again as {', '.join(other)}" if other else "")
+                   + ("; the second is not counted" if n == 2 else "; only the first is counted"))
+        ci.append(dict(entry("CI", "", 0, f"duplicate-stack:{_what(first)}", "env", "fail", problem,
                              "list each stack of the plan once: one row per stack in the --stacks file",
                              "a merged result that reads one stack's results twice"), stack=first["name"]))
     return kept, finalize(ci)
@@ -368,8 +375,9 @@ def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
     The whole: `stacks` [{name, stack, project_dir, summary, checks}], every entry, and per check the worst of the
     stacks that report it (R0 only where it ran); the summary from those. A stack given twice counts once, with one CI
     entry naming it (_distinct)."""
-    legs, dups = _distinct(legs)
+    # base and head from any result given, a repeat's too: a stack given twice always reports its entry (#62)
     present = [env for _, env in legs if env is not None] + ([drift] if drift is not None else [])
+    legs, dups = _distinct(legs)
     if not present:
         raise ValueError("combine_stacks needs at least one envelope")
     base, head = present[0]["base"], present[0]["head"]

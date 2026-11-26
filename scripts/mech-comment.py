@@ -128,8 +128,8 @@ def main(argv):
         legs = read_stacks(args.stacks)
         stacks, crashes, env, drift_why = [], [], None, None
         if legs is None:  # no result to report: the crash comment names the file
-            crashes = [f"--stacks {args.stacks}: want a list of distinct {{name, stack, project_dir, envelopes}} "
-                       "(one per stack: no name, and no stack and project dir, twice)"]
+            crashes = [f"--stacks {args.stacks}: want a non-empty list of {{name, stack, project_dir, envelopes: "
+                       "{JOB: FILE}}, one per stack"]
             print(f"mech-comment: {crashes[0]}", file=sys.stderr)
         for leg in legs or []:
             got, why = named(list(leg["envelopes"].items()), args.head, args.reason)
