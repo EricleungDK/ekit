@@ -66,7 +66,7 @@ On a new branch, commit it all, then prove the committed files the way CI reads 
 
 Push and open it, as SKILL.md step 5. Its body, beside step 5's:
 
-- How its own check reads: `no result`, red with nothing to waive (the base has no stack for its CI to run). The owner merges on the proof report below, then makes the mech-review check required (an empty repo: after the first manifest lands).
+- How its own check reads. The base resolves no stack (no built-in project there): `no result`, red with nothing to waive; the owner merges on the proof report below, then makes the mech-review check required (an empty repo: after the first manifest lands). The base resolves one (a built-in project beside the new one): the check runs and reads red `needs-human` for `.github/**`, and also for the new stack when its adapter declares a `[mutation.tool]` or its target OS is not linux (R0 compares a folder new to the plan with the defaults: linux, the default limits, no mutation tool); the owner waives those entries, as SKILL.md step 5 says, and merges. Later PRs compare with the merged entry and give none.
 
 - Files: the adapter and its fixtures, the stack plan entry, the callers, the base CI jobs or why none (`own_ci` names the team's), and the mutation tool's wiring in the repo's build, or that `[mutation.tool]` is left out (step 3).
 - Detection: doctor's `setup` (language, build, test framework, target OS and why).

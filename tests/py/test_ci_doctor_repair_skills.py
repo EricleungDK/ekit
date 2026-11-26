@@ -103,7 +103,7 @@ class SetupPrCheck(unittest.TestCase):
     def test_the_setup_pr_body_says_its_check_reads_no_result(self):
         s = flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR"))
         self.assertIn("`no result`, red with nothing to waive", s)
-        self.assertIn("The owner merges on the proof report below, then makes the mech-review check required", s)
+        self.assertIn("the owner merges on the proof report below, then makes the mech-review check required", s)
 
     def test_the_required_check_waits_for_the_first_manifest_in_an_empty_repo(self):
         self.assertIn("required (an empty repo: after the first manifest lands)",
@@ -118,13 +118,24 @@ class SetupPrCheck(unittest.TestCase):
 
     def test_an_expected_no_result_is_no_reason_to_set_up_again(self):
         s = flat(section(read("ci-doctor"), "1. Diagnose"))
-        self.assertIn("A setup PR's own `no result`, and that of a repo whose plan has only `planned` entries, are "
-                      "expected", s)
+        self.assertIn("A setup PR's own `no result` (its base resolves no stack), and that of a repo whose plan has "
+                      "only `planned` entries, are expected", s)
 
     def test_skill_step_5_tells_the_two_checks_apart(self):
         s = flat(section(read("ci-doctor"), "5. Open the PR"))
         self.assertIn("A repo with a built-in stack: red `needs-human` by design", s)
-        self.assertIn("A setup PR for a repo with no built-in stack (setup.md): `no result`", s)
+        self.assertIn("A setup PR (setup.md) whose base resolves no stack (no built-in project there): `no result`", s)
+        self.assertIn("One whose base resolves a built-in stack beside the new one: the check runs", s)
+
+    def test_the_setup_pr_body_names_both_cases_and_the_new_stacks_entry(self):
+        """review F5, F6: the check runs where the base resolves a built-in stack, and a folder new to the plan with
+        a mutation tool or a non-linux target OS is a needs-human entry there"""
+        s = flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR"))
+        self.assertIn("The base resolves no stack (no built-in project there): `no result`", s)
+        self.assertIn("The base resolves one (a built-in project beside the new one): the check runs and reads red "
+                      "`needs-human` for `.github/**`, and also for the new stack when its adapter declares a "
+                      "`[mutation.tool]` or its target OS is not linux", s)
+        self.assertIn("a built-in keeps them and needs no person", flat(read("ci-doctor", "repair.md")))
 
     def test_the_setup_evals_grade_the_same(self):
         for case in ("ci-doctor-setup-java", "ci-doctor-setup-java-no-ci", "ci-doctor-setup-planned"):

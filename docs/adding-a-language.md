@@ -361,8 +361,9 @@ check ([R0 adapter proof § Editing rules](mech-review-ci.md#r0-adapter-proof)):
 the same folder and adapter. A new entry in a folder that already has entries (a second stack beside the first, or
 the new stack of a migration) has no twin, so it is compared against every base entry of that folder, and needs a
 person only if it changes the target OS, loosens a limit or changes the mutation tool. So a migration (the old stack
-`retiring`, the new one `current`) needs a person only in those three cases. An entry in a folder new to the plan
-needs none.
+`retiring`, the new one `current`) needs a person only in those three cases. An entry in a folder new to the plan is
+compared with the defaults (linux, the default limits, no declared mutation tool): it needs no person when it keeps
+them, and one when its target OS is not linux or its adapter declares a mutation tool.
 
 **Named limit: an unproven adapter needs no person.** Swapping a proven adapter for one with unproven cases, or
 editing a fixture so that a case turns `unproven`, gives no `needs-human` entry today. After the merge, R0 on later

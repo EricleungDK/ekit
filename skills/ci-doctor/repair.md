@@ -25,7 +25,7 @@ Take the entry from the PR's mech-review result (sticky comment or JSON) or doct
 
 - **Failed R0**: regenerate only the failing part, for this repo. A runtime case: read the runner's real output (run the adapter's command where the toolchain is installed, else CI's `red-first` or `mutants` log) and write the pattern for what the runner prints now. A static case: the repo's test files and the categories of setup.md's Cheat list. A cheat fixture changes only when it is not valid code in the language; the report says which and why.
 - **Drift**: for each uncovered folder:
-  - The team's code: a plan entry for its folder (SKILL.md's Stack plan), `planned`, since its manifest arrives with the PR and is not on this branch. Its adapter is a built-in that lists the manifest, else an adapter file that setup.md's steps Detect through Prove it with R0 generate and prove (`.ekit/adapters/<name>.toml` and its fixtures).
+  - The team's code: a plan entry for its folder (SKILL.md's Stack plan), `planned`, since its manifest arrives with the PR and is not on this branch. Its adapter is a built-in that lists the manifest, else an adapter file that setup.md's steps Detect through Prove it with R0 generate and prove (`.ekit/adapters/<name>.toml` and its fixtures). R0 compares a folder new to the plan with the defaults (linux, the default limits, no mutation tool): a built-in keeps them and needs no person; an adapter file that declares a `[mutation.tool]`, or a target OS other than linux, is a person's call at step 4's A person's call.
   - Samples, templates, vendored or generated code: the folder in `ignore`.
   - The branch adds no manifest.
 - **A plan or adapter file that does not read**: fix the named entry and field.
