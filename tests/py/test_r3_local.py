@@ -912,6 +912,111 @@ class MachineLock(Tmp):
         self.assertEqual(r.stderr, f"r3-local: {self.envdir} is in use by another r3-local run (pid 77): "
                                    "wait for it, or pass another --env-dir\n")
 
+    def bounded(self, fake, *extra):
+        """self.main in a thread that must end within 5 s: a lock that spins for ever fails here, not hangs."""
+        out = []
+        t = threading.Thread(target=lambda: out.append(self.main(fake, "--wait-limit", "0.005", *extra)), daemon=True)
+        t.start()
+        t.join(5)
+        self.assertFalse(t.is_alive(), "r3-local did not end within 5 s")
+        return out[0]
+
+    def assert_refused(self, why):
+        fake = Fake()
+        r = self.bounded(fake)
+        self.assertEqual((r.returncode, fake.calls), (2, []))
+        self.assertEqual(r.stderr, f"r3-local: machine lock {self.machine}: {why}: remove it, or ask its owner\n")
+
+    def test_a_dangling_symlink_at_the_lock_path_is_exit_2_not_a_spin(self):
+        os.symlink(os.path.join(self.tmp, "missing"), self.machine)
+        self.assert_refused("a symlink")
+
+    def test_a_symlink_at_the_lock_path_leaves_its_target_alone(self):
+        target = os.path.join(self.tmp, "important")
+        with open(target, "w") as f:
+            f.write("IMPORTANT DATA\n")
+        os.symlink(target, self.machine)
+        self.assert_refused("a symlink")
+        with open(target) as f:
+            self.assertEqual(f.read(), "IMPORTANT DATA\n")
+
+    def test_a_dir_at_the_lock_path_is_exit_2(self):
+        os.mkdir(self.machine)
+        self.assert_refused("not a regular file")
+
+    def test_a_lock_file_with_another_hard_link_is_exit_2_and_left_alone(self):
+        other = os.path.join(self.tmp, "other")
+        with open(other, "w") as f:
+            f.write("IMPORTANT DATA\n")
+        os.link(other, self.machine)
+        self.assert_refused("a file with another hard link")
+        with open(other) as f:
+            self.assertEqual(f.read(), "IMPORTANT DATA\n")
+
+    def test_a_lock_file_this_user_may_not_open_is_exit_2_naming_why(self):
+        """Neither to write nor to read (simulated: the suite runs as root here)."""
+        with open(self.machine, "w") as f:
+            f.write("4242")
+        real = os.open
+
+        def refusing(path, flags, *rest):
+            if path == self.machine:
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, flags, *rest)
+
+        with mock.patch.object(r3.os, "open", refusing):
+            self.assert_refused("cannot open it (Permission denied)")
+
+    def opens(self, answer):
+        """os.open with answer(flags) for the lock path: an exception to raise, or None to open it for real."""
+        real = os.open
+
+        def fake_open(path, flags, *rest):
+            if path == self.machine:
+                e = answer(flags)
+                if e:
+                    raise e
+            return real(path, flags, *rest)
+
+        return mock.patch.object(r3.os, "open", fake_open)
+
+    def test_a_lock_file_that_keeps_going_and_coming_back_is_exit_2(self):
+        def answer(flags):
+            if flags & os.O_CREAT:
+                return FileExistsError(17, "File exists", self.machine)
+            return FileNotFoundError(2, "No such file or directory", self.machine)
+
+        with self.opens(answer):
+            self.assert_refused("it keeps going and coming back")
+
+    def test_a_lock_file_this_user_may_not_make_is_exit_2_naming_why(self):
+        def answer(flags):
+            if flags & os.O_CREAT:
+                return PermissionError(13, "Permission denied", self.machine)
+            return FileNotFoundError(2, "No such file or directory", self.machine)
+
+        with self.opens(answer):
+            self.assert_refused("cannot make it (Permission denied)")
+
+    def test_a_lock_file_gone_before_its_read_only_open_is_made_again(self):
+        seen = []
+
+        def answer(flags):
+            seen.append(flags & (os.O_RDWR | os.O_CREAT))
+            if len(seen) == 1:
+                return PermissionError(13, "Permission denied", self.machine)
+            if len(seen) == 2:
+                return FileNotFoundError(2, "No such file or directory", self.machine)
+            return None
+
+        fake = Fake(count=1)
+        with self.opens(answer):
+            r = self.main(fake)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(seen[:2], [os.O_RDWR, 0])
+        with open(self.machine) as f:
+            self.assertEqual(f.read(), str(os.getpid()))
+
     def test_the_machine_lock_is_one_path_for_every_user_not_under_tmpdir(self):
         self.assertEqual(DEFAULT_MACHINE_LOCK, "/tmp/ekit-r3-local.lock")
 

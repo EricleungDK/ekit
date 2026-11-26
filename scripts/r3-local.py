@@ -25,6 +25,7 @@ usage, the env dir in use by another run, git error, a step produced no usable r
 """
 import argparse
 import concurrent.futures
+import errno
 import fnmatch
 import hashlib
 import inspect
@@ -33,6 +34,7 @@ import os
 import posixpath
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -150,23 +152,59 @@ def hold(envdir):
     return f
 
 
+def _refused(path, why):
+    return Stop(f"machine lock {path}: {why}: remove it, or ask its owner")
+
+
+def _open_fd(path, flags, mode=0o666):
+    """os.open that never follows a link at path: a link there (any user can make one in /tmp) is a Stop, as is any
+    other error but a missing file (FileNotFoundError) or, for an existing file, the right to write it."""
+    try:
+        return os.open(path, flags | os.O_NOFOLLOW, mode)
+    except (FileNotFoundError, FileExistsError):
+        raise
+    except PermissionError:
+        if flags & os.O_RDWR:
+            raise
+        raise _refused(path, "cannot open it (Permission denied)")
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise _refused(path, "a symlink")
+        if e.errno == errno.EISDIR:
+            raise _refused(path, "not a regular file")
+        raise _refused(path, f"cannot open it ({e.strerror})")
+
+
 def _open_shared(path):
     """The machine lock file, open to write when this user may, else to read (flock works on either). The first run
     makes it writable by every user; an existing one is opened without O_CREAT, which a sticky /tmp refuses on another
-    user's file."""
-    while True:
+    user's file. Never through a link, and only a regular file with no other hard link: the run writes its pid in it.
+    Anything else is a Stop naming why."""
+    for _ in range(3):  # a file that keeps going and coming back between the two opens
+        mode = "r+"
         try:
-            return os.fdopen(os.open(path, os.O_RDWR), "r+")
+            fd = _open_fd(path, os.O_RDWR)
         except FileNotFoundError:
-            pass
+            try:
+                fd = _open_fd(path, os.O_RDWR | os.O_CREAT | os.O_EXCL)
+            except FileExistsError:  # another run made it first
+                continue
+            except OSError as e:
+                raise _refused(path, f"cannot make it ({e.strerror})")
+            os.fchmod(fd, 0o666)  # past the umask
         except PermissionError:
-            return open(path)
-        try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o666)
-        except FileExistsError:  # another run made it first
-            continue
-        os.fchmod(fd, 0o666)  # past the umask
-        return os.fdopen(fd, "r+")
+            try:
+                fd, mode = _open_fd(path, os.O_RDONLY), "r"
+            except FileNotFoundError:  # gone in between
+                continue
+        st = os.fstat(fd)
+        why = None if stat.S_ISREG(st.st_mode) else "not a regular file"
+        why = why or (None if st.st_nlink == 1 else "a file with another hard link")
+        if why:
+            os.close(fd)
+            raise _refused(path, why)
+        return os.fdopen(fd, mode)
+    raise _refused(path, "it keeps going and coming back")
 
 
 def _holder(f):
