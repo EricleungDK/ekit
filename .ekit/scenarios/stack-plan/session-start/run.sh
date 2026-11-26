@@ -2,6 +2,7 @@
 SPFX="$EKIT_PARENT_DIR/fixtures"; source "$SPFX/lib.sh"
 command -v strace >/dev/null || fail "unrunnable here: strace is missing (the git-only check needs it)"
 command -v unshare >/dev/null || fail "unrunnable here: unshare is missing (the no-network check needs it)"
+unshare -n true 2>/dev/null || fail "unrunnable here: unshare -n is not permitted (the no-network check needs it)"
 # start <dir> [wrapper...]: the SessionStart hook as Claude Code fires it (payload on stdin, plugin root set); CTX, HRC
 HERR="$PWD/hook.err"
 start() { local d=$1; shift
@@ -43,7 +44,7 @@ start_traced() { P=$(jq -nc --arg c "$1" '{cwd: $c, session_id: "s1", hook_event
   (cd "$1" && printf '%s' "$P" | CLAUDE_PLUGIN_ROOT="$KIT" strace -f -qq -s 300 -e trace=execve -o "$2" python3 "$KIT/scripts/session-start.py" >/dev/null 2>&1)
   grep -E '\) = 0$' "$2" | grep -o 'execve("[^"]*", \[.*\]' ; }
 WITH=$(start_traced "$R" "$PWD/with.trace")
-[[ -n $WITH ]] || fail "strace saw nothing (ptrace not allowed here?)"
+[[ -n $WITH ]] || fail "unrunnable here: strace saw nothing (ptrace not allowed here?)"
 NOPLAN="$PWD/noplan"; rm -rf "$NOPLAN"; git clone -q "$R" "$NOPLAN"; git -C "$NOPLAN" rm -q .ekit/stack-plan.toml
 git -C "$NOPLAN" commit -qm "no plan"; git -C "$NOPLAN" remote set-url origin https://example.invalid/never/fetched.git
 WITHOUT=$(start_traced "$NOPLAN" "$PWD/without.trace")
