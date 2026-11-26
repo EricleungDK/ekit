@@ -23,8 +23,9 @@ Other languages go the same way.
 ## Before you start
 
 - **Python 3.11 or newer** where ci-doctor runs. The plugin itself needs 3.9, but adapter files and the stack plan are
-  TOML, and reading TOML needs 3.11. On an older Python, `doctor` stops with
-  `this python cannot read the repo's adapter files`.
+  TOML, and reading TOML needs 3.11: on an older Python, proving an adapter (`--adapter`) is a usage error that says
+  so, and `doctor` on a repo that already has an adapter file or a plan names it too
+  ([Adapter file](mech-review-ci.md#adapter-file)).
 - **The language's toolchain**, if you have it (a JDK and Maven for the example). Without it, the proof's runtime half
   does not run on your machine, and the PR body says so. Your developer machine's setup per OS (Python, Git, the
   optional tools) is in [README § Setup per OS](../README.md#setup-per-os), from
@@ -96,6 +97,8 @@ The PR body has these parts ([setup.md step 8](../skills/ci-doctor/setup.md)):
 - The adapter names your real commands in `[commands]` ([the commands](#the-commands-each-adapter-names)), and its
   `target-os` is right.
 - The stack plan entry names the right folder.
+- The caller's `setup-command` provides what the runner lacks for your tests (the toolchain version, dependency
+  install, env values): nothing in mech-review's jobs runs the adapter's `install` command.
 - If base CI jobs were added and they ran on the PR, they are green: that shows the adapter's commands work on the
   runner.
 
@@ -129,8 +132,9 @@ reference adapter's: install `mvn -B -ntp dependency:go-offline`, build `mvn -B 
   (install, build, lint, test) on the target OS's runner.
 - **In mech-review's own jobs**, the reusable workflow sets up toolchains for the built-ins only. For your language,
   whatever the runner image lacks (a JDK version, Maven, an env value the tests need) goes into the caller's
-  `setup-command`, which runs before the tests in `red-first` and `mutants`. ci-doctor writes it from your existing
-  workflows. [Inputs](mech-review-ci.md#inputs).
+  `setup-command`, which runs before the tests in `red-first` and `mutants`. That includes installing dependencies:
+  nothing in mech-review's jobs runs the adapter's `install`. Your existing workflows show what the tests need.
+  [Inputs](mech-review-ci.md#inputs).
 - **In your agent sessions**, the adapter's lint and test commands are the natural verify command to agree on: under
   `/ekit:orchestrate-agent` you agree one per unit in the checklist (`mvn -B -ntp test-compile -Dmaven.compiler.failOnWarning=true && mvn -B -ntp test`).
   Nothing copies them for you: give them when the checklist is agreed.
@@ -147,6 +151,8 @@ reference adapter's: install `mvn -B -ntp dependency:go-offline`, build `mvn -B 
 - **What else follows it.** R0's runtime half runs only on the target OS (elsewhere `n/a`, named), and a declared
   mutation tool must list that OS (`[mutation.tool] os`).
 - **Changing it** needs a person ([editing rules](#editing-rules)).
+- **Your own machine** is a separate matter: the per-OS setup for the plugin (Python, Git, the optional tools) is in
+  [#34](https://github.com/EricleungDK/ekit/issues/34) and [README § Setup per OS](../README.md#setup-per-os).
 
 Details: [Setup mode § Target OS](mech-review-ci.md#setup-mode) and [Stack plan § Target OS](mech-review-ci.md#stack-plan).
 
@@ -216,14 +222,15 @@ While `pom.xml` is there the old stack is still checked; the new one starts when
 ``retiring stack `api` (.): its manifest pom.xml is still here: finish the migration, then remove its entry``. After 30
 days the note adds a reminder. When the PR that deletes `pom.xml` lands, the note becomes
 ``stack `api` (.): no pom.xml in . any more: remove the entry `api` from .ekit/stack-plan.toml``. Remove the entry
-once the old code is gone and you agree the migration is done. Ask ci-doctor for the new stack by name ("we are moving
-to Gradle"): it generates and proves the new adapter as it does for an empty repo, and edits the plan as its
-[Stack plan](../skills/ci-doctor/SKILL.md#stack-plan) section says.
+once the old code is gone and you agree the migration is done. To get the new adapter, run `/ekit:ci-doctor` and name
+the stack to come ("we are moving to Gradle"); ask it to generate and prove that adapter as for a planned stack, and to
+edit the plan as its [Stack plan](../skills/ci-doctor/SKILL.md#stack-plan) section says.
 
 ### Adding a stack
 
-A TS frontend in `web/` beside the Java backend: first a PR that adds only the entry (`adapter = "ts"`, a built-in, or
-an adapter file ci-doctor's setup mode writes for a language with no built-in), then the code. Added together, the PR
+A TS frontend in `web/` beside the Java backend: first a PR that adds only the entry, with `status = "planned"` and
+`adapter = "ts"` (a built-in; for a language with none, an adapter file ci-doctor's setup mode writes), then the
+code. The code PR starts the stack's checks, and drift asks you to set it `current`. Added together, the PR
 fails `D`:
 
 ```
@@ -247,7 +254,9 @@ review the swap and merge it.
 ## Editing rules
 
 Editing an adapter file or the stack plan needs no person each time. R0 judges the adapter and the drift check judges
-the plan. Only these need a person: one R0 `fail` entry of class `needs-human` names each, and it blocks no other
+the plan. Note when R0 judges an edit: on the PR that makes it, CI proves the base branch's copy, so the edited copy
+is judged by the proof you or ci-doctor run before the PR ([fixing it by hand](#fixing-it-by-hand)), and by R0 on every
+PR after it merges. Only these need a person: one R0 `fail` entry of class `needs-human` names each, and it blocks no other
 check ([R0 adapter proof § Editing rules](mech-review-ci.md#r0-adapter-proof)):
 
 - a looser limit: an adapter's `[limits]` (`max-mutants`, `mutation-budget` or `census` lower, `assert-density`
