@@ -103,6 +103,13 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         ):
             self.assertIn(rule, t)
 
+    def test_review_evidence_rule_runs_ekit_hooks_and_task_verify_against_a_temp_store(self):
+        # #121: a reviewer's SessionStart run in a scratch worktree wrote into the main checkout's declared.json
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn("Run every ekit hook and every task-verify call with `EKIT_STATE` set to a temp dir", rule5)
+        self.assertIn('EKIT_STATE="$(mktemp -d)"', rule5)
+        self.assertIn("keyed by the git common dir", rule5)
+
     def test_taster_brief_carries_its_fields(self):
         t = flat(read("taster-brief-template.md"))
         for field in ("Read list:", "Criteria:", "Install:", "Runner:", "`can-fail` baseline:", "Commit scope:"):
