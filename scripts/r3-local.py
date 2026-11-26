@@ -3,7 +3,7 @@
 
 usage: python3 -I scripts/r3-local.py --base REF [--head REF] --stack {python,rust,ts} [--repo DIR]
            [--test-paths GLOB ...] [--mutation-budget MIN] [--max-mutants N] [--mutant-timeout SEC]
-           [--project-dir DIR] [--env-dir DIR]
+           [--project-dir DIR] [--env-dir DIR] [--wait-limit MIN]
 
 Steps, as .github/workflows/mech-review.yml runs them: set up the stack's R3 tool with the workflow's pins (the adapter's
 r3_tool: python a venv with pytest and mutmut plus the project dir's requirements*.txt at head, ts Stryker in its own
@@ -15,10 +15,13 @@ max-mutants 40); pass your caller's inputs (ekit: --test-paths 'tests/**' --test
 --mutation-budget 20). The run tests the head commit: uncommitted changes are not in it. The shards share this
 machine's CPUs (CI gives each its own runner), so wall times and mutmut's own timeouts can differ from CI's. setup-command and extra-apt-packages are not run.
 --env-dir keeps the tool and the results (reused while the pins and requirements match); default: a temp dir, removed.
-One run at a time holds an env dir: a second run on it stops at once, naming the first's pid (the lock goes when that
-run ends, killed or not).
+One run at a time on this machine (#120): a second run, any user's and any env dir's, waits for the first, naming its
+pid, up to --wait-limit minutes (default 90), then stops with exit 3; the lock file is /tmp/ekit-r3-local.lock.
+One run at a time holds an env dir: a second run on it stops at once, naming the first's pid, without waiting for the
+machine. Both locks go when the run that holds them ends, killed or not.
 exit: 0 no fail entry and no unconfirmed survivor; 1 a fail entry or an unconfirmed survivor; 2 setup failed,
-usage, the env dir in use by another run, git error, a step produced no usable result, or Windows.
+usage, the env dir in use by another run, git error, a step produced no usable result, or Windows; 3 waited past
+--wait-limit for another run on this machine (R3 not run).
 """
 import argparse
 import concurrent.futures
@@ -34,6 +37,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 try:
     import fcntl
@@ -50,6 +54,9 @@ EXIT = __doc__[__doc__.index("exit: "):].strip()  # the exit codes above, also i
 ENGINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-review.py")
 MARKER = ".ekit-r3-env.json"  # the pins and requirements an env dir was set up with
 LOCK = ".ekit-r3-env.lock"  # held (flock) by the run using the env dir; holds that run's pid
+# held (flock) by the one run on this machine; holds its pid. /tmp, not $TMPDIR (per user on macOS): every user's runs
+MACHINE_LOCK = "/tmp/ekit-r3-local.lock"
+POLL_S = 0.1  # how often a waiting run tries the machine lock again
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
 EXTRACT_TAKES_FILTER = "filter" in inspect.signature(tarfile.TarFile.extract).parameters
@@ -57,7 +64,11 @@ DROP_ENV = ("PYTHONPATH", "PYTEST_ADDOPTS")  # a developer's shell settings CI d
 
 
 class Stop(Exception):
-    pass
+    code = 2
+
+
+class Waited(Stop):
+    code = 3
 
 
 def run_cmd(argv, env=None, cwd=None):
@@ -136,6 +147,61 @@ def hold(envdir):
     f.truncate(0)
     f.write(str(os.getpid()))
     f.flush()
+    return f
+
+
+def _open_shared(path):
+    """The machine lock file, open to write when this user may, else to read (flock works on either). The first run
+    makes it writable by every user; an existing one is opened without O_CREAT, which a sticky /tmp refuses on another
+    user's file."""
+    while True:
+        try:
+            return os.fdopen(os.open(path, os.O_RDWR), "r+")
+        except FileNotFoundError:
+            pass
+        except PermissionError:
+            return open(path)
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:  # another run made it first
+            continue
+        os.fchmod(fd, 0o666)  # past the umask
+        return os.fdopen(fd, "r+")
+
+
+def _holder(f):
+    f.seek(0)
+    pid = f.read(32).strip()
+    return pid if pid.isdigit() else "?"
+
+
+def hold_machine(path, limit_min):
+    """Lock this machine for this run: the open lock file. While another run holds it, wait, naming that run's pid,
+    up to limit_min minutes, then a Stop. flock goes with the process, so a killed run frees it."""
+    f = _open_shared(path)
+    deadline = time.monotonic() + limit_min * 60
+    said = None
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            pid = _holder(f)
+            if pid != said:
+                print(f"r3-local: waiting for the r3-local run of pid {pid} (one run at a time on this machine: "
+                      f"{path}), up to {limit_min:g} min", file=sys.stderr, flush=True)
+                said = pid
+            left = deadline - time.monotonic()
+            if left <= 0:
+                f.close()
+                raise Waited(f"waited {limit_min:g} min for the r3-local run of pid {pid}: R3 not run; run it again "
+                             "when that run ends, or pass a larger --wait-limit")
+            time.sleep(min(POLL_S, left))
+    if f.writable():
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
     return f
 
 
@@ -303,6 +369,17 @@ def r3(run, a, keep):
     return 1 if unconfirmed else rc
 
 
+def _minutes(text):
+    """--wait-limit: a finite number of minutes, 0 or more (nan would wait for ever)."""
+    try:
+        v = float(text)
+    except ValueError:
+        v = -1.0
+    if not 0 <= v < float("inf"):
+        raise argparse.ArgumentTypeError("want minutes, a number 0 or more")
+    return v
+
+
 def parse(argv):
     p = argparse.ArgumentParser(prog="r3-local.py", description="the workflow's R3 jobs, locally (#35). POSIX only: "
                                 "on Windows run it in WSL.", epilog=EXIT)
@@ -318,12 +395,14 @@ def parse(argv):
                    help="per-mutant timeout (workflow default: empty, the baseline's derived one)")
     p.add_argument("--project-dir", default=".", metavar="DIR", help="project dir under the repo (default .)")
     p.add_argument("--env-dir", metavar="DIR", help="keep the tool and results here (reused); default: temp dir")
+    p.add_argument("--wait-limit", default=90.0, type=_minutes, metavar="MIN",
+                   help="minutes to wait for another run on this machine (default 90)")
     a = p.parse_args(argv)
     a.project_dir = posixpath.normpath(a.project_dir)  # app/ and ./app are app, as the engine reads it
     return a
 
 
-def main(argv, run=run_cmd, os_name=os.name):
+def main(argv, run=run_cmd, os_name=os.name, machine_lock=MACHINE_LOCK):
     a = parse(argv)
     if os_name == "nt":
         print("r3-local: POSIX only (on Windows run it in WSL): the venv and the mutation tools need a POSIX host",
@@ -334,12 +413,16 @@ def main(argv, run=run_cmd, os_name=os.name):
     try:
         lock = hold(a.env_dir)
         try:
-            return r3(run, a, keep)
+            machine = hold_machine(machine_lock, a.wait_limit)
+            try:
+                return r3(run, a, keep)
+            finally:
+                machine.close()
         finally:
             lock.close()
     except Stop as e:
         print(f"r3-local: {e}", file=sys.stderr)
-        return 2
+        return e.code
     finally:
         if not keep:
             shutil.rmtree(a.env_dir, ignore_errors=True)

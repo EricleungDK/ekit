@@ -100,10 +100,11 @@ class Tmp(unittest.TestCase):
         self.addCleanup(t.cleanup)
         self.tmp = t.name
         self.envdir = os.path.join(self.tmp, "env")
+        self.machine = os.path.join(self.tmp, "machine.lock")  # never the real one: a run on this machine holds it
 
     def main(self, fake, *extra, stack_name="python"):
         argv = ["--repo", self.tmp, "--base", "main", "--stack", stack_name, "--env-dir", self.envdir, *extra]
-        return _kit.run_cli(argv, main=lambda a: r3.main(a, run=fake, os_name="posix"))
+        return _kit.run_cli(argv, main=lambda a: r3.main(a, run=fake, os_name="posix", machine_lock=self.machine))
 
 
 class Pins(unittest.TestCase):
@@ -318,7 +319,7 @@ class Steps(Tmp):
         os.chdir(self.tmp)
         self.addCleanup(os.chdir, cwd)
         _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python", "--env-dir", "rel"],
-                     main=lambda a: r3.main(a, run=fake, os_name="posix"))
+                     main=lambda a: r3.main(a, run=fake, os_name="posix", machine_lock=self.machine))
         venv = os.path.join(os.path.realpath(self.tmp), "rel", "venv")
         self.assertIn(["python3", "-m", "venv", venv], [a for a, _, _ in fake.calls])
         _, e, _ = [c for c in fake.calls if c[0][:2] == ["python3", "-I"]][0]
@@ -404,7 +405,8 @@ class Steps(Tmp):
         self.assertEqual([fake.opt(a, "--mutants-cmd") for a in fake.engine("mutants")], [[], []])
 
     def test_a_stack_without_an_r3_tool_is_exit_2(self):
-        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "nope"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
+        r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "nope"],
+                         main=lambda a: r3.main(a, run=Fake(), os_name="posix", machine_lock=self.machine))
         self.assertEqual(r.returncode, 2)
         self.assertIn("no R3 tool for stack nope", r.stderr)
 
@@ -738,6 +740,184 @@ class EnvDirLock(Tmp):
     def test_help_names_the_env_dir_in_use_as_exit_2(self):
         r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
         self.assertIn("2 setup failed, usage, the env dir in use by another run, git error", flat(r.stdout))
+
+
+class MachineLock(Tmp):
+    """#120: one r3-local run at a time on this machine, whatever its env dir: two at once share the CPUs and each
+    shard hits its budget (one run tested 0 of 204 mutants). A second run waits for the first, naming its pid."""
+
+    def held(self, text):
+        import fcntl
+        f = open(self.machine, "w")
+        self.addCleanup(f.close)
+        f.write(text)
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+
+    def test_a_second_run_waits_for_the_first_naming_its_pid_then_runs(self):
+        f = self.held("4242")
+        freed = threading.Event()
+
+        def free():
+            f.close()
+            freed.set()
+
+        threading.Timer(0.3, free).start()
+        fake, early = Fake(count=1), []
+
+        def run(argv, env=None, cwd=None):
+            early.append(not freed.is_set())
+            return fake(argv, env, cwd)
+
+        r = self.main(run, "--wait-limit", "1")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.count("waiting for"), 1, r.stderr)  # once, not once per try
+        self.assertIn("r3-local: waiting for the r3-local run of pid 4242 (one run at a time on this machine: "
+                      f"{self.machine}), up to 1 min\n", r.stderr)
+        self.assertNotIn(True, early)
+        self.assertEqual(len(fake.engine("merge")), 1)
+
+    def test_a_wait_past_its_limit_is_exit_3_naming_why_and_runs_nothing(self):
+        self.held("4242")
+        fake = Fake()
+        start = time.monotonic()
+        r = self.main(fake, "--wait-limit", "0.005")  # 0.3 s
+        self.assertGreaterEqual(time.monotonic() - start, 0.29)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(r.stderr.splitlines()[-1],
+                         "r3-local: waited 0.005 min for the r3-local run of pid 4242: R3 not run; run it again when "
+                         "that run ends, or pass a larger --wait-limit")
+        self.assertEqual(fake.calls, [])
+
+    def test_a_lock_file_holding_no_pid_names_the_holder_as_unknown(self):
+        self.held("garbage\nmore")
+        r = self.main(Fake(), "--wait-limit", "0.001")
+        self.assertIn("waiting for the r3-local run of pid ? (", r.stderr)
+        self.assertIn("waited 0.001 min for the r3-local run of pid ?: R3 not run", r.stderr)
+
+    def test_a_killed_first_run_frees_the_machine_for_the_waiting_one(self):
+        import subprocess
+        import sys
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import fcntl, os, sys, time\n"
+             "f = open(sys.argv[1], 'w'); f.write(str(os.getpid())); f.flush()\n"
+             "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); print('held', flush=True); time.sleep(60)",
+             self.machine], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline(), "held\n")
+        threading.Timer(0.3, holder.kill).start()
+        fake = Fake(count=1)
+        r = self.main(fake, "--wait-limit", "0.5")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"waiting for the r3-local run of pid {holder.pid} (", r.stderr)
+        self.assertEqual(len(fake.engine("merge")), 1)
+
+    def test_a_lock_file_left_by_a_dead_run_does_not_make_the_next_wait(self):
+        with open(self.machine, "w") as f:
+            f.write("4242")
+        fake = Fake(count=1)
+        r = self.main(fake, "--wait-limit", "0.001")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertNotIn("waiting", r.stderr)
+        self.assertEqual(len(fake.engine("merge")), 1)
+
+    def test_the_run_holds_the_machine_with_its_pid_until_it_ends(self):
+        import fcntl
+        seen = []
+        fake = Fake(count=1)
+
+        def run(argv, env=None, cwd=None):
+            if not seen:
+                with open(self.machine) as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        seen.append(("free", f.read()))
+                    except OSError:
+                        seen.append(("held", f.read()))
+            return fake(argv, env, cwd)
+
+        with open(self.machine, "w") as f:
+            f.write("4242424242")  # a longer pid of an earlier run: replaced, not overwritten in part
+        self.main(run)
+        self.assertEqual(seen, [("held", str(os.getpid()))])
+        with open(self.machine) as f:
+            self.assertIsNone(fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB))
+
+    def test_the_lock_file_a_run_makes_is_writable_by_every_user(self):
+        old = os.umask(0o022)
+        self.addCleanup(os.umask, old)
+        self.main(Fake(count=1))
+        self.assertEqual(os.stat(self.machine).st_mode & 0o777, 0o666)
+
+    def test_a_lock_file_this_user_may_not_write_still_locks(self):
+        """Another user's file this one may only read (the suite runs as root here, so the refusal is simulated)."""
+        with open(self.machine, "w") as f:
+            f.write("4242")
+        real = os.open
+
+        def refusing(path, flags, *rest):
+            if path == self.machine and flags & (os.O_RDWR | os.O_WRONLY):
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, flags, *rest)
+
+        held = self.held_by_other_once()
+        fake = Fake(count=1)
+        with mock.patch.object(r3.os, "open", refusing):
+            r = self.main(fake, "--wait-limit", "1")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("waiting for the r3-local run of pid 4242 (", r.stderr)
+        self.assertTrue(held.is_set())
+        with open(self.machine) as f:
+            self.assertEqual(f.read(), "4242")
+
+    def held_by_other_once(self):
+        """The machine lock held for 0.3 s by another open file, then freed: the event is set once it is free."""
+        import fcntl
+        f = open(self.machine)
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        freed = threading.Event()
+
+        def free():
+            f.close()
+            freed.set()
+
+        threading.Timer(0.3, free).start()
+        return freed
+
+    def test_an_env_dir_in_use_stops_at_once_without_waiting_for_the_machine(self):
+        import fcntl
+        self.held("4242")
+        os.makedirs(self.envdir)
+        g = open(os.path.join(self.envdir, r3.LOCK), "w")
+        self.addCleanup(g.close)
+        g.write("77")
+        g.flush()
+        fcntl.flock(g, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        r = self.main(Fake(), "--wait-limit", "1")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stderr, f"r3-local: {self.envdir} is in use by another r3-local run (pid 77): "
+                                   "wait for it, or pass another --env-dir\n")
+
+    def test_the_machine_lock_is_one_path_for_every_user_not_under_tmpdir(self):
+        import inspect
+        self.assertEqual(inspect.signature(r3.main).parameters["machine_lock"].default, "/tmp/ekit-r3-local.lock")
+
+    def test_a_wait_limit_that_is_no_number_of_minutes_is_a_usage_error(self):
+        for bad in ("nan", "inf", "-1", "x"):
+            with self.subTest(bad=bad):
+                fake = Fake()
+                r = self.main(fake, "--wait-limit", bad)
+                self.assertEqual((r.returncode, fake.calls), (2, []))
+                self.assertIn("--wait-limit: want minutes, a number 0 or more", r.stderr)
+
+    def test_help_names_the_wait_limit_and_its_exit_code(self):
+        r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
+        t = flat(r.stdout)
+        self.assertIn("minutes to wait for another run on this machine (default 90)", t)
+        self.assertIn("3 waited past --wait-limit for another run on this machine (R3 not run)", t)
 
 
 def flat(text):
