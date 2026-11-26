@@ -346,11 +346,11 @@ class Scenarios(Tmp):
         self.addCleanup(patch.stop)
         os.environ.pop("EK_STATE", None)
 
-    def scenario(self, sid, body):
+    def scenario(self, sid, body, fields=""):
         d = os.path.join(self.tmp, ".ekit", "scenarios", sid)
         os.makedirs(d)
         with open(os.path.join(d, "SCENARIO.md"), "w") as f:
-            f.write(f"# {sid}\n- story: s\n- covers: c\n- steps: x\n- expected: y\n")
+            f.write(f"# {sid}\n- story: s\n- covers: c\n- steps: x\n- expected: y\n{fields}")
         with open(os.path.join(d, "run.sh"), "w") as f:
             f.write("#!/bin/bash\n" + body + "\n")
 
@@ -371,6 +371,20 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 1)")
         self.assertIn("FAIL bad: exit 1\n", r.stdout)
+
+    def test_scenarios_that_mark_a_feature_pass_though_the_runner_prints_a_features_line_last(self):
+        self.scenario("good", "exit 0", "- feature: plan\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 of 1 features working\n", r.stdout)
+        self.assertEqual(line, "scenarios: passed: 1/1 scenarios")
+
+    def test_a_failing_scenario_that_marks_a_feature_fails_the_step(self):
+        self.scenario("good", "exit 0", "- feature: plan\n")
+        self.scenario("bad", "exit 1", "- feature: plan\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 1)")
 
     def test_a_real_run_keeps_its_evidence_in_the_tests_own_store_never_the_callers(self):
         # an ekit session sets EKIT_STATE: a real run there must not write into that live store

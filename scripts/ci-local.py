@@ -51,7 +51,8 @@ LEFT_BEHIND = ("uv.lock", ".venv")  # what a uv run with a project writes into t
 PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
 # the last line a scenario wrote when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
 UNRUNNABLE = re.compile(r"^(?:ASSERT FAILED: )?unrunnable here: (.+)$")
-VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): (\d+/\d+ scenarios)$")  # the runner's last line, once every scenario ran
+# the runner's verdict line, once every scenario ran; an unfiltered run may print `N of M features working` after it
+VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): (\d+/\d+ scenarios)$")
 
 
 class Stop(Exception):
@@ -161,7 +162,7 @@ def _runner():
 def scenarios(run, a):
     rc, out, err = run([sys.executable, "-I", RUNNER, "--repo", a.repo, "run"])
     _show(out, err)
-    verdict = VERDICT.match(_last(out, ""))
+    verdict = next(filter(None, map(VERDICT.match, reversed(out.splitlines()))), None)
     if not verdict:  # no scenarios, or the runner stopped before its verdict
         return NOT_RUN, f"scenarios.py run exit {rc}: {_last(err, _last(out, 'no result'))}"
     if rc == 0:
