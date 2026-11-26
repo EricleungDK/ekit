@@ -101,7 +101,9 @@ class RepairJavaRunner(Scaffold):
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines(), [
             "branch: claude/adapter-fix", "main: untouched", "coding: untouched (claude/multiply)", "new-commits: 1",
-            "mech-lines: 0", "cut-from-base: yes", "person: none", "entry: calc adapter .ekit/adapters/maven.toml",
+            "mech-lines: 0", "cut-from-base: yes",
+            "scope: the plan, adapter files, their fixtures and the caller only", "kept: yes", "fixtures: kept",
+            "person: none", "entry: calc adapter .ekit/adapters/maven.toml",
             "r0: pass (static half: 17 of 17 cases proved)", "replay: 5/5 runs read right; census 3/3",
             "drift: clean (exit 0, D pass, 0 entries)", "repair: yes"])
 
@@ -185,6 +187,36 @@ class RepairJavaRunner(Scaffold):
                 self.assertNotIn("repair.md", self.passing())
                 self.assertRegex(self.verdict(), r"(?m)^person: a person decides: ")
 
+    def test_the_repair_touches_only_the_checker(self):
+        """review round 1 [repair-diff-unbounded]: the PR's code cherry-picked, a command or limit changed (the replay
+        never runs a command), or a runtime fixture gutted, beside the right fix, is no repair"""
+        coding = {"src/main/java/com/example/Calc.java": self.git("show", "claude/multiply:src/main/java/com/example/Calc.java")}
+        ctl = ".ekit/adapters/maven.r0/runtime/project/src/test/java/com/example/CtlTest.java.r0"
+        for name, extra, want in (
+                ("the PR's code", coding,
+                 "scope: outside the checker (src/main/java/com/example/Calc.java)"),
+                ("a command", {ADAPTER: self.fixed()[ADAPTER].replace('test = "mvn -B -ntp test"', 'test = "true"')},
+                 "kept: no (commands changed)"),
+                ("a limit", {ADAPTER: self.fixed()[ADAPTER] + "\n[limits]\ncensus = 50\n"},
+                 "kept: no (limits changed)"),
+                ("a runtime fixture", {ctl: self.read(ctl).split("    @Test\n    void fails()")[0] + "}\n"},
+                 f"fixtures: changed ({ctl})")):
+            with self.subTest(name):
+                self.git("checkout", "-q", "claude/multiply")
+                self.commit(dict(self.fixed(), **extra), branch=f"claude/fix-{len(name)}")
+                self.assertIn(want + "\n", self.verdict())
+                self.assertNotIn("repair.md", self.passing())
+
+    def test_a_verdict_that_crashes_keeps_no_earlier_pass(self):
+        """review round 1 [verdict-crash-keeps-stale]: a plan the script cannot read as it expects"""
+        self.commit(self.fixed())
+        self.assertIn("repair.md", self.passing())
+        self.write({".ekit/stack-plan.toml": "stack = 1\n"})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "plan")
+        self.assertEqual(self.passing(), [])
+        self.assertRegex(self.verdict(), r"^verdict: crashed \(TypeError: .*\)\nrepair: no\n$")
+
     def test_a_missing_kit_is_named_a_harness_problem(self):
         with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
             f.write("/no/kit/here")
@@ -217,6 +249,7 @@ class RepairDrift(Scaffold):
         self.commit(self.plan(WEB.format("planned")))
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines()[6:], [
+            "scope: the plan, adapter files, their fixtures and the caller only", "kept: yes", "fixtures: kept",
             "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
             "drift: clean (exit 0, D pass, 0 entries)",
             "merged: clean (drift on the coding branch merged onto the repair tip: exit 0, D pass, 0 entries)",
@@ -228,9 +261,25 @@ class RepairDrift(Scaffold):
         self.assertIn("person: a person decides: `ignore` gains `web` in .ekit/stack-plan.toml\n"
                       "plan: ignores web (ignore 'web')\n", self.verdict())
 
-    def test_a_current_entry_for_a_manifest_not_there_yet_is_the_wrong_status(self):
+    def test_a_current_entry_passes_too_since_drift_judges_it_clean(self):
+        # review round 1: no spec sentence makes `planned` the only status; drift is clean either way
         self.commit(self.plan(WEB.format("current")))
-        self.assertEqual(self.passing(), ["own-branch.md", "repair.md"])
+        self.assertEqual(self.passing(), self.ALL)
+
+    def test_a_person_needed_beside_the_cover_is_no_repair(self):
+        """review round 1 [drift-needs-human-passes]: only `ignore` may need a person (its criteria grade the stop)"""
+        text = self.plan(WEB.format("planned"))[PLAN].replace('adapter = "python"\n', 'adapter = "python"\ntarget-os = "windows"\n', 1)
+        self.commit({PLAN: text})
+        self.assertRegex(self.verdict(), r"(?m)^person: a person decides: .*target-os")
+        self.assertEqual(self.passing(), ["own-branch.md", "plan.md"])
+
+    def test_a_plan_that_crashes_the_verdict_fails(self):
+        self.commit(self.plan(WEB.format("planned")))
+        self.write({PLAN: "ignore = 5\n" + self.read(PLAN)})
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "plan")
+        self.assertEqual(self.passing(), [])
+        self.assertIn("verdict: crashed (TypeError: ", self.verdict())
 
     def test_a_plan_that_neither_covers_nor_ignores_the_folder_fails(self):
         self.commit(self.plan(WEB.format("planned").replace('folder = "web"', 'folder = "site"')))
