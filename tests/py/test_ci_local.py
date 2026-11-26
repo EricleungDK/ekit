@@ -454,6 +454,23 @@ class Scenarios(Tmp):
         self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable "
                                               r"results.json \(FileNotFoundError: ")
 
+    def test_exit_0_with_a_fail_verdict_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable ")
+
+    def test_a_pass_verdict_short_of_every_scenario_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "PASS a\nPASS: 1/2 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: PASS: 1/2 scenarios, but no readable ")
+
+    def test_no_scenario_run_is_no_pass(self):
+        r = self.main(Fake(scenarios=(0, "PASS: 0/0 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r)[3], "scenarios: not run here: no scenario ran (PASS: 0/0 scenarios)")
+
     def test_a_repo_with_no_scenarios_is_not_run_here(self):
         os.makedirs(os.path.join(self.tmp, "src"))
         open(os.path.join(self.tmp, "src", "x.py"), "w").close()

@@ -52,7 +52,7 @@ PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
 # the last line a scenario wrote when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
 UNRUNNABLE = re.compile(r"^(?:ASSERT FAILED: )?unrunnable here: (.+)$")
 # the runner's verdict line, once every scenario ran; an unfiltered run may print `N of M features working` after it
-VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): (\d+/\d+ scenarios)$")
+VERDICT = re.compile(r"^(PASS|FAIL|NOT-RUN): ((\d+)/(\d+) scenarios)$")
 
 
 class Stop(Exception):
@@ -165,8 +165,11 @@ def scenarios(run, a):
     verdict = next(filter(None, map(VERDICT.match, reversed(out.splitlines()))), None)
     if not verdict:  # no scenarios, or the runner stopped before its verdict
         return NOT_RUN, f"scenarios.py run exit {rc}: {_last(err, _last(out, 'no result'))}"
-    if rc == 0:
-        return PASSED, verdict.group(2)
+    word, counted, passed, total = verdict.groups()
+    if total == "0":
+        return NOT_RUN, f"no scenario ran ({verdict.group(0)})"
+    if rc == 0 and word == "PASS" and passed == total:  # all three say so, or the rows below decide
+        return PASSED, counted
     sc = _runner()
     try:  # each scenario's reason and transcript: what tells a missing tool from a failure
         with open(os.path.join(sc.outdir(a.repo), "results.json"), encoding="utf-8") as f:
