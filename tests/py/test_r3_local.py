@@ -19,6 +19,16 @@ import _kit
 from scripts.mech_review import stack
 
 r3 = _kit.load("r3-local")
+DEFAULT_MACHINE_LOCK = r3.MACHINE_LOCK  # read before setUpModule points it away
+
+
+def setUpModule():
+    """No test here takes the real machine lock: a real R3 run holds it (and runs this suite in its mutants), so a
+    test that took it would wait for that run. A call without machine_lock gets this module's own temp file."""
+    t = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(t.cleanup)
+    r3.MACHINE_LOCK = os.path.join(t.name, "machine.lock")
+    unittest.addModuleCleanup(setattr, r3, "MACHINE_LOCK", DEFAULT_MACHINE_LOCK)
 WORKFLOW = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml")
 BASE, HEAD = "b" * 40, "a" * 40
 
@@ -627,7 +637,7 @@ class Output(Tmp):
 
     def test_without_env_dir_the_merged_json_is_said_not_kept(self):
         r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python"],
-                         main=lambda a: r3.main(a, run=Fake(count=1), os_name="posix"))
+                         main=lambda a: r3.main(a, run=Fake(count=1), os_name="posix", machine_lock=self.machine))
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(r.stdout.splitlines()[-1], "merged: not kept (temp dir removed; pass --env-dir to keep it)")
 
@@ -805,6 +815,7 @@ class MachineLock(Tmp):
              "f = open(sys.argv[1], 'w'); f.write(str(os.getpid())); f.flush()\n"
              "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); print('held', flush=True); time.sleep(60)",
              self.machine], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(holder.stdout.close)
         self.addCleanup(holder.wait)
         self.addCleanup(holder.kill)
         self.assertEqual(holder.stdout.readline(), "held\n")
@@ -902,8 +913,20 @@ class MachineLock(Tmp):
                                    "wait for it, or pass another --env-dir\n")
 
     def test_the_machine_lock_is_one_path_for_every_user_not_under_tmpdir(self):
-        import inspect
-        self.assertEqual(inspect.signature(r3.main).parameters["machine_lock"].default, "/tmp/ekit-r3-local.lock")
+        self.assertEqual(DEFAULT_MACHINE_LOCK, "/tmp/ekit-r3-local.lock")
+
+    def test_a_run_given_no_lock_path_takes_the_modules_one(self):
+        path = os.path.join(self.tmp, "module.lock")
+        with mock.patch.object(r3, "MACHINE_LOCK", path):
+            r = _kit.run_cli(["--repo", self.tmp, "--base", "main", "--stack", "python", "--env-dir", self.envdir],
+                             main=lambda a: r3.main(a, run=Fake(count=1), os_name="posix"))
+        self.assertEqual(r.returncode, 1, r.stderr)
+        with open(path) as f:
+            self.assertEqual(f.read(), str(os.getpid()))
+
+    def test_no_test_here_reaches_the_real_machine_lock(self):
+        self.assertNotEqual(r3.MACHINE_LOCK, DEFAULT_MACHINE_LOCK)
+        self.assertTrue(r3.MACHINE_LOCK.startswith(tempfile.gettempdir()), r3.MACHINE_LOCK)
 
     def test_a_wait_limit_that_is_no_number_of_minutes_is_a_usage_error(self):
         for bad in ("nan", "inf", "-1", "x"):

@@ -402,7 +402,7 @@ def parse(argv):
     return a
 
 
-def main(argv, run=run_cmd, os_name=os.name, machine_lock=MACHINE_LOCK):
+def main(argv, run=run_cmd, os_name=os.name, machine_lock=None):
     a = parse(argv)
     if os_name == "nt":
         print("r3-local: POSIX only (on Windows run it in WSL): the venv and the mutation tools need a POSIX host",
@@ -413,7 +413,7 @@ def main(argv, run=run_cmd, os_name=os.name, machine_lock=MACHINE_LOCK):
     try:
         lock = hold(a.env_dir)
         try:
-            machine = hold_machine(machine_lock, a.wait_limit)
+            machine = hold_machine(machine_lock or MACHINE_LOCK, a.wait_limit)
             try:
                 return r3(run, a, keep)
             finally:
