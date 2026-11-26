@@ -575,6 +575,14 @@ def _by_folder(repo, sha, entries):
     return out
 
 
+def _ref(adapter):
+    """a plan `adapter` value as stack_plan reads it: a path (a `/` or `.toml`) normalised, `./` and all spellings of it
+    one; a built-in's name as it is."""
+    if isinstance(adapter, str) and ("/" in adapter or adapter.endswith(".toml")):
+        return _norm(adapter)
+    return adapter
+
+
 DEFAULT_SIDE = ({}, ("linux", {}, None, None, None))  # a folder new to the plan: linux, the default limits, no tool
 
 
@@ -584,8 +592,8 @@ def _twins(head_entry, base_entries):
     person decides when the head entry differs from any); a folder new to the plan, the defaults."""
     if not base_entries:
         return [DEFAULT_SIDE]
-    ref = head_entry.get("adapter")
-    same = [b for b in base_entries if b[0].get("adapter") == ref]
+    ref = _ref(head_entry.get("adapter"))
+    same = [b for b in base_entries if _ref(b[0].get("adapter")) == ref]
     if not same:
         return base_entries
     status = [b for b in same if b[0].get("status") == head_entry.get("status")]
@@ -774,18 +782,22 @@ def editing(repo, mb, head, adapter_paths=()):
             add([x for x in new if not (x in seen or seen.add(x))], path)
 
         for folder in sorted(hf):
+            # a folder with one entry on each side keeps the plain wording; with more, each finding names its entry
+            several = len(hf[folder]) > 1 or len(bf.get(folder, [])) > 1
             for hst, (h_os, h_lim, h_path, h_err, h_tool) in hf[folder]:
+                stack = f"stack `{hst.get('name')}`" if several else "stack"
+                shown = h_path or hst.get("adapter")  # a built-in has no file: its name
                 if h_err:
-                    once([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
+                    once([f"the adapter file of the {stack} in folder `{folder}` does not load: {h_err}"], h_path)
                 for bst, (b_os, b_lim, _, _, b_tool) in _twins(hst, bf.get(folder, [])):
                     bo, ho = bst.get("target-os") or b_os, hst.get("target-os") or h_os
                     if bo != ho:
-                        where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
-                        once([f"stack in folder `{folder}` target-os {bo} -> {ho} in {where}"], where)
-                    once(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"),
+                        where = PLAN if bst.get("target-os") != hst.get("target-os") or not h_path else h_path
+                        once([f"{stack} in folder `{folder}` target-os {bo} -> {ho} in {where}"], where)
+                    once(_looser(b_lim, h_lim, "limits.", f"for the {stack} in folder `{folder}` ({shown})"),
                          h_path or PLAN)
                     if b_tool != h_tool and not h_err:  # R3's tool: added, removed or changed, a person's call (#19)
-                        once([f"[mutation.tool] of the stack in folder `{folder}` changed ({h_path})"], h_path or PLAN)
+                        once([f"[mutation.tool] of the {stack} in folder `{folder}` changed ({shown})"], h_path or PLAN)
         for p in adapter_paths:
             b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
             if h[3]:

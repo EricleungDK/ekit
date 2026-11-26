@@ -622,6 +622,9 @@ def _r0_repo(args, adapter, path):
         except (gitio.Die, r0.FixtureError) as e:
             print(f"mech-review: {e}", file=sys.stderr)
             return 2
+        except Exception as e:  # never exit 1 with no result: the guard keeps an exit-1 result
+            print(f"mech-review: r0 crashed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 2
         finally:
             os.chdir(here)
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
