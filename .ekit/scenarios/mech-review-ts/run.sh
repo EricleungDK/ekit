@@ -4,7 +4,9 @@ MR="$EKIT_REPO/scripts/mech-review.py"
 FX="$EKIT_REPO/tests/fixtures"
 export MECH_FX="$FX"
 # fake toolchain (argv[0] replaced via MECH_TEST_STUB): a Stryker run (--mutate) copies the real report fixture and
-# prints its log; any other run is a vitest replay of the outcome named for the test's leaf name in ./outcomes
+# prints its log; any other run is a vitest replay: as vitest does, -t is a regex on the full name (describe and test
+# joined with a space: `Calc fresh`), and the outcome is the one named in ./outcomes for the test it selects; a -t
+# that selects no test (the old `Calc > fresh` join) replays vitest's no-test run
 STUB="$PWD/fake-ts.sh"
 cat > "$STUB" <<'SH'
 #!/bin/bash
@@ -14,12 +16,12 @@ if [[ " $* " == *" --mutate "* ]]; then
   cat "$MECH_FX/stryker/missed/stdout.txt"; exit 0
 fi
 pat=""; prev=""; for a in "$@"; do [[ "$prev" == "-t" ]] && pat="$a"; prev="$a"; done
-leaf="${pat#^}"; leaf="${leaf%\$}"; leaf="${leaf##* > }"
 f=outcomes; [[ -f $f ]] || f=tests/outcomes.base  # R1's checkout: the base's code + the PR's test files
-o=$(awk -v n="$leaf" '$1 == n { print $2 }' "$f" 2>/dev/null); o="${o:-pass}"
+o=none; while read -r n v; do [[ -n $n && "Calc $n" =~ $pat ]] && { o="$v"; break; }; done < "$f"
 case "$o" in
   pass) cat "$MECH_FX/vitest/pass.txt"; exit 0 ;;
   fail) cat "$MECH_FX/vitest/fail.txt"; exit 1 ;;
+  *) cat "$MECH_FX/vitest/none.txt"; exit 0 ;;
 esac
 SH
 chmod +x "$STUB"
