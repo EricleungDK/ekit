@@ -3,7 +3,7 @@
 # whose files match what each result reports. main holds two stacks: `calc`, the Java fixture repo
 # (tests/fixtures/java/base) through the team's maven adapter and its R0 fixtures, and `app`, a Kotlin CLI in app/
 # through a parser adapter (kotlin.toml: `ktfacts`, npm 0.4.1). claude/app, cut from main's first commit (its result's
-# base), adds a `when` guard (Kotlin 2.1) that ktfacts 0.4.1 cannot parse (App.kt line 12) and sets the plan's
+# base), adds a `when` guard (stable since Kotlin 2.2) that ktfacts 0.4.1 cannot parse (App.kt line 12) and sets the plan's
 # stack[1] `app` to status `done` (mech-app.json: the two CI sources). main then took the maven adapter from the team's
 # JUnit 4 template (`Ignore` in place of `Disabled` in its skip list, surefire 2's per-class summary line), so R0
 # fails both halves on claude/calc, cut from that commit, which also adds `mul` (its test, and a bare `// NOPMD`: an
@@ -91,7 +91,7 @@ mkdir -p app/src/main/kotlin app/src/test/kotlin
 printf 'rootProject.name = "app"\n' > app/settings.gradle.kts
 cat > app/build.gradle.kts <<'K'
 plugins {
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.2.0"
     application
 }
 
@@ -214,7 +214,7 @@ sed "s/HEAD_SHA/$head/g; s/BASE_SHA/$app_base/g; s/PLAN_AT/${head:0:12}/g" > mec
    "severity": "fail",
    "file": "app/src/main/kotlin/App.kt",
    "line": 0,
-   "problem": "the adapter's parser failed: parser `ktfacts` on app/src/main/kotlin/App.kt: exited with status 1: App.kt:12:21: expecting '->'",
+   "problem": "the adapter's parser failed: parser `ktfacts` on app/src/main/kotlin/App.kt: exited with status 1: App.kt:12:21: expecting '->', found `if`",
    "hint": "fix the parser command or its pinned install step in the adapter file, in a PR of its own; R2 reads nothing of this stack until the parser runs",
    "forbidden": "falling back to patterns, or skipping R2, when the parser fails"
   }

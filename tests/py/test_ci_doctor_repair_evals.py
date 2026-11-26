@@ -498,16 +498,19 @@ class TriageAdapterFixIsReal(Scaffold):
     def test_the_parser_entry_names_a_file_the_base_plan_runs_ktfacts_on(self):
         _, entries = self.result("mech-app.json")
         problem = entries["CI-f2f3b6a8"]["problem"]
-        m = re.fullmatch(r"the adapter's parser failed: parser `(\S+)` on (\S+): exited with status 1: App\.kt:(\d+):(\d+): .+",
-                         problem)
+        m = re.fullmatch(r"the adapter's parser failed: parser `(\S+)` on (\S+): exited with status 1: App\.kt:(\d+):(\d+): "
+                         r".+, found `(\w+)`", problem)
         self.assertTrue(m, problem)
-        program, path, line, col = m.group(1), m.group(2), int(m.group(3)), int(m.group(4))
+        program, path, line, col, token = m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), m.group(5)
         self.assertEqual(path, entries["CI-f2f3b6a8"]["file"])
         plan = self.git("show", "main~1:.ekit/stack-plan.toml")
         self.assertIn('name = "app"\nfolder = "app"\nadapter = ".ekit/adapters/kotlin.toml"\nstatus = "current"', plan)
         self.assertIn(f'[parser]\ncommand = "{program} ', self.git("show", "main~1:.ekit/adapters/kotlin.toml"))
         head = self.git("show", f"claude/app:{path}").splitlines()
-        self.assertTrue(head[line - 1][col - 1:].startswith("if "), head[line - 1])  # the `when` guard ktfacts misses
+        self.assertTrue(head[line - 1][col - 1:].startswith(token + " "), head[line - 1])  # the guard ktfacts misses
+        # the agent under test reads the checked-out file alone: there the position holds another token, so the
+        # message reads as the head's change, never as a position the file does not hold
+        self.assertFalse(self.read(path).splitlines()[line - 1][col - 1:].startswith(token))
         self.assertNotIn(head[line - 1], self.git("show", f"main~1:{path}").splitlines())
 
     def test_the_drift_entry_is_drift_at_the_calc_head(self):
