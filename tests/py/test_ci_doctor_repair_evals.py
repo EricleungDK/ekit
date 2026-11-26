@@ -10,6 +10,7 @@ adapter left as it was, a proof that fails, a loosened limit, a plan that neithe
 state do not. The stop case passes only while no ref or reflog holds a new commit."""
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -265,6 +266,59 @@ class RepairBudget(Scaffold):
         self.commit({"calc_test.go": self.read("calc_test.go").replace("TestMul", "TestMultiply")}, branch=None)
         self.assertEqual(self.passing(), [])
         self.assertIn("coding: moved (claude/mul)\n", self.verdict())
+
+
+IDS = r"`((?:R\d|D|CI)-[0-9a-f]{8})`"  # an entry id, as a grader quotes it
+
+
+def llm_graders(case):
+    """{grader file: text} of the case's llm graders"""
+    out = {}
+    for name in sorted(os.listdir(os.path.join(case, "graders"))):
+        with open(os.path.join(case, "graders", name), encoding="utf-8") as f:
+            text = f.read()
+        if re.search(r"^type: llm$", text, re.M):
+            out[name] = text
+    return out
+
+
+class TriageAdapterFix(Scaffold):
+    """routing and labels are LLM-graded (#24): here the scaffold holds every source of the class, and each id a grader
+    names is an entry of its JSON with the class the grader says"""
+    CASE = "triage-adapter-fix"
+
+    def test_every_source_of_the_class_is_an_entry(self):
+        mech = json.loads(self.read("mech.json"))
+        app = json.loads(self.read("mech-app.json"))
+        entries = {e["id"]: e for e in mech["entries"] + app["entries"]}
+        fix = sorted(i for i, e in entries.items() if e["class"] == "adapter-fix")
+        self.assertEqual(fix, ["CI-599b7f05", "CI-f2f3b6a8", "D-7e776699", "R0-2b12725b", "R0-6d261a04"])
+        self.assertEqual([entries[i]["problem"].split(":")[0] for i in fix], [
+            "the stack plan does not read", "the adapter's parser failed",
+            "manifests no stack in .ekit/stack-plan.toml covers", "R0 runtime half (run) failed for the `maven` adapter",
+            "R0 static half failed for the `maven` adapter"])
+        self.assertEqual((mech["head"], app["head"]), (self.git("rev-parse", "claude/calc").strip(),
+                                                       self.git("rev-parse", "claude/app").strip()))
+        named = {i for text in llm_graders(self.case).values() for i in re.findall(IDS, text)}
+        self.assertEqual(named, set(entries))
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+
+class OrchestrateAdapterFixRoute(unittest.TestCase):
+    """the orchestrator's prompt carries the runner case's real entries, and its graders name them"""
+
+    def test_the_prompt_holds_the_runner_cases_entries(self):
+        case = case_dir("orchestrate-adapter-fix-route")
+        with open(os.path.join(case, "prompt.md"), encoding="utf-8") as f:
+            prompt = f.read()
+        with open(os.path.join(case_dir("ci-doctor-repair-java-runner"), "setup.sh"), encoding="utf-8") as f:
+            runner = json.loads(re.search(r"<<'JSON'\n(.*?)\nJSON\n", f.read(), re.S).group(1))
+        block = re.search(r"```json\n(.*?)\n```", prompt, re.S).group(1)
+        self.assertEqual([json.loads(line) for line in block.splitlines()], runner["entries"])
+        named = {i for text in llm_graders(case).values() for i in re.findall(IDS, text)}
+        self.assertEqual(named, {"R0-00e0bfc4", "R4-3f0be0be"})
+        self.assertIn("Rounds used: review 1, taste 0, CI 0.", prompt)
+        self.assertIn("review 2, taste 3, CI 3", llm_graders(case)["rounds.md"])
 
 
 if __name__ == "__main__":

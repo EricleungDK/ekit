@@ -1,6 +1,6 @@
 ---
 name: ci-doctor
-description: Set up or repair a repo's mech-review CI. Use when adopting mech-review, or when its check reports `no result`, `n/a`, or a CI entry.
+description: Set up or repair a repo's mech-review CI. Use when adopting mech-review, when its check reports `no result`, `n/a`, or a CI entry, or for an `adapter-fix` entry.
 ---
 
 Ends in a PR a person merges. `.github/**` is a human decision, so your last action is opening that PR.
@@ -9,10 +9,12 @@ Ends in a PR a person merges. `.github/**` is a human decision, so your last act
 
 ## 1. Diagnose
 
-Run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
+Started on an `adapter-fix` entry (a PR's mech-review, an orchestrator's hand-off): follow [repair.md](repair.md).
+
+Else run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
 
 - `ask`: several projects. Ask the user which, naming each as the entry does, then rerun with `--project-dir`, `--stack` or both (the entry's hint).
-- `repair`: the repo's own adapter file or stack plan does not read, an adapter file of its own finds no project (it may be meant for the one found), or a stack is the repo's adapter file's, which doctor does not trial; or R0's `adapter-fix` entry on a PR. Repair mode (#24) is not built yet: stop with a Needs-you block (finish) quoting the entries.
+- `repair`: the repo's own adapter file or stack plan does not read, an adapter file of its own finds no project (it may be meant for the one found), or a stack is the repo's adapter file's, which doctor does not trial: follow [repair.md](repair.md).
 - `setup`: a project no adapter covers: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
 - `adopt`: the steps below.
 - null: read the entry.
