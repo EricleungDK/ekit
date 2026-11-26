@@ -15,6 +15,7 @@ Reusable workflow: `EricleungDK/ekit/.github/workflows/mech-review.yml`. On each
 Rules: [testing standard](testing-standard.md). A stack described as data, not code: [adapter file](#adapter-file).
 
 Adopting or repairing: `/ekit:ci-doctor` runs `mech-review.py doctor` and opens the caller PR. A person merges it.
+A language with no built-in stack, from install to the merged setup PR: [adding a language](adding-a-language.md).
 
 ## Caller
 
