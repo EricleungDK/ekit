@@ -24,6 +24,15 @@ git -C "$P" -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qam
 cctx="$(echo "{\"cwd\":\"$P\"}" | python3 -I "$ROOT/scripts/session-start.py" | jq -r .hookSpecificOutput.additionalContext)"
 lacks "$cctx" "Stack plan" "clean plan: no stack plan line"
 
+# default verify commands (#61): the plan's stacks at HEAD, declared for the hook's session, as the Stop gate reads them
+vctx="$(echo "{\"cwd\":\"$P\",\"session_id\":\"s61\"}" | python3 -I "$ROOT/scripts/session-start.py" | jq -r .hookSpecificOutput.additionalContext)"
+has "$vctx" "\`cd api && python3 -m pytest\`" "python stack's test command named, in its folder"
+has "$vctx" "\`cd web && node_modules/.bin/vitest run\`" "ts stack's test command named, in its folder"
+has "$vctx" "stack \`api\` (python, in api) names no build or lint command" "missing steps named"
+vcheck="$(python3 -I "$ROOT/scripts/task-verify.py" --repo "$P" check s61)"
+has "$vcheck" "\`cd api && python3 -m pytest\`: no run recorded" "declared for the session: the Stop gate asks for its run"
+has "$vcheck" "\`cd web && node_modules/.bin/vitest run\`: no run recorded" "both stacks declared"
+
 # cloud install: hook command from settings.json yields the kit's absolute runner path
 bash "$ROOT/cloud/install.sh" "$R" >/dev/null
 cmd="$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$R/.claude/settings.json")"

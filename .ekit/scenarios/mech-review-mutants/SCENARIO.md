@@ -10,4 +10,4 @@
   5. Docs-only head (no production file). Expect R3 skipped with `no production file changed`, and the stub never invoked.
   6. Shards: run the stub with `--shard 0/2` (fixture `shard-0-of-2`) and `--shard 1/2` (fixture `shard-1-of-2`), then `merge --shards 2`. Expect exit 1 and summary `fail <head> (11 fail, 0 confirm; ran: R3; skipped: R1 R2 R4)`; with shard 1 missing, a CI entry names `shard 1/2`.
 - expected: exit codes and summaries as above; the caller checkout is untouched (HEAD and status unchanged).
-- children: cap, cap-misuse
+- children: cap, cap-misuse, stacks

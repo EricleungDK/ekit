@@ -1051,10 +1051,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STACK: ${{ needs.stack.outputs.stack }}
+          PROJECT_DIR: ${{ needs.stack.outputs.project-dir }}
         run: |
           set -u
           # no baseline result (its job crashed, or never ran): R3 fails with a CI entry; a missing shard file is one too
-          args=(--base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --shards "${COUNT:-0}")
+          # --project-dir (#62): merge counts only the results of this stack in this folder
+          args=(--base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR" --shards "${COUNT:-0}")
           if [ -f baseline-result/mech-review-baseline.json ]; then
             args+=(--baseline baseline-result/mech-review-baseline.json)
           else
@@ -1133,7 +1135,8 @@ jobs:
                       count = 0
                   count = count if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 4 else 0
                   args = [sys.executable, "-I", "ekit/scripts/mech-review.py", "merge", "--base", os.environ["BASE_SHA"],
-                          "--head", os.environ["HEAD_SHA"], "--stack", leg["stack"], "--shards", str(count)]
+                          "--head", os.environ["HEAD_SHA"], "--stack", leg["stack"],
+                          "--project-dir", leg["project-dir"], "--shards", str(count)]
                   if os.path.isfile(base):
                       args += ["--baseline", base]
                   else:

@@ -670,7 +670,8 @@ with tempfile.TemporaryDirectory() as d:  # the report's per-stack merge, on the
     head, base = "a" * 40, "b" * 40
     env_r3 = {"ekit": "0", "base": base, "head": head, "entries": [], "summary": "",
               "checks": {"R3": {"status": "pass", "note": "1/1 tested", "tested": 1, "total": 1}},
-              "shard": {"k": 0, "n": 1, "max_mutants": 40}}
+              "shard": {"k": 0, "n": 1, "max_mutants": 40},
+              "stack": {"stack": "python", "project_dir": "api"}}  # merge counts only its stack's results (#62)
     baseline = {"ekit": "0", "base": base, "head": head, "entries": [], "summary": "", "run": True, "count": 1,
                 "mutants": 1, "timeout": None, "checks": {"R3": {"status": "pass", "note": ""}}}
     for rel, obj in ((f"mech-review-baseline-json-0-api/mech-review-baseline.json", baseline),

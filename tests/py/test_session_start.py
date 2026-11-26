@@ -75,7 +75,12 @@ class StackPlan(unittest.TestCase):
 
     setUp = Context.setUp
     join_left_running = Context.join_left_running
-    context = Context.context
+
+    def context(self):
+        """the context without the default verify command lines (#61, test_session_start_defaults.py): these tests
+        compare what the drift check adds, and those lines change with the same commits"""
+        lines = Context.context(self).splitlines()
+        return "\n".join(line for line in lines if not line.startswith("[ekit] Verify defaults"))
 
     def commit(self, files, when=None):
         """files: {path: text}; when: the commit's time (unix seconds), else now"""

@@ -123,16 +123,15 @@ class TestStacksPoster(unittest.TestCase):
     def test_a_malformed_stacks_file_posts_the_crash_comment_naming_it(self):
         bad = os.path.join(self.tmp.name, "bad.json")
         leg = dict(API, envelopes={"r2": "x.json"})
-        for text in ("[{}]", "[]", "{}", '"x"', json.dumps([dict(API, envelopes={})]), "not json",
-                     json.dumps([leg, leg]), json.dumps([leg, dict(leg, name="api2")]),
-                     json.dumps([leg, dict(leg, stack="ts", project_dir="web")])):
+        # a stack given twice is no malformed file since #62: one CI entry (test_comment_stacks_merge.DuplicatedStack)
+        for text in ("[{}]", "[]", "{}", '"x"', json.dumps([dict(API, envelopes={})]), "not json"):
             with open(bad, "w") as f:
                 f.write(text)
             api = tc.Api()
             p = self.call(["--stacks", bad, "--head", SHA], api)
             self.assertEqual(p.returncode, 4, text)
-            self.assertIn(f"reason: --stacks {bad}: want a list of distinct {{name, stack, project_dir, envelopes}} "
-                          "(one per stack: no name, and no stack and project dir, twice)", api.writes[0])
+            self.assertIn(f"reason: --stacks {bad}: want a non-empty list of {{name, stack, project_dir, envelopes: "
+                          "{JOB: FILE}}, one per stack", api.writes[0])
 
     def test_a_drift_result_for_another_head_is_a_ci_entry_as_for_one_stack(self):
         path, _ = tc.TestPoster.drift_result(self)

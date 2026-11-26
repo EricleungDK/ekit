@@ -58,8 +58,10 @@ class Merged(unittest.TestCase):
               "blocks": ["R3"], "cause": "R0 runtime half (r3) failed"}
         shard0 = env({"R3": {"status": "pass", "note": "0 missed"}, "R0": r3}, [r0_entry("runtime:r3:r3-weak")])
         shard0["shard"] = {"k": 0, "n": 2, "max_mutants": 40}
+        shard0["stack"] = {"stack": "python", "project_dir": "."}  # merge counts only its stack's results (#62)
         shard1 = env({"R3": {"status": "pass", "note": "0 missed"}})
         shard1["shard"] = {"k": 1, "n": 2, "max_mutants": 40}
+        shard1["stack"] = {"stack": "python", "project_dir": "."}
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
             for k, e in enumerate((shard0, shard1)):
