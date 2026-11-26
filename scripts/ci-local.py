@@ -195,7 +195,9 @@ def scenarios(run, a):
         return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
     if unrunnable:
         return NOT_RUN, "; ".join(unrunnable)
-    return NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or unrunnable scenario"
+    # the runner said FAIL, so it failed whatever its rows leave out; a NOT-RUN or a short PASS blames no scenario
+    return FAILED if word == "FAIL" else NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or " \
+                                                  "unrunnable scenario"
 
 
 def _read_rows(repo):

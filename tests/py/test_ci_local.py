@@ -548,10 +548,24 @@ class Scenarios(Tmp):
                 os.remove(os.path.join(self.tmp, ".git", "ekit", "results.json"))
                 os.rmdir(os.path.join(self.tmp, ".git", "ekit"))
 
-    def test_a_fail_verdict_whose_results_name_no_failure_is_not_run_here(self):
+    def test_a_fail_verdict_whose_results_name_no_failure_is_still_a_failure(self):
+        # the runner said FAIL: the machine is not to blame for what its rows leave out
         line = self.fail_with({"scenarios": []})
-        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but results.json names no failed or "
+        self.assertEqual(line, "scenarios: failed: FAIL: 0/1 scenarios, but results.json names no failed or "
                                "unrunnable scenario")
+
+    def test_a_not_run_or_short_pass_verdict_whose_results_name_nothing_is_not_run_here(self):
+        for out in ("NOT-RUN win: PowerShell is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n",
+                    "PASS a\nPASS: 1/2 scenarios\n"):
+            with self.subTest(out=out):
+                self.evidence({"scenarios": []})
+                r = self.main(Fake(scenarios=(1, out, "")))
+                self.assertEqual(r.returncode, 1)
+                verdict = out.splitlines()[-1]
+                self.assertEqual(self.verdicts(r)[3], f"scenarios: not run here: {verdict}, but results.json names "
+                                                      "no failed or unrunnable scenario")
+                os.remove(os.path.join(self.tmp, ".git", "ekit", "results.json"))
+                os.rmdir(os.path.join(self.tmp, ".git", "ekit"))
 
     def test_exit_0_with_a_fail_verdict_is_no_pass(self):
         self.evidence(None)
