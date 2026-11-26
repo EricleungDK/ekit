@@ -1080,7 +1080,10 @@ with tempfile.TemporaryDirectory() as ws:
     for body, want in (("Closes #53", "53"), ("Fixes #53\nresolves: #61\nCLOSED #53", "53 61"),
                        ("closes o/r#7, fixes https://github.com/o/r/issues/8", "7 8"),
                        ("closes x/y#9, fixes https://github.com/x/y/issues/10", ""),
-                       ("See #53; disclose #6; closes #0", ""), ("", ""), ("Closes #5 $(echo pwned) `echo pwned`", "5")):
+                       ("See #53; disclose #6; closes #0", ""), ("", ""), ("Closes #5 $(echo pwned) `echo pwned`", "5"),
+                       # GitHub reads no closing keyword in code or a comment: an example in the body links nothing
+                       ("Closes #1\n`Fixes #53` / `resolves: #61`\n```\ncloses #7\n```\n~~~\nfixes #8\n~~~\n<!-- closes #9 -->",
+                        "1"), ("``closes #3`` and `` fixes #4 ``", "")):
         got = linked(body)
         check(f"guard: body {body!r} links {want or 'nothing'}", got == want, repr(got))
 

@@ -280,7 +280,11 @@ jobs:
           import os, re
           repo = re.escape(os.environ["REPO"])
           ref = r"(?:(?:" + repo + r")?#|https://github\.com/" + repo + r"/issues/)([0-9]+)\b"
-          found = re.findall(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+" + ref, os.environ.get("PR_BODY") or "")
+          body = os.environ.get("PR_BODY") or ""
+          # GitHub reads no closing keyword in code or a comment: fenced blocks, then HTML comments, then inline code
+          for code in (r"(?s)(```|~~~).*?(?:\1|\Z)", r"(?s)<!--.*?(?:-->|\Z)", r"(?s)(`+).*?\1"):
+              body = re.sub(code, " ", body)
+          found = re.findall(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+" + ref, body)
           print("\n".join(dict.fromkeys(n for n in found if int(n) > 0)))
           ') || linked=""
           for n in $linked; do args+=(--linked-issue "$n"); done
