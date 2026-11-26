@@ -261,6 +261,9 @@ jobs:
           PROJECT_DIR: ${{ matrix.project-dir }}
           TEST_PATHS: ${{ inputs.test-paths }}
           PROTECTED_PATHS: ${{ inputs.protected-paths }}
+          # #53: the body's closing keywords name the issues the PR closes; env only, never interpolated into run:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
           # the project dir picks the plan entry whose adapter file judges (#17)
@@ -271,6 +274,21 @@ jobs:
           while IFS= read -r g; do
             if [ -n "$g" ]; then args+=(--protected-paths "$g"); fi
           done <<< "$PROTECTED_PATHS"
+          # #53: the issues the PR body closes (GitHub's closing keywords: close, fix, resolve and their forms; #N, this
+          # repo's owner/name#N or issue URL), for R2's spec-reversed removals; none found: every removal stays a fail
+          linked=$(python3 -I -c '
+          import os, re
+          repo = re.escape(os.environ["REPO"])
+          ref = r"(?:(?:" + repo + r")?#|https://github\.com/" + repo + r"/issues/)([0-9]+)\b"
+          body = os.environ.get("PR_BODY") or ""
+          # GitHub reads no closing keyword in code or a comment: fenced blocks, then HTML comments, then inline code
+          for code in (r"(?s)(```|~~~).*?(?:\1|\Z)", r"(?s)<!--.*?(?:-->|\Z)", r"(?s)(`+).*?\1"):
+              body = re.sub(code, " ", body)
+          found = re.findall(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+" + ref, body)
+          print("\n".join(dict.fromkeys(n for n in found if int(n) > 0)))
+          ') || linked=""
+          for n in $linked; do args+=(--linked-issue "$n"); done
+          echo "linked issues: $(echo $linked)"
           rc=0
           python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r2 "${args[@]}" > mech-review.json 2> mech-review.err || rc=$?
           cat mech-review.err >&2

@@ -1056,6 +1056,37 @@ check("workflow text: a set mutant-timeout no longer caps the baseline", "also c
 check("docs: the baseline job is named in the jobs list", "`baseline`" in docs_text, "")
 check("docs: a set mutant-timeout does not cap the baseline", "also caps the baseline" not in docs_text, "")
 
+# ---- #53: the R2 guard passes the issues the PR body closes as --linked-issue ----
+import subprocess
+import textwrap
+wf = "\n".join(W)
+gi = wf.index("      - name: R2 guard")
+gj = wf.index("        run: |\n", gi) + len("        run: |\n")
+step = textwrap.dedent(wf[gj:wf.index("\n      - name: ", gj)])
+genv = wf[gi:gj]
+check("guard: PR_BODY comes through env, never into run:", "PR_BODY: ${{ github.event.pull_request.body }}" in genv
+      and "github.event.pull_request.body" not in step, genv)
+check("guard: no new permission (the body is in the event payload)", "issues:" not in text(W)[:text(W).index("jobs:")], "")
+with tempfile.TemporaryDirectory() as ws:
+    os.makedirs(os.path.join(ws, "ekit", "scripts"))
+    with open(os.path.join(ws, "ekit", "scripts", "mech-review.py"), "w") as f:  # stub engine: prints its linked issues
+        f.write("import sys\na = sys.argv[1:]\nprint(' '.join(a[i + 1] for i, x in enumerate(a) if x == '--linked-issue'))\n")
+    def linked(body):
+        env = dict(os.environ, GITHUB_WORKSPACE=ws, BASE_SHA="b", HEAD_SHA="h", STACK="python", PROJECT_DIR=".",
+                   TEST_PATHS="tests/**", PROTECTED_PATHS=".github/**", REPO="o/r", PR_BODY=body)
+        subprocess.run(["bash", "-c", step], cwd=ws, env=env, capture_output=True, text=True)
+        out = os.path.join(ws, "mech-review.json")
+        return open(out).read().strip() if os.path.exists(out) else None
+    for body, want in (("Closes #53", "53"), ("Fixes #53\nresolves: #61\nCLOSED #53", "53 61"),
+                       ("closes o/r#7, fixes https://github.com/o/r/issues/8", "7 8"),
+                       ("closes x/y#9, fixes https://github.com/x/y/issues/10", ""),
+                       ("See #53; disclose #6; closes #0", ""), ("", ""), ("Closes #5 $(echo pwned) `echo pwned`", "5"),
+                       # GitHub reads no closing keyword in code or a comment: an example in the body links nothing
+                       ("Closes #1\n`Fixes #53` / `resolves: #61`\n```\ncloses #7\n```\n~~~\nfixes #8\n~~~\n<!-- closes #9 -->",
+                        "1"), ("``closes #3`` and `` fixes #4 ``", "")):
+        got = linked(body)
+        check(f"guard: body {body!r} links {want or 'nothing'}", got == want, repr(got))
+
 print("")
 sys.exit(1 if FAILS else 0)
 PY
