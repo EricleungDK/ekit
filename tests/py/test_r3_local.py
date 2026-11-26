@@ -657,6 +657,77 @@ class Output(Tmp):
         self.assertEqual(fake.opt(plan, "--head"), ["c" * 40])
 
 
+class EnvDirLock(Tmp):
+    """Two runs on one --env-dir: the second refuses, so neither overwrites the other's tool or results (spec #78's
+    run: two agents shared one env dir). flock, as r3-local: POSIX only."""
+
+    def held(self, pid):
+        import fcntl
+        os.makedirs(self.envdir, exist_ok=True)
+        f = open(os.path.join(self.envdir, r3.LOCK), "w")
+        self.addCleanup(f.close)
+        f.write(pid)
+        f.flush()
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_an_env_dir_another_live_run_holds_is_exit_2_and_runs_nothing(self):
+        self.held("4242")
+        fake = Fake()
+        r = self.main(fake)
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stderr, f"r3-local: {self.envdir} is in use by another r3-local run (pid 4242): "
+                                   "wait for it, or pass another --env-dir\n")
+        self.assertEqual(fake.calls, [])
+
+    def test_a_holder_that_wrote_no_pid_is_named_as_unknown(self):
+        self.held("")
+        r = self.main(Fake())
+        self.assertEqual(r.stderr, f"r3-local: {self.envdir} is in use by another r3-local run (pid ?): "
+                                   "wait for it, or pass another --env-dir\n")
+
+    def test_the_run_holds_the_lock_with_its_pid_until_it_ends(self):
+        import fcntl
+        seen = []
+        fake = Fake(count=1)
+
+        def run(argv, env=None, cwd=None):
+            if not seen:
+                with open(os.path.join(self.envdir, r3.LOCK)) as f:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        seen.append(("free", f.read()))
+                    except OSError:
+                        seen.append(("held", f.read()))
+            return fake(argv, env, cwd)
+
+        self.main(run)
+        self.assertEqual(seen, [("held", str(os.getpid()))])
+        with open(os.path.join(self.envdir, r3.LOCK)) as f:
+            self.assertIsNone(fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB))
+
+    def test_a_lock_file_left_by_a_killed_run_does_not_stop_the_next(self):
+        os.makedirs(self.envdir)
+        with open(os.path.join(self.envdir, r3.LOCK), "w") as f:
+            f.write("4242")
+        fake = Fake(count=1)
+        r = self.main(fake)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(len(fake.engine("merge")), 1)
+
+    def test_a_second_run_after_the_first_ends_reuses_the_env(self):
+        self.main(Fake())
+        r = self.main(Fake())
+        self.assertIn("r3-local: env ready in " + self.envdir, r.stdout)
+
+    def test_help_names_the_env_dir_in_use_as_exit_2(self):
+        r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))
+        self.assertIn("2 setup failed, usage, the env dir in use by another run, git error", flat(r.stdout))
+
+
+def flat(text):
+    return re.sub(r"\s+", " ", text)
+
+
 class RealRun(unittest.TestCase):
     """The default runner: a real command, its exit code and output."""
 
