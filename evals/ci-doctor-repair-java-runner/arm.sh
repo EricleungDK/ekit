@@ -60,14 +60,23 @@ except Exception as e:
     kit_error = f"{type(e).__name__}: {e}"
 lines, ok = [], []
 
-# the repair branch: among the branches other than main and the coding branch that hold a new commit, the one the main
-# checkout's HEAD is on, else the newest
+# the repair branch: among the branches other than main and the coding branch that hold a new commit, one cut from the
+# base (none of the coding branch's commits) that changes .ekit/ against main first, then the one the main checkout's
+# HEAD is on, else the newest: a scratch branch (notes, a merge tried in the repo) never wins over the repair
 heads = [x.split(" ", 1) for x in git("for-each-ref", "--sort=-committerdate", "--format=%(objectname) %(refname:short)",
                                       "refs/heads/").stdout.splitlines()]
 mine = [(sha, name) for sha, name in heads if name not in ("main", coding)
         and git("rev-list", "--count", sha, "--not", main0, coding0).stdout.strip() not in ("", "0")]
 on = git("symbolic-ref", "--short", "-q", "HEAD").stdout.strip()
-mine.sort(key=lambda b: b[1] != on)
+own = git("rev-list", main0 + ".." + coding0).stdout.split()  # the coding branch's own commits
+
+
+def repairs(sha):
+    cut = not any(git("merge-base", "--is-ancestor", c, sha).returncode == 0 for c in own)
+    return cut and bool(git("diff", "--name-only", main0, sha, "--", ".ekit/").stdout.strip())
+
+
+mine.sort(key=lambda b: (not repairs(b[0]), b[1] != on))
 tip, branch = mine[0] if mine else (None, None)
 lines.append(f"branch: {branch}" if branch else "branch: none (no branch other than main and the coding branch holds "
                                                 "a new commit)")
@@ -81,9 +90,9 @@ commits = set(git("rev-list", "--all", "--reflog", "--not", main0, coding0).stdo
 for w in git("reflog", "show", "--format=%H", "refs/stash").stdout.split():
     commits -= {w, *git("rev-list", "--parents", "-n", "1", w).stdout.split()[2:]}
 lines.append(f"new-commits: {len(commits)}")
-mech = sorted(c for c in commits if re.search(r"(?m)^mech: ", git("log", "-1", "--format=%B", c).stdout))
+# anywhere in the message, as failure-triage's `git log --fixed-strings --grep="mech: <id>"` counts a round
+mech = sorted(c for c in commits if "mech: " in git("log", "-1", "--format=%B", c).stdout)
 lines.append(f"mech-lines: {len(mech)}")
-own = git("rev-list", main0 + ".." + coding0).stdout.split()  # the coding branch's own commits
 if tip:
     held = [c for c in own if git("merge-base", "--is-ancestor", c, tip).returncode == 0]
     lines.append("cut-from-base: " + ("yes" if not held else f"no (the repair branch holds {len(held)} of the coding "

@@ -74,13 +74,15 @@ class Repair(unittest.TestCase):
     def test_a_person_decides_a_loosened_limit_a_target_os_or_an_ignore(self):
         s = flat(section(self.text, "4. Prove it"))
         for part in ("`needs-human`", "a loosened limit", "a changed target OS", "a folder added to `ignore`",
-                     "stop before the PR", "Needs-you block", "`Decide:`"):
+                     "stop before the PR", "Needs-you block", "`Decide:`", "commit it too"):
             self.assertIn(part, s, part)
 
     def test_out_of_budget_ends_with_a_report_and_no_pr(self):
         s = flat(section(self.text, "4. Prove it"))
         self.assertIn("Budget spent", s)
-        self.assertIn("Commit nothing, open no PR", s)
+        self.assertIn("Commit nothing in the repo, open no PR", s)
+        self.assertIn("in a scratch clone (never a branch of the repo)", s)
+        self.assertIn("Every part passes → commit the edit on the repair branch", s)
         self.assertIn("/mech-waive", s)
 
     def test_the_pr_body_says_how_ci_judges_it(self):

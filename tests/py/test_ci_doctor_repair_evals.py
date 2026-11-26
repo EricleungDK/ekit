@@ -116,6 +116,18 @@ class RepairJavaRunner(Scaffold):
         self.assertEqual(self.passing(), self.ALL)
         self.assertIn("branch: ekit/repair\n", self.verdict())
 
+    def test_the_repair_branch_is_preferred_over_a_newer_scratch_branch(self):
+        self.commit(self.fixed())
+        for on in ("claude/multiply", "main"):
+            with self.subTest(head=on):
+                self.git("checkout", "-q", "-B", f"scratch-{on.replace('/', '-')}", "main")
+                self.write({"notes.txt": on})
+                self.git("add", "-A")
+                self.git("commit", "-q", "-m", "notes")
+                self.git("checkout", "-q", on)
+                self.assertEqual(self.passing(), self.ALL)
+                self.assertIn("branch: claude/adapter-fix\n", self.verdict())
+
     def test_the_adapter_left_as_it_was_misreads_the_runner(self):
         self.commit({"NOTES.md": "surefire 3 changed its summary line\n"})
         self.assertEqual(self.passing(), ["own-branch.md", "r0-pass.md"])
@@ -143,6 +155,11 @@ class RepairJavaRunner(Scaffold):
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "adapter: read surefire 3's summary")
         self.git("branch", "-q", "-D", "claude/adapter-fix")  # gone from the branches, still in the reflog
+        self.assertIn("mech-lines: 1\n", self.verdict())
+        self.assertNotIn("repair.md", self.passing())
+
+    def test_a_mech_line_anywhere_in_the_message_counts_as_git_grep_counts_it(self):
+        self.commit(self.fixed(), body="fixes the misread (mech: R0-00e0bfc4)\n")
         self.assertIn("mech-lines: 1\n", self.verdict())
         self.assertNotIn("repair.md", self.passing())
 
@@ -302,6 +319,12 @@ class TriageAdapterFix(Scaffold):
         named = {i for text in llm_graders(self.case).values() for i in re.findall(IDS, text)}
         self.assertEqual(named, set(entries))
         self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_the_entry_r0_blocks_is_graded_as_held(self):
+        r2 = next(e for e in json.loads(self.read("mech.json"))["entries"] if e["id"] == "R2-f3a6a4fd")
+        self.assertEqual((r2["class"], r2.get("blocked")), ("agent-fixable", "R0"))
+        self.assertIn("`R2-f3a6a4fd` is marked `blocked: R0`: it gets no fix round now.",
+                      llm_graders(self.case)["next-action.md"])
 
 
 class OrchestrateAdapterFixRoute(unittest.TestCase):

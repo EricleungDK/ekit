@@ -1,7 +1,7 @@
 #!/bin/bash
 # fixture: two PR branches with mech-review results that hold every source of the `adapter-fix` class (#24): on
 # claude/calc (mech.json) R0's static and runtime halves (the maven adapter), the drift block D (a manifest no stack
-# covers) and, beside them, an agent-fixable R2 entry R0 blocks; on claude/app (mech-app.json) the two CI sources: the
+# covers) and, beside them, an agent-fixable R2 entry R0 blocks (held: no fix round until the repaired adapter); on claude/app (mech-app.json) the two CI sources: the
 # adapter's parser failed, and the stack plan does not read. Each adapter-fix entry gets its own label, `adapter-fix`,
 # and the next action "no edit by the PR's agent": ci-doctor's repair mode, a person's waiver only as the emergency exit.
 set -e
