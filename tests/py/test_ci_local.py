@@ -497,6 +497,37 @@ class Scenarios(Tmp):
         self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable "
                                               r"results.json \(FileNotFoundError: ")
 
+    def fail_with(self, doc):
+        self.evidence(doc)
+        r = self.main(Fake(scenarios=(1, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stderr)
+        return self.verdicts(r)[3]
+
+    def test_a_failed_row_with_no_transcript_is_not_run_here(self):
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1"}]})
+        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               "(KeyError: 'transcript')")
+
+    def test_a_transcript_that_is_gone_is_not_run_here(self):
+        gone = os.path.join(self.tmp, "gone.log")
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1", "transcript": gone}]})
+        self.assertRegex(line, r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               r"\(FileNotFoundError: ")
+
+    def test_scenarios_that_are_not_a_list_of_rows_are_not_run_here(self):
+        for doc in ({"scenarios": {"bad": {}}}, {"scenarios": ["bad"]}, ["bad"]):
+            with self.subTest(doc=doc):
+                self.assertRegex(self.fail_with(doc), r"^scenarios: not run here: FAIL: 0/1 scenarios, but no "
+                                                      r"readable results.json \(\w+Error: ")
+                os.remove(os.path.join(self.tmp, ".git", "ekit", "results.json"))
+                os.rmdir(os.path.join(self.tmp, ".git", "ekit"))
+
+    def test_a_fail_verdict_whose_results_name_no_failure_is_not_run_here(self):
+        line = self.fail_with({"scenarios": []})
+        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but results.json names no failed or "
+                               "unrunnable scenario")
+
     def test_exit_0_with_a_fail_verdict_is_no_pass(self):
         self.evidence(None)
         r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))

@@ -182,16 +182,26 @@ def scenarios(run, a):
         return NOT_RUN, f"no scenario ran ({verdict.group(0)})"
     if rc == 0 and word == "PASS" and passed == total:  # all three say so, or the rows below decide
         return PASSED, counted
-    sc = _runner()
     try:  # each scenario's reason and transcript: what tells a missing tool from a failure
-        with open(os.path.join(sc.outdir(a.repo), "results.json"), encoding="utf-8") as f:
-            doc = json.load(f)
-        rows = doc["scenarios"]
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        why, rows, failed, unrunnable = _read_rows(a.repo)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:  # results.json of another shape
         return NOT_RUN, f"{verdict.group(0)}, but no readable results.json ({type(e).__name__}: {e})"
-    if doc.get("reason"):  # the run itself wrote into the repo: none of its verdicts proves anything
-        return FAILED, doc["reason"]
-    failed, unrunnable = [], []
+    if why:  # the run itself wrote into the repo: none of its verdicts proves anything
+        return FAILED, why
+    if failed:
+        also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
+        return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
+    if unrunnable:
+        return NOT_RUN, "; ".join(unrunnable)
+    return NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or unrunnable scenario"
+
+
+def _read_rows(repo):
+    """(the run's own reason, its rows, failed rows, unrunnable rows) from the results.json the run wrote"""
+    sc = _runner()
+    with open(os.path.join(sc.outdir(repo), "results.json"), encoding="utf-8") as f:
+        doc = json.load(f)
+    rows, failed, unrunnable = list(doc["scenarios"]), [], []
     for r in rows:
         if not r.get("reason"):
             continue
@@ -204,10 +214,7 @@ def scenarios(run, a):
             unrunnable.append(f"{r['id']}: {m.group(1)}")
         else:
             failed.append(f"{r['id']} ({r['reason']})")
-    if failed:
-        also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
-        return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
-    return NOT_RUN, "; ".join(unrunnable)
+    return doc.get("reason"), rows, failed, unrunnable
 
 
 STEPS = (("mech", mech), ("suite", suite), ("r3", r3), ("scenarios", scenarios))
