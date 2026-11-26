@@ -13,13 +13,19 @@ from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" sta
 
 
 
-def case_dir(name):
-    """evals/<name> of the repo. The mutation run (R3) executes the tests from a copy under <repo>/mutants/ that
-    holds the scripts and the tests only: the eval cases are then one level up."""
-    root = _kit.ROOT
-    while not os.path.isdir(os.path.join(root, "evals", name)) and os.path.dirname(root) != root:
+def case_dir(name, root=None):
+    """evals/<name> of the outermost dir above the tests (root: _kit.ROOT) that holds it. The mutation run (R3)
+    executes the tests from a copy under <checkout>/mutants/ that holds evals/ too (mutants.also_copy copies every
+    tracked top-level entry), its scripts mutated: the case, its scaffold and the kit its hooks call are then the
+    checkout's above it, the code as written. No dir holds it: evals/<name> of root, for the error to name."""
+    start = root = root or _kit.ROOT
+    found = None
+    while True:
+        if os.path.isdir(os.path.join(root, "evals", name)):
+            found = os.path.join(root, "evals", name)
+        if os.path.dirname(root) == root:
+            return found or os.path.join(start, "evals", name)
         root = os.path.dirname(root)
-    return os.path.join(root, "evals", name)
 
 
 CASE = case_dir("orchestrate-mech-tick")
