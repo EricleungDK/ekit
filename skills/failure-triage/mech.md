@@ -8,7 +8,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 
 `<id> → <label>: entry <file>:<line>, <problem>`
 
-`<label>` is one exact token from the class map: `sandbox/env`, `flaky`, `real bug`, `adapter-fix`, `Needs-you`. An entry Gate 3 holds opens with `<id> → held: blocked by <R0 id>` instead. These tokens are read by the finish report, so copy them character for character.
+`<label>` is one exact token from the class map: `sandbox/env`, `flaky`, `real bug`, `adapter-fix`, `Needs-you`. An entry Gate 3 holds opens with `<id> → held: blocked by <R0 id>` instead. The class-map tokens are read by the finish report, so copy them character for character; a held entry goes under its Open line, never ticked.
 
 ## Gate
 

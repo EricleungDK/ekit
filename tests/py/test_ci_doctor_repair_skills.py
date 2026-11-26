@@ -69,7 +69,7 @@ class Repair(unittest.TestCase):
     def test_the_proof_is_full_and_the_pr_is_re_run_on_it(self):
         s = flat(section(self.text, "4. Prove it"))
         for part in ("Static half", "Census of the repo's own tests", "Runtime half", "The cheat list", "drift", "merge",
-                     "Budget: 5 rounds by default"):
+                     "Budget: 5 rounds"):
             self.assertIn(part, s, part)
 
     def test_a_person_decides_a_loosened_limit_a_target_os_or_an_ignore(self):
@@ -129,6 +129,8 @@ class TriageLabel(unittest.TestCase):
     def test_a_held_entry_opens_the_answer_with_its_own_token(self):
         s = flat(section(self.text, "Open the answer"))
         self.assertIn("`<id> → held: blocked by <R0 id>`", s)
+        self.assertIn("The class-map tokens are read by the finish report", s)  # `held` is listed under Open there
+        self.assertNotIn("Budget: 5 rounds by default", flat(read("ci-doctor", "repair.md")))
 
     def test_an_adapter_fix_entry_takes_no_fix_round(self):
         s = flat(section(self.text, "Rounds"))
@@ -144,7 +146,8 @@ class RoundsHold(unittest.TestCase):
         self.assertIn("repair rounds are no rounds of the unit", s)
         self.assertIn("entries marked `blocked: R0` wait for that run too", s)
         self.assertIn("once a person waives the R0 entry, or the repair stops out of budget, they rejoin", s)
-        self.assertIn("an entry marked `blocked: R0` is held, not sent (step 4)", s)
+        self.assertIn("an entry marked `blocked: R0` is held, not sent, and opens as `<id> → held: blocked by <R0 id>` "
+                      "(step 4)", s)
 
     def test_finish_counts_no_round_for_an_adapter_fix_entry(self):
         self.assertIn("an `adapter-fix` entry counts no fix round", flat(read("finish")))
