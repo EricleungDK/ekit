@@ -15,12 +15,10 @@ A command line means what its shell makes of it (bash, zsh, PowerShell): the fir
 keeps the shell it was given in (shells.current()), and every later `run` of it uses that shell, whichever shell
 calls `run`. A command whose shell this machine lacks is not run: `run` exits 5, and the command reads
 `n/a (env)`, never a pass. So does a run that failed because its runner is not installed (#117), naming what to
-install: `<python> -m <module>` whose whole stderr is the interpreter's `No module named <module>` line (`install
-pytest for python3 (python3 -m pip install pytest)`), or the shell's own not-found line for a word of the command,
-with that shell's exit code for it (`install <name> (not found on PATH)`: bash and sh 127, cmd 9009, PowerShell any
-failure). A runner that is there and fails is a failed run, whatever its output says: a test whose import fails
-prints a traceback, not that one line. The run's stdout goes straight through; its stderr is shown as it comes, and
-read for that.
+install: after a failing exit, task-verify asks whether the first command's runner is there (missing_runner): for
+`<python> -m <module>` that python whether it finds the module (`install module pytest for python3 (that Python
+finds no pytest; ...)`), for any other command the shell whether it finds the word (`install jq (bash finds no
+jq)`). A runner that is there and fails is a failed run, whatever it printed; the run's output is not read.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command becomes a command of the session.
@@ -47,8 +45,8 @@ import os
 import re
 import shlex
 import subprocess
+import shutil
 import sys
-import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
@@ -166,88 +164,112 @@ def spelled(words):
     return " ".join((words[0] if len(words) == 1 else shlex.join(words)).split())
 
 
-EXE = r"(?:python[\d.]*|py)(?:\.exe)?"  # python3, python3.12, py, python.exe
-PYTHON = (r"(?:'[^']*[\\/]" + EXE + r"'"  # a quoted path, or a bare name or path
-          r'|"[^"]*[\\/]' + EXE + r'"'
-          r"""|(?:[^\s'"]*[\\/])?""" + EXE + ")")
-# `<python> [flags] -m <module>`: the interpreter as the line spells it, its flags, and the module
-FLAGS = r"(?:\s+-[XW]\s+\S+|\s+-(?![mc](?:\s|$))\S+)*"  # options before -m: `-X utf8`, `-I`, never -c
-PY_M = re.compile(r"(?<![^\s;&|(])(" + PYTHON + ")(" + FLAGS + r")\s+-m\s+([A-Za-z_][\w.]*)", re.I)
-VERSION_FLAG = re.compile(r"-\d+(?:\.\d+)?(?:-(?:32|64))?")  # the py launcher's `-3`, `-3.12`, `-3.12-64`
-# a shell saying it found no such command; each with the exit code that shell gives it (None: any failing one)
-NOT_FOUND = (
-    (127, re.compile(r"(?:^|: )([^\s:]+): (?:command )?not found$")),       # bash, sh (dash)
-    (127, re.compile(r"command not found: (\S+)$")),                        # zsh
-    (9009, re.compile(r"^'(.+?)' is not recognized as an internal or external command")),  # cmd
-    (None, re.compile(r"The term '(.+?)' is not recognized as (?:the|a) name of a cmdlet")),  # PowerShell
-)
+PYTHON = re.compile(r"(?:python[\d.]*|py)(?:\.exe)?", re.I)  # python3, python3.12, py, python.exe: a basename
+ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # `NAME=value` before a command
+ENDS = ("&&", "||", ";", "|", "&")  # what ends a simple command, as its own word
+PROBE_SECONDS = 10  # what one question about the runner may take; past it, the run reads as failed
+FINDS = "import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1]) else 3)"  # 3: no such module
 
 
-def mentions(cmd, word):
-    """`word` stands in the command line as a whole word (a name, or the end of a path)"""
-    return re.search(r"(?<![\w.-])" + re.escape(word) + r"(?![\w.-])", cmd) is not None
-
-
-def missing_runner(cmd, rc, err):
-    """What to install when the run failed because its runner is not there; None when it ran (and failed) or passed.
-    Only the runner's own absence counts: `<python> -m <module>` whose whole stderr is the interpreter's one line
-    `No module named <module>` (a test whose import fails prints a traceback), or the shell's not-found line for a
-    word of the command with that shell's exit code for it."""
-    if not rc:
+def first_command(cmd, shell):
+    """(folder, assignments, words) of the command's first simple command: leading `cd <dir> &&` steps (a stack's
+    folder) give the folder, leading `NAME=value` words the assignments; None when the line does not split."""
+    posix = shell not in shells.PS_SHELLS + ("cmd",)
+    try:
+        words = shlex.split(cmd, posix=posix)
+    except ValueError:
         return None
-    lines = [line.strip() for line in err.splitlines() if line.strip()]
-    for exe, flags, module in PY_M.findall(cmd):
-        interp = " ".join([exe] + [f for f in flags.split() if VERSION_FLAG.fullmatch(f)])  # pip runs without -I, -S
-        top = module.split(".")[0]
-        said = re.escape(module) + "|" + re.escape(top) if top != module else re.escape(module)
-        if len(lines) == 1 and re.search(r"(?:: No module named (?:" + said + r")|"
-                                         r"\(ModuleNotFoundError: No module named '" + re.escape(top) + r"'\))$",
-                                         lines[0]):
-            return f"install {top} for {interp} ({interp} -m pip install {top})"
-    for code, pattern in NOT_FOUND:
-        for line in lines:
-            m = pattern.search(line)
-            if m and (code is None or rc == code) and mentions(cmd, m.group(1)):
-                return f"install {m.group(1)} (not found on PATH)"
+    if not posix:  # quotes stay on the words: a Windows path keeps its backslashes
+        words = [w[1:-1] if len(w) > 1 and w[0] == w[-1] and w[0] in "'\"" else w for w in words]
+    folder, assigned = "", {}
+    while len(words) > 3 and words[0] == "cd" and words[2] == "&&":
+        folder, words = os.path.join(folder, words[1]), words[3:]
+    while words and ASSIGN.match(words[0]) and posix:
+        name, _, value = words[0].partition("=")
+        assigned[name], words = value, words[1:]
+    for i, w in enumerate(words):
+        if w in ENDS:
+            words = words[:i]
+            break
+    return (folder, assigned, words) if words else None
+
+
+def python_m(words):
+    """(flags, top package) of `<python> [flags] -m <module>`; None for any other command"""
+    if not PYTHON.fullmatch(re.split(r"[\\/]", words[0])[-1]):
+        return None
+    flags, rest = [], words[1:]
+    while rest:
+        w = rest.pop(0)
+        if w == "-m" and rest:
+            return flags, rest[0].split(".")[0]
+        if w.startswith("-m") and len(w) > 2:
+            return flags, w[2:].split(".")[0]
+        if w in ("-X", "-W") and rest:
+            flags += [w, rest.pop(0)]
+        elif w.startswith("-") and not w.startswith("-c"):
+            flags.append(w)
+        else:
+            return None  # a script, -c, or no -m: not a module run
     return None
 
 
-KEPT = 65536  # bytes of a run's stderr kept to read: the start and the end
+def probe(argv, cwd, env):
+    """the exit code of one bounded question; None when it could not be asked or did not answer in time"""
+    try:
+        return subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=PROBE_SECONDS).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
-class Stderr:
-    """The run's stderr: shown as it comes, where task-verify's own stderr goes, and its start and end kept.
-    It is a pipe read by a thread, so the run itself is the plain subprocess.run it always was."""
+def found_in_shell(exe, shell, word, cwd, env):
+    """True/False: whether `shell` finds `word` as a command (builtins, functions and aliases count); None when
+    that cannot be told."""
+    if shell in shells.PS_SHELLS:
+        line = f"if (Get-Command -ErrorAction SilentlyContinue {shells.ps_literal(word)}) {{ exit 0 }} else {{ exit 3 }}"
+        rc = probe(shells.command(exe, shell, line), cwd, env)
+        return {0: True, 3: False}.get(rc)
+    if shell == "cmd":
+        return shutil.which(word, path=env.get("PATH")) is not None
+    rc = probe(shells.command(exe, shell, f"command -v {shlex.quote(word)} >/dev/null 2>&1"), cwd, env)
+    return {0: True, 1: False, 127: False}.get(rc)
 
-    def __init__(self):
-        self.r, self.w = os.pipe()
-        self.head, self.tail, self.cut = b"", b"", False
-        self.thread = threading.Thread(target=self.pump, daemon=True)
-        self.thread.start()
 
-    def pump(self):
-        out = getattr(sys.stderr, "buffer", None)
-        while True:
-            data = os.read(self.r, KEPT)
-            if not data:
-                break
-            if out is not None:
-                out.write(data)
-                out.flush()
-            else:
-                sys.stderr.write(data.decode("utf-8", "replace"))
-            if len(self.head) < KEPT:
-                data, self.head = data[KEPT - len(self.head):], self.head + data[:KEPT - len(self.head)]
-            self.cut = self.cut or len(self.tail) + len(data) > KEPT
-            self.tail = (self.tail + data)[-KEPT:]
-        os.close(self.r)
-
-    def text(self):
-        """All that was read once the run is over; a process it left behind that holds the pipe open gets 5s."""
-        os.close(self.w)
-        self.thread.join(5)
-        text = self.head + (b"\n...\n" if self.cut else b"") + self.tail
-        return text.decode("utf-8", "replace")
+def missing_runner(top, cmd, rc, exe, shell):
+    """What to install when the run failed because its runner is not there; None when the runner is there (a failed
+    run, whatever it printed), the run passed, or it cannot be told. Asked after a failing exit, of the first simple
+    command only (past leading `cd <dir> &&` steps and `NAME=value` words; in `a && b` only `a`):
+    - `<python> [flags] -m <module>`: that python, with those flags, in that folder, is asked for the module's top
+      package (importlib.util.find_spec); a python that answers 9009 is the Windows Store stub, no Python at all.
+    - any other command (and a python not on PATH): the shell is asked whether it finds the word, after an exit
+      that shell gives a missing command (bash, sh: 127; cmd: 9009; PowerShell: 1).
+    A question that fails or takes over PROBE_SECONDS reads as a failed run, never n/a."""
+    if not rc:
+        return None
+    first = first_command(cmd, shell)
+    if not first:
+        return None
+    folder, assigned, words = first
+    cwd, env = os.path.join(top, folder), dict(shells.env_for(exe, shell), **assigned)
+    if not os.path.isdir(cwd):
+        return None
+    module = python_m(words)
+    py = shutil.which(words[0], path=env.get("PATH")) if module else None
+    if py:
+        flags, pkg = module
+        interp = " ".join([words[0]] + flags)
+        answer = probe([py, *flags, "-c", FINDS, pkg], cwd, env)
+        if answer == 3:
+            readme = "; ekit's README § Development names the version CI installs" if pkg == "pytest" else ""
+            return f"install module {pkg} for {interp} (that Python finds no {pkg}{readme})"
+        if answer == 9009:
+            return f"install Python: {words[0]} ran no Python (exit 9009, the Microsoft Store stub)"
+        return None
+    if rc == (1 if shell in shells.PS_SHELLS else 9009 if shell == "cmd" else 127):
+        if found_in_shell(exe, shell, words[0], cwd, env) is False:
+            return f"install {words[0]} ({shell} finds no {words[0]})"
+    return None
 
 
 def cmd_run(top, words):
@@ -260,14 +282,8 @@ def cmd_run(top, words):
         keep_shell(top, cmd, sh)
         print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
         return 5
-    # stdout goes straight through; stderr is shown as it comes and read, to tell a runner that is not there
-    err = Stderr()
-    try:
-        rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"]),
-                            stderr=err.w).returncode
-    finally:
-        said = err.text()
-    na = missing_runner(cmd, rc, said)
+    rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"])).returncode
+    na = missing_runner(top, cmd, rc, exe, sh["name"])
     if na:
         record(top, cmd, None, sh["name"], na)
         keep_shell(top, cmd, sh)

@@ -745,7 +745,7 @@ class TestRunnerNotInstalled(GateCase):
         out = self.gate_on(f"{py} -m ekit_absent_runner -q")
         self.assertEqual(out["decision"], "block")
         self.assertIn(f"A verify command cannot run on this host: `{py} -m ekit_absent_runner -q`: n/a (env): install "
-                      f"ekit_absent_runner for {py} ({py} -m pip install ekit_absent_runner). Give `## Finish: "
+                      f"module ekit_absent_runner for {py} (that Python finds no ekit_absent_runner). Give `## Finish: "
                       "blocked`", out["reason"])
         self.assertNotIn("exited", out["reason"])
 
