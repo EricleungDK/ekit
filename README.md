@@ -122,7 +122,7 @@ Copies editable skill files. Update: `npx skills@latest update`.
 
 ### Setup per OS
 
-The plugin needs Python 3.9 or newer (standard library only) and Git, on macOS, Windows or Linux. No bash and no WSL:
+The plugin needs Python 3.9 or newer (3.11+ to add a language: [adding a language](docs/adding-a-language.md#before-you-start); standard library only) and Git, on macOS, Windows or Linux. No bash and no WSL:
 each hook starts the first of `python3`, `py -3` and `python` that is 3.9+, in whichever shell Claude Code gives it,
 and one message names what is missing when none is.
 

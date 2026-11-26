@@ -32,11 +32,16 @@ Other languages go the same way.
 
 ## Before you start
 
-- **Python 3.11 or newer** where ci-doctor runs: the Python the `[ekit] Python:` session line names. The plugin's
-  launcher takes the first 3.9+ it finds ([README § Setup per OS](../README.md#setup-per-os)), but adapter files and
-  the stack plan are TOML, and reading TOML needs 3.11: on an older Python, proving an adapter (`--adapter`) is a usage error that says
-  so, and `doctor` on a repo that already has an adapter file or a plan names it too
-  ([Adapter file](mech-review-ci.md#adapter-file)).
+- **Python 3.11 or newer** where ci-doctor runs: the Python the `[ekit] Python:` session line names. Adapter files and
+  the stack plan are TOML, and reading TOML needs 3.11: on an older Python, proving an adapter (`--adapter`) is a
+  usage error that says so, and `doctor` on a repo that already has an adapter file or a plan names it too
+  ([Adapter file](mech-review-ci.md#adapter-file)). The plugin's launcher tries `python3`, then `py -3`, then
+  `python`, and takes the first that is 3.9+ ([README § Setup per OS](../README.md#setup-per-os)); it never looks for
+  `python3.11` by name. So check `python3 --version` (`py -3 --version` on Windows). If it is older than 3.11, make a
+  3.11+ the first `python3` on `PATH` before you start the session: an activated venv made from a 3.11+ works.
+- **A GitHub remote you can push to, and a way to open the PR** (the `gh` CLI, or your harness's GitHub tools).
+  Without them ci-doctor stops before the PR, and its report hands you the caller YAML and the PR body to open it
+  yourself.
 - **The language's toolchain**, if you have it (a JDK and Maven for the example). Without it, the proof's runtime half
   does not run on your machine, and the PR body says so. Your developer machine's setup per OS (Python, Git, the
   optional tools) is in [README § Setup per OS](../README.md#setup-per-os), from
@@ -107,19 +112,42 @@ That is expected: doctor does not trial an adapter file, and the proof report st
 
 - Every count is full: `17 of 17`, not `16 of 17`. A missing count is a gap, not a pass.
 - The census count matches the number of tests you know your repo has.
-- `not run here` for the runtime half: it runs in CI on the first PR after the merge, and its result is in that PR's
-  comment (`R0:` line). Read it once.
+- `not run here` for the runtime half: in CI, its `run` part (the census and the runner controls, in `red-first`) runs
+  on the first PR after the merge, and its `r3` part (the mutation tool control, in `mutants`) on the first PR that
+  changes production code. Each result is in that PR's comment (`R0:` line). Read both once.
 - Each item under `## Limits (owner decides)`: you either accept it, or you ask for another round.
 - The adapter names your real commands in `[commands]` ([the commands](#the-commands-each-adapter-names)), and its
   `target-os` is right.
 - The stack plan entry names the right folder.
-- The caller's `test-paths` covers your test folder (`src/test/**` for Maven), beside `.ekit/scenarios/**` if you have
-  scenarios.
+- The caller's `test-paths` covers your test folder: `src/test/**` for a Maven project at the repo root, which matches
+  only there; `**/src/test/**` for a multi-module build. Add `.ekit/scenarios/**` if you have scenarios.
 - The caller's `setup-command` provides what the runner lacks for your tests, by the rules in
   [the commands](#the-commands-each-adapter-names): nothing in mech-review's jobs runs the adapter's `install` command.
-- If the adapter runs PIT, as the Java reference adapter does: the pom has `pitest-junit5-plugin` (PIT takes its
-  configuration and dependencies from your pom), and `[mutation] config_files` lists `pom.xml`, so every later pom
-  edit is an R2 `needs-human` entry a person settles. That is by design: a pom can switch mutators off.
+- If the adapter runs PIT, as the Java reference adapter does: your pom declares the PIT plugin with
+  `pitest-junit5-plugin`, which PIT needs to run JUnit 5 tests. **The proof does not cover this**: R0's mutation
+  control runs on the fixture project's own pom, so it passes even when your pom lacks the plugin, and R3 on a later
+  PR then fails with `pit ran and wrote no report`. If it is missing, add it in the setup PR, with the PIT version the
+  adapter pins (the Java reference adapter pins `pitest-maven` 1.17.4; its fixture pom uses `pitest-junit5-plugin`
+  1.2.1), under `<build><plugins>`:
+
+  ```xml
+  <plugin>
+    <groupId>org.pitest</groupId>
+    <artifactId>pitest-maven</artifactId>
+    <version>1.17.4</version>
+    <dependencies>
+      <dependency>
+        <groupId>org.pitest</groupId>
+        <artifactId>pitest-junit5-plugin</artifactId>
+        <version>1.2.1</version>
+      </dependency>
+    </dependencies>
+  </plugin>
+  ```
+
+  In the setup PR this needs no waiver: no check runs there yet. After the merge, `[mutation] config_files` lists
+  `pom.xml`, so every later pom edit is an R2 `needs-human` entry a person settles. That is by design: a pom can switch
+  mutators off.
 - If base CI jobs were added and they ran on the PR, they are green: that shows the adapter's commands work on the
   runner.
 
@@ -167,19 +195,21 @@ test = "mvn -B -ntp test"
     `echo "NAME=value" >> "$GITHUB_ENV"`, `echo "<dir>" >> "$GITHUB_PATH"`. They apply from the next step on, so a
     command later in the same `setup-command` that needs them exports them too.
 
-  A plain Maven repo may need nothing, since `mvn test` fetches its own dependencies. A repo that needs another JDK and
-  a prefetch would set:
+  A plain Maven repo may need nothing, since `mvn test` fetches its own dependencies. The reusable workflow takes no
+  extra steps from the caller, so `actions/setup-java` cannot run inside it; use it in your own base CI file instead.
+  Inside mech-review, pick a JDK the runner image ships: GitHub's images set `JAVA_HOME_<version>_X64` for each one
+  (`JAVA_HOME_21_X64`; the image's README lists them). A repo that needs JDK 21 and a prefetch would set:
 
   ```yaml
       with:
         setup-command: |
-          echo "JAVA_HOME=<jdk dir>" >> "$GITHUB_ENV"
-          echo "<jdk dir>/bin" >> "$GITHUB_PATH"
-          export JAVA_HOME="<jdk dir>" PATH="<jdk dir>/bin:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_21_X64/bin" >> "$GITHUB_PATH"
+          export JAVA_HOME="$JAVA_HOME_21_X64" PATH="$JAVA_HOME_21_X64/bin:$PATH"
           cd caller && mvn -B -ntp dependency:go-offline
   ```
 
-  Your existing workflows show what the tests need.
+  The variables expand when bash runs the command on the runner. Your existing workflows show what the tests need.
 - **In your agent sessions**, the adapter's lint and test commands are the natural verify command to agree on: under
   `/ekit:orchestrate-agent` you agree one per unit in the checklist, for example the reference adapter's lint and test
   joined with `&&`. Nothing copies them for you: give them when the checklist is agreed.
@@ -308,6 +338,9 @@ Deleting the old adapter file counts as removing its mutation tool, even when th
 and a different tool or target OS in the new file counts too ([known gaps](#known-gaps)). You are that person: review
 the swap and merge it.
 
+To avoid the entry, keep the old adapter file in the swap PR and delete it in a later PR. Both PRs need no person when
+the new file declares the same mutation tool and target OS: the same `r0` run reads `pass` for each.
+
 ## Editing rules
 
 Editing an adapter file or the stack plan needs no person each time. R0 judges the adapter and the drift check judges
@@ -344,8 +377,9 @@ If the adapter lists the mutation tool's config files (the Java reference lists 
 ## When R0 fails: the fixing round
 
 **R0** is the adapter's proof, run as a CI check. Its static half runs in `guard` on every PR, in seconds. Its runtime
-half runs in `red-first` and `mutants` once on every new PR (a passed proof is cached per PR), and again on that PR
-when its fingerprint changes (the adapter, its fixtures, the ekit version, the target OS, the toolchain's version
+half has two parts, each cached per PR: its `run` part runs in `red-first` once on every new PR, and its `r3` part in
+`mutants` on a PR's first run that changes production code (R3 runs only then). Each runs again on that
+PR when its fingerprint changes (the adapter, its fixtures, the ekit version, the target OS, the toolchain's version
 lines, among others). It is mechanical: frozen inputs, no model.
 
 **When it fails**, most often: a toolchain or test-framework upgrade changes the runner's output; the repo adopts a new
@@ -402,7 +436,8 @@ fixture of ekit's, not a built-in) and what Java cannot express yet: `@Nested` c
 
 You can edit the file yourself, in a PR of its own cut from the base branch. Editing it in the PR it judges changes
 nothing for that PR: its checks read the base's copy. Prove the edit before you push, with the commands setup and
-repair use. `<kit>` is the plugin's folder, named by the `[ekit] Scenario runner:` line at session start, or `~/.ekit`:
+repair use. `<kit>` is the folder above `scripts/` in the `[ekit] Scenario runner:` line at session start, or
+`~/.ekit`:
 
 ```bash
 MR="python3 -I <kit>/scripts/mech-review.py"
