@@ -6,10 +6,10 @@
 # /tmp, /var/tmp and /dev/shm, so the agent under test cannot commit in its own repo. TMPDIR goes to a root outside
 # them (~/.cache/ekit-eval/tmp, made if missing) unless the caller's TMPDIR is outside them already. The sandbox also
 # denies reads of that whole root, so nothing the agent must run lives there.
-# All: the sandbox turns every git hook off (core.hooksPath=/dev/null and hook.<name>.enabled=false, set at command-line
-# scope), so a scaffold's ref hooks never write the verdict its regex graders read. evals/git-shim.sh goes first on
-# PATH as `git` (in ~/.cache/ekit-eval/bin, outside the temp root): it runs the real git, then the case's verdict
-# script whenever a ref moved (its header).
+# Git hooks: the sandbox turns every one off (core.hooksPath=/dev/null and hook.<name>.enabled=false at command-line
+# scope; seen on Linux, CLI 2.1.332, macOS not checked), so a scaffold's ref hooks would never write the verdict its
+# regex graders read. On every OS evals/git-shim.sh goes first on PATH as `git` (in ~/.cache/ekit-eval/bin, outside the
+# temp root): it runs the real git, then the case's verdict script whenever a ref moved (its header).
 set -euo pipefail
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/ekit-eval"
 if [[ $(uname) == Linux ]]; then
