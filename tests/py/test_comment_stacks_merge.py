@@ -71,6 +71,18 @@ class DuplicatedStack(unittest.TestCase):
         self.assertEqual(body.count("| fail | :0 |"), 1)
         self.assertNotIn("protected path changed", body)
 
+    def test_each_repeat_that_reads_differently_is_named_once(self):
+        api = tc.Api()
+        api3 = dict(API, name="api3")
+        p = self.call(["--stacks", self.manifest((API, {"r2": self.save("api-r2.json", [])}),
+                                                 (api3, {"r2": self.save("api-2.json", [PROTECTED])}),
+                                                 (api3, {"r2": self.save("api-3.json", [PROTECTED])})),
+                       "--envelope", "drift=" + self.clean_drift(), "--head", SHA], api)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        [body] = api.writes
+        self.assertIn("| api | fail | :0 | stack api (python in api) given 3 times: again as stack api3 (python in api); "
+                      "only the first is counted |", body)
+
     def test_a_duplicate_whose_first_row_has_no_result_still_posts_the_comment_with_its_entry(self):
         api = tc.Api()
         p = self.call(["--stacks", self.manifest((API, {"r2": os.path.join(self.tmp.name, "gone.json")}),
