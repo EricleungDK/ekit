@@ -1,0 +1,194 @@
+#!/bin/bash
+# fixture: the Java fixture repo (tests/fixtures/java/base: Maven, surefire 3.5.2, JUnit 5) with mech-review set up on
+# main through the team's own adapter file (.ekit/adapters/maven.toml, the reference adapter as theirs), its R0
+# fixtures and a stack plan. Its [run.outcome] summary reads only the per-class line of an older surefire
+# (`Time elapsed: 0.04 sec - in com.example.CalcTest`); surefire 3 prints `0.048 s -- in ...`, so R0's runtime half
+# reads every control wrong. The coding branch claude/multiply (checked out) is a PR whose CI gave that R0 entry
+# (mech.json); red-first.log is the runner's output for the `pass` control. The run should end on a repair branch cut
+# from main, its adapter reading the newer runner's recorded output right (runner/, replayed by the verdict), R0's
+# static half passing on it, main and the coding branch as they were and no `mech:` line anywhere (#24).
+set -e
+here="$(cd "$(dirname "$0")" && pwd -P)"
+git init -q -b main .; git config user.email t@t; git config user.name t
+printf '.gitconfig\n.config/\n.npm/\n.m2/\n.cache/\nmech.json\nred-first.log\n' >> .git/info/exclude  # not the work
+cp -R "$here/../../tests/fixtures/java/base/." .
+python3 -I - "$here/../../tests/fixtures/adapters" <<'PY'
+import os, sys
+src = sys.argv[1]
+with open(os.path.join(src, "java.toml"), encoding="utf-8") as f:
+    text = f.read()
+old = r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
+new = (r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time elapsed: [\d.]+ """
+       r"""sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
+assert old in text
+body = text.split("format = 1\n", 1)[1].replace('name = "java"', 'name = "maven"').replace(old, new)
+head = ("# The calc team's adapter for Maven, JUnit 5 and PIT, written against surefire 2's console output.\n"
+        "# Format: https://github.com/EricleungDK/ekit/blob/main/docs/mech-review-ci.md#adapter-file\nformat = 1\n")
+os.makedirs(".ekit/adapters", exist_ok=True)
+with open(".ekit/adapters/maven.toml", "w", encoding="utf-8", newline="\n") as f:
+    f.write(head + body)
+for root, _, names in os.walk(os.path.join(src, "java.r0")):
+    for fn in names:
+        rel = os.path.relpath(os.path.join(root, fn), os.path.join(src, "java.r0"))
+        os.makedirs(os.path.join(".ekit/adapters/maven.r0", os.path.dirname(rel)), exist_ok=True)
+        with open(os.path.join(root, fn), encoding="utf-8", newline="") as f, \
+                open(os.path.join(".ekit/adapters/maven.r0", rel), "w", encoding="utf-8", newline="") as g:
+            g.write(f.read())
+PY
+cat > .ekit/stack-plan.toml <<'T'
+[[stack]]
+name = "calc"
+folder = "."
+adapter = ".ekit/adapters/maven.toml"
+status = "current"
+T
+mkdir -p .github/workflows
+cat > .github/workflows/mech-review.yml <<'Y'
+name: mech-review
+on:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  mech-review:
+    uses: EricleungDK/ekit/.github/workflows/mech-review.yml@v0
+    with:
+      test-paths: |
+        src/test/**
+      protected-paths: |
+        .github/**
+Y
+git add -A; git commit -qm "ci: mech-review through the maven adapter"
+git checkout -qb claude/multiply
+cp "$here/../../tests/fixtures/java/red/src/main/java/com/example/Calc.java" src/main/java/com/example/Calc.java
+cp "$here/../../tests/fixtures/java/red/src/test/java/com/example/CalcTest.java" src/test/java/com/example/CalcTest.java
+git add -A; git commit -qm "calc: multiply"
+cp "$here/runner/pass.txt" red-first.log
+head=$(git rev-parse HEAD); base=$(git rev-parse main)
+sed "s/HEAD_SHA/$head/g; s/BASE_SHA/$base/g" > mech.json <<'JSON'
+{
+ "ekit": "0.5.0",
+ "base": "BASE_SHA",
+ "head": "HEAD_SHA",
+ "checks": {
+  "R0": {
+   "status": "fail",
+   "note": "runtime half (run): fingerprint d3f21f174ec3 (ran); census: 4/4 listed tests found; fixtures census: 4/4; assert density: 0 of 4 tests with no recognised assert, 0% (limit 10%); controls: 1 of 5 read right; failed: control-pass control-fail control-skipped control-no-such-test",
+   "half": "runtime",
+   "part": "run",
+   "adapter": "maven",
+   "cases": [
+    {
+     "case": "census-repo",
+     "kind": "census",
+     "status": "pass",
+     "want": "at least 100% of the listed tests found",
+     "got": "4/4 found"
+    },
+    {
+     "case": "census-fixtures",
+     "kind": "census",
+     "status": "pass",
+     "want": "every listed test found",
+     "got": "4/4 found"
+    },
+    {
+     "case": "control-pass",
+     "kind": "control",
+     "status": "fail",
+     "want": "pass",
+     "got": "error: [INFO] Scanning for projects..."
+    },
+    {
+     "case": "control-fail",
+     "kind": "control",
+     "status": "fail",
+     "want": "fail",
+     "got": "error: [INFO] Scanning for projects..."
+    },
+    {
+     "case": "control-skipped",
+     "kind": "control",
+     "status": "fail",
+     "want": "none",
+     "got": "error: [INFO] Scanning for projects..."
+    },
+    {
+     "case": "control-build",
+     "kind": "control",
+     "status": "pass",
+     "want": "build",
+     "got": "build"
+    },
+    {
+     "case": "control-no-such-test",
+     "kind": "control",
+     "status": "fail",
+     "want": "none",
+     "got": "error: [INFO] Scanning for projects..."
+    },
+    {
+     "case": "skip-idiom",
+     "kind": "control",
+     "status": "pass",
+     "want": "the skip marker found",
+     "got": "the adapter marks it skipped"
+    }
+   ]
+  },
+  "R1": {
+   "status": "n/a",
+   "note": "blocked: R0 failed (R0 runtime half (run) failed for the `maven` adapter: control `pass` read error: [INFO] Scanning for projects... (want pass); control `fail` read error: [INFO] Scanning for projects... (want fail); control `skipped` read error: [INFO] Scanning for projects... (want none); control `no-such-test` read error: [INFO] Scanning for projects... (want none))",
+   "before": {
+    "status": "pass",
+    "note": "1 of 1 new or changed test(s) fail on the base's production code (1 compile-red)"
+   }
+  },
+  "R2": {
+   "status": "pass",
+   "note": "0 fail, 0 confirm"
+  },
+  "R3": {
+   "status": "skipped",
+   "note": "not run here"
+  },
+  "R4": {
+   "status": "n/a",
+   "note": "blocked: R0 failed (R0 runtime half (run) failed for the `maven` adapter: control `pass` read error: [INFO] Scanning for projects... (want pass); control `fail` read error: [INFO] Scanning for projects... (want fail); control `skipped` read error: [INFO] Scanning for projects... (want none); control `no-such-test` read error: [INFO] Scanning for projects... (want none))",
+   "before": {
+    "status": "fail",
+    "note": "a new or changed test cannot run at head"
+   }
+  }
+ },
+ "entries": [
+  {
+   "id": "R0-00e0bfc4",
+   "check": "R0",
+   "class": "adapter-fix",
+   "severity": "fail",
+   "file": ".ekit/adapters/maven.toml",
+   "line": 0,
+   "problem": "R0 runtime half (run) failed for the `maven` adapter: control `pass` read error: [INFO] Scanning for projects... (want pass); control `fail` read error: [INFO] Scanning for projects... (want fail); control `skipped` read error: [INFO] Scanning for projects... (want none); control `no-such-test` read error: [INFO] Scanning for projects... (want none)",
+   "hint": "repair the adapter (ci-doctor repair mode) in a PR of its own, then re-run R0; the PR under review never edits its own checker",
+   "forbidden": "tuning the adapter or its fixtures until this PR passes"
+  },
+  {
+   "id": "R4-3f0be0be",
+   "check": "R4",
+   "class": "agent-fixable",
+   "severity": "fail",
+   "file": "src/test/java/com/example/CalcTest.java",
+   "line": 27,
+   "problem": "test `CalcTest.multiplies` cannot run at head: [INFO] Scanning for projects...",
+   "hint": "fix the test setup (manifest, flags); the toolchain did not reach a test result",
+   "forbidden": "a check that did not run",
+   "blocked": "R0"
+  }
+ ],
+ "summary": "fail HEAD_SHA (2 fail, 0 confirm; ran: R0 R2; skipped: R3; n/a: R1 R4)"
+}
+JSON
+source "$here/arm.sh"
+arm_repair '{"kind": "runner", "folder": ".", "test_files": ["src/test/java/com/example/CalcTest.java"]}'
