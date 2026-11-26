@@ -21,7 +21,8 @@ a run of non-blank lines, and one test has two asserts, each on a line of its ow
 Built-in stacks: BUILTIN_FIXTURES/<stack>. An adapter file: `<file without .toml>.r0/` beside it, or --fixtures.
 
 The editing rules (`editing`): a PR may edit an adapter file or the stack plan without a person; R0 judges the adapter
-(on the PR's version) and the drift check the plan. Only loosening a limit (LIMITS, the plan's `ignore` list) or
+(the file given with --adapter; in CI, without it, the repo's adapter file as it is at the base) and the drift check
+the plan. Only loosening a limit (LIMITS, the plan's `ignore` list) or
 changing a target OS needs a person: one `needs-human` entry naming each. Tightening needs no one.
 
 The runtime half (#21: census, assert density, runner controls, the fingerprint) builds on this module: a new half adds

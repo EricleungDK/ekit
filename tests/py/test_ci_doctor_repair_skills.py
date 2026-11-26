@@ -68,7 +68,8 @@ class Repair(unittest.TestCase):
 
     def test_the_proof_is_full_and_the_pr_is_re_run_on_it(self):
         s = flat(section(self.text, "4. Prove it"))
-        for part in ("static half", "census", "runtime half", "cheat list", "drift", "merge", "Budget: 5 rounds"):
+        for part in ("Static half", "Census of the repo's own tests", "Runtime half", "The cheat list", "drift", "merge",
+                     "Budget: 5 rounds by default"):
             self.assertIn(part, s, part)
 
     def test_a_person_decides_a_loosened_limit_a_target_os_or_an_ignore(self):
@@ -82,7 +83,7 @@ class Repair(unittest.TestCase):
         self.assertIn("Budget spent", s)
         self.assertIn("Commit nothing in the repo, open no PR", s)
         self.assertIn("in a scratch clone (never a branch of the repo)", s)
-        self.assertIn("Every part passes → commit the edit on the repair branch", s)
+        self.assertIn("Every stage passes → commit the edit on the repair branch", s)
         self.assertIn("/mech-waive", s)
 
     def test_the_pr_body_says_how_ci_judges_it(self):
@@ -91,6 +92,8 @@ class Repair(unittest.TestCase):
         self.assertIn("judged by its own plan", s)
         self.assertIn("/mech-waive", s)
         self.assertIn("close and reopen", s)
+        self.assertIn("it needs the owner's `/mech-waive <id> <reason>` on that R0 entry", s)
+        self.assertIn("this deviates from #24's", s)
 
 
 class TriageLabel(unittest.TestCase):

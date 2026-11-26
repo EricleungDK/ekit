@@ -8,7 +8,7 @@ Take the entry from the PR's mech-review result (sticky comment or JSON) or doct
 
 | Entry | What failed | Edit |
 |---|---|---|
-| `R0`, `static:<cases>` | the named cheats or controls of the static half | the adapter's tables those cases read (setup.md step 2's categories) |
+| `R0`, `static:<cases>` | the named cheats or controls of the static half | the adapter's tables those cases read (the categories of setup.md's Cheat list) |
 | `R0`, `runtime:run:<cases>` | the census or a runner control: the adapter misreads the runner | `[run.list]` (census), `[run.outcome]` or `[run]` (controls) |
 | `R0`, `runtime:r3:<cases>` | the R3 control | `[mutation.tool]` |
 | `D` | manifests no plan entry covers | the plan: an entry per uncovered folder, or the folder in `ignore` |
@@ -23,23 +23,23 @@ Take the entry from the PR's mech-review result (sticky comment or JSON) or doct
 
 ## 3. Edit
 
-- **Failed R0**: regenerate only the failing part, for this repo. A runtime case: read the runner's real output (run the adapter's command where the toolchain is installed, else CI's `red-first` or `mutants` log) and write the pattern for what the runner prints now. A static case: the repo's test files and setup.md step 2's categories. A cheat fixture changes only when it is not valid code in the language; the report says which and why.
+- **Failed R0**: regenerate only the failing part, for this repo. A runtime case: read the runner's real output (run the adapter's command where the toolchain is installed, else CI's `red-first` or `mutants` log) and write the pattern for what the runner prints now. A static case: the repo's test files and the categories of setup.md's Cheat list. A cheat fixture changes only when it is not valid code in the language; the report says which and why.
 - **Drift**: for each uncovered folder:
-  - The team's code: a plan entry for its folder (SKILL.md's Stack plan), `planned`, since its manifest arrives with the PR and is not on this branch. Its adapter is a built-in that lists the manifest, else an adapter file setup.md steps 1-4 generate and prove (`.ekit/adapters/<name>.toml` and its fixtures).
+  - The team's code: a plan entry for its folder (SKILL.md's Stack plan), `planned`, since its manifest arrives with the PR and is not on this branch. Its adapter is a built-in that lists the manifest, else an adapter file that setup.md's steps Detect through Prove it with R0 generate and prove (`.ekit/adapters/<name>.toml` and its fixtures).
   - Samples, templates, vendored or generated code: the folder in `ignore`.
   - The branch adds no manifest.
 - **A plan or adapter file that does not read**: fix the named entry and field.
 
 ## 4. Prove it
 
-The proof is every part, for the edited copy. Budget: 5 rounds, as setup.md step 4 counts them (one revision and one run of the proof; a failing case of any part counts the same).
+The proof is every part, for the edited copy, in the four stages below. Budget: 5 rounds by default, as setup.md's Prove it with R0 counts them (one revision and one run of the proof; a failing case of any part counts the same).
 
-1. On the working tree: R0's static half (setup.md 4.1, `--adapter` the edited file), the census (4.2), the runtime half where the toolchain is installed and this machine is the target OS (4.3: `red --r0`, `mutants --r0`; else the report's "not run here: <why>", and for a runtime entry each changed pattern checked against the runner's output in CI's log), and for a new adapter file the cheat list (setup.md steps 2 and 4.4).
-2. As CI will read it, in a scratch clone (never a branch of the repo): commit the edit on top of `origin/<base>`, then `MR r0 --repo <scratch> --base HEAD --head HEAD --stack <name> --project-dir <folder>` (`pass`) for each adapter file the repair touched, and `MR drift --repo <scratch> --base origin/<base> --head HEAD --format text` (`pass`, no fail entry).
-3. The PR on the fixed base, in the same clone: merge the PR's head onto that commit; `drift --base <commit> --head <merge>` and, for an R0 repair, `r0 --base <commit> --head <merge> --stack <name> --project-dir <folder>` both pass.
-4. A person's call: `MR r0 --repo <scratch> --base origin/<base> --head <commit> --stack <name> --project-dir <folder>` (`<name>` the base plan's stack). Its `needs-human` entries are R0's editing rules: a loosened limit, a changed target OS, a folder added to `ignore`, a changed `[parser]` or `[mutation.tool]`. Its `adapter-fix` entry is expected for an R0 repair: it proves the base's copy (step 5).
+- **Working tree.** The parts of setup.md's Prove it with R0: Static half (`--adapter` the edited file), Census of the repo's own tests, Runtime half where the toolchain is installed and this machine is the target OS (`red --r0`, `mutants --r0`; else the report's "not run here: <why>", and for a runtime entry each changed pattern checked against every output shape the runner gives in CI's log), and for a new adapter file The cheat list (written as setup.md's Cheat list says).
+- **As CI reads it**, in a scratch clone (never a branch of the repo): commit the edit on top of `origin/<base>`, then `MR r0 --repo <scratch> --base HEAD --head HEAD --stack <name> --project-dir <folder>` (`pass`) for each adapter file the repair touched, and `MR drift --repo <scratch> --base origin/<base> --head HEAD --format text` (`pass`, no fail entry).
+- **The PR on the fix**, in the same clone: merge the PR's head onto that commit; `drift --base <commit> --head <merge>` and, for an R0 repair, `r0 --base <commit> --head <merge> --stack <name> --project-dir <folder>` both pass.
+- **A person's call**: `MR r0 --repo <scratch> --base origin/<base> --head <commit> --stack <name> --project-dir <folder>` (`<name>` the base plan's stack). Its `needs-human` entries are R0's editing rules: a loosened limit, a changed target OS, a folder added to `ignore`, a changed `[parser]` or `[mutation.tool]`. This run proves the base's copy: for a static R0 repair it also gives the base's `adapter-fix` entry, expected (step 5); for a runtime repair its static half passes.
 
-Every part passes → commit the edit on the repair branch (step 2), the commit the clone proved. A `needs-human` entry in 4.4 → commit it too, then stop before the PR: a Needs-you block (finish) with `Decide:` quoting each entry, the proof, and the PR body ready to open on a yes.
+Every stage passes → commit the edit on the repair branch (step 2), the commit the clone proved. A `needs-human` entry at A person's call → commit it too, then stop before the PR: a Needs-you block (finish) with `Decide:` quoting each entry, the proof, and the PR body ready to open on a yes.
 
 Budget spent with a case failing, unproven or missed: stop. Commit nothing in the repo, open no PR, and report blocked via finish: each failed case as `r0` or `r2` names it, the cheats missed, the draft's path, what would unblock it, and that the entry now needs a person. A person's `/mech-waive` on the PR's `R0` or `D` entry is the emergency exit for an urgent PR (a `CI` entry has none).
 
@@ -48,8 +48,8 @@ Budget spent with a case failing, unproven or missed: stop. Commit nothing in th
 Push and open it against the PR's base branch. Its body:
 
 - The entry (id, problem) and the PR it came from (link, head SHA); the files changed and why.
-- Proof report: setup.md step 8's (the static half `N of N cases`, the census `N of N tests`, the runtime half's result or not run here and why, the cheat list for a new adapter), drift, and step 4.3's merge.
-- How its CI judges it: the checks read the adapter and the plan from the base branch. A drift repair edits only the plan, adds no manifest, and is judged by its own plan, so `D` passes. An R0 repair's CI proves the base branch's copy, so it reads the PR's R0 fail until it merges: a person reads the proof above, waives that R0 entry here (`/mech-waive <id> <reason>`) and merges. A new adapter file has no base copy for its CI to prove: the proof above is its proof.
+- Proof report: as in setup.md's Open the setup PR (the static half `N of N cases`, the census `N of N tests`, the runtime half's result or not run here and why, the cheat list for a new adapter), drift, and The PR on the fix.
+- How its CI judges it: the checks read the adapter and the plan from the base branch. A drift repair edits only the plan, adds no manifest, and is judged by its own plan, so `D` passes. An R0 repair's CI proves the base branch's copy, so it reads the PR's R0 fail until it merges: it needs the owner's `/mech-waive <id> <reason>` on that R0 entry here, after reading the proof above, and then the merge. Say so plainly: this deviates from #24's "needs a person only if it loosens a limit or changes a target OS", until a follow-up proves an adapter-only PR at its head (`<kit>/docs/mech-review-ci.md`, Repair mode). A new adapter file has no base copy for its CI to prove: the proof above is its proof.
 - After the merge: the PR's checks run again on the fixed adapter at its next run (a push, or close and reopen it; re-running an old run keeps its old base).
 
 Report the PR URL via finish. Stopped before the PR (a person's call, no remote, asked to) → the report carries the PR body.
