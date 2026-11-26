@@ -523,6 +523,23 @@ class Scenarios(Tmp):
         self.assertRegex(line, r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
                                r"\(FileNotFoundError: ")
 
+    def test_a_transcript_that_is_not_a_path_is_not_run_here_and_no_fd_is_touched(self):
+        # an int is a file descriptor to open(): 5 would be closed under the process, 1 would read stdout
+        fd = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(lambda: os.close(fd) if self.fd_open(fd) else None)
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1", "transcript": fd}]})
+        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               f"(TypeError: transcript {fd!r} is not a path)")
+        self.assertTrue(self.fd_open(fd))
+
+    @staticmethod
+    def fd_open(fd):
+        try:
+            os.fstat(fd)
+            return True
+        except OSError:
+            return False
+
     def test_scenarios_that_are_not_a_list_of_rows_are_not_run_here(self):
         for doc in ({"scenarios": {"bad": {}}}, {"scenarios": ["bad"]}, ["bad"]):
             with self.subTest(doc=doc):

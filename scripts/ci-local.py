@@ -164,6 +164,8 @@ def _runner():
 def _fail_message(transcript):
     """the scenario's own fail message: the last line it wrote to stderr, when that is its only `ASSERT FAILED: ` line
     (lib.sh's fail writes one, then exits). Else "": a tail of captured output, or a quoted failure, is no message."""
+    if not isinstance(transcript, str):  # open() takes an int as a file descriptor: never one of this process's
+        raise TypeError(f"transcript {transcript!r} is not a path")
     with open(transcript, encoding="utf-8", errors="replace") as f:
         text = f.read()
     err = text.partition("\n--- stderr ---\n")[2].rsplit("\n--- exit:", 1)[0]
