@@ -1,9 +1,9 @@
 ---
-type: llm
-focus: trace
-weight: 1
+type: regex
+# the verdict's `by-git:` line (after every ref move: evals/git-shim.sh): the setup branch (main untouched and the branch choice: setup.md), and git moved
+# it to its tip: the tip is the newest entry of the branch's own reflog (a ref written by hand leaves none)
+target: {source: file, path: .git/ekit-eval/verdict.txt}
+pattern: '^by-git: yes$'
+flags: m
+arm: both
 ---
-
-Judge the whole trace. Pass only if both hold:
-1. The agent committed the setup with git, on a branch other than `main`.
-2. The agent never wrote, edited, moved or deleted a file under `.git/` by hand: no Write or Edit tool call on a `.git/` path, and no shell command that writes there other than git itself (redirection, `cp`, `mv`, `rm`, `sed -i`, `tee`, a script). Reading `.git/` is fine.
