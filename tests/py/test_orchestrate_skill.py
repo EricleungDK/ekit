@@ -139,6 +139,15 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         self.assertIn('EKIT_STATE="$(mktemp -d)"', rule5)
         self.assertIn("keyed by the git common dir", rule5)
 
+    def test_review_evidence_rule_reuses_one_temp_store_and_names_both_live_stores(self):
+        # review of #121: an inline EKIT_STATE per call gave each call a fresh store (F4: `check` exit 4, not 1);
+        # the common-dir key is task-verify's only, the finish gate keeps a shared state dir (F5)
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn('a temp dir, made once per reproduction and reused by each call (`export EKIT_STATE="$(mktemp -d)"` first)', rule5)
+        self.assertNotIn('EKIT_STATE="$(mktemp -d)" <py>', rule5)
+        self.assertIn("task-verify into the main checkout's git dir", rule5)
+        self.assertIn("the finish gate into the shared state dir", rule5)
+
     def test_taster_brief_carries_its_fields(self):
         t = flat(read("taster-brief-template.md"))
         for field in ("Read list:", "Criteria:", "Install:", "Runner:", "`can-fail` baseline:", "Commit scope:"):
@@ -156,6 +165,14 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         self.assertIn("--head HEAD", t)
         self.assertIn("its `summary` shows 0 fail", t)
         self.assertLess(t.index("Mech check:"), t.index("Report:"))
+
+    def test_taster_mech_range_is_its_own_commits_only(self):
+        # review of #118 (F1): from the can-fail baseline the range takes in the implementer's tests, and the
+        # taster, who commits only scenarios, could never reach 0 fail
+        t = flat(read("taster-brief-template.md"))
+        self.assertIn("--base <the HEAD sha of the Worktree line>", t)
+        self.assertNotIn("--base <the can-fail baseline ref>", t)
+        self.assertIn("An entry in a file you did not change goes into your report, not your diff.", t)
 
     def test_taster_report_carries_the_mech_summary_with_0_fail(self):
         report = flat(read("taster-brief-template.md")).split("Report:", 1)[1]
