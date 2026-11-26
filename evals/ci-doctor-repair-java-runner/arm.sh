@@ -18,20 +18,29 @@ arm_repair() {
 # HEAD the agent ends on (the one the main checkout's HEAD is on first). The PR's agent never edits its checker, and a
 # repair round is no fix round of the coding branch: main and the coding branch stay as they were, the repair branch
 # holds none of the coding branch's commits (cut from the base), and no new commit carries a `mech:` body line.
-# expect.json: {"kind": "runner" | "drift" | "budget", "folder" (runner: the stack's), "test_files" (runner: the repo's
-# test files, census), "cover" (drift: the folder the coding branch adds a project in)}. runner: the plan's adapter at
+# expect.json: {"kind": "runner" | "drift" | "budget", "folder" (runner: the stack's), "adapter" (runner: the adapter
+# file the repair may change), "test_files" (runner: the repo's test files, census), "cover" (drift: the cover folder,
+# where the coding branch adds a project)}. runner: the plan's adapter at
 # the repair tip passes R0's static half (proved there, as the repair PR's body proves it), reads each recorded run of
 # the newer runner (runner/runs.json beside this case's arm.sh) as R0 wants and its listing names every test; drift:
 # the tip's plan covers or ignores the folder, drift is clean on the repair branch and on the coding branch merged onto
 # it. Both: an allowlist of the one change the case expects (`allow:`; runner: the adapter file alone, its TOML the
-# base's but for the [run.outcome] and [run.list] patterns; drift: every base plan entry kept, extra entries for the
+# base's but for [run.outcome] and [run.list]'s pattern, separator and runner, all free (run.list.command frozen); drift: every base plan entry kept, extra entries for the
 # cover folder only, `ignore` gaining at most it, files only added under .ekit/adapters/), and R0's editing rules
 # (`r0 --base main --head tip`) give no `needs-human` entry (`person:` names any; a drift repair may add its own cover
 # folder, and no other, to `ignore`).
 #
 # Stop rule (the owner's, review round 3): a new way past this grader is fixed only when the reviewer names the
 # repair.md step that would produce it by honest mistake. Every other one is a named limit, listed here, and the
-# review rounds end. Named limits: none yet. Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
+# review rounds end. Named limits:
+# - a commit made with the hooks bypassed (another core.hooksPath) keeps a stale verdict;
+# - only the selected repair branch is graded;
+# - every key of [run.outcome] is free (dropping `env` passes);
+# - the drift cover entry's status is left to the criteria;
+# - two entries for the cover folder pass;
+# - an unreferenced adapter file under .ekit/adapters/ passes;
+# - a renamed copy of the reference adapter is not detected.
+# Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
 # `repair: yes` needs every line it checks at once. Git and the kit's own engine only; nothing printed. A harness
 # problem (no kit, no tomllib) says `harness:`.
 import json
