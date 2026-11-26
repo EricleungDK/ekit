@@ -8,13 +8,13 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 
 `<id> → <label>: entry <file>:<line>, <problem>`
 
-`<label>` is one exact token from the class map: `sandbox/env`, `flaky`, `real bug`, `adapter-fix`, `Needs-you`. These tokens are read by the finish report, so copy them character for character.
+`<label>` is one exact token from the class map: `sandbox/env`, `flaky`, `real bug`, `adapter-fix`, `Needs-you`. An entry Gate 3 holds opens with `<id> → held: blocked by <R0 id>` instead. These tokens are read by the finish report, so copy them character for character.
 
 ## Gate
 
 1. Envelope `head` ≠ `git rev-parse HEAD` → **stale** ([stale.md](stale.md): judge only the run for your SHA). Rerun mech-review at HEAD.
 2. `severity: confirm` → not red. Reviewer decides. List under Open (finish). `severity: waived` → not red: a person let it through (`waiver.by`, `waiver.reason`). Leave it; list it under Open.
-3. `blocked: R0` on an `agent-fixable` entry → not yet red: its check read the code through the adapter R0 failed, so it may be a misread. No fix round; list it under Open. It is read again when the PR runs on the repaired adapter. A `needs-human` one stays the person's.
+3. `blocked: R0` on an `agent-fixable` entry → not yet red: its check read the code through the adapter R0 failed, so it may be a misread. No fix round; list it under Open. It is read again when the PR runs on the repaired adapter. The hold ends once a person waives the R0 entry, or the repair stops out of budget: then classify it below, so an `agent-fixable` one is a fix round of the PR's agent, otherwise it joins the Needs-you block with the R0 entry. A `needs-human` one stays the person's.
 4. `severity: fail` → classify below.
 
 ## Class map

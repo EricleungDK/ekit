@@ -117,6 +117,16 @@ class TriageLabel(unittest.TestCase):
         self.assertIn("No fix round", s)
         self.assertIn("A `needs-human` one stays the person's", s)
 
+    def test_a_held_entry_rejoins_once_r0_is_waived_or_the_repair_stops(self):
+        s = flat(section(self.text, "Gate"))
+        self.assertIn("once a person waives the R0 entry, or the repair stops out of budget", s)
+        self.assertIn("an `agent-fixable` one is a fix round of the PR's agent", s)
+        self.assertIn("otherwise it joins the Needs-you block with the R0 entry", s)
+
+    def test_a_held_entry_opens_the_answer_with_its_own_token(self):
+        s = flat(section(self.text, "Open the answer"))
+        self.assertIn("`<id> → held: blocked by <R0 id>`", s)
+
     def test_an_adapter_fix_entry_takes_no_fix_round(self):
         s = flat(section(self.text, "Rounds"))
         self.assertIn("`adapter-fix` entry", s)
@@ -130,6 +140,8 @@ class RoundsHold(unittest.TestCase):
         self.assertIn("ci-doctor's repair mode", s)
         self.assertIn("repair rounds are no rounds of the unit", s)
         self.assertIn("entries marked `blocked: R0` wait for that run too", s)
+        self.assertIn("once a person waives the R0 entry, or the repair stops out of budget, they rejoin", s)
+        self.assertIn("an entry marked `blocked: R0` is held, not sent (step 4)", s)
 
     def test_finish_counts_no_round_for_an_adapter_fix_entry(self):
         self.assertIn("an `adapter-fix` entry counts no fix round", flat(read("finish")))
