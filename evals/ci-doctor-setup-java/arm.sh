@@ -19,6 +19,7 @@ arm_verdict() {
 # checks at once. Git and the kit's own engine only (r0 static half, r2 for the census, drift; doctor's workflow
 # reader); nothing printed. A harness problem (no kit, no tomllib) says `harness:`. An adapter or fixtures copied from
 # the kit's reference (tests/fixtures/adapters/java.toml, java.r0) is no setup: `copied: yes`.
+# A known limit: the agent under test can open this grading (the kit's evals/, the scaffold's .git/ekit-eval/).
 import json
 import os
 import re

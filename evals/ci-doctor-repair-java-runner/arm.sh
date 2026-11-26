@@ -40,6 +40,8 @@ arm_repair() {
 # - two entries for the cover folder pass;
 # - an unreferenced adapter file under .ekit/adapters/ passes;
 # - a renamed copy of the reference adapter is not detected.
+# - the agent under test can open this grading: the kit's evals/ (case headers, graders, this script) and the
+#   scaffold's .git/ekit-eval/.
 # Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
 # `repair: yes` needs every line it checks at once. Git and the kit's own engine only; nothing printed. A harness
 # problem (no kit, no tomllib) says `harness:`.
