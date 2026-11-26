@@ -24,7 +24,10 @@ def case_dir(name, root=None):
     here = root
     while not os.path.isdir(here) and os.path.dirname(here) != here:
         here = os.path.dirname(here)
-    top = subprocess.run(["git", "-C", here, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                                                            "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
+    top = subprocess.run(["git", "-C", here, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                         env=env)  # a git hook's GIT_DIR would make it answer the cwd
     if top.returncode == 0 and os.path.isdir(os.path.join(top.stdout.strip(), "evals", name)):
         return os.path.join(top.stdout.strip(), "evals", name)
     at = root

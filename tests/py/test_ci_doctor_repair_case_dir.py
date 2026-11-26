@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import test_ci_doctor_setup_evals
 from test_eval_scaffold import case_dir
@@ -45,6 +46,14 @@ class CaseDir(unittest.TestCase):
         os.makedirs(os.path.join(tree, "mutants", "tests", "py"))  # R3 run from that worktree
         self.assertEqual(case_dir("x", root=os.path.join(tree, "mutants", "tests", "py")),
                          os.path.join(tree, "evals", "x"))
+
+    def test_a_git_dir_in_the_environment_is_not_read(self):
+        """review round 2 [case_dir GIT_DIR]: a git hook exports GIT_DIR, which makes --show-toplevel answer the cwd"""
+        os.makedirs(os.path.join(self.root, "mutants", "evals", "x"))
+        os.makedirs(os.path.join(self.root, "mutants", "tests", "py"))
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(self.root, ".git")}):
+            self.assertEqual(case_dir("x", root=os.path.join(self.root, "mutants", "tests", "py")),
+                             os.path.join(self.root, "evals", "x"))
 
     def test_the_checkout_finds_its_own_case(self):
         self.assertEqual(case_dir("x", root=os.path.join(self.root, "tests", "py")),
