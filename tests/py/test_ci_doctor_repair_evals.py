@@ -450,6 +450,7 @@ class TriageAdapterFix(Scaffold):
         self.assertEqual((r2["class"], r2.get("blocked")), ("agent-fixable", "R0"))
         self.assertIn("`R2-f3a6a4fd` is marked `blocked: R0`: it gets no fix round now.",
                       llm_graders(self.case)["next-action.md"])
+        self.assertIn("It plans no fix for it, now or for later", llm_graders(self.case)["next-action.md"])
 
 
 class OrchestrateAdapterFixRoute(unittest.TestCase):

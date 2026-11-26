@@ -169,6 +169,15 @@ class TriageLabel(unittest.TestCase):
         self.assertIn("No fix round", s)
         self.assertIn("A `needs-human` one stays the person's", s)
 
+    def test_a_held_entry_gets_no_fix_plan_until_the_repaired_adapter_reads_it(self):
+        """#24: an entry R0 blocks is not worked on until the adapter-fix lands, so its plan is the hold alone: no
+        `Fix:` lines and no conditional fix for later (the triage eval's next-action criterion grades the same)"""
+        s = flat(section(self.text, "Gate"))
+        self.assertIn("its plan is the hold alone", s)
+        self.assertIn("no `Fix:` lines", s)
+        self.assertIn("triaged from that run", s)
+        self.assertIn("Each `agent-fixable` fail that Gate 3 does not hold: open its fix plan", flat(self.text))
+
     def test_a_held_entry_rejoins_once_r0_is_waived_or_the_repair_stops(self):
         s = flat(section(self.text, "Gate"))
         self.assertIn("once a person waives the R0 entry, or the repair stops out of budget", s)
