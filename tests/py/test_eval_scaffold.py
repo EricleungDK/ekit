@@ -14,18 +14,23 @@ from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" sta
 
 
 def case_dir(name, root=None):
-    """evals/<name> of the outermost dir above the tests (root: _kit.ROOT) that holds it. The mutation run (R3)
-    executes the tests from a copy under <checkout>/mutants/ that holds evals/ too (mutants.also_copy copies every
-    tracked top-level entry), its scripts mutated: the case, its scaffold and the kit its hooks call are then the
-    checkout's above it, the code as written. No dir holds it: evals/<name> of root, for the error to name."""
-    start = root = root or _kit.ROOT
-    found = None
-    while True:
-        if os.path.isdir(os.path.join(root, "evals", name)):
-            found = os.path.join(root, "evals", name)
-        if os.path.dirname(root) == root:
-            return found or os.path.join(start, "evals", name)
-        root = os.path.dirname(root)
+    """evals/<name> of the git checkout that holds root (default _kit.ROOT, the tests' own checkout): its top, as
+    `git rev-parse --show-toplevel` names it. R3's mutation run executes the tests from a copy under
+    <checkout>/mutants/ that holds evals/ too (mutants.also_copy), its scripts mutated: a plain dir inside the checkout,
+    so the case, its scaffold and the kit its hooks call are the checkout's, the code as written. A worktree inside
+    another checkout (<repo>/.claude/worktrees/<name>) is a checkout of its own: its own case. Outside git, or a top
+    with no such case: the nearest evals/<name> above root, else evals/<name> of root, for the error to name."""
+    root = os.path.abspath(root or _kit.ROOT)
+    here = root
+    while not os.path.isdir(here) and os.path.dirname(here) != here:
+        here = os.path.dirname(here)
+    top = subprocess.run(["git", "-C", here, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode == 0 and os.path.isdir(os.path.join(top.stdout.strip(), "evals", name)):
+        return os.path.join(top.stdout.strip(), "evals", name)
+    at = root
+    while not os.path.isdir(os.path.join(at, "evals", name)) and os.path.dirname(at) != at:
+        at = os.path.dirname(at)
+    return os.path.join(at if os.path.isdir(os.path.join(at, "evals", name)) else root, "evals", name)
 
 
 CASE = case_dir("orchestrate-mech-tick")

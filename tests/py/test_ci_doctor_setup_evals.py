@@ -16,19 +16,8 @@ import unittest
 
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 import _kit
+from test_eval_scaffold import case_dir  # the tests' own checkout's case, never R3's copy (#24)
 
-
-def case_dir(name):
-    """evals/<name> of the outermost dir above the tests that holds it. R3's mutation run executes the tests from a
-    copy under <checkout>/mutants/ that holds evals/ too, its scripts mutated (they import mutmut): the scaffold's
-    ref hooks then run the verdict, and the engine it calls, from the checkout above it, which is the code as written."""
-    found, root = None, _kit.ROOT
-    while True:
-        if os.path.isdir(os.path.join(root, "evals", name)):
-            found = os.path.join(root, "evals", name)
-        if os.path.dirname(root) == root:
-            return found
-        root = os.path.dirname(root)
 
 ADAPTERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "adapters")
 CALLER = "jobs:\n  mech-review:\n    uses: EricleungDK/ekit/.github/workflows/mech-review.yml@v0\n"
