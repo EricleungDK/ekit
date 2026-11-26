@@ -334,6 +334,18 @@ class Scenarios(Tmp):
     test's own. A FAIL fails the step, named; a scenario this machine cannot run is `not run here`, naming it and
     what is missing; neither is a pass."""
 
+    def setUp(self):
+        super().setUp()
+        # every real run keeps its evidence in a store of the test's own, outside the fixture repo: never the
+        # caller's EKIT_STATE (an ekit session's live store)
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        self.state = state.name
+        patch = mock.patch.dict(os.environ, EKIT_STATE=self.state)
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("EK_STATE", None)
+
     def scenario(self, sid, body):
         d = os.path.join(self.tmp, ".ekit", "scenarios", sid)
         os.makedirs(d)
@@ -359,6 +371,13 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 1)")
         self.assertIn("FAIL bad: exit 1\n", r.stdout)
+
+    def test_a_real_run_keeps_its_evidence_in_the_tests_own_store_never_the_callers(self):
+        # an ekit session sets EKIT_STATE: a real run there must not write into that live store
+        self.scenario("good", "exit 0")
+        self.run_scenarios()
+        stored = [os.path.join(d, f) for d, _, fs in os.walk(self.state) for f in fs if f == "results.json"]
+        self.assertEqual(len(stored), 1, stored)
 
     def test_a_scenario_that_says_it_cannot_run_here_is_not_run_here_naming_it_and_the_tool(self):
         # lib.sh's fail, as stack-plan/session-start uses it: `fail "unrunnable here: <what is missing>"`
@@ -393,13 +412,9 @@ class Scenarios(Tmp):
         self.assertEqual(line, "scenarios: failed: scenarios modified the repo: run in the temp cwd")
 
     def evidence(self, doc):
-        """results.json where the runner keeps it: <git dir>/ekit/ (no EKIT_STATE)"""
+        """results.json where the runner keeps it: <git dir>/ekit/ (no EKIT_STATE; setUp's patch restores it)"""
         self.commit()
-        patch = mock.patch.dict(os.environ)
-        patch.start()
-        self.addCleanup(patch.stop)
-        for name in ("EKIT_STATE", "EK_STATE"):
-            os.environ.pop(name, None)
+        os.environ.pop("EKIT_STATE", None)
         if doc is not None:
             os.makedirs(os.path.join(self.tmp, ".git", "ekit"))
             with open(os.path.join(self.tmp, ".git", "ekit", "results.json"), "w") as f:
