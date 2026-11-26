@@ -135,19 +135,22 @@ def _drift(cwd):
 
 
 def stack_commands(top, stack):
-    """{step: command} of the commands CI runs for a stack (#61): an adapter file's [commands] build, lint and test; a
-    built-in's test command as R1 and R4 run it (it has no build or lint). A step with no command is left out."""
+    """{step: command} of the commands CI runs for a stack (#61): build and lint from an adapter file's [commands] (a
+    built-in has none); test as R1 and R4 run it (test_cmd_in on the checkout: an adapter file's [run] runners, a
+    built-in's), an adapter file with no [run] its [commands].test. A step with no command is left out."""
     a = stack.adapter
-    if hasattr(a, "commands"):
-        got = {k: a.commands.get(k, "") for k in STEPS}
-    else:
-        got = {"test": a.test_cmd_in(os.path.join(top, *stack.folder.split("/")))}
+    got = {k: a.commands.get(k, "") for k in STEPS} if hasattr(a, "commands") else {}
+    if getattr(a, "run", True) is not None:  # a built-in has no [run] attribute: it always runs its tests
+        got["test"] = a.test_cmd_in(os.path.join(top, *stack.folder.split("/")))
     return {k: v for k, v in got.items() if v.strip()}
 
 
 def in_folder(folder, cmd):
-    """the command run in the stack's folder: `cd <folder> && <cmd>`, plain at the repo root"""
-    return cmd if folder == "." else f"cd {shlex.quote(folder)} && {cmd}"
+    """the command run in the stack's folder: `cd <folder> && <cmd>` (a folder led by `-` as `./-x`, a path to cd, not
+    an option), plain at the repo root"""
+    if folder == ".":
+        return cmd
+    return f"cd {shlex.quote('./' + folder if folder.startswith('-') else folder)} && {cmd}"
 
 
 def _listed(words, last):
@@ -200,11 +203,12 @@ def _task_verify():
 
 def declare(top, stacks, session):
     """Declare each stack's commands as the session's verify commands, through task-verify's own code (the same
-    string `run` and the Stop gate match); the context lines that name them and each step a stack has no command for."""
+    string `run` and the Stop gate match); the context lines that name what the store then holds, each step a stack has
+    no command for, and each it has one that task-verify would change."""
     if not session:
         return _none("the hook got no session_id")
     tv = _task_verify()
-    named, missing = {}, []  # named: {command: (its stack, [its steps])}
+    named, notes = {}, []  # named: {command: {its stack: [its steps]}}, in the order first met
     for st in stacks:
         cmds = stack_commands(top, st)
         where = "at the repo root" if st.folder == "." else f"in {st.folder}"
@@ -212,24 +216,38 @@ def declare(top, stacks, session):
         about = f"stack `{shown(st.name)}` ({kind}{shown(where)})"
         gap = [k for k in STEPS if k not in cmds]
         if gap:
-            missing.append(f"{DEFAULTS}: {about} names no {_listed(gap, 'or')} command, so none is declared for "
-                           f"{'that step' if len(gap) == 1 else 'those steps'}.")
+            notes.append(f"{DEFAULTS}: {about} names no {_listed(gap, 'or')} command, so none is declared for "
+                         f"{'that step' if len(gap) == 1 else 'those steps'}.")
+        spaced = []
         for k in STEPS:
-            if k in cmds:
-                cmd = tv.spelled([in_folder(st.folder, cmds[k])])
-                named.setdefault(cmd, (about, []))[1].append(k)  # one line for a command several steps share
+            if k not in cmds:
+                continue
+            cmd = in_folder(st.folder, cmds[k])
+            if tv.spelled([cmd]) != cmd:  # task-verify collapses whitespace: what it keeps would run elsewhere
+                spaced.append(k)
+                continue
+            named.setdefault(cmd, {}).setdefault(about, []).append(k)
+        if spaced:
+            notes.append(f"{DEFAULTS}: {about}: {_listed(spaced, 'and')} not declared: its folder or command holds a "
+                         f"run of whitespace that task-verify collapses; declare it per task.")
+    error = None
     try:
         with contextlib.redirect_stderr(io.StringIO()):  # its own `is a verify command` line: the context says it
             for cmd in named:
                 tv.cmd_declare(top, [cmd], session)
     except OSError as e:
-        return _none(f"task-verify's store cannot be written ({shown(e.filename)}: {shown(e.strerror)})") + missing
+        error = f"task-verify's store cannot be written ({shown(e.filename)}: {shown(e.strerror)})"
+    held = set(tv.commands(top, session))  # what the store holds, read back: the context says no more than that
+    done = [cmd for cmd in named if cmd in held]
     run = launcher.line(VERIFY, "--repo", launcher.shown(top), "run", "--")
     lines = [f"{DEFAULTS} (#61): this session's verify commands, from the stacks at HEAD; run each as shown before "
-             f"calling the work done (the Stop gate checks them). Declare more per task as before."] if named else []
-    lines += [f"{DEFAULTS}: `{shown(cmd)}` ({_listed(steps, 'and')} of {about}): `{run} {shown(shlex.quote(cmd))}`"
-              for cmd, (about, steps) in named.items()]
-    return lines + missing
+             f"calling the work done (the Stop gate checks them). Declare more per task as before."] if done else []
+    for cmd in done:
+        serves = "; ".join(f"{_listed(steps, 'and')} of {about}" for about, steps in named[cmd].items())
+        lines.append(f"{DEFAULTS}: `{shown(cmd)}` ({serves}): `{run} {shown(shlex.quote(cmd))}`")
+    if error:
+        lines += _none(error) if not done else [f"{DEFAULTS}: {len(done)} of {len(named)} declared: {error}."]
+    return lines + notes
 
 
 def defaults(cwd, session):

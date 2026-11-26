@@ -114,6 +114,53 @@ class Defaults(unittest.TestCase):
             "for those steps."])
         self.assertEqual(self.declared(), ["cd api && python3 -m pytest", "cd lib && mini build", "cd lib && mini test"])
 
+    def test_an_adapter_file_with_runners_declares_the_test_command_r1_and_r4_run(self):
+        with open(os.path.join(_kit.SCRIPTS, "mech_review", "adapters", "ts.toml")) as f:
+            ts = f.read()
+        self.commit({".ekit/adapters/ts.toml": ts, "package.json": '{"devDependencies": {"jest": "29"}}'})
+        self.context()
+        self.assertEqual(self.declared(), ["node_modules/.bin/jest"])  # its jest runner, not [commands].test (vitest)
+
+    def test_a_folder_or_command_with_a_run_of_whitespace_is_not_declared_and_one_line_says_why(self):
+        self.commit({MINI: mini(COMMANDS.replace('"mini lint"', '"mini  lint"')), "my  lib/mini.json": "{}",
+                     "lib/mini.json": "{}",
+                     PLAN: plan(("spaced", "my  lib", MINI, "current"), ("lib", "lib", MINI, "current"))})
+        lines = [line for line in self.lines(self.context()) if "whitespace" in line]
+        self.assertEqual(self.declared(), ["cd lib && mini build", "cd lib && mini test"])
+        self.assertEqual(lines, [
+            "[ekit] Verify defaults: stack `spaced` (mini, in my  lib): build, lint and test not declared: its folder "
+            "or command holds a run of whitespace that task-verify collapses; declare it per task.",
+            "[ekit] Verify defaults: stack `lib` (mini, in lib): lint not declared: its folder or command holds a run "
+            "of whitespace that task-verify collapses; declare it per task."])
+
+    def test_a_folder_that_starts_with_a_dash_reaches_cd_as_a_path(self):
+        self.commit({MINI: mini(), "-P/mini.json": "{}", PLAN: plan(("dash", "-P", MINI, "current"))})
+        self.context()
+        self.assertEqual(self.declared(), ["cd ./-P && mini build", "cd ./-P && mini lint", "cd ./-P && mini test"])
+
+    def test_a_command_two_stacks_share_names_each_stack_and_step_it_serves(self):
+        same = COMMANDS.replace('"mini build"', '""').replace('"mini lint"', '""').replace('"mini test"', '"make test"')
+        mono = mini(same).replace('name = "mini"', 'name = "mono"').replace("mini.json", "mono.json")
+        self.commit({MINI: mini(same), ".ekit/mono.toml": mono, "mini.json": "{}", "mono.json": "{}",
+                     PLAN: plan(("a", ".", MINI, "current"), ("b", ".", ".ekit/mono.toml", "current"))})
+        lines = [line for line in self.lines(self.context()) if line.startswith("[ekit] Verify defaults: `")]
+        self.assertEqual(self.declared(), ["make test"])
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("`make test` (test of stack `a` (mini, at the repo root); test of stack `b` (mono, at the repo "
+                      "root)): `", lines[0])
+
+    def test_a_store_written_in_part_lists_what_is_declared_and_names_the_rest(self):
+        self.commit({MINI: mini(), "lib/mini.json": "{}", PLAN: plan(("lib", "lib", MINI, "current"))})
+        os.makedirs(os.path.join(tv.store(self.repo), "shells.json"))  # declared.json saves; shells.json cannot
+        lines = self.lines(self.context())
+        self.assertEqual(self.declared(), ["cd lib && mini build"])
+        listed = [line for line in lines if line.startswith("[ekit] Verify defaults: `")]
+        self.assertEqual(len(listed), 1, lines)
+        self.assertIn("`cd lib && mini build` (build of stack `lib` (mini, in lib))", listed[0])
+        [error] = [line for line in lines if "cannot be written" in line]
+        self.assertRegex(error, r"^\[ekit\] Verify defaults: 1 of 3 declared: task-verify's store cannot be written "
+                                r"\(.*shells\.json")
+
     def test_on_a_python_without_tomllib_one_line_says_311_is_needed_and_declares_none(self):
         self.commit({"pyproject.toml": "[project]\n"})
         with mock.patch.dict(sys.modules, {"tomllib": None}):  # None in sys.modules: `import tomllib` raises ImportError
