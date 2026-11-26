@@ -123,9 +123,8 @@ class TestStacksPoster(unittest.TestCase):
     def test_a_malformed_stacks_file_posts_the_crash_comment_naming_it(self):
         bad = os.path.join(self.tmp.name, "bad.json")
         leg = dict(API, envelopes={"r2": "x.json"})
-        for text in ("[{}]", "[]", "{}", '"x"', json.dumps([dict(API, envelopes={})]), "not json",
-                     json.dumps([leg, leg]), json.dumps([leg, dict(leg, name="api2")]),
-                     json.dumps([leg, dict(leg, stack="ts", project_dir="web")])):
+        # a stack given twice is no malformed file since #62: one CI entry (test_comment_stacks_merge.DuplicatedStack)
+        for text in ("[{}]", "[]", "{}", '"x"', json.dumps([dict(API, envelopes={})]), "not json"):
             with open(bad, "w") as f:
                 f.write(text)
             api = tc.Api()

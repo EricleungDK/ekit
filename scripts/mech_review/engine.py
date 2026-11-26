@@ -171,9 +171,10 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
         checks.update(stop)
         entries = r0_mod.mark(entries, stop)
     env = envelope(base, head, entries, checks)
-    if "R3" in want:  # which shard this result is, and its cap: merge checks them (#42)
+    if "R3" in want:  # which shard this result is, and its cap (#42), and which stack and folder it ran for (#62)
         k, _, n = (shard or "0/1").partition("/")
         env["shard"] = {"k": int(k), "n": int(n), "max_mutants": max_mutants}
+        env["stack"] = {"stack": stack, "project_dir": project_dir}
     return env
 
 

@@ -8,7 +8,8 @@ fails its checks and adds a CI entry, the other job's entries stay.
 several stacks (#17): --stacks FILE is a JSON list of {name, stack, project_dir, envelopes: {JOB: FILE}}, one per stack
      of the plan. Each stack's job results merge apart (as above); then one comment and one exit code come of them:
      a row per stack, entries labelled with their stack and ids made distinct by stack, each check the worst of the
-     stacks'. A stack with no result at all fails, with a CI entry. The drift result is the repo's: --envelope drift=FILE.
+     stacks'. A stack with no result at all fails, with a CI entry; a stack given twice counts once, with a CI
+     entry naming it (#62). The drift result is the repo's: --envelope drift=FILE.
 env: GITHUB_TOKEN, GITHUB_REPOSITORY (owner/repo), GITHUB_API_URL (default https://api.github.com),
      GITHUB_STEP_SUMMARY (optional: rendered comment is also appended there),
      MECH_COMMENT_AUTHOR (login whose marker comment is edited; default github-actions[bot]).
@@ -63,8 +64,8 @@ def named(jobs, head, reason):
 
 
 def read_stacks(path):
-    """[{name, stack, project_dir, envelopes: {job: file}}] from the --stacks file, or None when it is not that, or a
-    stack is in it twice (by name, or by stack and project dir): its two rows would share entry ids."""
+    """[{name, stack, project_dir, envelopes: {job: file}}] from the --stacks file, or None when it is not that. A stack
+    in it twice (by name, or by stack and project dir) is read: combine_stacks counts it once and names it (#62)."""
     try:
         with open(path) as fh:
             legs = json.load(fh)
@@ -75,9 +76,6 @@ def read_stacks(path):
         and isinstance(leg.get("envelopes"), dict) and leg["envelopes"]
         and all(j in merge.OWNS and j != "drift" and isinstance(f, str) for j, f in leg["envelopes"].items())
         for leg in legs)
-    if ok and (len({leg["name"] for leg in legs}) < len(legs)
-               or len({(leg["stack"], leg["project_dir"]) for leg in legs}) < len(legs)):
-        ok = False
     return legs if ok else None
 
 

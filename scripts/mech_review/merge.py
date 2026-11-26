@@ -137,6 +137,23 @@ def _count(x):
     return isinstance(x, int) and not isinstance(x, bool) and x >= 0
 
 
+def stack_problem(env, stack, project_dir, any_field):
+    """Why a shard envelope is not this leg's result (#62), or None when it is. Each envelope names the stack and project
+    dir it ran for (`stack: {stack, project_dir}`, set by `mutants`). A result for another stack, or for another project
+    dir when project_dir is given (None: the stack alone is compared), is not this leg's. A field that is not
+    {stack, project_dir} of strings is malformed, named, never a crash. One with no field (an older engine's) is
+    compared only when another envelope carries it (any_field), as shard_problems does for the shard field."""
+    if "stack" not in env:
+        return "result has no stack field" if any_field else None
+    st = env["stack"]
+    if not (isinstance(st, dict) and all(isinstance(st.get(x), str) for x in ("stack", "project_dir"))):
+        return f"result has a malformed stack field {json.dumps(st)}"  # a JSON value: it came from a JSON file
+    if st["stack"] != stack or (project_dir is not None and st["project_dir"] != project_dir):
+        leg = stack if project_dir is None else f"{stack} in {project_dir}"
+        return f"result is for stack {st['stack']} in {st['project_dir']}, not {leg}"
+    return None
+
+
 def shard_problems(base, head, n, shards):
     """Why the given shard envelopes are not the n shards of one run (#42), in a fixed order: [] when they are. Each
     envelope names the shard it ran as and its cap (`shard: {k, n, max_mutants}`, set by `mutants`); one without it (an
@@ -320,6 +337,28 @@ def _worst(named):
     return {"status": status, "note": note}
 
 
+def _what(leg):
+    return f"stack {leg['name']} ({leg['stack']} in {leg['project_dir']})"
+
+
+def _distinct(legs):
+    """(legs with each stack once, CI entries): a leg whose name, or stack and project dir, an earlier leg has (#62) is
+    not counted (its ids would be the earlier one's), and is one CI fail entry naming both, never a crash."""
+    kept, ci = [], []
+    for leg, env in legs:
+        first = next((k for k, _ in kept if k["name"] == leg["name"]
+                      or (k["stack"], k["project_dir"]) == (leg["stack"], leg["project_dir"])), None)
+        if first is None:
+            kept.append((leg, env))
+            continue
+        again = "" if _what(first) == _what(leg) else f": again as {_what(leg)}"
+        ci.append(dict(entry("CI", "", 0, f"duplicate-stack:{_what(first)}", "env", "fail",
+                             f"{_what(first)} given twice{again}; the second is not counted",
+                             "list each stack of the plan once: one row per stack in the --stacks file",
+                             "a merged result that reads one stack's results twice"), stack=first["name"]))
+    return kept, finalize(ci)
+
+
 def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
     """One result from the results of several stacks (#17). legs: [(leg {name, stack, project_dir}, envelope or None)]
     in the plan's order, at least one envelope present; None is a stack with no result at all (it fails, named). Each
@@ -327,7 +366,9 @@ def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
     read them too. drift: the repo's drift result (D is one for the repo, not per stack), waived the same way; with
     none, drift_reason (why there is none) fails D with a CI entry, as merge does for a job with no result.
     The whole: `stacks` [{name, stack, project_dir, summary, checks}], every entry, and per check the worst of the
-    stacks that report it (R0 only where it ran); the summary from those."""
+    stacks that report it (R0 only where it ran); the summary from those. A stack given twice counts once, with one CI
+    entry naming it (_distinct)."""
+    legs, dups = _distinct(legs)
     present = [env for _, env in legs if env is not None] + ([drift] if drift is not None else [])
     if not present:
         raise ValueError("combine_stacks needs at least one envelope")
@@ -341,7 +382,7 @@ def combine_stacks(legs, drift=None, waive=None, drift_reason=None):
         named = [(s["name"], s["checks"][c]) for s in stacks if c in s["checks"]]
         if named:
             checks[c] = _worst(named)
-    entries = [e for env in envs for e in env["entries"]]
+    entries = [e for env in envs for e in env["entries"]] + dups
     if drift is not None:
         drift = waive(drift)
         if "D" in drift["checks"]:
