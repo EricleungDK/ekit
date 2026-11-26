@@ -132,9 +132,11 @@ class Twins(unittest.TestCase):
                                               + entry("m", ".", "./" + AD, "current")}), [])
 
     def test_two_base_twins_the_one_with_the_same_status_judges(self):
-        base = {PLAN: entry("a", ".", "python", "retiring", "windows") + entry("b", ".", "python", "current")}
-        self.assertEqual(self.problems(base, {PLAN: entry("b", ".", "python", "current")}), [])
-        got = self.problems(base, {PLAN: entry("b", ".", "python", "current", "macos")})
+        # (both kept: dropping `a` would be a removal, judged by test_ci_doctor_repair_r0_departed)
+        keep = entry("a", ".", "python", "retiring", "windows")
+        base = {PLAN: keep + entry("b", ".", "python", "current")}
+        self.assertEqual(self.problems(base, {PLAN: keep + entry("b", ".", "python", "current")}), [])
+        got = self.problems(base, {PLAN: keep + entry("b", ".", "python", "current", "macos")})
         self.assertEqual(len(got), 1, got)
         self.assertIn("target-os linux -> macos", got[0])
 

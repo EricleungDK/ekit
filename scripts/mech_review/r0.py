@@ -600,6 +600,16 @@ def _twins(head_entry, base_entries):
     return status[:1] or same
 
 
+def _departed(head_entries, base_entries):
+    """the base entries of a folder no head entry is compared with (_twins): they leave the folder. A head entry with no
+    twin is compared with every base entry of its folder already, so only a twin match leaves one out. With no head
+    entry left there, none: a folder with no entry is the drift check's."""
+    if not head_entries:
+        return []
+    kept = [id(b) for h, _ in head_entries for b in _twins(h, base_entries)]
+    return [b for b in base_entries if id(b) not in kept]
+
+
 def _value(text):
     """a limit value's text: an int, or UNSURE (an expression, a block scalar, an anchor or alias, flow style)."""
     t = text.split(" #", 1)[0].strip()
@@ -798,6 +808,22 @@ def editing(repo, mb, head, adapter_paths=()):
                          h_path or PLAN)
                     if b_tool != h_tool and not h_err:  # R3's tool: added, removed or changed, a person's call (#19)
                         once([f"[mutation.tool] of the {stack} in folder `{folder}` changed ({shown})"], h_path or PLAN)
+        # a removal is judged like an edit: a base entry that leaves a folder where head entries stay is compared with
+        # each of them, so dropping the entry that ran never moves the runner, loosens a limit or swaps the tool
+        for folder in sorted(bf):
+            for bst, (b_os, b_lim, _, _, b_tool) in _departed(hf.get(folder, []), bf[folder]):
+                for hst, (h_os, h_lim, h_path, h_err, h_tool) in hf[folder]:
+                    gone, stack = bst.get("name"), f"stack `{hst.get('name')}`"
+                    shown = h_path or hst.get("adapter")
+                    bo, ho = bst.get("target-os") or b_os, hst.get("target-os") or h_os
+                    if bo != ho:
+                        once([f"stack `{gone}` leaves folder `{folder}`: {stack} target-os {bo} -> {ho} in {PLAN}"],
+                             PLAN)
+                    once(_looser(b_lim, h_lim, "limits.", f"for the {stack} in folder `{folder}` in place of `{gone}` "
+                                                          f"({shown})"), h_path or PLAN)
+                    if b_tool != h_tool and not h_err:
+                        once([f"[mutation.tool] of the {stack} in folder `{folder}`, in place of `{gone}`, changed "
+                              f"({shown})"], h_path or PLAN)
         for p in adapter_paths:
             b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
             if h[3]:
