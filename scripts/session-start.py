@@ -1,17 +1,23 @@
 """SessionStart hook: record the tree baseline for the finish gate, inject preflight warnings and the kit's always-on rules
-(the finish gate and taste-it are orchestrate-only). Every command it prints starts the Python the hook found."""
+(the finish gate and taste-it are orchestrate-only), the stack plan's drift (#57) and the session's default verify
+commands (#61). Every command it prints starts the Python the hook found."""
+import contextlib
+import importlib.util
+import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # -I drops the script dir from sys.path
 
 import launcher  # noqa: E402 - the sys.path line above has to run first
 import preflight  # noqa: E402 - imported after the sys.path line above, like the one before it
-from mech_review import gitio, stack_plan  # noqa: E402 - imported after the sys.path line above, like the ones before it
+from mech_review import adapter_file, gitio, stack_plan  # noqa: E402 - imported after the sys.path line above, like the ones before it
 
 RULES = """[ekit] Working rules:
 - A test or check goes red → classify it with the failure-triage skill before editing code.
@@ -23,6 +29,9 @@ MAX_ITEMS = 20  # manifests and messages shown; the rest is a count and the comm
 MAX_TEXT = 500  # characters of one repo-controlled value
 SHALLOW = "; in this shallow clone the days retiring count only the history here"
 DRIFT_SECONDS = 3  # the drift check's share of the hook (it takes ~0.1 s): past it, one line, the context still goes
+VERIFY = os.path.join(HERE, "task-verify.py")
+DEFAULTS = "[ekit] Verify defaults"  # every line of the default verify commands (#61) starts so
+STEPS = ("build", "lint", "test")  # the verify steps; install is setup, never a verify command
 
 
 def shown(text):
@@ -44,8 +53,7 @@ def drift(cwd):
     """The `[ekit]` lines for the stack plan's drift (#57): the committed tree at HEAD of the repo holding cwd against
     the plan at HEAD, what CI's drift check reads. Git only: no test runner, no network. Nothing when cwd is in no git
     repo, the repo has no commit, there is no plan, or it is clean; any other failure is one line, never a clean read."""
-    os.environ["GIT_NO_LAZY_FETCH"] = "1"  # git 2.44+: a missing object is an error, never a fetch (older: partial_clone)
-    os.environ.update(LC_ALL="C", LANGUAGE="")  # git's own words, unlocalized: "not a git repository" is read below
+    git_env()
     out = []
     worker = threading.Thread(target=lambda: out.append(_guarded(cwd)), daemon=True)  # left behind on overrun
     worker.start()
@@ -54,6 +62,13 @@ def drift(cwd):
         return [f"[ekit] Stack plan: the drift check did not finish in {DRIFT_SECONDS} s here, so nothing here says what "
                 f"is unchecked; CI still runs it on every PR."]
     return out[0]
+
+
+def git_env():
+    """the hook's git calls: a missing object is an error, never a fetch (git 2.44+; older: partial_clone), and git's
+    own words unlocalized ("not a git repository" is read)."""
+    os.environ["GIT_NO_LAZY_FETCH"] = "1"
+    os.environ.update(LC_ALL="C", LANGUAGE="")
 
 
 def _guarded(cwd):
@@ -119,15 +134,138 @@ def _drift(cwd):
     return [f"[ekit] Stack plan drift at HEAD ({stack_plan.PATH}; {FIX}):", *items]
 
 
+def stack_commands(top, stack):
+    """{step: command} of the commands CI runs for a stack (#61): an adapter file's [commands] build, lint and test; a
+    built-in's test command as R1 and R4 run it (it has no build or lint). A step with no command is left out."""
+    a = stack.adapter
+    if hasattr(a, "commands"):
+        got = {k: a.commands.get(k, "") for k in STEPS}
+    else:
+        got = {"test": a.test_cmd_in(os.path.join(top, *stack.folder.split("/")))}
+    return {k: v for k, v in got.items() if v.strip()}
+
+
+def in_folder(folder, cmd):
+    """the command run in the stack's folder: `cd <folder> && <cmd>`, plain at the repo root"""
+    return cmd if folder == "." else f"cd {shlex.quote(folder)} && {cmd}"
+
+
+def _listed(words, last):
+    """`a`, `a or b`, `a, b or c`"""
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} {last} {words[-1]}"
+
+
+def _none(why):
+    return [f"{DEFAULTS}: none declared: {why}."]
+
+
+def _stacks(cwd):
+    """(top, [stack_plan.Stack]) of the repo holding cwd at HEAD, resolved as CI resolves them; else [the one line
+    saying why none is]."""
+    if not has_tomllib():
+        v = sys.version_info
+        return _none(f"the default verify commands need python 3.11 or newer (tomllib), this is {v[0]}.{v[1]}; declare "
+                     f"them per task with task-verify")
+    try:
+        try:
+            top = gitio.git(cwd, "rev-parse", "--show-toplevel").strip()
+        except gitio.Die as e:
+            if "not a git repository (or any" in str(e):
+                return _none(f"{shown(cwd)} is in no git repo")
+            raise
+        try:
+            gitio.resolve(top, "HEAD")
+        except gitio.Die:
+            return _none("the repo has no commit yet")
+        if partial_clone(top):
+            return _none("this is a partial clone, where git would fetch the objects it lacks (a network call)")
+        stacks, why = stack_plan.stacks_at(top, "HEAD")
+    except stack_plan.PlanError as e:
+        return _none(f"the stack plan does not read: {shown(e)}")
+    except adapter_file.AdapterFileError as e:
+        return _none(shown(e))
+    except FileNotFoundError:
+        return _none("git is not on PATH")
+    except Exception as e:  # noqa: BLE001 - a git error or a bug here must not fail the hook
+        return _none(f"the stacks could not be resolved here ({type(e).__name__}: {shown(e)})")
+    return _none(shown(why)) if why else (top, stacks)
+
+
+def _task_verify():
+    spec = importlib.util.spec_from_file_location("ekit_task_verify", VERIFY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def declare(top, stacks, session):
+    """Declare each stack's commands as the session's verify commands, through task-verify's own code (the same
+    string `run` and the Stop gate match); the context lines that name them and each step a stack has no command for."""
+    if not session:
+        return _none("the hook got no session_id")
+    tv = _task_verify()
+    named, missing = {}, []  # named: {command: (its stack, [its steps])}
+    for st in stacks:
+        cmds = stack_commands(top, st)
+        where = "at the repo root" if st.folder == "." else f"in {st.folder}"
+        kind = "" if st.adapter.name == st.name else f"{shown(st.adapter.name)}, "  # no plan: the name is the adapter's
+        about = f"stack `{shown(st.name)}` ({kind}{shown(where)})"
+        gap = [k for k in STEPS if k not in cmds]
+        if gap:
+            missing.append(f"{DEFAULTS}: {about} names no {_listed(gap, 'or')} command, so none is declared for "
+                           f"{'that step' if len(gap) == 1 else 'those steps'}.")
+        for k in STEPS:
+            if k in cmds:
+                cmd = tv.spelled([in_folder(st.folder, cmds[k])])
+                named.setdefault(cmd, (about, []))[1].append(k)  # one line for a command several steps share
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):  # its own `is a verify command` line: the context says it
+            for cmd in named:
+                tv.cmd_declare(top, [cmd], session)
+    except OSError as e:
+        return _none(f"task-verify's store cannot be written ({shown(e.filename)}: {shown(e.strerror)})") + missing
+    run = launcher.line(VERIFY, "--repo", launcher.shown(top), "run", "--")
+    lines = [f"{DEFAULTS} (#61): this session's verify commands, from the stacks at HEAD; run each as shown before "
+             f"calling the work done (the Stop gate checks them). Declare more per task as before."] if named else []
+    lines += [f"{DEFAULTS}: `{shown(cmd)}` ({_listed(steps, 'and')} of {about}): `{run} {shown(shlex.quote(cmd))}`"
+              for cmd, (about, steps) in named.items()]
+    return lines + missing
+
+
+def defaults(cwd, session):
+    """The `[ekit] Verify defaults` lines (#61), within the drift check's deadline: the stacks resolve on a worker,
+    git only; past the deadline nothing is declared. The declaring itself runs here, so none lands after the line."""
+    git_env()
+    out = []
+    worker = threading.Thread(target=lambda: out.append(_stacks(cwd)), daemon=True)
+    worker.start()
+    return lambda deadline: _settled(worker, out, deadline, session)
+
+
+def _settled(worker, out, deadline, session):
+    worker.join(max(0, deadline - time.monotonic()))
+    if not out:
+        return _none(f"resolving the stacks did not finish in {DRIFT_SECONDS} s here")
+    got = out[0]
+    if isinstance(got, list):
+        return got
+    try:
+        return declare(*got, session)
+    except Exception as e:  # noqa: BLE001 - a bug in declaring must not fail the hook
+        return _none(f"declaring them failed here ({type(e).__name__}: {shown(e)})")
+
+
 def main():
     raw = sys.stdin.read()
     data = json.loads(raw or "{}")
     cwd = data.get("cwd") or os.getcwd()
     subprocess.run([sys.executable, "-I", os.path.join(HERE, "finish-gate.py"), "--baseline"], input=raw, text=True)
     pf = "\n".join(preflight.checks(cwd, quiet=True))
+    deadline = time.monotonic() + DRIFT_SECONDS  # the drift check's and the stacks' alike: they run side by side
+    verify = defaults(cwd, data.get("session_id"))
     ctx = "\n".join([RULES, f"[ekit] Python: {launcher.command()}",
                      f"[ekit] Scenario runner: {launcher.line(os.path.join(HERE, 'scenarios.py'))}",
-                     f"[ekit] Preflight (this env):\n{pf}", *drift(cwd)])
+                     f"[ekit] Preflight (this env):\n{pf}", *drift(cwd), *verify(deadline)])
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}))
 
 
