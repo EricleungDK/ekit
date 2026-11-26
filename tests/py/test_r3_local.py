@@ -2,6 +2,7 @@
 
 main(argv, run=...) in this process; the fake `run` stands for every command (git, venv, pip, the engine), so no tool is
 installed and no test of the PR is run here. One real run is in the PR's evidence, not in the suite."""
+import errno
 import io
 import json
 import os
@@ -1059,6 +1060,25 @@ class MachineLock(Tmp):
         self.assertEqual(r.returncode, 3)
         self.assertIn("), up to 0 min\n", r.stderr)
         self.assertIn("r3-local: waited 0 min for the r3-local run of pid 4242", r.stderr)
+
+    def test_a_lock_error_that_is_no_busy_lock_is_exit_2_at_once(self):
+        """Only EWOULDBLOCK means another run holds it; ENOLCK (no lock this file system can give) waits for nothing."""
+        import fcntl
+        import types
+        calls = []
+
+        def flock(f, op):
+            calls.append(op)
+            if len(calls) == 2:  # the first is the env dir's
+                raise OSError(errno.ENOLCK, "No locks available")
+            return fcntl.flock(f, op)
+
+        fake = Fake()
+        with mock.patch.object(r3, "fcntl", types.SimpleNamespace(flock=flock, LOCK_EX=fcntl.LOCK_EX,
+                                                                  LOCK_NB=fcntl.LOCK_NB)):
+            r = self.bounded(fake)
+        self.assertEqual((r.returncode, fake.calls), (2, []))
+        self.assertEqual(r.stderr, f"r3-local: machine lock {self.machine}: cannot lock it (No locks available)\n")
 
     def test_help_names_the_wait_limit_and_its_exit_code(self):
         r = _kit.run_cli(["--help"], main=lambda a: r3.main(a, run=Fake(), os_name="posix"))

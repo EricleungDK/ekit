@@ -225,7 +225,7 @@ def hold_machine(path, limit_min):
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except OSError:
+        except BlockingIOError:  # EWOULDBLOCK: another run holds it
             pid = _holder(f)
             if pid != said:
                 print(f"r3-local: waiting for the r3-local run of pid {pid} (one run at a time on this machine: "
@@ -237,6 +237,9 @@ def hold_machine(path, limit_min):
                 raise Waited(f"waited {limit_min:g} min for the r3-local run of pid {pid}: R3 not run; run it again "
                              "when that run ends, or pass a larger --wait-limit")
             time.sleep(min(POLL_S, left))
+        except OSError as e:  # no lock to be had here (ENOLCK, ...): waiting would not change that
+            f.close()
+            raise Stop(f"machine lock {path}: cannot lock it ({e.strerror})")
     if f.writable():
         f.seek(0)
         f.truncate()
