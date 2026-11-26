@@ -1,7 +1,8 @@
-"""The eval stack-plan-js-to-ts grades the end state at HEAD: its scaffold's ref hooks (on every commit, reset and
-checkout) read the plan at HEAD with tomllib and run the kit's drift check on HEAD, and write the verdict its regex
-graders read. A wrong end state (a TS entry only in a comment, the js entry gone, an invalid plan, an edit not
-committed, a migration reset away or left on another branch) and the start state must not pass."""
+"""The eval stack-plan-js-to-ts grades the end state at HEAD: its scaffold's verdict script, run by evals/git-shim.sh
+after every ref move (commit, reset, checkout), reads the plan at HEAD with tomllib, runs the kit's drift check on HEAD
+and writes the verdict its regex graders read. A wrong end state (a TS entry only in a comment, the js entry gone, an
+invalid plan, an edit not committed, a migration reset away or left on another branch) and the start state must not
+pass."""
 import os
 import shutil
 import subprocess
@@ -10,15 +11,16 @@ import unittest
 
 import _kit
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
-from test_eval_scaffold import case_dir
+from test_eval_scaffold import case_dir, eval_git
 
 CASE = case_dir("stack-plan-js-to-ts")
+GIT = eval_git()
 VERDICT = ("ekit-eval", "verdict.txt")
 JS_RETIRING = '[[stack]]\nname = "js"\nfolder = "."\nadapter = "ts"\nstatus = "retiring"\n'
 TS = '\n[[stack]]\nname = "web"\nfolder = "."\nadapter = "ts"\nstatus = "current"\n'
 
 
-class EndState(unittest.TestCase):
+class Scaffold(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -35,16 +37,18 @@ class EndState(unittest.TestCase):
                 f.write("{}")
         with open(os.path.join(self.repo, ".ekit", "stack-plan.toml"), "w", newline="\n") as f:
             f.write(plan)
-        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "c"], check=True)
+        subprocess.run([*GIT, "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run([*GIT, "-C", self.repo, "commit", "-qm", "c"], check=True)
 
     def verdict(self):
         with open(os.path.join(self.repo, ".git", *VERDICT)) as f:
             return f.read().splitlines()
 
     def git(self, *args):
-        subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True)
+        subprocess.run([*GIT, "-C", self.repo, *args], check=True, capture_output=True)
 
+
+class EndState(Scaffold):
     def test_ts_current_beside_js_retiring_passes_all_three(self):
         self.commit(JS_RETIRING + TS)
         lines = self.verdict()
@@ -72,11 +76,11 @@ class EndState(unittest.TestCase):
 
     def test_a_linked_worktree_works_and_the_verdict_stays_the_main_checkouts(self):
         linked = os.path.join(os.path.dirname(self.repo), "linked")
-        self.git("worktree", "add", "-q", "-b", "w2", linked)  # check=True: its post-checkout must not fail it
+        self.git("worktree", "add", "-q", "-b", "w2", linked)  # check=True: the shim must not fail it
         with open(os.path.join(linked, ".ekit", "stack-plan.toml"), "w", newline="\n") as f:
             f.write(JS_RETIRING + TS)
-        subprocess.run(["git", "-C", linked, "commit", "-qam", "ts"], check=True, capture_output=True)
-        subprocess.run(["git", "-C", linked, "checkout", "-q", "-b", "w3"], check=True, capture_output=True)
+        subprocess.run([*GIT, "-C", linked, "commit", "-qam", "ts"], check=True, capture_output=True)
+        subprocess.run([*GIT, "-C", linked, "checkout", "-q", "-b", "w3"], check=True, capture_output=True)
         self.assertEqual(self.verdict()[-1], "migrated: no")  # main's HEAD has not moved
         self.git("merge", "-q", "--ff-only", "w2")
         self.assertEqual(self.verdict()[-1], "migrated: yes")
@@ -125,8 +129,38 @@ class EndState(unittest.TestCase):
         self.commit(JS_RETIRING + TS)
         with open(os.path.join(self.repo, ".ekit", "stack-plan.toml"), "w") as f:
             f.write("")
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "empty", "--allow-empty"], check=True)
+        subprocess.run([*GIT, "-C", self.repo, "commit", "-qm", "empty", "--allow-empty"], check=True)
         self.assertIn("ts-entry: yes", self.verdict())  # HEAD still has the plan: the working tree is not read
+
+
+@unittest.skipIf(os.name == "nt", "a bash script named git on PATH: POSIX only (the evals run in WSL on Windows)")
+class ShimAsGit(Scaffold):
+    """evals/run.sh's install: the shim as `git`, first on PATH. It finds the real git past itself, its git output
+    and exit status are the real git's, and the verdict script's own git calls (and the kit's) do not recurse into a
+    second verdict run."""
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = os.path.join(os.path.dirname(self.repo), "bin")
+        os.mkdir(bin_dir)
+        shutil.copy(GIT[1], os.path.join(bin_dir, "git"))
+        os.chmod(os.path.join(bin_dir, "git"), 0o755)
+        self.env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"])
+
+    def run_git(self, *args):
+        return subprocess.run(["git", "-C", self.repo, *args], capture_output=True, text=True, env=self.env)
+
+    def test_a_commit_through_git_on_path_writes_the_verdict(self):
+        with open(os.path.join(self.repo, ".ekit", "stack-plan.toml"), "w", newline="\n") as f:
+            f.write(JS_RETIRING + TS)
+        self.assertEqual(self.run_git("commit", "-qam", "ts").returncode, 0)
+        self.assertEqual(self.verdict()[-1], "migrated: yes")
+
+    def test_output_and_exit_status_are_the_real_gits(self):
+        real = subprocess.run(["git", "-C", self.repo, "rev-parse", "HEAD"], capture_output=True, text=True)
+        self.assertEqual(self.run_git("rev-parse", "HEAD").stdout, real.stdout)
+        self.assertEqual(self.run_git("no-such-command").returncode, 1)
+        self.assertEqual(self.run_git("rev-parse", "no-such-rev").returncode, 128)
 
 
 if __name__ == "__main__":

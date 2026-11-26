@@ -36,6 +36,13 @@ def case_dir(name, root=None):
     return os.path.join(at if os.path.isdir(os.path.join(at, "evals", name)) else root, "evals", name)
 
 
+def eval_git(root=None):
+    """argv that runs git as the agent under an eval does: through evals/git-shim.sh, which evals/run.sh puts first on
+    PATH as `git` and which runs a case's verdict script after each ref move (the eval sandbox turns git hooks off, so
+    a scaffold installs none). The shim is the one beside case_dir's cases, the checkout's."""
+    return [shells.find("bash"), os.path.join(os.path.dirname(case_dir("stack-plan-js-to-ts", root)), "git-shim.sh")]
+
+
 CASE = case_dir("orchestrate-mech-tick")
 GATE = os.path.join(_kit.SCRIPTS, "finish-gate.py")
 

@@ -1,12 +1,12 @@
-"""The ci-doctor setup evals (#23) grade the setup branch: each scaffold's ref hooks (ci-doctor-setup-java's arm.sh, on
-every ref move in any worktree) run the verdict script it writes, which takes the newest branch other than main holding
-a commit beyond the scaffold's, reads its stack plan and workflow jobs, runs the kit's own `r0` (static half), a census
-(R2 on a scratch commit that deletes the repo's test files) and `drift` there, and writes the verdict the case's regex
-graders read. Here the good end state (the Java reference adapter and its R0 fixtures, committed on a setup branch with
-a plan entry and a caller) passes every regex grader of its case, wherever HEAD ends; wrong end states (a failing or
-unproven proof, a census miss, the wrong status, the team's CI edited or a job beside it in any file, a caller only in
-a comment, the setup on main or reset away) and the start state do not. The stop cases (the proof cannot pass; several
-projects) pass only while no ref or reflog holds a new commit."""
+"""The ci-doctor setup evals (#23) grade the setup branch: evals/git-shim.sh runs the verdict script each scaffold
+writes (ci-doctor-setup-java's arm.sh) after every ref move in any worktree; it takes the newest branch other than main
+holding a commit beyond the scaffold's, reads its stack plan and workflow jobs, runs the kit's own `r0` (static half), a
+census (R2 on a scratch commit that deletes the repo's test files) and `drift` there, and writes the verdict the case's
+regex graders read. Here the good end state (the Java reference adapter and its R0 fixtures, committed on a setup branch
+with a plan entry and a caller) passes every regex grader of its case, wherever HEAD ends; wrong end states (a failing
+or unproven proof, a census miss, the wrong status, the team's CI edited or a job beside it in any file, a caller only
+in a comment, the setup on main or reset away) and the start state do not. The stop cases (the proof cannot pass;
+several projects) pass only while no ref or reflog holds a new commit."""
 import os
 import re
 import shutil
@@ -16,7 +16,7 @@ import unittest
 
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 import _kit
-from test_eval_scaffold import case_dir  # the tests' own checkout's case, never R3's copy (#24)
+from test_eval_scaffold import case_dir, eval_git  # the tests' own checkout's case, never R3's copy (#24)
 
 
 ADAPTERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "adapters")
@@ -28,6 +28,8 @@ GO_SUBTESTS = ("format = 1\nname = \"go\"\nmanifests = [\"go.mod\"]\nextensions 
                "lints = \"directive\"\n")  # reads `t.Run("name", func...)` subtests as calls (`.` is no member char)
 BASE_JOB = ("jobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@v4\n"
             "      - run: mvn -B -ntp test\n")
+
+GIT = eval_git()
 
 
 def plan(status, folder=".", name="maven"):
@@ -70,7 +72,7 @@ class Scaffold(unittest.TestCase):
                        env=shells.env_for(bash, "bash"))
 
     def git(self, *args):
-        return subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
+        return subprocess.run([*GIT, "-C", self.repo, *args], check=True, capture_output=True, text=True).stdout
 
     def write(self, files, at=None):
         for rel, text in files.items():
@@ -86,7 +88,7 @@ class Scaffold(unittest.TestCase):
         repo = at or self.repo
         name = "java" if copy else "maven"
         if branch:
-            subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", branch], check=True, capture_output=True)
+            subprocess.run([*GIT, "-C", repo, "checkout", "-q", "-b", branch], check=True, capture_output=True)
         with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
             text = f.read() if copy else generated_adapter(f.read())
         self.write({f".ekit/adapters/{name}.toml": adapter(text) if adapter else text}, at=repo)
@@ -102,7 +104,7 @@ class Scaffold(unittest.TestCase):
         self.write(dict({".ekit/stack-plan.toml": plan(status, name=name), ".github/workflows/mech-review.yml": CALLER},
                         **(files or {})), at=repo)
         for args in (("add", "-A"), ("commit", "-qm", "ci: mech-review setup")):
-            subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+            subprocess.run([*GIT, "-C", repo, *args], check=True, capture_output=True)
 
     def verdict(self):
         with open(os.path.join(self.repo, ".git", "ekit-eval", "verdict.txt"), encoding="utf-8") as f:
@@ -297,7 +299,7 @@ def a_stash_is_no_commit(self):
     self.write({"notes.txt": "wip\n", "calc.go": "package calc\n"})
     self.git("stash", "-u")
     self.git("stash", "list")
-    self.git("checkout", "-q", "main")  # any ref move: the hooks write the verdict
+    self.git("checkout", "-q", "main")  # any ref move: the shim writes the verdict
     self.assertEqual(self.passing(), ["no-pr.md"])
     self.assertIn("new-commits: 0\n", self.verdict())
 

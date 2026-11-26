@@ -1,8 +1,9 @@
 # Sourced by each ci-doctor-setup-* setup.sh after its scaffold commit (#23). Arms the grader support: whenever a ref
 # moves (commit, reset, checkout, merge, rebase, in any worktree), .git/ekit-eval/verdict.py (written below: a heredoc,
 # so the kit tracks no python file outside its test paths) grades the setup branch and writes
-# .git/ekit-eval/verdict.txt, which the regex graders read. $1: the case's expect.json (the script's header). The kit's
-# path is data in a file, never shell text.
+# .git/ekit-eval/verdict.txt, which the regex graders read. The trigger is evals/git-shim.sh, which evals/run.sh puts
+# first on PATH as `git` (the eval sandbox turns git hooks off). $1: the case's expect.json (the script's header). The
+# kit's path is data in a file, never shell text.
 arm_verdict() {
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -11,9 +12,9 @@ arm_verdict() {
   printf '%s\n' "$1" > .git/ekit-eval/expect.json
   git rev-parse HEAD > .git/ekit-eval/start
   cat > .git/ekit-eval/verdict.py <<'PY'
-# The end state of a ci-doctor setup eval (#23), written to .git/ekit-eval/verdict.txt for the regex graders by the
-# scaffold's ref hooks. Graded: the setup branch, the newest branch other than main that holds a commit beyond the
-# scaffold's (.git/ekit-eval/start), whichever worktree or HEAD the agent ends on. expect.json: {"status": "current" |
+# The end state of a ci-doctor setup eval (#23), written to .git/ekit-eval/verdict.txt for the regex graders after
+# every ref move (evals/git-shim.sh). Graded: the setup branch, the newest branch other than main that holds a commit
+# beyond the scaffold's (.git/ekit-eval/start), whichever worktree or HEAD the agent ends on. expect.json: {"status": "current" |
 # "planned", "folder", "target_os", "ci": "keep" | "write", and for a repo with tests "tests" (the names the adapter
 # must read), "test_files" (the paths that hold them) and "test_paths" (their glob)}. `setup: yes` needs every line it
 # checks at once. Git and the kit's own engine only (r0 static half, r2 for the census, drift; doctor's workflow
@@ -90,7 +91,7 @@ try:
 except ImportError:
     tomllib = None
 if not tomllib or not stack_plan:
-    lines.append("entry: not read: harness: " + ("no tomllib (python 3.11 or newer runs the hooks)" if not tomllib
+    lines.append("entry: not read: harness: " + ("no tomllib (python 3.11 or newer runs the verdict)" if not tomllib
                                                  else f"the kit's engine does not import ({kit_error})"))
 elif ref:
     try:
@@ -246,9 +247,5 @@ lines.append(f"setup: {'yes' if all(ok) else 'no'}")
 with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 PY
-  # reference-transaction: every ref update; post-checkout: a switch of HEAD alone. Never fails the model's git command
-  printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/reference-transaction
-  printf '#!/bin/sh\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/post-checkout
-  chmod +x .git/hooks/reference-transaction .git/hooks/post-checkout
   python3 -I .git/ekit-eval/verdict.py  # the start state's verdict
 }

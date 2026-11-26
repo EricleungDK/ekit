@@ -38,8 +38,9 @@ status = "current"
 TOML
 # Grader support: whenever HEAD or a ref moves (commit, reset, checkout, merge, rebase), the end state at HEAD (the
 # committed plan read with tomllib, and the kit's own drift check on HEAD) goes to .git/ekit-eval/verdict.txt, which the
-# regex graders read; `migrated: yes` needs all three. Git only; nothing printed. The kit's path is data in a file, never
-# shell text.
+# regex graders read; `migrated: yes` needs all three. The trigger is evals/git-shim.sh, which evals/run.sh puts first
+# on PATH as `git` (the eval sandbox turns git hooks off). Git only; nothing printed. The kit's path is data in a file,
+# never shell text.
 mkdir -p .git/ekit-eval
 printf '%s' "$(cd "$(dirname "$0")/../.." && pwd -P)" > .git/ekit-eval/kit
 cat > .git/ekit-eval/verdict.py <<'PY'
@@ -47,7 +48,7 @@ import json, os, subprocess, sys
 here = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
                       text=True).stdout.strip()  # the main checkout's .git, from it or from any linked worktree
 repo = os.path.dirname(here)  # the main checkout: its HEAD is the end state, whichever worktree moved a ref
-# a hook runs with the worktree's GIT_DIR (and index) set: dropped, so git reads the main checkout
+# a caller's GIT_DIR (and index), a linked worktree's: dropped, so git reads the main checkout
 env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                                                         "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
 def git(*a):
@@ -92,9 +93,5 @@ lines.append(f"migrated: {'yes' if ts and retiring and clean else 'no'}")  # the
 with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
-# reference-transaction: every ref update (commit, reset, merge, rebase); post-checkout: a switch of HEAD alone
-# (never failing the model's git command: exit 0 whatever the verdict script did)
-printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/reference-transaction
-printf '#!/bin/sh\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/post-checkout
-chmod +x .git/hooks/reference-transaction .git/hooks/post-checkout
 git add -A; git commit -qm "greet: js package, stack plan"
+python3 -I .git/ekit-eval/verdict.py  # the start state's verdict

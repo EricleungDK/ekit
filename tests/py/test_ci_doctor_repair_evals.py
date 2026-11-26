@@ -1,13 +1,13 @@
-"""The ci-doctor repair evals (#24) grade the repair branch: each scaffold's ref hooks (ci-doctor-repair-java-runner's
-arm.sh, on every ref move in any worktree) run the verdict script it writes, which takes the newest branch other than
-main and the coding branch holding a commit beyond the scaffold's, checks that main and the coding branch are where they
-were, that the repair branch holds none of the coding branch's commits and that no new commit carries a `mech:` line,
-and runs the kit's own engine there: R0's static half on the tip's adapter (proved at the tip), R0's editing rules
+"""The ci-doctor repair evals (#24) grade the repair branch: evals/git-shim.sh runs the verdict script each scaffold
+writes (ci-doctor-repair-java-runner's arm.sh) after every ref move in any worktree; it takes the newest branch other
+than main and the coding branch holding a commit beyond the scaffold's, checks that main and the coding branch are where
+they were, that the repair branch holds none of the coding branch's commits and that no new commit carries a `mech:`
+line, and runs the kit's own engine there: R0's static half on the tip's adapter (proved at the tip), R0's editing rules
 against main, drift, and per case the replay of a newer runner's recorded output (runner case) or drift on the coding
 branch merged onto the tip (drift case). Here the good end state passes every regex grader of its case, wherever HEAD
-ends; wrong end states (a commit on the coding branch, a `mech:` line, a branch cut from the coding branch, the
-adapter left as it was, a proof that fails, a loosened limit, a plan that neither covers nor ignores) and the start
-state do not. The stop case passes only while no ref or reflog holds a new commit."""
+ends; wrong end states (a commit on the coding branch, a `mech:` line, a branch cut from the coding branch, the adapter
+left as it was, a proof that fails, a loosened limit, a plan that neither covers nor ignores) and the start state do
+not. The stop case passes only while no ref or reflog holds a new commit."""
 import contextlib
 import io
 import json
@@ -19,7 +19,7 @@ import unittest
 
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 from test_ci_doctor_setup_evals import graders
-from test_eval_scaffold import case_dir
+from test_eval_scaffold import case_dir, eval_git
 from scripts.mech_review import cli
 
 ADAPTER = ".ekit/adapters/maven.toml"
@@ -28,6 +28,7 @@ OLD = (r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+,
        r"""sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
 NEW = r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
 TRAILER = "adapter-fix: R0-00e0bfc4\n"
+GIT = eval_git()
 
 
 class Scaffold(unittest.TestCase):
@@ -44,7 +45,7 @@ class Scaffold(unittest.TestCase):
                        env=shells.env_for(bash, "bash"))
 
     def git(self, *args, at=None):
-        return subprocess.run(["git", "-C", at or self.repo, *args], check=True, capture_output=True, text=True).stdout
+        return subprocess.run([*GIT, "-C", at or self.repo, *args], check=True, capture_output=True, text=True).stdout
 
     def read(self, rel, at=None):
         with open(os.path.join(at or self.repo, rel), encoding="utf-8") as f:

@@ -1,8 +1,9 @@
 # Sourced by each ci-doctor-repair-* setup.sh after its scaffold commits (#24). Arms the grader support: whenever a ref
 # moves (commit, reset, checkout, merge, rebase, in any worktree), .git/ekit-eval/verdict.py (written below: a heredoc,
 # so the kit tracks no python file outside its test paths) grades the repair branch and writes
-# .git/ekit-eval/verdict.txt, which the regex graders read. $1: the case's expect.json (the script's header). The kit's
-# path is data in a file, never shell text. The coding branch is the one checked out when this runs.
+# .git/ekit-eval/verdict.txt, which the regex graders read. The trigger is evals/git-shim.sh, which evals/run.sh puts
+# first on PATH as `git` (the eval sandbox turns git hooks off). $1: the case's expect.json (the script's header). The
+# kit's path is data in a file, never shell text. The coding branch is the one checked out when this runs.
 arm_repair() {
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -12,11 +13,11 @@ arm_repair() {
   printf '%s %s %s\n' "$(git rev-parse main)" "$(git symbolic-ref --short HEAD)" "$(git rev-parse HEAD)" \
     > .git/ekit-eval/start
   cat > .git/ekit-eval/verdict.py <<'PY'
-# The end state of a ci-doctor repair eval (#24), written to .git/ekit-eval/verdict.txt for the regex graders by the
-# scaffold's ref hooks. Graded: the repair branch, the newest branch other than main and the coding branch that holds a
-# commit beyond the scaffold's (.git/ekit-eval/start: main's sha, the coding branch and its sha), whichever worktree or
-# HEAD the agent ends on (the one the main checkout's HEAD is on first). The PR's agent never edits its checker, and a
-# repair round is no fix round of the coding branch: main and the coding branch stay as they were, the repair branch
+# The end state of a ci-doctor repair eval (#24), written to .git/ekit-eval/verdict.txt for the regex graders after
+# every ref move (evals/git-shim.sh). Graded: the repair branch, the newest branch other than main and the coding
+# branch that holds a commit beyond the scaffold's (.git/ekit-eval/start: main's sha, the coding branch and its sha),
+# whichever worktree or HEAD the agent ends on (the one the main checkout's HEAD is on first). The PR's agent never
+# edits its checker, and a repair round is no fix round of the coding branch: main and the coding branch stay as they were, the repair branch
 # holds none of the coding branch's commits (cut from the base), and no new commit carries a `mech:` body line.
 # expect.json: {"kind": "runner" | "drift" | "budget", "folder" (runner: the stack's), "adapter" (runner: the adapter
 # file the repair may change), "test_files" (runner: the repo's test files, census), "cover" (drift: the cover folder,
@@ -33,7 +34,8 @@ arm_repair() {
 # Stop rule (the owner's, review round 3): a new way past this grader is fixed only when the reviewer names the
 # repair.md step that would produce it by honest mistake. Every other one is a named limit, listed here, and the
 # review rounds end. Named limits:
-# - a commit made with the hooks bypassed (another core.hooksPath) keeps a stale verdict;
+# - git run past evals/git-shim.sh (by its absolute path, or with a PATH that puts another git first) keeps a
+#   stale verdict;
 # - only the selected repair branch is graded;
 # - every key of [run.outcome] is free (dropping `env` passes);
 # - the drift cover entry's status is left to the criteria;
@@ -78,7 +80,7 @@ except OSError:
 
 
 def crashed(kind, value, tb):
-    """any exception: a verdict no grader passes (the hook hides the traceback)"""
+    """any exception: a verdict no grader passes (the git shim hides the traceback)"""
     with open(VERDICT, "w", encoding="utf-8") as f:
         f.write(f"verdict: crashed ({kind.__name__}: {str(value)[:300]})\nrepair: no\n")
 
@@ -162,7 +164,7 @@ except ImportError:
     tomllib = None
 harness = (f"the kit's scripts/mech-review.py is not at {kit!r}" if not os.path.isfile(engine) else
            f"the kit's engine does not import ({kit_error})" if not adapter_file else
-           "no tomllib (python 3.11 or newer runs the hooks)" if not tomllib else None)
+           "no tomllib (python 3.11 or newer runs the verdict)" if not tomllib else None)
 if harness:
     lines.append(f"proof: not run: harness: {harness} (not the model's doing)")
     ok.append(False)
@@ -397,9 +399,5 @@ lines.append(f"repair: {'yes' if ok and all(ok) else 'no'}")
 with open(VERDICT, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 PY
-  # reference-transaction: every ref update; post-checkout: a switch of HEAD alone. Never fails the model's git command
-  printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/reference-transaction
-  printf '#!/bin/sh\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/post-checkout
-  chmod +x .git/hooks/reference-transaction .git/hooks/post-checkout
   python3 -I .git/ekit-eval/verdict.py  # the start state's verdict
 }
