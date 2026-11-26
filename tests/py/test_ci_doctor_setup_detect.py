@@ -315,7 +315,8 @@ class SetupDetection(unittest.TestCase):
                          (None, None, ["no project found: no pyproject.toml, setup.py, setup.cfg, Cargo.toml, "
                                        "package.json"]))
         rc, env = self.doctor({"App.sln": "", "App/App.csproj": "<Project />\n",
-                               "examples/Demo/Demo.csproj": "<UseWPF>true</UseWPF> <Package Include=\"xunit\" />"})
+                               "examples/Demo/Demo.csproj": "<UseWPF>true</UseWPF> <Package Include=\"xunit\" />",
+                               "examples/Wpf.csproj": "<UseWPF>true</UseWPF> <Package Include=\"nunit\" />"})
         self.assertEqual([(p["test_framework"], p["target_os"]) for p in env["setup"]["projects"]], [(None, "linux")])
 
     def test_an_adapter_file_named_like_a_built_in_keeps_the_adopt_flow(self):
@@ -347,6 +348,8 @@ class SetupDetection(unittest.TestCase):
                  "presentation": {"App/App.csproj": '<Project><Reference Include="PresentationFramework" /></Project>'},
                  "props": {"Directory.Build.props": "<Project><PropertyGroup><UseWPF> True </UseWPF></PropertyGroup>"
                                                     "</Project>", "App/App.csproj": "<Project />"},
+                 "props-in-a-folder": {"App/Directory.Build.props": "<Project><UseWPF>true</UseWPF></Project>",
+                                       "App/App.csproj": "<Project />"},
                  "utf16": {"App/App.csproj": None}, "utf16be": {"App/App.csproj": None}}
         for name, files in cases.items():
             with self.subTest(name=name):
@@ -360,7 +363,8 @@ class SetupDetection(unittest.TestCase):
                     del files["App/App.csproj"]
                 repo.commit(files, "c")
                 env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
-                file = "Directory.Build.props" if name == "props" else "App/App.csproj"
+                file = {"props": "Directory.Build.props", "props-in-a-folder": "App/Directory.Build.props"}.get(
+                    name, "App/App.csproj")
                 self.assertEqual([(p["target_os"], p["target_os_why"]) for p in env["setup"]["projects"]],
                                  [("windows", WPF.format(file))])
 
@@ -385,6 +389,25 @@ class SetupDetection(unittest.TestCase):
                  '    platforms: [.iOS(.v16)], path: "a*/b", url: "https://example.com/kit")\n'
                  'let doc = """\n  /* not a comment */ "quoted" \n  """\n')
         rc, env = self.doctor({"Package.swift": swift}, "--stack", "swiftpm")
+        self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["macos"])
+
+    def test_groovy_and_swift_string_forms_keep_their_comment_markers(self):
+        groovy = {  # name: (build.gradle, framework)
+            "single-quoted": ("test { include('**/*Test.class') }\n"
+                              "dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0' }\n"
+                              "test { exclude('**/*IT.class') }\n", "junit5"),
+            "slashy": ("def tests = ~/src\\/*Test/\n"
+                       "dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0' }\n"
+                       "/* a note */\n", "junit5")}
+        for name, (text, framework) in groovy.items():
+            with self.subTest(name=name):
+                repo = Repo(os.path.join(self.repo.path + "-" + name, "r"))
+                repo.commit({"build.gradle": text}, "c")
+                env = json.loads(_kit.run_cli(["doctor", "--repo", repo.path, "--no-trial"]).stdout)
+                self.assertEqual([p["test_framework"] for p in env["setup"]["projects"]], [framework])
+        swift = ('let doc = """\n  a /* in a text block\n  """\n'
+                 'let package = Package(name: "Kit", platforms: [.iOS(.v16)])\nlet end = "*/"\n')
+        rc, env = self.doctor({"Package.swift": swift})
         self.assertEqual([p["target_os"] for p in env["setup"]["projects"]], ["macos"])
 
     def test_every_manifest_of_one_build_in_a_folder_is_one_project(self):

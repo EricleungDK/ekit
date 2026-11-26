@@ -910,6 +910,7 @@ Adding a rule with its cases and an incident that resolves, promoting one to `fa
 
 ## Limits
 
+- ci-doctor's setup detection (#23) drops comments from Gradle and Swift files before it reads the test framework and the target OS, keeping string literals: text blocks, double- and single-quoted strings and Groovy's `~/.../` patterns. A slashy string without the `~` (`/a\/*b/`, which reads as a division) and a dollar-slashy one (`$/.../$`) are not read as strings: a `/*` inside one drops the lines after it, up to the next `*/`.
 - Fork and Dependabot PRs get a read-only `GITHUB_TOKEN`: the comment cannot be posted (GitHub answers 403). `report` then prints a warning, leaves the result in the job summary, and passes or fails on the result alone. Waiver comments are still read.
 - Permissions are `contents: read` and `pull-requests: write` only. The workflow uses `pull_request`, not `pull_request_target`, so forks get no secrets.
 - `guard` decides from git diffs only. `red-first` compiles and runs the PR's tests (the code under review) with a job-level `contents: read` token and no other secrets.

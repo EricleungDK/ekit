@@ -52,8 +52,11 @@ BUILDS = tuple(sorted({k.build for k in KINDS}))
 EXTRA = {"dotnet": ("Directory.Build.props",)}  # read like the build's manifests, never a project of its own
 EVIDENCE_SKIP = SKIP_DIRS - {"tests", "test"}  # a test project's manifest names the test framework
 XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
-# a string literal (kept: `"**/*Test.class"` opens no comment) or a comment (dropped), leftmost first
-C_COMMENT = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*[\s\S]*?\*/|//[^\n]*')
+# a string literal (kept: `"**/*Test.class"` opens no comment) or a comment (dropped), leftmost first: a text block,
+# a double- or single-quoted string, Groovy's `~/.../` pattern (a slashy string). Not read: a slashy string without the
+# `~` (`/a\/*b/`, read as a division) and a dollar-slashy one (`$/.../$`); a `/*` in one can drop the lines after it
+C_COMMENT = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|~/(?:\\.|[^/\\\n])*/'
+                       r'|/\*[\s\S]*?\*/|//[^\n]*')
 COMMENTS = {".xml": XML_COMMENT, ".csproj": XML_COMMENT, ".props": XML_COMMENT, ".swift": C_COMMENT,
             ".gradle": C_COMMENT, ".kts": C_COMMENT}
 LINUX = "no Windows- or Apple-only project file"
@@ -129,4 +132,4 @@ def _text(repo, head, path):
 
 def _uncommented(m):
     """a match of a COMMENTS pattern: a string literal stays, a comment goes"""
-    return m.group(0) if m.group(0)[0] in "\"'" else ""
+    return m.group(0) if m.group(0)[0] in "\"'~" else ""
