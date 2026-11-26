@@ -112,6 +112,19 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         t = flat(read("taster-brief-template.md"))
         self.assertIn("no source, diff, or implementer reasoning", t)
 
+    def test_taster_runs_mech_review_on_its_commit_before_the_report(self):
+        # #118: a taster committed scenarios that failed 4 mech entries; its commit's summary shows 0 fail first
+        t = flat(read("taster-brief-template.md"))
+        self.assertIn("Mech check:", t)
+        self.assertIn("scripts/mech-review.py all", t)
+        self.assertIn("--head HEAD", t)
+        self.assertIn("its `summary` shows 0 fail", t)
+        self.assertLess(t.index("Mech check:"), t.index("Report:"))
+
+    def test_taster_report_carries_the_mech_summary_with_0_fail(self):
+        report = flat(read("taster-brief-template.md")).split("Report:", 1)[1]
+        self.assertIn("the mech-review `summary` line of your commit, with 0 fail", report)
+
     def test_review_relay_and_taste_dispatch_fill_the_templates(self):
         skill = read("SKILL.md")
         self.assertIn("[review-brief-template.md](review-brief-template.md)", section(skill, "Review relay"))
