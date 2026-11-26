@@ -23,11 +23,11 @@ arm_repair() {
 # the repair tip passes R0's static half (proved there, as the repair PR's body proves it), reads each recorded run of
 # the newer runner (runner/runs.json beside this case's arm.sh) as R0 wants and its listing names every test; drift:
 # the tip's plan covers or ignores the folder, drift is clean on the repair branch and on the coding branch merged onto
-# it. Both: the repair touches only the plan, adapter files, their R0 fixtures and the caller (`scope:`), an adapter
-# file on both sides keeps its commands, limits, run and listing commands, mutation tool, target OS, manifests and
-# extensions (`kept:`), every R0 fixture file of the base is as it was (`fixtures:`), and R0's editing rules
-# (`r0 --base main --head tip`) give no `needs-human` entry (`person:` names any; a drift repair may add its folder to
-# `ignore`). Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
+# it. Both: the repair touches only the plan, adapter files and their R0 fixtures (`scope:`), the adapter file of each
+# base plan entry, compared with the tip's adapter for that folder whatever its name, keeps its commands, limits, run
+# and listing commands, mutation tool, target OS, manifests and extensions (`kept:`), every R0 fixture file of the
+# base's is beside it unchanged (`fixtures:`), and R0's editing rules (`r0 --base main --head tip`) give no
+# `needs-human` entry (`person:` names any; a drift repair may add its own folder, and no other, to `ignore`). Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
 # `repair: yes` needs every line it checks at once. Git and the kit's own engine only; nothing printed. A harness
 # problem (no kit, no tomllib) says `harness:`.
 import json
@@ -53,15 +53,6 @@ def read(name):
         return f.read()
 
 
-expect, kit = json.loads(read("expect.json")), read("kit")
-main0, coding, coding0 = read("start").split()
-engine = os.path.join(kit, "scripts", "mech-review.py")
-sys.path.insert(0, os.path.join(kit, "scripts"))
-try:
-    from mech_review import adapter_file, r0_runtime, stack_plan  # the kit's own loader, census and folder rule
-except Exception as e:
-    adapter_file = r0_runtime = stack_plan = None
-    kit_error = f"{type(e).__name__}: {e}"
 lines, ok = [], []
 VERDICT = os.path.join(here, "ekit-eval", "verdict.txt")
 try:  # no verdict of an earlier ref move outlives this one
@@ -77,6 +68,15 @@ def crashed(kind, value, tb):
 
 
 sys.excepthook = crashed
+expect, kit = json.loads(read("expect.json")), read("kit")  # after the hook: a malformed one is a crashed verdict
+main0, coding, coding0 = read("start").split()
+engine = os.path.join(kit, "scripts", "mech-review.py")
+sys.path.insert(0, os.path.join(kit, "scripts"))
+try:
+    from mech_review import adapter_file, r0_runtime, stack_plan  # the kit's own loader, census and folder rule
+except Exception as e:
+    adapter_file = r0_runtime = stack_plan = None
+    kit_error = f"{type(e).__name__}: {e}"
 
 # the repair branch: among the branches other than main and the coding branch that hold a new commit, one cut from the
 # base (none of the coding branch's commits) that changes .ekit/ against main first, then the one the main checkout's
@@ -170,19 +170,23 @@ else:
     plan = plan_at(tip)
     stacks = [s for s in plan.get("stack", []) if isinstance(s, dict)]
 
-    # the repair touches the checker only: the plan, adapter files and their R0 fixtures, the caller; an adapter file
-    # on both sides keeps what the entry does not name (its commands, limits, how one test runs and is listed, the
-    # mutation tool, target OS, manifests and extensions), and every R0 fixture file of the base stays as it was
-    refs = sorted({str(s.get("adapter")) for p in (plan_at(main0), plan) for s in p.get("stack", [])
-                   if str(s.get("adapter", "")).endswith(".toml")})
+    # the repair touches the checker only: the plan, adapter files and their R0 fixtures (never the caller workflow,
+    # whose test-paths, protected-paths and ekit ref a repair has no reason to change). Each base plan entry's adapter
+    # file is compared with the tip's adapter for that entry's folder, whatever the file is named: it keeps what the
+    # entry does not name (its commands, limits, how one test runs and is listed, the mutation tool, target OS,
+    # manifests and extensions), and every R0 fixture file of the base's is there, the same, beside the tip's. A new
+    # adapter file is free only for a folder the base plan has no entry for (the drift case)
+    base_plan = plan_at(main0)
+    refs = sorted({str(s.get("adapter")) for p in (base_plan, plan) for s in p.get("stack", [])
+                   if isinstance(s, dict) and str(s.get("adapter", "")).endswith(".toml")})
+
     def checker(path):
-        return (path in (".ekit/stack-plan.toml", ".github/workflows/mech-review.yml")
-                or path.startswith(".ekit/adapters/") or path in refs
+        return (path == ".ekit/stack-plan.toml" or path.startswith(".ekit/adapters/") or path in refs
                 or any(path.startswith(r[:-len(".toml")] + ".r0/") for r in refs))
 
     outside = [p for p in git("diff", "--name-only", main0, tip).stdout.splitlines() if not checker(p)]
     lines.append("scope: " + (f"outside the checker ({', '.join(outside)[:300]})" if outside else
-                              "the plan, adapter files, their fixtures and the caller only"))
+                              "the plan, adapter files and their fixtures only"))
     ok.append(not outside)
 
     def toml_at(rev, path):
@@ -197,18 +201,32 @@ else:
             data = data.get(k) if isinstance(data, dict) else None
         return data
 
+    def blobs(rev, stem):
+        """{path under stem: blob} of the fixture dir stem at rev"""
+        out = {}
+        for row in git("ls-tree", "-r", rev, "--", stem).stdout.splitlines():
+            meta, path = row.split("\t", 1)
+            out[path[len(stem):]] = meta.split()[2]
+        return out
+
     frozen = ("commands", "limits", "run.test", "run.runner", "run.list.command", "mutation", "target-os", "manifests",
               "extensions")
     moved, gone = [], []
-    for ref in refs:
-        old, new = toml_at(main0, ref), toml_at(tip, ref)
-        if old is not None and new is not None:
+    for old_entry in (s for s in base_plan.get("stack", []) if isinstance(s, dict)):
+        ref = str(old_entry.get("adapter", ""))
+        if not ref.endswith(".toml"):
+            continue
+        new_entry = next((s for s in stacks if folder(s.get("folder")) == folder(old_entry.get("folder"))), None)
+        new_ref = str((new_entry or {}).get("adapter", ""))
+        old = toml_at(main0, ref)
+        new = toml_at(tip, new_ref) if new_ref.endswith(".toml") else None
+        if old is not None and new is None:
+            moved.append(f"the adapter file of folder {old_entry.get('folder')!r}")
+        elif old is not None:
             moved += [k for k in frozen if part(old, k) != part(new, k)]
-        stem = ref[:-len(".toml")] + ".r0/"
-        for row in git("ls-tree", "-r", main0, "--", stem).stdout.splitlines():
-            meta, path = row.split("\t", 1)
-            if git("rev-parse", "-q", "--verify", f"{tip}:{path}").stdout.strip() != meta.split()[2]:
-                gone.append(path)
+        stem, new_stem = ref[:-len(".toml")] + ".r0/", new_ref[:-len(".toml")] + ".r0/"
+        mine = blobs(tip, new_stem) if new_ref.endswith(".toml") else {}
+        gone += [stem + rel for rel, blob in sorted(blobs(main0, stem).items()) if mine.get(rel) != blob]
     lines.append("kept: " + (f"no ({', '.join(sorted(set(moved)))} changed)" if moved else "yes"))
     ok.append(not moved)
     lines.append("fixtures: " + (f"changed ({', '.join(gone)[:300]})" if gone else "kept"))
@@ -246,8 +264,9 @@ else:
     lines.append("person: " + ("; ".join(people)[:400] if people else "none" if result else
                                f"not read (r0 exit {r.returncode}: {why(r, result)})"))
     # a drift repair may add its folder to `ignore`, a person's call whose stop its criteria grade; nothing else
+    own_ignore = f"`ignore` gains `{expect.get('cover')}` in .ekit/stack-plan.toml"  # the drift case's own folder only
     loose = [x for p in people for x in p.split("a person decides: ", 1)[-1].split("; ")
-             if not (expect["kind"] == "drift" and x.startswith("`ignore` gains "))]
+             if not (expect["kind"] == "drift" and x == own_ignore)]
     ok.append(bool(result) and not loose)
 
     if expect["kind"] == "runner":

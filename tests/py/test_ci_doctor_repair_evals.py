@@ -20,6 +20,7 @@ from test_ci_doctor_setup_evals import graders
 from test_eval_scaffold import case_dir
 
 ADAPTER = ".ekit/adapters/maven.toml"
+PLAN = ".ekit/stack-plan.toml"
 OLD = (r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time elapsed: [\d.]+ """
        r"""sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
 NEW = r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
@@ -102,7 +103,7 @@ class RepairJavaRunner(Scaffold):
         self.assertEqual(self.verdict().splitlines(), [
             "branch: claude/adapter-fix", "main: untouched", "coding: untouched (claude/multiply)", "new-commits: 1",
             "mech-lines: 0", "cut-from-base: yes",
-            "scope: the plan, adapter files, their fixtures and the caller only", "kept: yes", "fixtures: kept",
+            "scope: the plan, adapter files and their fixtures only", "kept: yes", "fixtures: kept",
             "person: none", "entry: calc adapter .ekit/adapters/maven.toml",
             "r0: pass (static half: 17 of 17 cases proved)", "replay: 5/5 runs read right; census 3/3",
             "drift: clean (exit 0, D pass, 0 entries)", "repair: yes"])
@@ -207,6 +208,49 @@ class RepairJavaRunner(Scaffold):
                 self.assertIn(want + "\n", self.verdict())
                 self.assertNotIn("repair.md", self.passing())
 
+    def test_a_renamed_adapter_is_compared_with_the_base_adapter_of_its_folder(self):
+        """review round 2 [repair-diff-unbounded]: the fix moved to maven2.toml, its command and a runtime fixture
+        changed there, the plan pointed at it"""
+        ctl = "runtime/project/src/test/java/com/example/CtlTest.java.r0"
+        files = {".ekit/adapters/maven2.toml": self.fixed()[ADAPTER].replace('test = "mvn -B -ntp test"', 'test = "true"'),
+                 PLAN: self.read(PLAN).replace("adapter = \".ekit/adapters/maven.toml\"", "adapter = \".ekit/adapters/maven2.toml\"")}
+        src = os.path.join(self.repo, ".ekit", "adapters", "maven.r0")
+        for root, _, names in os.walk(src):
+            for fn in names:
+                rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
+                files[f".ekit/adapters/maven2.r0/{rel}"] = self.read(os.path.join(".ekit/adapters/maven.r0", rel))
+        files[f".ekit/adapters/maven2.r0/{ctl}"] = files[f".ekit/adapters/maven2.r0/{ctl}"].split("    @Test\n    void fails()")[0] + "}\n"
+        self.commit(files)
+        self.assertIn("kept: no (commands changed)\n", self.verdict())
+        self.assertIn(f"fixtures: changed (.ekit/adapters/maven.r0/{ctl})\n", self.verdict())
+        self.assertNotIn("repair.md", self.passing())
+
+    def test_a_renamed_adapter_that_keeps_everything_passes(self):
+        files = {".ekit/adapters/maven2.toml": self.fixed()[ADAPTER],
+                 PLAN: self.read(PLAN).replace("adapter = \".ekit/adapters/maven.toml\"", "adapter = \".ekit/adapters/maven2.toml\"")}
+        src = os.path.join(self.repo, ".ekit", "adapters", "maven.r0")
+        for root, _, names in os.walk(src):
+            for fn in names:
+                rel = os.path.relpath(os.path.join(root, fn), src).replace(os.sep, "/")
+                files[f".ekit/adapters/maven2.r0/{rel}"] = self.read(os.path.join(".ekit/adapters/maven.r0", rel))
+        self.commit(files)
+        self.assertIn("kept: yes\nfixtures: kept\n", self.verdict())
+
+    def test_the_caller_workflow_is_outside_a_repair(self):
+        """review round 2 [repair-diff-unbounded]: a narrowed test-paths beside the right fix"""
+        wf = ".github/workflows/mech-review.yml"
+        self.commit(dict(self.fixed(), **{wf: self.read(wf).replace("src/test/**", "nowhere/**")}))
+        self.assertIn(f"scope: outside the checker ({wf})\n", self.verdict())
+        self.assertNotIn("repair.md", self.passing())
+
+    def test_a_malformed_harness_file_writes_a_crashed_verdict(self):
+        """review round 2 [verdict-crash early reads]"""
+        self.commit(self.fixed())
+        with open(os.path.join(self.repo, ".git", "ekit-eval", "expect.json"), "w") as f:
+            f.write("{not json")
+        self.git("checkout", "-q", "main")
+        self.assertRegex(self.verdict(), r"^verdict: crashed \(JSONDecodeError: .*\)\nrepair: no\n$")
+
     def test_a_verdict_that_crashes_keeps_no_earlier_pass(self):
         """review round 1 [verdict-crash-keeps-stale]: a plan the script cannot read as it expects"""
         self.commit(self.fixed())
@@ -226,7 +270,6 @@ class RepairJavaRunner(Scaffold):
         self.assertNotIn("repair.md", self.passing())
 
 
-PLAN = ".ekit/stack-plan.toml"
 WEB = '\n[[stack]]\nname = "web"\nfolder = "web"\nadapter = "ts"\nstatus = "{}"\n'
 
 
@@ -249,7 +292,7 @@ class RepairDrift(Scaffold):
         self.commit(self.plan(WEB.format("planned")))
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines()[6:], [
-            "scope: the plan, adapter files, their fixtures and the caller only", "kept: yes", "fixtures: kept",
+            "scope: the plan, adapter files and their fixtures only", "kept: yes", "fixtures: kept",
             "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
             "drift: clean (exit 0, D pass, 0 entries)",
             "merged: clean (drift on the coding branch merged onto the repair tip: exit 0, D pass, 0 entries)",
@@ -261,10 +304,10 @@ class RepairDrift(Scaffold):
         self.assertIn("person: a person decides: `ignore` gains `web` in .ekit/stack-plan.toml\n"
                       "plan: ignores web (ignore 'web')\n", self.verdict())
 
-    def test_a_current_entry_passes_too_since_drift_judges_it_clean(self):
-        # review round 1: no spec sentence makes `planned` the only status; drift is clean either way
+    def test_a_current_entry_for_a_manifest_not_there_yet_is_the_wrong_status(self):
+        # repair.md, the CI doc and the scaffold: `planned`, since the manifest arrives with the PR
         self.commit(self.plan(WEB.format("current")))
-        self.assertEqual(self.passing(), self.ALL)
+        self.assertEqual(self.passing(), ["own-branch.md", "repair.md"])
 
     def test_a_person_needed_beside_the_cover_is_no_repair(self):
         """review round 1 [drift-needs-human-passes]: only `ignore` may need a person (its criteria grade the stop)"""
@@ -272,6 +315,16 @@ class RepairDrift(Scaffold):
         self.commit({PLAN: text})
         self.assertRegex(self.verdict(), r"(?m)^person: a person decides: .*target-os")
         self.assertEqual(self.passing(), ["own-branch.md", "plan.md"])
+
+    def test_only_the_cases_own_folder_may_be_ignored(self):
+        """review round 2 [drift-needs-human-passes]: an ignore beyond web/ (the python package's own src/) is a
+        person's call like any other"""
+        for n, files in enumerate((self.plan(ignore=["web", "src"]), self.plan(WEB.format("planned"), ignore=["src"]))):
+            with self.subTest(n):
+                self.git("checkout", "-q", "claude/web")
+                self.commit(files, branch=f"claude/fix-{n}")
+                self.assertRegex(self.verdict(), r"(?m)^person: a person decides: .*`ignore` gains `src`")
+                self.assertNotIn("repair.md", self.passing())
 
     def test_a_plan_that_crashes_the_verdict_fails(self):
         self.commit(self.plan(WEB.format("planned")))
