@@ -133,6 +133,16 @@ class Defaults(unittest.TestCase):
             "[ekit] Verify defaults: stack `lib` (mini, in lib): lint not declared: its folder or command holds a run "
             "of whitespace that task-verify collapses; declare it per task."])
 
+    def test_whitespace_only_at_a_commands_ends_is_declared_trimmed(self):
+        for lint in ('"mini lint "', '"""\nmini lint\n"""'):
+            with self.subTest(lint=lint):
+                self.setUp()
+                self.commit({MINI: mini(COMMANDS.replace('"mini lint"', lint)), "lib/mini.json": "{}",
+                             PLAN: plan(("lib", "lib", MINI, "current"))})
+                lines = self.lines(self.context())
+                self.assertEqual(self.declared(), ["cd lib && mini build", "cd lib && mini lint", "cd lib && mini test"])
+                self.assertFalse([line for line in lines if "whitespace" in line], lines)
+
     def test_a_folder_that_starts_with_a_dash_reaches_cd_as_a_path(self):
         self.commit({MINI: mini(), "-P/mini.json": "{}", PLAN: plan(("dash", "-P", MINI, "current"))})
         self.context()

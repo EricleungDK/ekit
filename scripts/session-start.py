@@ -137,12 +137,12 @@ def _drift(cwd):
 def stack_commands(top, stack):
     """{step: command} of the commands CI runs for a stack (#61): build and lint from an adapter file's [commands] (a
     built-in has none); test as R1 and R4 run it (test_cmd_in on the checkout: an adapter file's [run] runners, a
-    built-in's), an adapter file with no [run] its [commands].test. A step with no command is left out."""
+    built-in's), an adapter file with no [run] its [commands].test. Each trimmed; a step with no command is left out."""
     a = stack.adapter
     got = {k: a.commands.get(k, "") for k in STEPS} if hasattr(a, "commands") else {}
     if getattr(a, "run", True) is not None:  # a built-in has no [run] attribute: it always runs its tests
         got["test"] = a.test_cmd_in(os.path.join(top, *stack.folder.split("/")))
-    return {k: v for k, v in got.items() if v.strip()}
+    return {k: v.strip() for k, v in got.items() if v.strip()}  # whitespace at its ends runs as none: trimmed
 
 
 def in_folder(folder, cmd):
