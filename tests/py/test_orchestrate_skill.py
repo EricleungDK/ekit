@@ -121,6 +121,14 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         self.assertIn("its `summary` shows 0 fail", t)
         self.assertLess(t.index("Mech check:"), t.index("Report:"))
 
+    def test_taster_mech_range_is_its_own_commits_only(self):
+        # review of #118 (F1): from the can-fail baseline the range takes in the implementer's tests, and the
+        # taster, who commits only scenarios, could never reach 0 fail
+        t = flat(read("taster-brief-template.md"))
+        self.assertIn("--base <the HEAD sha of the Worktree line>", t)
+        self.assertNotIn("--base <the can-fail baseline ref>", t)
+        self.assertIn("An entry in a file you did not change goes into your report, not your diff.", t)
+
     def test_taster_report_carries_the_mech_summary_with_0_fail(self):
         report = flat(read("taster-brief-template.md")).split("Report:", 1)[1]
         self.assertIn("the mech-review `summary` line of your commit, with 0 fail", report)
