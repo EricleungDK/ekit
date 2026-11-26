@@ -66,6 +66,22 @@ class Defaults(unittest.TestCase):
         self.assertIn("[ekit] Verify defaults: stack `python` (at the repo root) names no build or lint command, so none "
                       "is declared for those steps.", self.lines(self.context()))
 
+    def test_declaring_starts_no_program_a_session_with_nothing_declared_does_not(self):
+        """the defaults add no process to session start (stack-plan/session-start: the programs other than git are
+        the same with and without a plan): the run lines reuse the python the hook already found"""
+        def probes(files):
+            self.setUp()
+            self.commit(files)
+            with mock.patch.dict(os.environ), mock.patch.object(ss.launcher, "version_of", return_value=(3, 13)) as v:
+                os.environ.pop("EKIT_PY", None)  # the hook found none yet: launcher probes for it
+                ctx = self.context()
+            return v.call_count, ctx
+        none, ctx = probes({"web/package.json": "{}", "api/pyproject.toml": "[project]\n"})  # several: none declared
+        self.assertIn("none declared: several projects", ctx)
+        some, ctx = probes({"pyproject.toml": "[project]\n"})
+        self.assertIn("`python3 -m pytest`", ctx)
+        self.assertEqual(some, none)
+
     def test_a_built_in_gives_its_test_command_as_r1_and_r4_run_it(self):
         self.commit({"web/package.json": '{"devDependencies": {"jest": "29"}}'})
         self.context()
