@@ -671,7 +671,7 @@ class MissingRunner(VerifyCase):
         self.failed("true && ekit_absent_tool117", 127)
 
     def test_a_probe_that_hangs_is_a_failed_run(self):
-        self.fake_python('case "$1" in -c) sleep 5;; esac\necho "No module named pytest" >&2\nexit 1\n')
+        self.fake_python('case "$1" in -c) sleep 5;; esac\nexit 1\n')  # the run fails; the probe hangs
         with mock.patch.object(tv, "PROBE_SECONDS", 0.5):
             self.failed("python3 -m pytest", 1)
 
