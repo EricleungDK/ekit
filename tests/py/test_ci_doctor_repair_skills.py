@@ -105,6 +105,22 @@ class SetupPrCheck(unittest.TestCase):
         self.assertIn("`no result`, red with nothing to waive", s)
         self.assertIn("The owner merges on the proof report below, then makes the mech-review check required", s)
 
+    def test_the_required_check_waits_for_the_first_manifest_in_an_empty_repo(self):
+        self.assertIn("required (an empty repo: after the first manifest lands)",
+                      flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR")))
+
+    def test_the_setup_checks_the_repos_own_build_runs_the_mutation_tool(self):
+        s = flat(section(read("ci-doctor", "setup.md"), "3. Draft the adapter"))
+        self.assertIn("it cannot see whether the repo's own build runs the declared mutation tool", s)
+        self.assertIn("add that wiring to the setup PR, or leave `[mutation.tool]` out so that R3 reads `n/a`", s)
+        self.assertIn("the mutation tool's wiring in the repo's build, or that `[mutation.tool]` is left out",
+                      flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR")))
+
+    def test_an_expected_no_result_is_no_reason_to_set_up_again(self):
+        s = flat(section(read("ci-doctor"), "1. Diagnose"))
+        self.assertIn("A setup PR's own `no result`, and that of a repo whose plan has only `planned` entries, are "
+                      "expected", s)
+
     def test_skill_step_5_tells_the_two_checks_apart(self):
         s = flat(section(read("ci-doctor"), "5. Open the PR"))
         self.assertIn("A repo with a built-in stack: red `needs-human` by design", s)

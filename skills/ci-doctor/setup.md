@@ -31,6 +31,8 @@ Java, as an example of the categories: a composed `@Disabled` or `@Test`, `assum
 
 Read how the repo writes its tests (test files, the manifest's test and lint setup), then write `.ekit/adapters/<name>.toml` for this repo: generated from what it holds, never copied from the kit's own test fixtures (`<kit>/tests/fixtures/adapters/`, ekit's tests of the format; the graders fail a copy). Its keys: `name`, `manifests` (every manifest of the build in the folder, e.g. both `build.gradle.kts` and `settings.gradle.kts`: one it leaves out reads as a second project), `extensions`, `target-os` (step 1's), the lexer, tests, asserts, suppressions and mutation tables, `[mutation.tool]`, `[commands]` (install, build, lint, test: the repo's own toolchain), `[run]`, `[run.list]` and `[run.outcome]`.
 
+The proof runs the R3 control on the fixture project, so it cannot see whether the repo's own build runs the declared mutation tool (a plugin the build file must name, say). Check that it does. If it does not, add that wiring to the setup PR, or leave `[mutation.tool]` out so that R3 reads `n/a`. The PR body says which.
+
 ## 4. Prove it with R0
 
 The proof is every R0 case of both halves, the census and the cheat list. Budget: 5 rounds; a round is one adapter revision and one run of the proof below, and a failing case of either half counts the same. Nothing is committed yet; each step reads the working tree:
@@ -64,9 +66,9 @@ On a new branch, commit it all, then prove the committed files the way CI reads 
 
 Push and open it, as SKILL.md step 5. Its body, beside step 5's:
 
-- How its own check reads: `no result`, red with nothing to waive (the base has no stack for its CI to run). The owner merges on the proof report below, then makes the mech-review check required.
+- How its own check reads: `no result`, red with nothing to waive (the base has no stack for its CI to run). The owner merges on the proof report below, then makes the mech-review check required (an empty repo: after the first manifest lands).
 
-- Files: the adapter and its fixtures, the stack plan entry, the callers, the base CI jobs or why none (`own_ci` names the team's).
+- Files: the adapter and its fixtures, the stack plan entry, the callers, the base CI jobs or why none (`own_ci` names the team's), and the mutation tool's wiring in the repo's build, or that `[mutation.tool]` is left out (step 3).
 - Detection: doctor's `setup` (language, build, test framework, target OS and why).
 - Proof report: the static half (`N of N cases`), the census (`N of N tests`), the runtime half's result or not run here and why, and the cheat list, each item caught (its R0 case, or the r2 run) or a limit the CI doc names (quoted).
 - `## Limits (owner decides)`: each other cheat the proof cannot catch, with why; leave the heading out when there is none.

@@ -11,6 +11,8 @@ Ends in a PR a person merges. `.github/**` is a human decision, so your last act
 
 Started on an `adapter-fix` entry (a PR's mech-review, an orchestrator's hand-off): follow [repair.md](repair.md).
 
+A setup PR's own `no result`, and that of a repo whose plan has only `planned` entries, are expected (`<kit>/docs/mech-review-ci.md`, Setup mode, Known gaps): no reason to run setup again.
+
 Else run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
 
 - `ask`: several projects. Ask the user which, naming each as the entry does, then rerun with `--project-dir`, `--stack` or both (the entry's hint).
