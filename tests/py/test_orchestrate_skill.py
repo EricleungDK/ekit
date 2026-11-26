@@ -67,6 +67,15 @@ class TestPlanTimeGates(unittest.TestCase):
             self.assertIn("write only under", t, name)
             self.assertRegex(t, r"run every command as `cd <[^`>]+> && …`", name)
 
+    def test_every_brief_puts_scratch_files_in_a_temp_dir_outside_the_repo(self):
+        # review of #119 (F7): "write only under" read as a ban on the briefs' own temp-dir steps (install dir,
+        # EKIT_STATE, a temp worktree); the limit is for the repo, scratch goes outside it
+        for name in BRIEFS:
+            t = flat(read(name))
+            self.assertIn("In the repo, write only under", t, name)
+            self.assertIn("scratch files go in a temp dir outside the repo; never write into another worktree or the "
+                          "main checkout.", t, name)
+
     def test_briefs_and_skill_say_the_brief_is_the_only_isolation(self):
         # #119: no hook ekit ships blocked any of those writes; the claim that one does is gone
         for name in BRIEFS:
