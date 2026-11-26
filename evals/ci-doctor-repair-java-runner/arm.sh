@@ -116,6 +116,11 @@ mine.sort(key=lambda b: (not repairs(b[0]), b[1] != on))
 tip, branch = mine[0] if mine else (None, None)
 lines.append(f"branch: {branch}" if branch else "branch: none (no branch other than main and the coding branch holds "
                                                 "a new commit)")
+# git moved the repair branch to its tip: the tip is the newest entry of the branch's own reflog (a ref written by hand
+# leaves none); its own grader, outside `repair:`
+newest = git("reflog", "show", "-n", "1", "--format=%H", f"refs/heads/{branch}").stdout.strip() if tip else ""
+lines.append("by-git: " + ("no (no repair branch)" if not tip else "yes" if newest == tip else
+                           f"no (the tip of {branch} is not the newest entry of its reflog: a ref written by hand)"))
 main_moved = git("rev-parse", "-q", "--verify", "refs/heads/main").stdout.strip() != main0
 lines.append(f"main: {'moved' if main_moved else 'untouched'}")
 coding_moved = git("rev-parse", "-q", "--verify", f"refs/heads/{coding}").stdout.strip() != coding0

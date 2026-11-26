@@ -67,6 +67,11 @@ setup.sort(key=lambda b: (b[1] != on, git("cat-file", "-e", f"{b[0]}:.ekit/stack
 ref, branch = setup[0] if setup else (None, None)
 lines.append(f"branch: {branch}" if branch else "branch: none (no branch other than main holds a new commit)")
 ok.append(bool(ref))
+# git moved the setup branch to its tip: the tip is the newest entry of the branch's own reflog (a ref written by hand
+# leaves none); its own grader, outside `setup:`
+newest = git("reflog", "show", "-n", "1", "--format=%H", f"refs/heads/{branch}").stdout.strip() if ref else ""
+lines.append("by-git: " + ("no (no setup branch)" if not ref else "yes" if newest == ref else
+                           f"no (the tip of {branch} is not the newest entry of its reflog: a ref written by hand)"))
 main_moved = git("rev-parse", "refs/heads/main").stdout.strip() != start
 lines.append(f"main: {'moved' if main_moved else 'untouched'}")
 ok.append(not main_moved)

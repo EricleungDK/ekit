@@ -89,9 +89,23 @@ else:
         clean = r.returncode == 0 and d.get("status") == "pass" and not entries
         lines.append(f"drift: {'clean' if clean else 'not clean'} (exit {r.returncode}, D {d.get('status')}, "
                      f"{len(entries)} entries, messages {json.dumps(d.get('messages', []))})")
+# committed with git on the branch that ends checked out: HEAD is on a branch beyond the scaffold's commit, and git moved
+# it there (its tip is the newest entry of its own reflog; a ref written by hand leaves none)
+on = git("symbolic-ref", "-q", "HEAD").stdout.strip()
+tip = git("rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+try:
+    with open(os.path.join(here, "ekit-eval", "start"), encoding="utf-8") as f:
+        start = f.read().strip()
+except OSError:  # the scaffold's own commit, before it records the start
+    start = tip
+newest = git("reflog", "show", "-n", "1", "--format=%H", on).stdout.strip() if on else ""
+lines.append("by-git: " + ("no (HEAD is on no branch)" if not on else "no (no commit beyond the scaffold's)"
+                           if tip == start else "yes" if newest == tip else
+                           f"no (the tip of {on} is not the newest entry of its reflog: a ref written by hand)"))
 lines.append(f"migrated: {'yes' if ts and retiring and clean else 'no'}")  # the one end state: all three at once
 with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
 git add -A; git commit -qm "greet: js package, stack plan"
+git rev-parse HEAD > .git/ekit-eval/start
 python3 -I .git/ekit-eval/verdict.py  # the start state's verdict

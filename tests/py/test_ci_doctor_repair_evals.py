@@ -81,7 +81,7 @@ class Scaffold(unittest.TestCase):
 
 class RepairJavaRunner(Scaffold):
     CASE = "ci-doctor-repair-java-runner"
-    ALL = ["own-branch.md", "r0-pass.md", "repair.md", "replay.md"]
+    ALL = ["committed-by-git.md", "own-branch.md", "r0-pass.md", "repair.md", "replay.md"]
 
     def fixed(self, at=None):
         return {ADAPTER: self.read(ADAPTER, at).replace(OLD, NEW)}
@@ -105,8 +105,8 @@ class RepairJavaRunner(Scaffold):
         self.commit(self.fixed())
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines(), [
-            "branch: claude/adapter-fix", "main: untouched", "coding: untouched (claude/multiply)", "new-commits: 1",
-            "mech-lines: 0", "cut-from-base: yes", "allow: yes",
+            "branch: claude/adapter-fix", "by-git: yes", "main: untouched", "coding: untouched (claude/multiply)",
+            "new-commits: 1", "mech-lines: 0", "cut-from-base: yes", "allow: yes",
             "person: none", "entry: calc adapter .ekit/adapters/maven.toml",
             "r0: pass (static half: 17 of 17 cases proved)", "replay: 5/5 runs read right; census 3/3",
             "drift: clean (exit 0, D pass, 0 entries)", "repair: yes"])
@@ -136,7 +136,7 @@ class RepairJavaRunner(Scaffold):
 
     def test_the_adapter_left_as_it_was_misreads_the_runner(self):
         self.commit({"NOTES.md": "surefire 3 changed its summary line\n"})
-        self.assertEqual(self.passing(), ["own-branch.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md", "r0-pass.md"])
         self.assertIn("replay: misread: pass read error (want pass); fail read error (want fail); skipped read error "
                       "(want none); no-such-test read error (want none)\n", self.verdict())
 
@@ -148,13 +148,13 @@ class RepairJavaRunner(Scaffold):
     def test_a_repair_branch_cut_from_the_coding_branch_fails(self):
         self.commit(self.fixed(), start="claude/multiply")
         # (and the recorded listing, of main's three tests, no longer names every test of that branch's file)
-        self.assertEqual(self.passing(), ["r0-pass.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "r0-pass.md"])
         self.assertIn("replay: misread: census 3/3 (4 found by the scanner)\n", self.verdict())
         self.assertIn("cut-from-base: no (the repair branch holds 1 of the coding branch's commits)\n", self.verdict())
 
     def test_a_mech_line_on_any_new_commit_counts_as_a_fix_round(self):
         self.commit(self.fixed(), body="mech: R0-00e0bfc4\n")
-        self.assertEqual(self.passing(), ["r0-pass.md", "replay.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "r0-pass.md", "replay.md"])
         self.assertIn("mech-lines: 1\n", self.verdict())
         self.git("checkout", "-q", "-b", "claude/adapter-fix-2", "main")
         self.write(self.fixed())
@@ -178,7 +178,7 @@ class RepairJavaRunner(Scaffold):
             with self.subTest(name):
                 self.git("checkout", "-q", "claude/multiply")
                 self.commit(files, branch=f"claude/fix-{len(name)}")
-                self.assertEqual(self.passing(), ["own-branch.md", "replay.md"])
+                self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md", "replay.md"])
                 self.assertRegex(self.verdict(), want)
 
     def test_a_loosened_limit_or_a_changed_target_os_needs_a_person(self):
@@ -266,7 +266,7 @@ WEB = '\n[[stack]]\nname = "web"\nfolder = "web"\nadapter = "ts"\nstatus = "{}"\
 
 class RepairDrift(Scaffold):
     CASE = "ci-doctor-repair-drift"
-    ALL = ["own-branch.md", "plan.md", "repair.md"]
+    ALL = ["committed-by-git.md", "own-branch.md", "plan.md", "repair.md"]
 
     def plan(self, extra="", ignore=None):
         text = self.git("show", f"main:{PLAN}") + extra
@@ -282,7 +282,7 @@ class RepairDrift(Scaffold):
     def test_a_planned_entry_for_the_folder_passes_every_grader(self):
         self.commit(self.plan(WEB.format("planned")))
         self.assertEqual(self.passing(), self.ALL)
-        self.assertEqual(self.verdict().splitlines()[6:], [
+        self.assertEqual(self.verdict().splitlines()[7:], [
             "allow: yes", "person: none", "plan: covers web (entry web adapter ts status planned)", "r0: built-in (ts)",
             "drift: clean (exit 0, D pass, 0 entries)",
             "merged: clean (drift on the coding branch merged onto the repair tip: exit 0, D pass, 0 entries)",
@@ -341,7 +341,7 @@ class RepairDrift(Scaffold):
         text = self.plan(WEB.format("planned"))[PLAN].replace('adapter = "python"\n', 'adapter = "python"\ntarget-os = "windows"\n', 1)
         self.commit({PLAN: text})
         self.assertRegex(self.verdict(), r"(?m)^person: a person decides: .*target-os")
-        self.assertEqual(self.passing(), ["own-branch.md", "plan.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md", "plan.md"])
 
     def test_only_the_cases_own_folder_may_be_ignored(self):
         """review round 2 [drift-needs-human-passes]: an ignore beyond web/ (the python package's own src/) is a
@@ -363,7 +363,7 @@ class RepairDrift(Scaffold):
 
     def test_a_plan_that_neither_covers_nor_ignores_the_folder_fails(self):
         self.commit(self.plan(WEB.format("planned").replace('folder = "web"', 'folder = "site"')))
-        self.assertEqual(self.passing(), ["own-branch.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md"])
         self.assertIn("plan: neither (no entry for 'web' and no ignore folder holding it)\n", self.verdict())
         self.assertIn("merged: not clean (", self.verdict())
 
@@ -374,7 +374,7 @@ class RepairDrift(Scaffold):
 
     def test_the_entry_with_a_mech_line_or_cut_from_the_coding_branch_fails(self):
         self.commit(self.plan(WEB.format("planned")), body="mech: D-7e776699\n")
-        self.assertEqual(self.passing(), ["plan.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "plan.md"])
         self.git("checkout", "-q", "claude/web")
         self.git("branch", "-q", "-D", "claude/adapter-fix")
         self.commit(self.plan(WEB.format("planned")), branch="claude/fix-2", start="claude/web")

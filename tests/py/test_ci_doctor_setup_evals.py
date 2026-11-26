@@ -118,17 +118,30 @@ class Scaffold(unittest.TestCase):
 
 class SetupJava(Scaffold):
     CASE = "ci-doctor-setup-java"
-    ALL = ["census.md", "ci-kept.md", "plan-current.md", "r0-pass.md", "setup.md"]
+    ALL = ["census.md", "ci-kept.md", "committed-by-git.md", "plan-current.md", "r0-pass.md", "setup.md"]
 
     def test_the_generated_setup_on_its_branch_passes_every_grader(self):
         self.setup_commit()
         self.assertEqual(self.passing(), self.ALL)
         self.assertEqual(self.verdict().splitlines(), [
-            "branch: ekit-setup", "main: untouched", "new-commits: 1",
+            "branch: ekit-setup", "by-git: yes", "main: untouched", "new-commits: 1",
             "entry: calc adapter .ekit/adapters/maven.toml status current", "target-os: linux",
             "r0: pass (static half: 17 of 17 cases proved)", "census: 3/3 of the repo's tests read",
             "copied: no", "drift: clean (exit 0, D pass, 0 entries)", "caller: yes", "ci-kept: yes", "base-jobs: none",
             "setup: yes"])
+
+    def test_a_setup_branch_written_by_hand_is_no_commit_by_git(self):
+        self.setup_commit()
+        sha = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "ekit-setup")
+        with open(os.path.join(self.repo, ".git", "refs", "heads", "ekit-setup"), "w") as f:
+            f.write(sha + "\n")  # the ref by hand: no reflog
+        self.git("status")
+        self.assertIn("by-git: no (the tip of ekit-setup is not the newest entry of its reflog: a ref written by "
+                      "hand)\n", self.verdict())
+        self.assertNotIn("committed-by-git.md", self.passing())
+        self.assertIn("setup.md", self.passing())  # the tree is the good setup: only the commit check catches it
 
     def test_the_setup_branch_is_graded_wherever_head_ends(self):
         self.setup_commit()
@@ -147,13 +160,13 @@ class SetupJava(Scaffold):
 
     def test_an_adapter_that_misses_a_cheat_fails_the_proof(self):
         self.setup_commit(adapter=lambda text: text.replace('skip = ["Disabled",', "skip = ["))
-        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md"])
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "committed-by-git.md", "plan-current.md"])
         self.assertRegex(self.verdict(), r"(?m)^r0: not pass \(exit 1, R0 fail: R0 static half failed for the `maven` "
                                          r"adapter: cheat `skip` gave no R2 fail")
 
     def test_an_adapter_with_no_fixtures_is_unproven_not_a_pass(self):
         self.setup_commit(fixtures=False)
-        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md"])
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "committed-by-git.md", "plan-current.md"])
         self.assertRegex(self.verdict(), r"(?m)^r0: not pass \(exit 0, R0 unproven: ")
 
     def test_an_adapter_that_misreads_the_repos_tests_fails_the_census(self):
@@ -164,7 +177,7 @@ class SetupJava(Scaffold):
 
     def test_the_reference_adapter_or_its_fixtures_copied_from_the_kit_fail(self):
         self.setup_commit(copy=True)
-        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "committed-by-git.md", "plan-current.md", "r0-pass.md"])
         self.assertIn("copied: yes (.ekit/adapters/java.toml is the kit's tests/fixtures/adapters/java.toml; 19 of 19 "
                       "fixture files are java.r0's)\n", self.verdict())
         self.git("checkout", "-q", "main")
@@ -184,7 +197,7 @@ class SetupJava(Scaffold):
 
     def test_a_planned_entry_for_a_manifest_that_is_there_is_the_wrong_status(self):
         self.setup_commit(status="planned")
-        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "committed-by-git.md", "r0-pass.md"])
 
     def test_the_setup_branch_is_preferred_over_a_newer_scratch_branch(self):
         self.setup_commit()
@@ -209,20 +222,20 @@ class SetupJava(Scaffold):
 
     def test_the_teams_ci_edited_or_a_job_beside_it_in_any_file_fails(self):
         self.setup_commit(files={".github/workflows/ci.yml": "name: ci\non: [push]\njobs: {}\n"})
-        self.assertEqual(self.passing(), ["census.md", "plan-current.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "committed-by-git.md", "plan-current.md", "r0-pass.md"])
         for n, files in enumerate(({".github/workflows/build.yml": BASE_JOB},
                                    {".github/workflows/mech-review.yml": CALLER + BASE_JOB[len("jobs:\n"):]})):
             with self.subTest(files=sorted(files)):
                 self.git("checkout", "-q", "main")
                 self.setup_commit(files=files, branch=f"setup-{n}")
-                self.assertEqual(self.passing(), ["census.md", "plan-current.md", "r0-pass.md"])
+                self.assertEqual(self.passing(), ["census.md", "committed-by-git.md", "plan-current.md", "r0-pass.md"])
                 self.assertRegex(self.verdict(), r"(?m)^base-jobs: yes \(\.github/workflows/\S+ job test run "
                                                  r"`mvn -B -ntp test`\)$")
 
     def test_the_setup_on_main_or_reset_away_is_not_the_end_state(self):
         self.setup_commit(branch=None)
         self.assertEqual(self.passing(), [])
-        self.assertIn("branch: none (no branch other than main holds a new commit)\nmain: moved\n", self.verdict())
+        self.assertIn("branch: none (no branch other than main holds a new commit)\nby-git: no (no setup branch)\nmain: moved\n", self.verdict())
         self.git("reset", "-q", "--hard", "HEAD~1")
         self.git("checkout", "-q", "-b", "ekit-setup")
         self.assertEqual(self.passing(), [])
@@ -231,7 +244,7 @@ class SetupJava(Scaffold):
         self.setup_commit(files={".github/workflows/mech-review.yml": "jobs: {}\n# mech-review:\n"
                                                                       "#   uses: EricleungDK/ekit/.github/workflows/"
                                                                       "mech-review.yml@v0\n"})
-        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "plan-current.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "ci-kept.md", "committed-by-git.md", "plan-current.md", "r0-pass.md"])
         self.assertIn("caller: no\n", self.verdict())
 
     def test_a_missing_kit_is_named_a_harness_problem(self):
@@ -247,20 +260,20 @@ class SetupJavaNoCi(Scaffold):
 
     def test_base_jobs_running_the_adapters_test_command_pass_in_any_file(self):
         self.setup_commit(files={".github/workflows/build.yml": BASE_JOB})
-        self.assertEqual(self.passing(), ["base-jobs.md", "census.md", "r0-pass.md", "setup.md"])
+        self.assertEqual(self.passing(), ["base-jobs.md", "census.md", "committed-by-git.md", "r0-pass.md", "setup.md"])
         self.git("checkout", "-q", "main")
         self.setup_commit(files={".github/workflows/mech-review.yml": CALLER + BASE_JOB[len("jobs:\n"):]},
                           branch="setup-2")
-        self.assertEqual(self.passing(), ["base-jobs.md", "census.md", "r0-pass.md", "setup.md"])
+        self.assertEqual(self.passing(), ["base-jobs.md", "census.md", "committed-by-git.md", "r0-pass.md", "setup.md"])
 
     def test_no_base_job_or_one_that_runs_the_test_command_in_a_comment_only_fails(self):
         self.setup_commit()
-        self.assertEqual(self.passing(), ["census.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "committed-by-git.md", "r0-pass.md"])
         self.write({".github/workflows/build.yml": BASE_JOB.replace("- run: mvn -B -ntp test",
                                                                     "- run: mvn -B verify  # mvn -B -ntp test")})
         self.git("add", "-A")
         self.git("commit", "-qm", "base job")
-        self.assertEqual(self.passing(), ["census.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["census.md", "committed-by-git.md", "r0-pass.md"])
         self.assertIn("base-jobs: no test command (.github/workflows/build.yml job test: none runs the adapter's "
                       "[commands] test)", self.verdict())
 
@@ -270,12 +283,12 @@ class SetupPlanned(Scaffold):
 
     def test_a_planned_entry_with_a_proven_adapter_and_base_jobs_passes(self):
         self.setup_commit(status="planned", files={".github/workflows/build.yml": BASE_JOB})
-        self.assertEqual(self.passing(), ["plan-planned.md", "r0-pass.md", "setup.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "plan-planned.md", "r0-pass.md", "setup.md"])
         self.assertIn("census: no repo tests yet\ncopied: no\ndrift: clean (exit 0, D pass, 0 entries)", self.verdict())
 
     def test_a_current_entry_with_no_manifest_fails(self):
         self.setup_commit(status="current", files={".github/workflows/build.yml": BASE_JOB})
-        self.assertEqual(self.passing(), ["r0-pass.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "r0-pass.md"])
 
     def test_the_start_state_passes_no_grader(self):
         self.assertEqual(self.passing(), [])

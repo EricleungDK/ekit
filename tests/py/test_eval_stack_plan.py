@@ -56,6 +56,33 @@ class EndState(Scaffold):
         self.assertIn("js-retiring: yes", lines)
         self.assertRegex(lines[2], r"^drift: clean \(exit 0, D pass, 0 entries, messages \[\"retiring stack `js`")
         self.assertEqual(lines[-1], "migrated: yes")
+        self.assertIn("by-git: yes", lines)
+
+    def hand_written_tip(self, plan):
+        """a commit made with plain git (no ref moved), then main's ref file written by hand to it"""
+        with open(os.path.join(self.repo, ".ekit", "stack-plan.toml"), "w", newline="\n") as f:
+            f.write(plan)
+        plain = ["git", "-C", self.repo]
+        subprocess.run([*plain, "add", "-A"], check=True)
+        tree = subprocess.run([*plain, "write-tree"], check=True, capture_output=True, text=True).stdout.strip()
+        sha = subprocess.run([*plain, "commit-tree", tree, "-p", "HEAD", "-m", "by hand"], check=True,
+                             capture_output=True, text=True).stdout.strip()
+        with open(os.path.join(self.repo, ".git", "refs", "heads", "main"), "w") as f:
+            f.write(sha + "\n")
+
+    def test_a_ref_written_by_hand_is_no_commit_by_git_at_the_next_git_command(self):
+        self.hand_written_tip(JS_RETIRING + TS)
+        self.git("status")  # read-only: the shim grades what moved since the last verdict, not during this command
+        lines = self.verdict()
+        self.assertEqual(lines[-1], "migrated: yes")  # the tree at HEAD is right
+        self.assertIn("by-git: no (the tip of refs/heads/main is not the newest entry of its reflog: a ref written "
+                      "by hand)", lines)
+
+    def test_a_detached_head_or_the_scaffolds_commit_is_no_commit_by_git(self):
+        self.assertIn("by-git: no (no commit beyond the scaffold's)", self.verdict())
+        self.commit(JS_RETIRING + TS)
+        self.git("checkout", "-q", "--detach")
+        self.assertIn("by-git: no (HEAD is on no branch)", self.verdict())
 
     def test_the_start_state_passes_no_grader(self):
         lines = self.verdict()
