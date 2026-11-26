@@ -44,7 +44,7 @@ The proof is every R0 case of both halves, the census and the cheat list. Budget
 
 Each failed case is a fix to the adapter; a cheat fixture changes only when it is not valid code in the language, and the report says which and why.
 
-A cheat the proof cannot catch is a **limit** only when the CI doc already names it as one (`<kit>/docs/mech-review-ci.md`: the format's own limits), or when the PR body lists it under a `## Limits (owner decides)` heading, which the owner accepts or rejects before merging. Name each in a comment at the top of the adapter too. Any other uncaught cheat is a miss.
+A cheat the proof cannot catch is a **limit** only when the CI doc already names it as one (`<kit>/docs/mech-review-ci.md`: the format's own limits), or when the PR body lists it under a `## Limits (owner decides)` heading, which the owner accepts or rejects before merging. Name each in a comment at the top of the adapter too. Any other uncaught cheat is a miss. A limit covers an uncaught cheat alone, never a failing R0 case or a census miss, and it replaces no round: when the doc names a limit you expect to fail the proof (Go's tests declared by their name alone, say), still draft the adapter and its fixtures, run the proof and revise round by round; the report names each case that still fails as `r0` or `r2` gave it.
 
 Budget spent with a case failing, unproven or missed: stop here. Commit nothing, open no PR, and report blocked via finish: each failed case as `r0` or `r2` names it, the cheats missed, the draft's path, and what would unblock it.
 

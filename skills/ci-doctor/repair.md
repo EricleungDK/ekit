@@ -32,7 +32,7 @@ Take the entry from the PR's mech-review result (sticky comment or JSON) or doct
 
 ## 4. Prove it
 
-The proof is every part, for the edited copy, in the four stages below. Budget: 5 rounds, as setup.md's Prove it with R0 counts them (one revision and one run of the proof; a failing case of any part counts the same).
+The proof is every part, for the edited copy, in the four stages below. Budget: 5 rounds, as setup.md's Prove it with R0 counts them (one revision and one run of the proof; a failing case of any part counts the same). A limit the CI doc names replaces no round (setup.md, Prove it with R0): draft each revision, run the proof on it, and report the cases that still fail by name.
 
 - **Working tree.** The parts of setup.md's Prove it with R0: Static half (`--adapter` the edited file), Census of the repo's own tests, Runtime half where the toolchain is installed and this machine is the target OS (`red --r0`, `mutants --r0`; else the report's "not run here: <why>", and for a runtime entry each changed pattern checked against every output shape the runner gives in CI's log), and for a new adapter file The cheat list (written as setup.md's Cheat list says).
 - **As CI reads it**, in a scratch clone (never a branch of the repo): commit the edit on top of `origin/<base>`, then `MR r0 --repo <scratch> --base HEAD --head HEAD --stack <name> --project-dir <folder>` (`pass`) for each adapter file the repair touched, and `MR drift --repo <scratch> --base origin/<base> --head HEAD --format text` (`pass`, no fail entry).

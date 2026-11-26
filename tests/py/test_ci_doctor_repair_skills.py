@@ -72,6 +72,15 @@ class Repair(unittest.TestCase):
                      "Budget: 5 rounds"):
             self.assertIn(part, s, part)
 
+    def test_a_limit_the_doc_names_replaces_no_proof_round(self):
+        """the budget evals' runs stopped on a format limit the CI doc names, before any round: the rounds still run,
+        and the report names each case that still fails (setup.md says the same for setup mode)"""
+        self.assertIn("A limit the CI doc names replaces no round", flat(section(self.text, "4. Prove it")))
+        s = flat(section(read("ci-doctor", "setup.md"), "4. Prove it with R0"))
+        self.assertIn("A limit covers an uncaught cheat alone, never a failing R0 case or a census miss, and it replaces "
+                      "no round", s)
+        self.assertIn("the report names each case that still fails as `r0` or `r2` gave it", s)
+
     def test_a_person_decides_a_loosened_limit_a_target_os_or_an_ignore(self):
         s = flat(section(self.text, "4. Prove it"))
         for part in ("`needs-human`", "a loosened limit", "a changed target OS", "a folder added to `ignore`",
