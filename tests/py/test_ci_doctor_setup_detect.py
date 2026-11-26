@@ -316,7 +316,8 @@ class SetupDetection(unittest.TestCase):
                                        "package.json"]))
         rc, env = self.doctor({"App.sln": "", "App/App.csproj": "<Project />\n",
                                "examples/Demo/Demo.csproj": "<UseWPF>true</UseWPF> <Package Include=\"xunit\" />",
-                               "examples/Wpf.csproj": "<UseWPF>true</UseWPF> <Package Include=\"nunit\" />"})
+                               "examples/Wpf.csproj": "<UseWPF>true</UseWPF> <Package Include=\"nunit\" />",
+                               "tools/examples/Old.csproj": "<UseWPF>true</UseWPF> <Package Include=\"mstest\" />"})
         self.assertEqual([(p["test_framework"], p["target_os"]) for p in env["setup"]["projects"]], [(None, "linux")])
 
     def test_an_adapter_file_named_like_a_built_in_keeps_the_adopt_flow(self):
