@@ -17,9 +17,9 @@ calls `run`. A command whose shell this machine lacks is not run: `run` exits 5,
 `n/a (env)`, never a pass. So does a run that failed because its runner is not installed (#117), naming what to
 install: after a failing exit of a line that is one plain command, task-verify asks whether its runner is there
 (missing_runner; any other line is a failed run, never a guess), through the run's own shell started as the run is,
-so it finds what the run finds: for `<python> -m <module>` that python whether it finds the module (`install module pytest for python3 (that Python
-finds no pytest; ...)`), for any other command the shell whether it finds the word (`install jq (bash finds no
-jq)`). A runner that is there and fails is a failed run, whatever it printed; the run's output is not read.
+so it finds what the run finds: for `<python> -m <module>` that python whether it finds the module (`install
+module pytest for python3 (that Python finds no pytest; ...)`), for any other command the shell whether it finds
+the word (`install jq (bash finds no jq)`). A runner that is there and fails is a failed run, whatever it printed; the run's output is not read.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command becomes a command of the session.
