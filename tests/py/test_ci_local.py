@@ -392,7 +392,8 @@ class Scenarios(Tmp):
         self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
         r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
-        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 3); not run here: traced: strace is missing")
+        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 3); "
+                               "not run here: traced: strace is missing")
 
     def test_unrunnable_ok_all_passing_exits_0(self):
         self.scenario("good", "exit 0")

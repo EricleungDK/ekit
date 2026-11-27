@@ -17,17 +17,17 @@ scenarios:
          fails the step.
   scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file; #115), as the tests
          workflow's scenarios job runs it (#116): a FAIL fails the step, naming each; one this machine cannot run
-         is not run here, naming it and what is missing: the runner's NOT-RUN (no shell for its run file), or a scenario that exits non-zero with its own one
-         fail message on stderr, `ASSERT FAILED: unrunnable here: <what>` (lib.sh: fail "unrunnable here: ..."), as its
-         last stderr line and its only ASSERT FAILED line. A timeout or a bad folder stays a FAIL. No verdict line, or
-         PASS: 0/0, is not run here.
+         is not run here, naming it and what is missing: the runner's NOT-RUN (no shell for its run file), or a
+         scenario that exits non-zero with its own one fail message on stderr, `ASSERT FAILED: unrunnable here: <what>`
+         (lib.sh: fail "unrunnable here: ..."), as its last stderr line and its only ASSERT FAILED line. A timeout or a
+         bad folder stays a FAIL. No verdict line, or PASS: 0/0, is not run here.
 mech and r3 test the HEAD commit (uncommitted changes are not in them); suite and scenarios run the working tree.
 Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that could not run is not a pass.
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
---step runs only the steps named (repeatable; still in CI's order). --unrunnable-ok (#116: the tests workflow's scenarios
-job, `--step scenarios --unrunnable-ok`): a scenarios step that is not run here only for scenarios this machine cannot
-run, each named with what it lacks, does not fail the exit; a FAIL beside them still does, and so does any other not run
-here (no verdict line, PASS: 0/0, an unreadable results.json, or another step's).
+--step runs only the steps named (repeatable; still in CI's order). --unrunnable-ok (#116: the tests workflow's
+scenarios job, `--step scenarios --unrunnable-ok`): a scenarios step that is not run here only for scenarios this
+machine cannot run, each named with what it lacks, does not fail the exit; a FAIL beside them still does, and so does
+any other not run here (no verdict line, PASS: 0/0, an unreadable results.json, or another step's).
 exit: 0 every step passed; 1 a step failed or could not run here; 2 usage, or a base that is not a commit (no step ran).
 """
 import argparse
