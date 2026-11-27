@@ -57,7 +57,6 @@ UV = ["uv", "run", "--no-project", "--python", CI_PYTHON]
 LEFT_BEHIND = ("uv.lock", ".venv")  # what a uv run with a project writes into the repo
 
 PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
-UNRUNNABLE_ONLY = "unrunnable only"  # a step's third value: not run here only for scenarios this machine cannot run
 # a scenario's own fail message when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
 UNRUNNABLE = re.compile(r"^ASSERT FAILED: unrunnable here: (.+)$")
 # the runner's verdict line, once every scenario ran; an unfiltered run may print `N of M features working` after it
@@ -204,9 +203,8 @@ def scenarios(run, a):
     if failed:
         also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
         return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
-    if unrunnable:  # a missing tool alone: what --unrunnable-ok excuses, once at least one scenario passed
-        ran = len(rows) > len(unrunnable)  # no failed row here: every other row passed
-        return (NOT_RUN, "; ".join(unrunnable)) + ((UNRUNNABLE_ONLY,) if ran else ())
+    if unrunnable:  # a missing tool alone; the third value: one scenario passed, so --unrunnable-ok excuses it
+        return NOT_RUN, "; ".join(unrunnable), len(rows) > len(unrunnable)  # no failed row: every other one passed
     # the runner said FAIL, so it failed whatever its rows leave out; a NOT-RUN or a short PASS blames no scenario
     return FAILED if word == "FAIL" else NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or " \
                                                   "unrunnable scenario"
@@ -277,7 +275,7 @@ def main(argv, run=run_cmd):
             continue
         print(f"== {name}", flush=True)
         verdict, detail, *why = step(run, a)
-        results.append((name, verdict, detail, why == [UNRUNNABLE_ONLY] and a.unrunnable_ok))
+        results.append((name, verdict, detail, why == [True] and a.unrunnable_ok))
     for name, verdict, detail, _ in results:
         print(f"{name}: {verdict}: {detail}")
     return 0 if all(v == PASSED or excused for _, v, _, excused in results) else 1

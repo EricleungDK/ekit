@@ -197,6 +197,16 @@ class Inputs(Tmp):
         self.assertEqual(r.returncode, 0)
         self.assertIn("exit: 0 every step passed; 1 a step failed or could not run here;", " ".join(r.stdout.split()))
 
+    def test_help_says_what_step_and_unrunnable_ok_do(self):
+        r = _kit.run_cli(["--help"], main=lambda a: ci.main(a, run=Fake()))
+        self.assertEqual(r.returncode, 0)
+        out = " ".join(r.stdout.split())
+        self.assertIn("--step {mech,suite,r3,scenarios} run this step only (repeat for more; they run in CI's order). "
+                      "Default: every step --unrunnable-ok", out)
+        self.assertIn("--unrunnable-ok a scenarios step not run here only for scenarios this machine cannot run (each "
+                      "named), with at least one scenario passed, does not fail the exit (the tests workflow's "
+                      "scenarios job, #116)", out)
+
 
 class Failed(Tmp):
     """Any step that did not pass fails the command; the others still run and report."""
