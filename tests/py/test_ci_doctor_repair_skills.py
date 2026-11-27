@@ -214,7 +214,9 @@ class SetupProof(unittest.TestCase):
         no adapter could pass"""
         s = flat(section(self.text, "4. Prove it with R0"))
         self.assertIn("is a **format gap**: no revision of the adapter can pass it, so it ends the rounds there", s)
-        self.assertIn("Its reason is the format, never the fixtures; any other failure is revised round by round", s)
+        self.assertIn("A gap's reason is the format, never the fixtures; any other failure is revised round by round", s)
+        self.assertIn("A cheat-list item with such a shape is a limit from that round on", s)
+        self.assertIn("no revision is spent on it", s)
 
     def test_a_stop_on_the_proof_shows_no_pr_body(self):
         """an eval run printed "the PR body I would have opened" on a blocked stop"""
@@ -224,7 +226,9 @@ class SetupProof(unittest.TestCase):
 
     def test_a_skip_from_the_body_is_caught_by_r4_or_listed(self):
         s = flat(section(self.text, "4. Prove it with R0"))
-        self.assertIn("must give R4's `did not run at head`; elsewhere it goes under `## Limits (owner decides)`", s)
+        self.assertIn("A cheat R2 gives no entry for (in Java, a skip from the test's body)", s)
+        self.assertIn("`--repo <scratch> --base HEAD~1 --head HEAD` must give R4's `did not run at head` on that pair; "
+                      "elsewhere it goes under `## Limits (owner decides)`", s)
         self.assertIn("or the red run's R4 entry", flat(section(self.text, "8. Open the setup PR")))
 
     def test_every_cheat_has_one_place_and_the_limits_heading_is_a_heading(self):
