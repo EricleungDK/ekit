@@ -247,6 +247,13 @@ class SetupProof(unittest.TestCase):
         s = flat(section(read("ci-doctor"), "5. Open the PR"))
         self.assertIn("A proof that did not pass (setup.md, repair.md) has no PR to show", s)
 
+    def test_a_doc_limit_is_one_of_the_format_limits_list(self):
+        """#25 moved the format's limits into a list of their own under Adapter file"""
+        self.assertIn("names it as one (`<kit>/docs/mech-review-ci.md`, Adapter file, Format limits)",
+                      flat(section(self.text, "4. Prove it with R0")))
+        with open(os.path.join(_kit.ROOT, "docs", "mech-review-ci.md"), encoding="utf-8") as f:
+            self.assertRegex(f.read(), r"(?m)^### Format limits$")
+
     def test_a_cheat_r2_is_run_with_the_callers_inputs(self):
         """two runs reported a `.github` edit uncaught ("a bare R2 run without that input gave no entry")"""
         s = flat(section(self.text, "4. Prove it with R0"))
