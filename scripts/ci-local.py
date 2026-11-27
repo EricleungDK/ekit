@@ -161,16 +161,20 @@ def _runner():
     return mod
 
 
-def _fail_message(transcript):
-    """the scenario's own fail message: the last line it wrote to stderr, when that is its only `ASSERT FAILED: ` line
-    (lib.sh's fail writes one, then exits). Else "": a tail of captured output, or a quoted failure, is no message."""
+def _missing_tool(transcript):
+    """what the scenario says this machine lacks: its own fail message, the last line it wrote to stderr and its only
+    `ASSERT FAILED: ` line (lib.sh's fail writes one, then exits), read as `ASSERT FAILED: unrunnable here: <what>`.
+    None for any other: a tail of captured output, or a quoted failure, is no message."""
     if not isinstance(transcript, str):  # open() takes an int as a file descriptor: never one of this process's
         raise TypeError(f"transcript {transcript!r} is not a path")
     with open(transcript, encoding="utf-8", errors="replace") as f:
         text = f.read()
     err = text.partition("\n--- stderr ---\n")[2].rsplit("\n--- exit:", 1)[0]
     lines = [x.strip() for x in err.splitlines() if x.strip()]
-    return lines[-1] if lines and [x for x in lines if x.startswith("ASSERT FAILED: ")] == lines[-1:] else ""
+    if not lines or [x for x in lines if x.startswith("ASSERT FAILED: ")] != lines[-1:]:
+        return None
+    m = UNRUNNABLE.match(lines[-1])
+    return m.group(1) if m else None
 
 
 def scenarios(run, a):
@@ -213,9 +217,9 @@ def _read_rows(repo):
             unrunnable.append(f"{r['id']}: {r['reason']}")
             continue
         # only a plain exit-code failure can be a missing tool: a timeout or a bad folder is the runner's own FAIL
-        m = r["reason"] == f"exit {r.get('exit')}" and UNRUNNABLE.match(_fail_message(r["transcript"]))
-        if m:
-            unrunnable.append(f"{r['id']}: {m.group(1)}")
+        what = _missing_tool(r["transcript"]) if r["reason"] == f"exit {r.get('exit')}" else None
+        if what is not None:
+            unrunnable.append(f"{r['id']}: {what}")
         else:
             failed.append(f"{r['id']} ({r['reason']})")
     return doc.get("reason"), rows, failed, unrunnable
