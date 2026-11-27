@@ -1,5 +1,6 @@
 """scripts/mech-summary.py (#122): the merged R3 line says what its count stands for, tested/total per risk class,
 when the cap cut the run; a result without the counts (an older engine's) prints as before."""
+import os
 import unittest
 
 import test_mech_summary as summary
@@ -30,6 +31,15 @@ class TestRiskLine(summary.Run):
         self.capped([(SHARD0, 1, 3), (None, 2, 2)])
         r = self.main("555")
         self.assertIn("R3 partial (3/5 tested)", r.stdout.splitlines(), r.stdout)
+
+    def test_a_shard_with_no_artifact_leaves_no_counts(self):
+        # the summary merges only the shards it found: shard 1's artifact is missing, so its counts are too
+        self.capped([(SHARD0, 1, 3), (SHARD1, 2, 2)])
+        os.remove(os.path.join(self.art, "mech-review-mutants-1", "mech-review-mutants.json"))
+        out = self.main("555").stdout.splitlines()
+        r3 = [x for x in out if x.startswith("R3 ")]
+        self.assertEqual(len(r3), 1, out)
+        self.assertNotIn("by risk class", r3[0])
 
     def test_a_merged_result_whose_counts_do_not_add_up_prints_the_count_alone(self):
         self.capped([(SHARD0, 1, 3), (SHARD1, 2, 2)])

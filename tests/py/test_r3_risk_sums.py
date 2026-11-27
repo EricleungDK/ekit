@@ -98,6 +98,57 @@ class TestPythonSums(Side, cap.PyCli):
         self.assertNotIn("by_risk", r3)
 
 
+class TestPythonGuards(Side, cap.PyCli):
+    """review round 2: counts read anywhere are the check's own whole-number count, by known classes, from every
+    shard of the run."""
+
+    def shard_files(self, change=None, ks=(0, 1)):
+        d, files = self.side(), []
+        for k in ks:
+            env = self.cli("mutants", "--shard", f"{k}/2", "--max-mutants", "3")
+            if change and k == 1:
+                change(env["checks"]["R3"])
+            files += ["--envelope", f"{k}={self.save(d, f's{k}.json', env)}"]
+        return files
+
+    def test_a_shard_missing_from_the_merge_leaves_no_counts(self):
+        r3 = self.cli("merge", "--shards", "2", *self.shard_files(ks=(0,)))["checks"]["R3"]
+        self.assertEqual(r3["status"], "fail")  # the missing shard's CI entry
+        self.assertNotIn("by_risk", r3)
+        self.assertNotIn("all shards, by risk class", r3["note"])
+
+    def test_a_shard_whose_counts_name_an_unknown_class_is_not_summed(self):
+        # shard 1 holds one branch mutant, tested: its counts add up with the unknown class too
+        def add(c):
+            c["by_risk"] = {"branch": {"tested": 1, "total": 1}, "nope": {"tested": 0, "total": 0}}
+        r3 = self.cli("merge", "--shards", "2", *self.shard_files(add))["checks"]["R3"]
+        self.assertEqual((r3["tested"], r3["total"]), (3, 5))
+        self.assertNotIn("by_risk", r3)
+
+
+class TestReadersGuards(unittest.TestCase):
+    R3 = {"status": "partial", "note": "3/5 tested", "timing": {"wall_s": 2.0}}
+
+    def line(self, **r3):
+        body = comment.render(counts.env_with(dict(self.R3, **r3))).split("### JSON")[0]
+        return [x for x in body.splitlines() if "by risk class" in x]
+
+    def test_control_whole_counts_that_add_up_get_the_line(self):
+        self.assertEqual(self.line(tested=3, total=5, by_risk={"branch": {"tested": 3, "total": 5}}),
+                         ["R3 by risk class, tested/total: branch conditions 3/5"])
+
+    def test_a_count_that_is_not_a_whole_number_gets_no_line(self):
+        for tested, total, by in ((3, 5.0, {"branch": {"tested": 3, "total": 5}}),
+                                  (True, 5, {"branch": {"tested": 1, "total": 5}}),
+                                  (3.0, 5, {"branch": {"tested": 3, "total": 5}}),
+                                  (3, None, {"branch": {"tested": 3, "total": 5}})):
+            self.assertEqual(self.line(tested=tested, total=total, by_risk=by), [], (tested, total))
+
+    def test_an_unknown_class_gets_no_line(self):
+        by = {"branch": {"tested": 3, "total": 4}, "nope": {"tested": 0, "total": 1}}
+        self.assertEqual(self.line(tested=3, total=5, by_risk=by), [])
+
+
 class TestRustSums(cap.RustCap):
     cli = counts.TestRustRiskCounts.cli  # in-process
 
