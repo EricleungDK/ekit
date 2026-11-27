@@ -15,7 +15,7 @@ A setup PR's own `no result` (its base resolves no stack), and that of a repo wh
 
 Else run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
 
-- `ask`: several projects. Ask the user which, naming each as the entry does, then rerun with `--project-dir`, `--stack` or both (the entry's hint).
+- `ask`: several projects. Ask the user which, naming each as the entry does and what the pick means: a built-in stack is adopted as it is; one with `no adapter` gets an adapter written and proved for this repo first (setup.md). Then rerun with `--project-dir`, `--stack` or both (the entry's hint).
 - `repair`: the repo's own adapter file or stack plan does not read, an adapter file of its own finds no project (it may be meant for the one found), or a stack is the repo's adapter file's, which doctor does not trial: follow [repair.md](repair.md).
 - `setup`: a project no adapter covers: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
 - `adopt`: the steps below.
