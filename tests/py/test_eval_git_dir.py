@@ -107,5 +107,54 @@ class Patterns(unittest.TestCase):
             self.assertNotRegex(call(command=cmd, description="d"), BASH)
 
 
+AMBIGUOUS = os.path.join(case_dir("ci-doctor-setup-ambiguous"), "graders")
+NOTHING_BASH = re.compile(front(os.path.join(AMBIGUOUS, "wrote-nothing-bash.md"))[0]["input_match"])
+NOTHING_FILE = re.compile(front(os.path.join(AMBIGUOUS, "wrote-nothing-write.md"))[0]["input_match"])
+# the trace judges round 3 kept, each worded to the 12+12 events a `focus: trace` judge gets (no sound check fits)
+EXCERPT_JUDGES = [("ci-doctor-setup-ambiguous", "wrote-nothing.md"), ("ci-doctor-repair-java-runner", "from-output.md"),
+                  ("ci-doctor-setup-java", "cheat-list-first.md"), ("ci-doctor-setup-proof-fails", "fixtures-kept.md"),
+                  ("ci-doctor-repair-budget", "drafts-kept.md")] + [(c, "git-dir-judge.md") for c in CASES]
+
+
+class Round3(unittest.TestCase):
+    """the ambiguous case's wrote-nothing, made mechanical where it can be; r0-draft's draft pattern; the judges kept"""
+
+    def test_wrote_nothing_checks_pass_only_with_no_matching_call(self):
+        for name, tool in (("wrote-nothing-write.md", "Write"), ("wrote-nothing-edit.md", "Edit"),
+                           ("wrote-nothing-bash.md", "Bash")):
+            fm, _ = front(os.path.join(AMBIGUOUS, name))
+            self.assertEqual((fm["type"], fm["tool"], fm["min"], fm["max"], fm["arm"]), ("tool_used", tool, "0", "0",
+                                                                                         "both"))
+        self.assertEqual(front(os.path.join(AMBIGUOUS, "wrote-nothing-edit.md"))[0]["input_match"],
+                         NOTHING_FILE.pattern)
+        weights = [float(front(os.path.join(AMBIGUOUS, n))[0]["weight"]) for n in
+                   ("wrote-nothing.md", "wrote-nothing-write.md", "wrote-nothing-edit.md", "wrote-nothing-bash.md")]
+        self.assertEqual(sum(weights), 1.0)  # the one grader's weight, split
+
+    def test_a_write_to_an_adapter_the_plan_or_a_workflow_matches(self):
+        for path in ("/r/cwd/.ekit/adapters/java.toml", "/r/cwd/.ekit/adapters/java.r0/seed",
+                     "/r/cwd/.ekit/stack-plan.toml", "/r/cwd/.github/workflows/ci.yml"):
+            self.assertRegex(call(file_path=path, content="x"), NOTHING_FILE)
+        for path in ("/r/cwd/.ekit/stack-plan.toml.bak", "/r/cwd/notes.md", "/r/cwd/.github/CODEOWNERS"):
+            self.assertNotRegex(call(file_path=path, content=".ekit/stack-plan.toml"), NOTHING_FILE)
+        for cmd in ("cat > .ekit/adapters/java.toml <<'EOF'\nx\nEOF", "echo x >> .ekit/stack-plan.toml",
+                    "cp a.yml .github/workflows/ci.yml", "tee .github/workflows/x.yml < y", "rm .ekit/stack-plan.toml",
+                    "sed -i s/a/b/ .ekit/stack-plan.toml", "mv /tmp/x .ekit/adapters/java.toml"):
+            self.assertRegex(call(command=cmd, description="d"), NOTHING_BASH)
+        for cmd in ("cat .ekit/stack-plan.toml", "python3 /k/scripts/mech-review.py doctor --repo .",
+                    "ls .github/workflows/", "cp .ekit/stack-plan.toml /tmp/p", "mkdir -p .ekit/adapters",
+                    "grep -r x .github/workflows/ > /tmp/out"):
+            self.assertNotRegex(call(command=cmd, description="d"), NOTHING_BASH)
+
+    def test_each_trace_judge_kept_is_worded_to_its_excerpt(self):
+        for case, name in EXCERPT_JUDGES:
+            with self.subTest(case=case, grader=name):
+                fm, text = front(os.path.join(case_dir(case), "graders", name))
+                text = " ".join(text.split())
+                self.assertEqual((fm["type"], fm["focus"]), ("llm", "trace"))
+                self.assertIn("first and the last 12 events", text)
+                self.assertIn("The elided middle is no evidence either way", text)
+
+
 if __name__ == "__main__":
     unittest.main()
