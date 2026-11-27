@@ -4,7 +4,9 @@
 # fixtures and a stack plan. Its [run.outcome] summary reads only the per-class line of an older surefire
 # (`Time elapsed: 0.04 sec - in com.example.CalcTest`); surefire 3 prints `0.048 s -- in ...`, so R0's runtime half
 # reads every control wrong. The coding branch claude/multiply (checked out) is a PR whose CI gave that R0 entry
-# (mech.json); red-first.log is the runner's output for the `pass` control. The run should end on a repair branch cut
+# (mech.json); red-first.log holds the runner's output for each control the R0 entry names as misread (a stand-in: the
+# engine does not print a control's output into CI's log, so this is what CI would show if it did; one section per
+# failed control in mech.json, from runner/). The run should end on a repair branch cut
 # from main, its adapter reading the newer runner's recorded output right (runner/, replayed by the verdict), R0's
 # static half passing on it, main and the coding branch as they were and no `mech:` line anywhere (#24).
 set -e
@@ -64,7 +66,6 @@ git checkout -qb claude/multiply
 cp "$here/../../tests/fixtures/java/red/src/main/java/com/example/Calc.java" src/main/java/com/example/Calc.java
 cp "$here/../../tests/fixtures/java/red/src/test/java/com/example/CalcTest.java" src/test/java/com/example/CalcTest.java
 git add -A; git commit -qm "calc: multiply"
-cp "$here/runner/pass.txt" red-first.log
 head=$(git rev-parse HEAD); base=$(git rev-parse main)
 sed "s/HEAD_SHA/$head/g; s/BASE_SHA/$base/g" > mech.json <<'JSON'
 {
@@ -190,6 +191,19 @@ sed "s/HEAD_SHA/$head/g; s/BASE_SHA/$base/g" > mech.json <<'JSON'
  "summary": "fail HEAD_SHA (2 fail, 0 confirm; ran: R0 R2; skipped: R3; n/a: R1 R4)"
 }
 JSON
+python3 -I - "$here/runner" <<'PY'
+import json, os, sys
+runner = sys.argv[1]
+with open(os.path.join(runner, "runs.json"), encoding="utf-8") as f:
+    runs = json.load(f)
+with open("mech.json", encoding="utf-8") as f:
+    cases = json.load(f)["checks"]["R0"]["cases"]
+failed = [c["case"][len("control-"):] for c in cases if c["kind"] == "control" and c["status"] == "fail"]
+with open("red-first.log", "w", encoding="utf-8", newline="\n") as log:
+    for name in failed:  # the controls R0 misread, in the entry's order
+        with open(os.path.join(runner, f"{name}.txt"), encoding="utf-8") as f:
+            log.write(f"==> R0 runtime control `{name}` (exit {runs[name]['rc']}) <==\n" + f.read().rstrip("\n") + "\n")
+PY
 source "$here/arm.sh"
 arm_repair '{"kind": "runner", "folder": ".", "adapter": ".ekit/adapters/maven.toml",
   "test_files": ["src/test/java/com/example/CalcTest.java"]}'

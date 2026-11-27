@@ -86,6 +86,25 @@ class RepairJavaRunner(Scaffold):
     def fixed(self, at=None):
         return {ADAPTER: self.read(ADAPTER, at).replace(OLD, NEW)}
 
+    def test_red_first_log_shows_every_control_the_entry_names_as_misread(self):
+        """what CI's log would show for each misread control (a stand-in: the engine prints no control's output): the
+        controls come from mech.json's failed R0 cases, the output from the recorded runs the replay reads"""
+        cases = json.loads(self.read("mech.json"))["checks"]["R0"]["cases"]
+        failed = [c["case"][len("control-"):] for c in cases if c["kind"] == "control" and c["status"] == "fail"]
+        self.assertEqual(failed, ["pass", "fail", "skipped", "no-such-test"])
+        named = json.loads(self.read("mech.json"))["entries"][0]["problem"]
+        self.assertEqual(re.findall(r"control `([\w-]+)`", named), failed)
+        log = self.read("red-first.log")
+        sections = re.split(r"(?m)^==> R0 runtime control `([\w-]+)` \(exit (\d+)\) <==\n", log)[1:]
+        rec = os.path.join(self.case, "runner")
+        with open(os.path.join(rec, "runs.json"), encoding="utf-8") as f:
+            runs = json.load(f)
+        self.assertEqual(sections[0::3], failed)
+        for name, rc, body in zip(sections[0::3], sections[1::3], sections[2::3]):
+            with open(os.path.join(rec, f"{name}.txt"), encoding="utf-8") as f:
+                self.assertEqual(body, f.read().rstrip("\n") + "\n", name)
+            self.assertEqual(int(rc), runs[name]["rc"])
+
     def test_the_scaffold_adapter_misreads_the_newer_runner(self):
         self.assertIn(OLD, self.git("show", f"main:{ADAPTER}"))
         self.assertEqual(self.git("symbolic-ref", "--short", "HEAD").strip(), "claude/multiply")
