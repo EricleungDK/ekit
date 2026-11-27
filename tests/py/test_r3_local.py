@@ -766,6 +766,27 @@ class MachineLock(Tmp):
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return f
 
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(r3, "POLL_S", 0.005)  # a waiting run tries again soon: the waits here stay short
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def free_at_first_wait(self, free):
+        """The run's clock, which calls free once the run has found the lock busy and said so (its 2nd read; the 1st
+        sets the deadline): a wait that ends on the run's own step, never on a timer."""
+        reads = []
+
+        def clock():
+            reads.append(1)
+            if len(reads) == 2:
+                free()
+            return time.monotonic()
+
+        patch = mock.patch.object(r3, "CLOCK", clock)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def test_a_second_run_waits_for_the_first_naming_its_pid_then_runs(self):
         f = self.held("4242")
         freed = threading.Event()
@@ -774,7 +795,7 @@ class MachineLock(Tmp):
             f.close()
             freed.set()
 
-        threading.Timer(0.3, free).start()
+        self.free_at_first_wait(free)
         fake, early = Fake(count=1), []
 
         def run(argv, env=None, cwd=None):
@@ -793,12 +814,12 @@ class MachineLock(Tmp):
         self.held("4242")
         fake = Fake()
         start = time.monotonic()
-        r = self.main(fake, "--wait-limit", "0.005")  # 0.3 s
-        self.assertGreaterEqual(time.monotonic() - start, 0.29)
+        r = self.main(fake, "--wait-limit", "0.001")  # 0.06 s
+        self.assertGreaterEqual(time.monotonic() - start, 0.059)
         self.assertLess(time.monotonic() - start, 5)
         self.assertEqual(r.returncode, 3)
         self.assertEqual(r.stderr.splitlines()[-1],
-                         "r3-local: waited 0.005 min for the r3-local run of pid 4242: R3 not run; run it again when "
+                         "r3-local: waited 0.001 min for the r3-local run of pid 4242: R3 not run; run it again when "
                          "that run ends, or pass a larger --wait-limit")
         self.assertEqual(fake.calls, [])
 
@@ -835,7 +856,7 @@ class MachineLock(Tmp):
         self.addCleanup(holder.wait)
         self.addCleanup(holder.kill)
         self.assertEqual(holder.stdout.readline(), "held\n")
-        threading.Timer(0.3, holder.kill).start()
+        self.free_at_first_wait(lambda: (holder.kill(), holder.wait()))
         fake = Fake(count=1)
         r = self.main(fake, "--wait-limit", "0.5")
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -901,7 +922,7 @@ class MachineLock(Tmp):
             self.assertEqual(f.read(), "4242")
 
     def held_by_other_once(self):
-        """The machine lock held for 0.3 s by another open file, then freed: the event is set once it is free."""
+        """The machine lock held by another open file until the run waits for it: the event is set once it is free."""
         import fcntl
         f = open(self.machine)
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -911,7 +932,7 @@ class MachineLock(Tmp):
             f.close()
             freed.set()
 
-        threading.Timer(0.3, free).start()
+        self.free_at_first_wait(free)
         return freed
 
     def test_an_env_dir_in_use_stops_at_once_without_waiting_for_the_machine(self):
