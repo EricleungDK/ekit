@@ -23,16 +23,16 @@ cp -R "$here/../../tests/fixtures/java/base/." .
 python3 -I - "$here/../../tests/fixtures/adapters" <<'PY'
 import os, sys
 src = sys.argv[1]
-with open(os.path.join(src, "java.toml"), encoding="utf-8") as f:
-    body = f.read().split("format = 1\n", 1)[1].replace('name = "java"', 'name = "maven"')
+with open(os.path.join(src, "maven.toml"), encoding="utf-8") as f:
+    body = f.read().split("format = 1\n", 1)[1]
 head = ("# The calc team's adapter for Maven, JUnit 5 and PIT.\n"
         "# Format: https://github.com/EricleungDK/ekit/blob/main/docs/mech-review-ci.md#adapter-file\nformat = 1\n")
 os.makedirs(".ekit/adapters", exist_ok=True)
 with open(".ekit/adapters/maven.toml", "w", encoding="utf-8", newline="\n") as f:
     f.write(head + body)
-for root, _, names in os.walk(os.path.join(src, "java.r0")):
+for root, _, names in os.walk(os.path.join(src, "maven.r0")):
     for fn in names:
-        rel = os.path.relpath(os.path.join(root, fn), os.path.join(src, "java.r0"))
+        rel = os.path.relpath(os.path.join(root, fn), os.path.join(src, "maven.r0"))
         os.makedirs(os.path.join(".ekit/adapters/maven.r0", os.path.dirname(rel)), exist_ok=True)
         with open(os.path.join(root, fn), encoding="utf-8", newline="") as f, \
                 open(os.path.join(".ekit/adapters/maven.r0", rel), "w", encoding="utf-8", newline="") as g:
@@ -226,13 +226,13 @@ git checkout -q main
 python3 -I - <<'PY'
 with open(".ekit/adapters/maven.toml", encoding="utf-8") as f:
     text = f.read()
-old = r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
-new = (r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time elapsed: [\d.]+ """
-       r"""sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
-assert old in text and 'skip = ["Disabled",' in text
+old = r"""summary = '^\[(?:INFO|WARNING|ERROR)\] Tests run: (\d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
+new = (r"""summary = '^\[(?:INFO|WARNING|ERROR)\] Tests run: (\d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time """
+       r"""elapsed: [\d.]+ sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
+assert old in text and 'skip = [\n  "Disabled",\n' in text
 text = text.replace("# The calc team's adapter for Maven, JUnit 5 and PIT.\n",
                     "# The calc team's adapter for Maven and PIT, from the team's JUnit 4 and surefire 2 template.\n")
-text = text.replace('skip = ["Disabled",', 'skip = ["Ignore",').replace(old, new)
+text = text.replace('skip = [\n  "Disabled",\n', 'skip = [\n  "Ignore",\n').replace(old, new)
 with open(".ekit/adapters/maven.toml", "w", encoding="utf-8", newline="\n") as f:
     f.write(text)
 PY
@@ -265,7 +265,7 @@ sed "s/HEAD_SHA/$(git rev-parse HEAD)/g; s/BASE_SHA/$base/g" > mech.json <<'JSON
  "checks": {
   "R0": {
    "status": "fail",
-   "note": "static half: 16 of 17 cases proved; failed: skip; runtime half (run): fingerprint d3f21f174ec3 (ran); census: 4/4 listed tests found; fixtures census: 4/4; assert density: 0 of 4 tests with no recognised assert, 0% (limit 10%); controls: 1 of 5 read right; failed: control-pass control-fail control-skipped control-no-such-test"
+   "note": "static half: 16 of 17 cases proved; failed: skip; runtime half (run): fingerprint 197659c34d09 (ran); census: 4/4 listed tests found; fixtures census: 2/2; assert density: 0 of 4 tests with no recognised assert, 0% (limit 10%); controls: 1 of 5 read right; failed: control-pass control-fail control-skipped control-no-such-test"
   },
   "R1": {
    "status": "n/a",
@@ -343,7 +343,7 @@ sed "s/HEAD_SHA/$(git rev-parse HEAD)/g; s/BASE_SHA/$base/g" > mech.json <<'JSON
    "file": "src/main/java/com/example/Calc.java",
    "line": 19,
    "problem": "`NOPMD` added without a reason",
-   "hint": "fix the PMD finding, or give the suppression a reason after it: `// NOPMD - why`",
+   "hint": "fix the lint, or give the suppression a reason",
    "forbidden": "silencing a lint without a reason",
    "blocked": "R0"
   }

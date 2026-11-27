@@ -1,5 +1,5 @@
 #!/bin/bash
-# fixture: the Java reference adapter's fixture repo (tests/fixtures/java/base) with no CI at all. As
+# fixture: the kit's Java fixture repo (tests/fixtures/java/base) with no CI at all. As
 # ci-doctor-setup-java, and the setup also writes base CI jobs from the adapter's commands, its test command among
 # them (#23). The grader support is that case's (arm.sh).
 set -e

@@ -26,18 +26,18 @@
 [INFO]  T E S T S
 [INFO] -------------------------------------------------------
 [INFO] Running com.example.CalcTest
-[WARNING] Tests run: 3, Failures: 0, Errors: 0, Skipped: 3, Time elapsed: 0.010 s -- in com.example.CalcTest
-[WARNING] com.example.CalcTest.adds skipped
-[WARNING] com.example.CalcTest.subtracts skipped
-[WARNING] com.example.CalcTest.negates skipped
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.082 s -- in com.example.CalcTest
+[INFO] com.example.CalcTest.adds -- Time elapsed: 0.035 s
+[INFO] com.example.CalcTest.subtracts -- Time elapsed: 0.001 s
+[INFO] com.example.CalcTest.negates -- Time elapsed: 0.004 s
 [INFO] 
 [INFO] Results:
 [INFO] 
-[WARNING] Tests run: 3, Failures: 0, Errors: 0, Skipped: 3
+[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  1.645 s
-[INFO] Finished at: 2026-11-26T01:49:26Z
+[INFO] Total time:  2.271 s
+[INFO] Finished at: 2026-11-27T05:43:10Z
 [INFO] ------------------------------------------------------------------------
