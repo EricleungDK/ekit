@@ -35,3 +35,31 @@ jobs:
             bash "tests/$t.test.sh" || rc=1
           done
           exit $rc
+
+  scenarios:
+    # Every .ekit/scenarios scenario, the step ci-local runs (#115, #116), beside the suite. Red only when a scenario
+    # FAILED (each named); one this runner cannot run is named in the log with the tool it lacks and does not make the
+    # job red (--unrunnable-ok), so a missing tool alone never fails it. Which scenario needs which tool:
+    # docs/mech-review-ci.md#developer-machine. About 8 minutes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: tools the scenarios need (strace, unshare -n, uv with Python 3.9)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq strace
+          # stack-plan/session-start runs the hook under `unshare -n`: as the runner's non-root user that needs a user
+          # namespace, which ubuntu 24.04 keeps behind AppArmor; the shim maps the runner's own uid into it
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          mkdir -p "$RUNNER_TEMP/netns-bin"
+          printf '#!/bin/sh\nexec /usr/bin/unshare --map-current-user "$@"\n' > "$RUNNER_TEMP/netns-bin/unshare"
+          chmod +x "$RUNNER_TEMP/netns-bin/unshare"
+          echo "$RUNNER_TEMP/netns-bin" >> "$GITHUB_PATH"
+          # the old-python scenarios find uv's installed 3.9 offline
+          pipx install uv==0.11.32
+          uv python install 3.9
+      - name: scenarios
+        run: python3 -I scripts/ci-local.py --step scenarios --unrunnable-ok
