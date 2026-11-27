@@ -61,6 +61,7 @@ LOCK = ".ekit-r3-env.lock"  # held (flock) by the run using the env dir; holds t
 MACHINE_LOCK = "/tmp/ekit-r3-local.lock"
 MAX_WAIT_MIN = 1440  # --wait-limit's largest value: a day
 POLL_S = 0.1  # how often a waiting run tries the machine lock again
+CLOCK = time.monotonic  # the waiting run's clock (tests stop it)
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
 EXTRACT_TAKES_FILTER = "filter" in inspect.signature(tarfile.TarFile.extract).parameters
@@ -220,7 +221,7 @@ def hold_machine(path, limit_min):
     """Lock this machine for this run: the open lock file. While another run holds it, wait, naming that run's pid,
     up to limit_min minutes, then a Stop. flock goes with the process, so a killed run frees it."""
     f = _open_shared(path)
-    deadline = time.monotonic() + limit_min * 60
+    deadline = CLOCK() + limit_min * 60
     said = None
     while True:
         try:
@@ -232,7 +233,7 @@ def hold_machine(path, limit_min):
                 print(f"r3-local: waiting for the r3-local run of pid {pid} (one run at a time on this machine: "
                       f"{path}), up to {limit_min:g} min", file=sys.stderr, flush=True)
                 said = pid
-            left = deadline - time.monotonic()
+            left = deadline - CLOCK()
             if left <= 0:
                 f.close()
                 raise Waited(f"waited {limit_min:g} min for the r3-local run of pid {pid}: R3 not run; run it again "

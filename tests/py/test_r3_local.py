@@ -802,6 +802,21 @@ class MachineLock(Tmp):
                          "that run ends, or pass a larger --wait-limit")
         self.assertEqual(fake.calls, [])
 
+    def test_a_wait_limit_of_0_gives_up_when_no_time_is_left(self):
+        """A clock that stands still: no time is left at the first busy try, so the run gives up then (the deadline
+        and that one try read the clock), not tries again. Later reads jump a day, so a run that tried again ends too."""
+        self.held("4242")
+        fake, reads = Fake(), []
+
+        def clock():
+            reads.append(1)
+            return 100.0 if len(reads) <= 10 else 100.0 + 86400
+
+        with mock.patch.object(r3, "CLOCK", clock):
+            r = self.bounded(fake, "--wait-limit", "0")
+        self.assertEqual((r.returncode, fake.calls, len(reads)), (3, [], 2))
+        self.assertIn("r3-local: waited 0 min for the r3-local run of pid 4242: R3 not run", r.stderr)
+
     def test_a_lock_file_holding_no_pid_names_the_holder_as_unknown(self):
         self.held("garbage\nmore")
         r = self.main(Fake(), "--wait-limit", "0.001")
