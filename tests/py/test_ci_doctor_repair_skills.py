@@ -106,10 +106,27 @@ class Repair(unittest.TestCase):
 
     def test_a_drift_repair_is_proved_against_the_base_in_a_scratch_clone(self):
         """an eval run proved with `drift --base HEAD --head HEAD` (SKILL.md's Stack plan line), merged the coding
-        branch in the repo itself, and told the PR's agent to edit the plan"""
+        branch in the repo itself"""
         self.assertIn("(its format: SKILL.md's Stack plan; its proof: step 4 here)", flat(section(self.text, "3. Edit")))
         self.assertIn("**The PR on the fix**, in the same scratch clone", flat(section(self.text, "4. Prove it")))
-        self.assertIn("the PR's agent leaves the plan as it is", flat(section(self.text, "5. Open the adapter-fix PR")))
+
+    def test_the_coding_pr_turns_its_planned_entry_current_and_makes_no_other_plan_edit(self):
+        """the owner's rule: the PR that adds the manifest makes the one-word status change drift asks for (setup.md
+        says the same); every other plan or adapter edit stays ci-doctor's (the repair-drift criteria grade the same)"""
+        s = flat(section(self.text, "5. Open the adapter-fix PR"))
+        self.assertIn("that PR turns the entry `current`: that one-word status change is the only plan edit a coding PR "
+                      "makes, judged by R0's editing rules like any plan edit. Every other plan or adapter edit stays "
+                      "ci-doctor's.", s)
+        self.assertIn("the PR that adds the manifest turns the entry `current`",
+                      flat(section(read("ci-doctor", "setup.md"), "8. Open the setup PR")))
+        with open(os.path.join(_kit.ROOT, "evals", "ci-doctor-repair-drift", "graders", "criteria.md"),
+                  encoding="utf-8") as f:
+            self.assertIn("sets the `web` entry's status to `current`", f.read())
+
+    def test_the_proof_fails_prompt_asks_for_no_pr_body(self):
+        """a blocked setup shows no PR body (setup.md step 4, the proof-fails grader), so its prompt asks for none"""
+        with open(os.path.join(_kit.ROOT, "evals", "ci-doctor-setup-proof-fails", "prompt.md"), encoding="utf-8") as f:
+            self.assertNotIn("PR body", f.read())
 
     def test_a_repair_out_of_budget_counts_its_rounds_and_shows_no_pr_body(self):
         s = flat(section(self.text, "4. Prove it"))
