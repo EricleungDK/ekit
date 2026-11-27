@@ -885,6 +885,42 @@ class MissingRunner(VerifyCase):
         with find, run, env:
             self.assertEqual(self.run_cmd("ekit_tool_here -q"), 9009)
 
+    def test_a_tool_missing_in_a_stack_folder_is_n_a(self):
+        os.mkdir(os.path.join(self.repo, "sub"))
+        self.na("cd sub && ekit_absent_tool117", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)")
+
+    def test_a_lone_cd_step_is_never_asked_about(self):
+        os.mkdir(os.path.join(self.repo, "sub"))
+        find, run, env = self.faked("pwsh", 1)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("cd sub &&"), 1)
+
+    def test_cmd_finds_a_path_from_the_runs_own_folder(self):
+        """a word with a `/` is a path: cmd looks for it from its folder, not on PATH"""
+        tool = os.path.join(self.repo, "bin", "ekit_tool_here" + (".exe" if os.name == "nt" else ""))
+        os.mkdir(os.path.dirname(tool))
+        open(tool, "w").close()
+        os.chmod(tool, 0o755)
+        find, run, env = self.faked("cmd", 9009)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("bin/ekit_tool_here -q"), 9009)
+            self.assertEqual(self.run_cmd("bin/ekit_absent_tool117 -q"), 5)
+        self.complete("Verify: `bin/ekit_absent_tool117 -q`")
+        self.assertEqual(self.check(), (1, "`bin/ekit_absent_tool117 -q`: n/a (env): install bin/ekit_absent_tool117 "
+                                           "(cmd finds no bin/ekit_absent_tool117)\n"))
+
+    def test_the_module_question_is_one_line_each_shell_runs_the_same(self):
+        """`<python> [flags] -c "<find_spec>" <pkg>`, double-quoted: the find_spec line holds no `$`, backtick, `!` or
+        quote, so bash, PowerShell and cmd each pass it as one word"""
+        finds = ('"import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1]) else 3)"')
+        for shell, rc in (("bash", 1), ("pwsh", 1), ("cmd", 1)):
+            with self.subTest(shell=shell):
+                probes, patches = self.fake_runs(rc, lambda argv: 3)
+                with patches[0], patches[1], mock.patch.dict(os.environ, {"EKIT_SHELL": shell}):
+                    self.assertEqual(self.run_cmd(f"python3 -X utf8 -m pytest.main -q {shell}"), 5)
+                line = probes[0][0] if isinstance(probes[0][0], str) else probes[0][0][-1]
+                self.assertIn(f"python3 -X utf8 -c {finds} pytest", line)
+
     def test_powershell_finding_the_command_and_cmd_with_another_exit_are_failed_runs(self):
         for shell, rc, probe in (("powershell", 1, 0), ("pwsh", 3, 3), ("cmd", 1, 3)):
             with self.subTest(shell=shell):

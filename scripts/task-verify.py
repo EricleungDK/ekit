@@ -184,7 +184,7 @@ def first_command(cmd):
     never a guess."""
     words = cmd.split()
     folder = ""
-    while len(words) > 3 and words[0] == "cd" and words[2] == "&&" and PLAIN.fullmatch(words[1]):
+    while words[2:3] == ["&&"] and words[0] == "cd" and PLAIN.fullmatch(words[1]):
         folder, words = os.path.join(folder, words[1]), words[3:]
     if not words or not all(PLAIN.fullmatch(w) for w in words) or not COMMAND.fullmatch(words[0]):
         return None
@@ -194,7 +194,7 @@ def first_command(cmd):
 def cmd_finds(word, cwd, env):
     """Whether cmd.exe, in `cwd`, finds `word`: cmd looks in its own folder first, then on PATH; a path, and a
     relative PATH entry, are that folder's, not task-verify's own."""
-    if "/" in word or os.sep in word:
+    if "/" in word:  # a path: a plain word holds no backslash
         return shutil.which(os.path.join(cwd, word)) is not None
     dirs = [cwd] + [os.path.join(cwd, d) for d in env.get("PATH", "").split(os.pathsep)]  # absolute entries stay
     return shutil.which(word, path=os.pathsep.join(dirs)) is not None
@@ -245,13 +245,9 @@ def finds_module(exe, shell, words, flags, pkg, cwd, env):
     """The exit of `<python as the line names it> <flags> -c <find_spec line> <pkg>` run by the run's own shell, as
     the run is started (shell, cwd, env): the python asked is the one the run's line reaches, its startup files
     (BASH_ENV, ~/.zshenv) and PATH included. 0: found, 3: no such module; anything else: no answer from that python.
-    The words are plain (first_command); only the find_spec line is quoted."""
-    if shell in shells.PS_SHELLS:
-        line = f"{' '.join([words[0], *flags])} -c {shells.ps_literal(FINDS)} {pkg}"
-    elif shell == "cmd":
-        line = f'{" ".join([words[0], *flags])} -c "{FINDS}" {pkg}'
-    else:
-        line = f"{' '.join([words[0], *flags])} -c {shlex.quote(FINDS)} {pkg}"
+    The words are plain (first_command); the find_spec line is double-quoted, one word in every shell: it holds no
+    `$`, backtick, `!`, `%` or quote for bash, PowerShell or cmd to read into."""
+    line = f'{" ".join([words[0], *flags])} -c "{FINDS}" {pkg}'
     return probe(shells.command(exe, shell, line), cwd, env)
 
 
