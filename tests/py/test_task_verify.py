@@ -596,15 +596,36 @@ class MissingRunner(VerifyCase):
         self.complete(f"Verify: `{cmd}`", task=task)
         self.assertIn(f"`{cmd}`: the run exited {rc}\n", self.check()[1])
 
-    def fake_python(self, body):
-        """a `python3` first on PATH: a sh script with this body"""
-        bindir = os.path.join(os.path.realpath(self.tmp.name), "bin")
-        os.makedirs(bindir, exist_ok=True)
-        exe = os.path.join(bindir, "python3")
-        with open(exe, "w") as f:
-            f.write("#!/bin/sh\n" + body)
+    def python_file(self, folder, on_path=True):
+        """a `python3` file in `folder` (python3.exe on Windows), first on PATH unless on_path is False: what the
+        run and the probe start is faked (fake_runs), so its content is never run"""
+        os.makedirs(folder, exist_ok=True)
+        exe = os.path.join(folder, "python3" + (".exe" if os.name == "nt" else ""))
+        open(exe, "w").close()
         os.chmod(exe, 0o755)
-        os.environ["PATH"] = bindir + os.pathsep + os.environ["PATH"]
+        if on_path:
+            os.environ["PATH"] = folder + os.pathsep + os.environ["PATH"]
+        return exe
+
+    def fake_runs(self, rc, answer):
+        """bash found and its process faked: the run exits `rc`; a python probe (argv[-2] the find_spec line) gets
+        answer(argv): an exit code, or an exception it raises; git runs for real. Returns the probes' argv."""
+        real, probes = subprocess.run, []
+
+        def run(argv, **kw):
+            if argv[0] == "git":
+                return real(argv, **kw)
+            if isinstance(argv, list) and len(argv) > 2 and argv[-2] == tv.FINDS:
+                probes.append((argv, kw.get("cwd")))
+                got = answer(argv)
+                if isinstance(got, BaseException):
+                    raise got
+                return subprocess.CompletedProcess(argv, got)
+            return subprocess.CompletedProcess(argv, rc)
+        patches = (mock.patch.object(tv.shells, "find", return_value="/fake/bash"),
+                   mock.patch.object(tv.subprocess, "run", side_effect=run),
+                   mock.patch.dict(os.environ, {"EKIT_SHELL": "bash"}))
+        return probes, patches
 
     # the runner is not there
 
@@ -676,38 +697,35 @@ class MissingRunner(VerifyCase):
             os.mkdir(os.path.join(self.repo, d))
         self.failed("cd sub$x && ekit_absent_tool117", 127)
 
-    @unittest.skipIf(os.name == "nt", "its pythons are sh scripts; tests/windows-smoke.py runs the real shells there")
     def test_the_python_asked_is_the_one_the_run_finds_from_its_folder(self):
-        """a relative path or PATH entry is the run's folder's, not task-verify's own: here task-verify runs from a
-        folder with no .venv, the repo's .venv python3 is this Python, and a later PATH entry's python3 finds
-        nothing"""
-        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
-        venv = os.path.join(self.repo, ".venv", "bin")
-        os.makedirs(venv)
-        with open(os.path.join(venv, "python3"), "w") as f:
-            f.write(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
-        os.chmod(os.path.join(venv, "python3"), 0o755)
-        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 1\n')  # first on PATH, till .venv/bin goes before it
+        """a relative path or PATH entry is the run's folder's, not task-verify's own: task-verify runs from a folder
+        with no .venv, the repo has one, and a later PATH entry holds another python3 (it finds no module)"""
+        venv = self.python_file(os.path.join(self.repo, ".venv", "bin"), on_path=False)
+        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "sysbin"))
         elsewhere = os.path.join(os.path.realpath(self.tmp.name), "elsewhere")
         os.mkdir(elsewhere)
         here = os.getcwd()
         self.addCleanup(os.chdir, here)
         os.chdir(elsewhere)
-        self.failed("./.venv/bin/python3 -m ekit_runner", 1, task="path")
-        os.environ["PATH"] = ".venv/bin" + os.pathsep + os.environ["PATH"]
-        self.failed("python3 -m ekit_runner", 1, task="entry")
-
-    # the runner is there: a failed run
+        os.environ["PATH"] = os.path.join(".venv", "bin") + os.pathsep + os.environ["PATH"]
+        for i, cmd in enumerate(("./.venv/bin/python3 -m ekit_runner", "python3 -m ekit_runner")):
+            with self.subTest(cmd=cmd):
+                probes, patches = self.fake_runs(1, lambda argv: 0 if os.path.samefile(argv[0], venv) else 3)
+                with patches[0], patches[1], patches[2]:
+                    self.assertEqual(self.run_cmd(cmd), 1)
+                self.assertTrue(os.path.samefile(probes[0][0][0], venv))
+                self.assertEqual(os.path.normpath(probes[0][1]), self.repo)
 
     def test_a_zero_exit_is_never_n_a(self):
         self.assertEqual(self.run_cmd(f"{PY} -m ekit_absent_runner || true"), 0)
         self.assertEqual(self.complete(f"Verify: `{PY} -m ekit_absent_runner || true`"), (0, ""))
 
-    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_a_zero_exit_is_never_asked_about(self):
-        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 0\n')  # a probe would say: no such module
-        self.assertEqual(self.run_cmd("python3 -m pytest"), 0)
-        self.assertEqual(self.complete("Verify: `python3 -m pytest`"), (0, ""))
+        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
+        probes, patches = self.fake_runs(0, lambda argv: 3)  # a probe would say: no such module
+        with patches[0], patches[1], patches[2]:
+            self.assertEqual(self.run_cmd("python3 -m pytest"), 0)
+        self.assertEqual((probes, self.complete("Verify: `python3 -m pytest`")), ([], (0, "")))
 
     def test_an_installed_runner_whose_test_cannot_import_is_a_failed_run(self):
         self.module("ekit_runner", "import ekit_absent_dep\n")
@@ -729,17 +747,20 @@ class MissingRunner(VerifyCase):
     def test_only_the_first_command_is_asked_about(self):
         self.failed("true && ekit_absent_tool117", 127)
 
-    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_a_probe_that_hangs_is_a_failed_run(self):
-        self.fake_python('case "$1" in -c) sleep 5;; esac\nexit 1\n')  # the run fails; the probe hangs
-        with mock.patch.object(tv, "PROBE_SECONDS", 0.5):
+        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
+        probes, patches = self.fake_runs(1, lambda argv: subprocess.TimeoutExpired(argv, tv.PROBE_SECONDS))
+        with patches[0], patches[1], patches[2]:
             self.failed("python3 -m pytest", 1)
+        self.assertEqual(len(probes), 1)
 
-    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_the_default_command_with_its_runner_missing_is_n_a(self):
-        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 1\n')  # 3: what the probe exits for no such module
-        self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's README "
-                                     "§ Development names the version CI installs)")
+        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
+        probes, patches = self.fake_runs(1, lambda argv: 3)  # 3: what the probe exits for no such module
+        with patches[0], patches[1], patches[2]:
+            self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's "
+                                         "README § Development names the version CI installs)")
+        self.assertEqual(probes[0][0][-1], "pytest")
 
     def test_a_line_that_is_not_one_plain_command_is_never_asked_about(self):
         """only a plain simple command is parsed: a separator, redirect, subshell, quote or expansion anywhere in it
@@ -766,12 +787,12 @@ class MissingRunner(VerifyCase):
                 with find, run, env:
                     self.assertEqual(self.run_cmd(f"ekit_absent_tool117 {shell}"), rc)
 
-    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_a_probe_that_errors_is_a_failed_run(self):
-        self.fake_python('case "$1" in -c) exit 2;; esac\nexit 1\n')
-        self.failed("python3 -m pytest", 1)
-
-    # the run's output is left as it is
+        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
+        for i, answer in enumerate((lambda argv: 2, lambda argv: OSError("cannot start"))):
+            probes, patches = self.fake_runs(1, answer)
+            with self.subTest(i=i), patches[0], patches[1], patches[2]:
+                self.failed("python3 -m pytest", 1, task=f"t{i}")
 
     def test_stdout_and_stderr_keep_their_order(self):
         r = subprocess.run([sys.executable, "-I", os.path.join(_kit.SCRIPTS, "task-verify.py"), "--repo", self.repo,
