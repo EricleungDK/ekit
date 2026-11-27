@@ -11,6 +11,7 @@ Runner: RUN = <the `[ekit] Scenario runner:` command>. `RUN run <id>` while writ
 `can-fail` baseline: <ref before this change>; `RUN can-fail <ref>` → `CAN-FAIL ✓` for every scenario covering these criteria.
 Commit scope: `.ekit/scenarios/**` only, on `<branch>`; commit message <owner's commit style, attribution trailer or none>. Leave other files as they are.
 Skills: load the taste-it skill before writing any scenario.
+Mech check: after your commit, run `<py> -I <kit>/scripts/mech-review.py all --repo <that path> --base <the HEAD sha of the Worktree line> --head HEAD --stack <stack> --head-branch <branch>` <plus the repo's --test-paths/--protected-paths/--agent-prefix>. The range is your commits only, and it judges your scenario files as tests. Before you report, its `summary` shows 0 fail (`all pass <sha>` or `pass <sha> (0 fail, …)`); fix each fail entry in your scenarios in a new commit and run it again. An entry in a file you did not change goes into your report, not your diff.
 
-Report: each finding with its scenario id and verdict (fix / human), the runner's PASS/FAIL lines, the scenarios read and the files created or edited, your commit SHA.
+Report: each finding with its scenario id and verdict (fix / human), the runner's PASS/FAIL lines, the scenarios read and the files created or edited, your commit SHA, the mech-review `summary` line of your commit, with 0 fail.
 ```
