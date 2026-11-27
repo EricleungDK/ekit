@@ -241,6 +241,12 @@ class SetupProof(unittest.TestCase):
         s = flat(section(read("ci-doctor"), "5. Open the PR"))
         self.assertIn("A proof that did not pass (setup.md, repair.md) has no PR to show", s)
 
+    def test_a_cheat_r2_is_run_with_the_callers_inputs(self):
+        """two runs reported a `.github` edit uncaught ("a bare R2 run without that input gave no entry")"""
+        s = flat(section(self.text, "4. Prove it with R0"))
+        self.assertIn("with the caller's inputs (step 6's `--test-paths` and `--protected-paths`, one flag per glob), "
+                      "must give its entry", s)
+
     def test_a_skip_from_the_body_is_caught_by_r4_or_listed(self):
         s = flat(section(self.text, "4. Prove it with R0"))
         self.assertIn("A cheat R2 gives no entry for (in Java, a skip from the test's body)", s)
