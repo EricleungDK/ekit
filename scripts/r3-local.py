@@ -31,6 +31,7 @@ import fnmatch
 import hashlib
 import inspect
 import json
+import math
 import os
 import posixpath
 import shlex
@@ -159,12 +160,13 @@ def _refused(path, why):
     return Stop(f"machine lock {path}: {why}: remove it, or ask its owner")
 
 
-def _open_fd(path, flags, mode=0o666):
+def _open_fd(path, flags):
     """os.open that never follows a link at path and never blocks (a fifo there; the fstat in _open_shared refuses it,
     and on a regular file O_NONBLOCK changes nothing): a link there (any user can make one in /tmp) is a Stop, as is any
     other error but a missing file (FileNotFoundError) or, for an existing file, the right to write it."""
     try:
-        return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode)  # a fifo there must not block the open
+        return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)  # a fifo there must not block the open; no mode:
+        # the fchmod after a create sets it
     except (FileNotFoundError, FileExistsError):
         raise
     except PermissionError:
@@ -231,7 +233,7 @@ def hold_machine(path, limit_min):
             pid = _holder(f)
             if pid != said:
                 print(f"r3-local: waiting for the r3-local run of pid {pid} (one run at a time on this machine: "
-                      f"{path}), up to {limit_min:g} min", file=sys.stderr, flush=True)
+                      f"{path}), up to {limit_min:g} min", file=sys.stderr)  # stderr is line-buffered (3.9+)
                 said = pid
             left = deadline - CLOCK()
             if left <= 0:
@@ -420,7 +422,7 @@ def _minutes(text):
         v = float(text)
     except ValueError:
         v = -1.0
-    if not 0 <= v < float("inf"):
+    if not (v >= 0 and math.isfinite(v)):
         raise argparse.ArgumentTypeError("want minutes, a number 0 or more")
     if v > MAX_WAIT_MIN:  # a finite 1e308 minutes is no finite number of seconds
         raise argparse.ArgumentTypeError(f"want minutes, at most {MAX_WAIT_MIN} (a day)")
