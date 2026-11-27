@@ -38,6 +38,12 @@ class CiDoctorRoutes(unittest.TestCase):
         description = read("ci-doctor").split("---")[1]
         self.assertIn("`adapter-fix` entry", description)
 
+    def test_an_ask_says_what_each_pick_means(self):
+        """a run asked which project without saying the uncovered one needs an adapter written first"""
+        self.assertIn("naming each as the entry does and what the pick means: a built-in stack is adopted as it is; "
+                      "one with `no adapter` gets an adapter written and proved for this repo first (setup.md)",
+                      flat(section(read("ci-doctor"), "1. Diagnose")))
+
     def test_an_adapter_fix_entry_from_a_pr_goes_straight_to_repair(self):
         self.assertRegex(flat(section(read("ci-doctor"), "1. Diagnose")),
                          r"`adapter-fix` entry[^.]*: follow \[repair\.md\]\(repair\.md\)")
@@ -321,8 +327,10 @@ class TriageLabel(unittest.TestCase):
     def test_a_held_entry_rejoins_once_r0_is_waived_or_the_repair_stops(self):
         s = flat(section(self.text, "Gate"))
         self.assertIn("once a person waives the R0 entry, or the repair stops out of budget", s)
-        self.assertIn("an `agent-fixable` one is a fix round of the PR's agent", s)
-        self.assertIn("otherwise it joins the Needs-you block with the R0 entry", s)
+        # a run wrote out the fix that may follow the hold, Forbidden list and all: the answer names who ends it
+        self.assertIn("the answer names those two ends and plans nothing past them, since the entry is triaged afresh "
+                      "then", s)
+        self.assertNotIn("is a fix round of the PR's agent", s)
 
     def test_a_held_entry_opens_the_answer_with_its_own_token(self):
         s = flat(section(self.text, "Open the answer"))

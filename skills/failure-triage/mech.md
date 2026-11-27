@@ -14,7 +14,7 @@ First lines of the answer, one per `severity: fail` entry, as a plain list:
 
 1. Envelope `head` ≠ `git rev-parse HEAD` → **stale** ([stale.md](stale.md): judge only the run for your SHA). Rerun mech-review at HEAD.
 2. `severity: confirm` → not red. Reviewer decides. List under Open (finish). `severity: waived` → not red: a person let it through (`waiver.by`, `waiver.reason`). Leave it; list it under Open.
-3. `blocked: R0` on an `agent-fixable` entry → not yet red: its check read the code through the adapter R0 failed, so it may be a misread. No fix round, and its plan is the hold alone, with no `Fix:` lines: its Open line, listed under Open, and the one sentence "read again, and triaged from that run, once the PR runs on the repaired adapter". The hold ends once a person waives the R0 entry, or the repair stops out of budget: then classify it below, so an `agent-fixable` one is a fix round of the PR's agent, otherwise it joins the Needs-you block with the R0 entry. A `needs-human` one stays the person's.
+3. `blocked: R0` on an `agent-fixable` entry → not yet red: its check read the code through the adapter R0 failed, so it may be a misread. No fix round, and its plan is the hold alone, with no `Fix:` lines: its Open line, listed under Open, and the one sentence "read again, and triaged from that run, once the PR runs on the repaired adapter". The hold ends once a person waives the R0 entry, or the repair stops out of budget: the answer names those two ends and plans nothing past them, since the entry is triaged afresh then. A `needs-human` one stays the person's.
 4. `severity: fail` → classify below.
 
 ## Class map
