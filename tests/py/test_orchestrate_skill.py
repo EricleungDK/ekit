@@ -103,6 +103,22 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         ):
             self.assertIn(rule, t)
 
+    def test_review_evidence_rule_runs_ekit_hooks_and_task_verify_against_a_temp_store(self):
+        # #121: a reviewer's SessionStart run in a scratch worktree wrote into the main checkout's declared.json
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn("Run every ekit hook and every task-verify call with `EKIT_STATE` set to a temp dir", rule5)
+        self.assertIn('EKIT_STATE="$(mktemp -d)"', rule5)
+        self.assertIn("keyed by the git common dir", rule5)
+
+    def test_review_evidence_rule_reuses_one_temp_store_and_names_both_live_stores(self):
+        # review of #121: an inline EKIT_STATE per call gave each call a fresh store (F4: `check` exit 4, not 1);
+        # the common-dir key is task-verify's only, the finish gate keeps a shared state dir (F5)
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn('a temp dir, made once per reproduction and reused by each call (`export EKIT_STATE="$(mktemp -d)"` first)', rule5)
+        self.assertNotIn('EKIT_STATE="$(mktemp -d)" <py>', rule5)
+        self.assertIn("task-verify into the main checkout's git dir", rule5)
+        self.assertIn("the finish gate into the shared state dir", rule5)
+
     def test_taster_brief_carries_its_fields(self):
         t = flat(read("taster-brief-template.md"))
         for field in ("Read list:", "Criteria:", "Install:", "Runner:", "`can-fail` baseline:", "Commit scope:"):
