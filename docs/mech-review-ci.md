@@ -159,7 +159,7 @@ ekit's own development (not part of the plugin, #84): `python3 scripts/ci-local.
 |---|---|---|
 | `strace`, allowed to trace (ptrace) | `stack-plan/session-start` | `unrunnable here: strace is missing` / `strace saw nothing (ptrace not allowed here?)` |
 | `unshare -n` (a network namespace; as a non-root user a user namespace too: the job turns off ubuntu 24.04's AppArmor limit, `kernel.apparmor_restrict_unprivileged_userns=0`, and puts first on `PATH` an `unshare` that runs `/usr/bin/unshare --map-current-user`) | `stack-plan/session-start` | `unrunnable here: unshare is missing` / `unshare -n is not permitted` |
-| Python 3.9 from `uv` (`uv python install 3.9`, found offline), else `python3.9` (or `python3.10` for `old-python`) on `PATH` | `stack-plan/session-start/old-python`, `stack-plan/session-start/verify-defaults/old-python` | `unrunnable here: no python 3.9 ...` |
+| Python 3.9 from `uv` (`uv python install 3.9`, found offline; `old-python` also takes uv's 3.10), else `python3.9` or `python3.10` on `PATH` | `stack-plan/session-start/old-python`, `stack-plan/session-start/verify-defaults/old-python` | `unrunnable here: no python 3.9 ...` |
 | `node` | `mech-review-ts/cap`, `mech-review-ts/cap/budget` | a FAIL (`node not on PATH`): no `unrunnable here:` message |
 | `python3 -m venv` and PyPI the first time (pytest 9.2.0 and mutmut 3.8.1 wheels, built once per machine under `~/.cache/ekit-scenarios`) | `mech-review-python/real-mutmut` and its children (`cap`, `own-config`, `symlinks`, `untracked`), `mech-review-doctor/sandbox` and its children (`above-project-dir`, `docs-link`, `tests-links`) | a FAIL (`pip install pytest mutmut failed`) |
 | `bash`, `git`, `jq`, `python3` 3.9+ | every scenario (lib.sh) | a FAIL |
