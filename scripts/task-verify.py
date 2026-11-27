@@ -176,19 +176,19 @@ FINDS = "import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1])
 
 
 def first_command(cmd):
-    """(folder, words) when the command line is one plain simple command, after the leading `cd <dir> &&` steps
+    """(folders, words) when the command line is one plain simple command, after the leading `cd <dir> &&` steps
     session-start writes for a stack's folder (they give the folder, `<dir>` a plain word). Plain: split on
     whitespace, every word only letters, digits and `_ . / : + = -`, so no shell reads anything into it (no
     separator, redirect, subshell, quote, glob or expansion anywhere), and the first word a plain name or path
     (COMMAND), so no leading `NAME=value` either, in any shell. Anything else is not parsed (None): a failed run,
     never a guess."""
-    words = cmd.split()
-    folder = ""
+    words, folders = cmd.split(), []
     while words[2:3] == ["&&"] and words[0] == "cd" and PLAIN.fullmatch(words[1]):
-        folder, words = os.path.join(folder, words[1]), words[3:]
+        folders.append(words[1])
+        words = words[3:]
     if not words or not all(PLAIN.fullmatch(w) for w in words) or not COMMAND.fullmatch(words[0]):
         return None
-    return folder, words
+    return folders, words
 
 
 def cmd_finds(word, cwd, env):
@@ -207,7 +207,7 @@ def python_m(words):
     flags, rest = [], words[1:]
     while rest:
         w = rest.pop(0)
-        if w == "-m" or (w.startswith("-m") and len(w) > 2):
+        if w.startswith("-m"):  # `-m pkg` or `-mpkg`
             module = w[2:] or (rest[0] if rest else "")
             return (flags, module.split(".")[0]) if MODULE.fullmatch(module) else None
         if w in ("-X", "-W") and rest:
@@ -228,17 +228,16 @@ def probe(argv, cwd, env):
         return None
 
 
-def found_in_shell(exe, shell, word, cwd, env):
-    """True/False: whether `shell` finds `word` as a command (builtins, functions and aliases count); None when
-    that cannot be told."""
+def shell_lacks(exe, shell, word, cwd, env):
+    """True when `shell` says it finds no command `word` (builtins, functions and aliases count as found); False
+    when it finds one or cannot tell. The word is plain (first_command): no shell reads anything into it."""
     if shell in shells.PS_SHELLS:
-        line = f"if (Get-Command -ErrorAction SilentlyContinue {shells.ps_literal(word)}) {{ exit 0 }} else {{ exit 3 }}"
-        rc = probe(shells.command(exe, shell, line), cwd, env)
-        return {0: True, 3: False}.get(rc)
+        line = f"if (Get-Command -ErrorAction SilentlyContinue '{word}') {{ exit 0 }} else {{ exit 3 }}"
+        return probe(shells.command(exe, shell, line), cwd, env) == 3
     if shell == "cmd":
-        return cmd_finds(word, cwd, env)
-    rc = probe(shells.command(exe, shell, f"command -v {shlex.quote(word)} >/dev/null 2>&1"), cwd, env)
-    return {0: True, 1: False, 127: False}.get(rc)
+        return not cmd_finds(word, cwd, env)
+    # `command -v` exits 1 for none in bash and zsh, 127 in dash
+    return probe(shells.command(exe, shell, f"command -v {word} >/dev/null 2>&1"), cwd, env) in (1, 127)
 
 
 def finds_module(exe, shell, words, flags, pkg, cwd, env):
@@ -260,17 +259,15 @@ def missing_runner(top, cmd, rc, exe, shell):
     - `<python> [flags] -m <module>`: that shell runs `<python> [flags] -c <find_spec>` for the module's top package
       (finds_module); 3 is no such module, 9009 no Python (the Windows Store stub, or cmd finding none).
     - any other command, and a python that gave no answer: after an exit that shell gives a missing command (bash,
-      sh: 127; cmd: 9009; PowerShell: 1), the shell is asked whether it finds the word (found_in_shell).
+      sh: 127; cmd: 9009; PowerShell: 1), the shell is asked whether it finds the word (shell_lacks).
     A question that fails or takes over PROBE_SECONDS reads as a failed run, never n/a."""
     if not rc:
         return None
     first = first_command(cmd)
     if not first:
         return None
-    folder, words = first
-    cwd, env = os.path.join(top, folder), shells.env_for(exe, shell)  # the run's own folder and environment
-    if not os.path.isdir(cwd):
-        return None
+    folders, words = first
+    cwd, env = os.path.join(top, *folders), shells.env_for(exe, shell)  # the run's own folder and environment
     module = python_m(words)
     if module:
         flags, pkg = module
@@ -281,7 +278,7 @@ def missing_runner(top, cmd, rc, exe, shell):
         if answer == 9009:
             return f"install Python: {words[0]} ran no Python (exit 9009, the Microsoft Store stub)"
     if rc == (1 if shell in shells.PS_SHELLS else 9009 if shell == "cmd" else 127):
-        if found_in_shell(exe, shell, words[0], cwd, env) is False:
+        if shell_lacks(exe, shell, words[0], cwd, env):
             return f"install {words[0]} ({shell} finds no {words[0]})"
     return None
 
