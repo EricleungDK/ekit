@@ -387,6 +387,15 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.verdicts(r), ["scenarios: not run here: traced: strace is missing"])
 
+    def test_unrunnable_ok_every_scenario_unrunnable_ran_nothing_and_exits_1(self):
+        # nothing passed: a job with every tool installed that ran no scenario is no green job
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        self.scenario("isolated", 'echo "ASSERT FAILED: unrunnable here: unshare -n is not permitted" >&2; exit 1')
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: isolated: unshare -n is not permitted; "
+                                            "traced: strace is missing"])
+
     def test_unrunnable_ok_a_failure_beside_an_unrunnable_scenario_still_exits_1_naming_both(self):
         self.scenario("bad", "exit 3")
         self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')

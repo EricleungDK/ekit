@@ -26,8 +26,9 @@ Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that co
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
 --step runs only the steps named (repeatable; still in CI's order). --unrunnable-ok (#116: the tests workflow's
 scenarios job, `--step scenarios --unrunnable-ok`): a scenarios step that is not run here only for scenarios this
-machine cannot run, each named with what it lacks, does not fail the exit; a FAIL beside them still does, and so does
-any other not run here (no verdict line, PASS: 0/0, an unreadable results.json, or another step's).
+machine cannot run, each named with what it lacks, does not fail the exit once at least one scenario passed; a FAIL
+beside them still does, and so does every scenario unrunnable, and any other not run here (no verdict line, PASS: 0/0,
+an unreadable results.json, or another step's).
 exit: 0 every step passed; 1 a step failed or could not run here; 2 usage, or a base that is not a commit (no step ran).
 """
 import argparse
@@ -203,8 +204,9 @@ def scenarios(run, a):
     if failed:
         also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
         return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
-    if unrunnable:  # a missing tool alone: what --unrunnable-ok excuses
-        return NOT_RUN, "; ".join(unrunnable), UNRUNNABLE_ONLY
+    if unrunnable:  # a missing tool alone: what --unrunnable-ok excuses, once at least one scenario passed
+        ran = len(rows) > len(unrunnable)  # no failed row here: every other row passed
+        return (NOT_RUN, "; ".join(unrunnable)) + ((UNRUNNABLE_ONLY,) if ran else ())
     # the runner said FAIL, so it failed whatever its rows leave out; a NOT-RUN or a short PASS blames no scenario
     return FAILED if word == "FAIL" else NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or " \
                                                   "unrunnable scenario"
@@ -251,8 +253,8 @@ def parse(argv):
     p.add_argument("--step", action="append", choices=[n for n, _ in STEPS],
                    help="run this step only (repeat for more; they run in CI's order). Default: every step")
     p.add_argument("--unrunnable-ok", action="store_true",
-                   help="a scenarios step not run here only for scenarios this machine cannot run (each named) does "
-                        "not fail the exit (the tests workflow's scenarios job, #116)")
+                   help="a scenarios step not run here only for scenarios this machine cannot run (each named), "
+                        "with at least one scenario passed, does not fail the exit (the tests workflow's scenarios job, #116)")
     return p.parse_args(argv)
 
 
