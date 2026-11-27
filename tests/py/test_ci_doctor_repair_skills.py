@@ -308,6 +308,14 @@ class RoundsHold(unittest.TestCase):
         self.assertIn("an entry marked `blocked: R0` is held, not sent, and opens as `<id> → held: blocked by <R0 id>` "
                       "(step 4)", s)
 
+    def test_with_no_agent_tool_the_orchestrator_still_starts_the_repair(self):
+        """both eval runs with no subagent tools put the repair's start in the Needs-you block after 334df29 named
+        that block in the same bullet"""
+        s = flat(read("orchestrate-agent"))
+        self.assertIn("Starting the repair is yours, now: ci-doctor's repair mode as an agent of its own, or, with no "
+                      "agent tool, as a run you make yourself", s)
+        self.assertIn("the Needs-you block holds that merge and any waiver, while the start stays yours", s)
+
     def test_finish_counts_no_round_for_an_adapter_fix_entry(self):
         self.assertIn("an `adapter-fix` entry counts no fix round", flat(read("finish")))
 
