@@ -15,7 +15,7 @@ scenarios:
          (uv run --no-project): no uv.lock and no .venv in the repo; one left there anyway is a failed step.
   r3     scripts/r3-local.py with the same inputs and --mutation-budget 20: a fail entry or an unconfirmed survivor
          fails the step.
-  scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file), which no CI job runs (#115):
+  scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file; #115), as the tests workflow's scenarios job runs it (#116):
          a FAIL fails the step, naming each; one this machine cannot run is not run here, naming it and what is
          missing: the runner's NOT-RUN (no shell for its run file), or a scenario that exits non-zero with its own one
          fail message on stderr, `ASSERT FAILED: unrunnable here: <what>` (lib.sh: fail "unrunnable here: ..."), as its
