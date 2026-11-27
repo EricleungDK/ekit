@@ -18,7 +18,7 @@ Other languages go the same way.
 | **`needs-human`** | An entry class: a `fail` only a person settles, by a waiver or by their own PR |
 | **`adapter-fix`** | An entry class: the adapter file or the stack plan needs a change, in a PR of its own, never by the PR's own agent |
 | **target OS** | The OS of the CI runner that runs your tests (`linux`, `macos`, `windows`), not your own computer's ([target OS](#target-os)) |
-| **Java reference adapter** | `tests/fixtures/adapters/java.toml`, a hand-written Java adapter that is a test fixture of ekit's, not a built-in. ci-doctor writes yours from your repo and must not copy this one ([Java reference adapter](mech-review-ci.md#java-reference-adapter)) |
+| **The kit's Java adapter** | `tests/fixtures/adapters/maven.toml`, a Java adapter ci-doctor's setup mode generated for ekit's Java fixture repo, kept as a test fixture of ekit's, not a built-in. ci-doctor writes yours from your repo and must not copy this one ([the kit's Java adapter](mech-review-ci.md#the-kits-java-adapter)) |
 
 ## The short version
 
@@ -123,12 +123,12 @@ That is expected: doctor does not trial an adapter file, and the proof report st
   only there; `**/src/test/**` for a multi-module build. Add `.ekit/scenarios/**` if you have scenarios.
 - The caller's `setup-command` provides what the runner lacks for your tests, by the rules in
   [the commands](#the-commands-each-adapter-names): nothing in mech-review's jobs runs the adapter's `install` command.
-- If the adapter runs PIT, as the Java reference adapter does: your pom declares the PIT plugin with
+- If the adapter runs PIT, as the kit's Java adapter does: your pom declares the PIT plugin with
   `pitest-junit5-plugin`, which PIT needs to run JUnit 5 tests. **The proof does not cover this**: R0's mutation
   control runs on the fixture project's own pom, so it passes even when your pom lacks the plugin, and R3 on a later
   PR then fails with `pit ran and wrote no report`. If it is missing, add it in the setup PR, with the PIT version the
-  adapter pins (the Java reference adapter pins `pitest-maven` 1.17.4; its fixture pom uses `pitest-junit5-plugin`
-  1.2.1), under `<build><plugins>`:
+  adapter pins, or a version of your own when it pins none (the kit's Java adapter runs the pom's: its fixture pom
+  declares `pitest-maven` 1.17.4 and `pitest-junit5-plugin` 1.2.1), under `<build><plugins>`:
 
   ```xml
   <plugin>
@@ -171,14 +171,14 @@ This is a [known gap](#known-gaps).
 ## The commands each adapter names
 
 `[commands]` in the adapter file holds four shell commands, each required (`""` means the stack has none). ci-doctor
-generates them from your repo's own toolchain, so read yours in the adapter. As an example only, the Java reference
-adapter's, quoted:
+generates them from your repo's own toolchain, so read yours in the adapter. As an example only, the kit's Java
+adapter's, quoted (its fixture repo has no lint step, and `mvn` fetches what it needs):
 
 ```toml
 [commands]
-install = "mvn -B -ntp dependency:go-offline"
+install = ""
 build = "mvn -B -ntp test-compile"
-lint = "mvn -B -ntp test-compile -Dmaven.compiler.showWarnings=true -Dmaven.compiler.failOnWarning=true"
+lint = ""
 test = "mvn -B -ntp test"
 ```
 
@@ -211,8 +211,9 @@ test = "mvn -B -ntp test"
 
   The variables expand when bash runs the command on the runner. Your existing workflows show what the tests need.
 - **In your agent sessions**, the adapter's lint and test commands are the natural verify command to agree on: under
-  `/ekit:orchestrate-agent` you agree one per unit in the checklist, for example the reference adapter's lint and test
-  joined with `&&`. Nothing copies them for you: give them when the checklist is agreed.
+  `/ekit:orchestrate-agent` you agree one per unit in the checklist, for example the adapter's lint and test joined
+  with `&&` (the test command alone where lint is `""`, as in the kit's Java adapter). Nothing copies them for you:
+  give them when the checklist is agreed.
 
 ## Target OS
 
@@ -372,7 +373,7 @@ PRs reads `unproven`, which exits 0 and blocks nothing, so those PRs are checked
 ([fixing it by hand](#fixing-it-by-hand)). It is a [known gap](#known-gaps), for the head-proof follow-up.
 
 Separately, every edit under `.github/**` (the callers, the base CI jobs) is a protected-path `needs-human` entry.
-If the adapter lists the mutation tool's config files (the Java reference lists `pom.xml`), an edit to one is an R2
+If the adapter lists the mutation tool's config files (the kit's Java adapter lists `pom.xml`), an edit to one is an R2
 `needs-human` entry too. A person settles these with `/mech-waive <id> <reason>` ([Waivers](mech-review-ci.md#waivers)).
 
 ## When R0 fails: the fixing round
@@ -429,9 +430,9 @@ One TOML file per stack: [Adapter file](mech-review-ci.md#adapter-file) is the f
 
 Its fixtures sit beside it in `.ekit/adapters/<name>.r0/` (`runtime/` for the runtime half). The
 [Worked example](mech-review-ci.md#worked-example) is a whole file for a made-up language.
-[Java reference adapter](mech-review-ci.md#java-reference-adapter) describes a hand-written Java adapter (a test
-fixture of ekit's, not a built-in) and what Java cannot express yet: `@Nested` classes, composed annotations,
-`@SuppressWarnings`, assumptions that stop a test from its body.
+[The kit's Java adapter](mech-review-ci.md#the-kits-java-adapter) describes a Java adapter ci-doctor generated (a test
+fixture of ekit's, not a built-in), and [Format limits](mech-review-ci.md#format-limits) what no adapter can make the
+checks see: composed annotations, `@SuppressWarnings`, assumptions that stop a test from its body, among others.
 
 ### Fixing it by hand
 
