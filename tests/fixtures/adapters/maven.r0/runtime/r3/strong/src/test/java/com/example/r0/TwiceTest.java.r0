@@ -1,0 +1,13 @@
+// R0 R3 control (maven): a strong assert, no MISSED mutant.
+package com.example.r0;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Test;
+
+class TwiceTest {
+    @Test
+    void twice() {
+        assertEquals(4, Twice.twice(2));
+    }
+}

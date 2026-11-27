@@ -1,0 +1,30 @@
+// R0 runtime controls (maven): one test per verdict the runner must give. The top-level `same` fails and the
+// @Nested `Inner.same` passes, so a run that drops or mis-joins the nested part of a name reads the wrong one.
+package com.example.r0;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
+class CtlTest {
+    @Test
+    void same() {
+        assertEquals(4, Calc.add(1, 2));
+    }
+
+    @Disabled("R0 skipped control")
+    @Test
+    void skipped() {
+        assertEquals(3, Calc.add(1, 2));
+    }
+
+    @Nested
+    class Inner {
+        @Test
+        void same() {
+            assertEquals(3, Calc.add(1, 2));
+        }
+    }
+}
