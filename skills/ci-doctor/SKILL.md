@@ -71,7 +71,7 @@ Ask the user for `protected-paths` beyond `.github/**`, and whether their agent 
 
 ## 4. Iterate
 
-Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry that survives its fix twice → stop with a Needs-you block (finish).
+Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0, or when its one entry is the `adapter-file` `confirm` of the repo's own adapter file (it exits 1: doctor trials the built-in stacks only, and setup.md's or repair.md's proof stands in for that). An entry that survives its fix twice → stop with a Needs-you block (finish).
 
 `env` entries on this machine may be local-only: a missing tool here says nothing about the runner, and `mutation_tool: absent` gets no entry because CI installs it. Report them as verification debt unless the workflow also lacks the input.
 
@@ -79,7 +79,7 @@ Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry 
 
 Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say how the PR's own mech-review check reads. A repo with a built-in stack: red `needs-human` by design (it edits `.github/**`); the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green. A setup PR (setup.md) whose base resolves no stack (no built-in project there): `no result`, red with nothing to waive; the owner merges on the proof report and makes the check required only after the merge. One whose base resolves a built-in stack beside the new one: the check runs, as for a repo with a built-in stack, and setup.md step 8 names its entries.
 
-Report the PR URL via finish. Stopped before the PR (blocked, no remote, asked to) → the final report itself carries the full caller YAML and PR body.
+Report the PR URL via finish. Stopped before the PR with its files ready (no remote, asked to, step 4's Needs-you stop) → the final report itself carries the full caller YAML and PR body. A proof that did not pass (setup.md, repair.md) has no PR to show: its report is the blocked one that file names.
 
 ## Stack plan
 

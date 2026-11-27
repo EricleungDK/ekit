@@ -154,6 +154,76 @@ class SetupPrCheck(unittest.TestCase):
             self.assertIn("reads `no result`", text, case)
 
 
+class SetupProof(unittest.TestCase):
+    """live runs of setup mode (the evals and one real Java repo): each pin is a step an agent got wrong"""
+
+    def setUp(self):
+        self.text = read("ci-doctor", "setup.md")
+
+    def test_the_runtime_commands_are_written_out(self):
+        """the real run guessed `--base HEAD --head HEAD`: red and mutants name every flag they need"""
+        s = flat(section(self.text, "4. Prove it with R0"))
+        self.assertIn("`MR red --repo <repo> --base HEAD --head HEAD --stack <name> --project-dir <folder> --adapter", s)
+        self.assertIn("`MR mutants --repo <repo> --base HEAD --head HEAD --stack <name> --project-dir <folder> --adapter", s)
+
+    def test_the_cheat_list_is_done_before_the_adapter_and_controls_json_waits_for_it(self):
+        """three of four eval runs drafted the adapter first; controls.json names tests as the adapter does"""
+        self.assertIn("write its cheat list, then generate its adapter file", flat(self.text))
+        s = flat(section(self.text, "2. Cheat list, from the language alone"))
+        self.assertIn("Done when: the list and its fixtures are on disk and `.ekit/adapters/<name>.toml` is not yet.", s)
+        self.assertIn("whose `controls.json` step 3 writes", s)
+        self.assertIn("step 2's `runtime/controls.json`", flat(section(self.text, "3. Draft the adapter")))
+
+    def test_a_suppression_fixture_is_a_comment_and_an_annotation_is_a_limit(self):
+        s = flat(section(self.text, "2. Cheat list, from the language alone"))
+        self.assertIn('reads suppressions "in comments only"', s)
+        self.assertIn("the `suppression` fixture takes a comment form, and an annotation one is a limit", s)
+
+    def test_rounds_are_counted_and_unproven_fails_the_round(self):
+        """a budget run reported "Static half passes" for 5 of 17 cases with no fixture, and miscounted its rounds"""
+        s = flat(section(self.text, "4. Prove it with R0"))
+        self.assertIn("a draft that does not load is a round too", s)
+        self.assertIn("Number each round as it runs", s)
+        self.assertIn("`unproven` (a case with no fixture yet) exits 0 and fails the round", s)
+        self.assertIn("the rounds run of the budget (`3 of 5`)", s)
+
+    def test_a_format_gap_ends_the_rounds_and_any_other_failure_is_revised(self):
+        """the proof-fails runs stopped at 2 and 3 of 5 on the fixtures' account; the real run spent a round on a case
+        no adapter could pass"""
+        s = flat(section(self.text, "4. Prove it with R0"))
+        self.assertIn("is a **format gap**: no revision of the adapter can pass it, so it ends the rounds there", s)
+        self.assertIn("Its reason is the format, never the fixtures; any other failure is revised round by round", s)
+
+    def test_a_stop_on_the_proof_shows_no_pr_body(self):
+        """an eval run printed "the PR body I would have opened" on a blocked stop"""
+        self.assertIn("This report carries no PR body or caller YAML", flat(section(self.text, "4. Prove it with R0")))
+        s = flat(section(read("ci-doctor"), "5. Open the PR"))
+        self.assertIn("A proof that did not pass (setup.md, repair.md) has no PR to show", s)
+
+    def test_a_skip_from_the_body_is_caught_by_r4_or_listed(self):
+        s = flat(section(self.text, "4. Prove it with R0"))
+        self.assertIn("must give R4's `did not run at head`; elsewhere it goes under `## Limits (owner decides)`", s)
+        self.assertIn("or the red run's R4 entry", flat(section(self.text, "8. Open the setup PR")))
+
+    def test_every_cheat_has_one_place_and_the_limits_heading_is_a_heading(self):
+        s = flat(section(self.text, "8. Open the setup PR"))
+        self.assertIn("Each cheat on the list appears once, in one of three places", s)
+        self.assertIn("a limit the CI doc names (its sentence quoted)", s)
+        self.assertIn("`## Limits (owner decides)`, a heading of its own", s)
+
+    def test_doctor_at_the_setup_head_reads_repair_and_that_is_expected(self):
+        s = flat(section(self.text, "8. Open the setup PR"))
+        self.assertIn("`fail <sha> (1 problems)`, mode `repair`, its one entry the `adapter-file` `confirm`", s)
+        self.assertIn("its one entry is the `adapter-file` `confirm` of the repo's own adapter file",
+                      flat(section(read("ci-doctor"), "4. Iterate")))
+
+    def test_scenarios_test_paths_base_ci_action_and_target_os_reason(self):
+        s = flat(section(self.text, "6. CI files"))
+        self.assertIn("plus `.ekit/scenarios/**` when the repo has `.ekit/scenarios/`", s)
+        self.assertIn("`actions/checkout`, the toolchain's `setup-*` action (`actions/setup-java`", s)
+        self.assertIn("its `target_os_why`, quoted", flat(section(self.text, "8. Open the setup PR")))
+
+
 class TriageLabel(unittest.TestCase):
     def setUp(self):
         self.text = read("failure-triage", "mech.md")
