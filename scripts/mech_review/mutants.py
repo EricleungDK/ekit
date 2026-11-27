@@ -269,13 +269,21 @@ def cap_counted(ordered, own, extra, max_mutants):
 def with_risk(check, counted, ran, class_of):
     """check with its per-class counts (#122) when the cap cut the run (counted is not None): by_risk from the class
     (class_of) of each mutant counted and each one tested (ran), and the same in its note. A check that is no count
-    (n/a, or one with no total) is left as it is. The counts add up to the check's tested/total (test_r3_risk_sums);
-    readers check that again (risk_of)."""
-    if counted is None or check.get("tested") is None or check.get("total") is None:
+    (n/a, a failed baseline, a shard whose total is unknown: no total) is left as it is. The counts add up to the
+    check's tested/total (test_r3_risk_sums); readers check that again (risk_of)."""
+    if counted is None or check.get("total") is None:
         return check
     counts = by_risk([class_of(m) for m in counted], [class_of(m) for m in ran])
     check["by_risk"] = counts
     check["note"] += risk_note(counts)
+    return check
+
+
+def empty_share(check, counted):
+    """A capped shard with no share of the pick (#122): empty per-class counts, so the merge still sums the other
+    shards'. A shard of a run within the cap (counted None) has none."""
+    if counted is not None:
+        check["by_risk"] = {}
     return check
 
 
@@ -711,8 +719,8 @@ class CargoMutants:
                     own, extra = cap_share(ordered, max_mutants, shard)
                     counted = cap_counted(ordered, own, extra, max_mutants)
                     if not own:
-                        return with_risk(apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra,
-                                                   max_mutants), counted, [], rust_risk), []
+                        return empty_share(apply_cap(_check("pass", "0 mutants in this shard", 0, 0), own, extra,
+                                                     max_mutants), counted), []
                     for m in own:
                         argv += ["--re", "^" + rust_regex_escape(str(m.get("name", ""))) + "$"]
                 elif shard:
@@ -1531,7 +1539,7 @@ class Mutmut:
             if stop:
                 return stop
             ranks = MutantFiles(crate, [_crate_path(project_dir, f) for f in files])  # each mutant's edit: its risk
-            keep, extra, off, counted = None, 0, 0, None
+            keep = None  # the pick; set by step 1, or from what mutmut listed when the budget ended step 1
 
             def on_changed_lines(cands):
                 return changed_line_mutants(cands, ranks, sources, changed, project_dir)
@@ -1559,7 +1567,7 @@ class Mutmut:
                 if not own:
                     check = apply_cap(_check("pass", "0 mutants in this shard" + off_note(off), 0, 0), own, extra,
                                       max_mutants)
-                    return with_risk(check, counted, [], lambda n: py_class(n, ranks)), []
+                    return empty_share(check, counted), []
                 # step 2: only the mutants of the touched functions run (this shard's share, when that is not all)
                 filters = touched if len(own) == len(inside) else [_glob_escape(n) for n in own]
                 left = None if budget is None else max(1.0, budget - (time.monotonic() - t0))
@@ -1664,10 +1672,9 @@ class Mutmut:
                 status = "fail" if fails else "partial" if tested < total else "pass"
                 check = _check(status, note, tested, total)
             check["timing"] = timing
-            if total is not None:  # a shard whose total is unknown has no per-class totals either
-                held = {n for n, *_ in unconfirmed}
-                ran = [n for n, k, _ in rows if k != "untested" and n not in held]
-                check = with_risk(check, counted, ran, lambda n: py_class(n, ranks))
+            held = {n for n, *_ in unconfirmed}
+            ran = [n for n, k, _ in rows if k != "untested" and n not in held]
+            check = with_risk(check, counted, ran, lambda n: py_class(n, ranks))  # no total: no counts
             return check, ents
 
 
