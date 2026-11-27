@@ -14,7 +14,12 @@ The agent runs it, through the Bash tool, so the command passes the session's pe
 A command line means what its shell makes of it (bash, zsh, PowerShell): the first `declare` or `run` of a command
 keeps the shell it was given in (shells.current()), and every later `run` of it uses that shell, whichever shell
 calls `run`. A command whose shell this machine lacks is not run: `run` exits 5, and the command reads
-`n/a (env)`, never a pass.
+`n/a (env)`, never a pass. So does a run that failed because its runner is not installed (#117), naming what to
+install: after a failing exit of a line that is one plain command, task-verify asks whether its runner is there
+(missing_runner; any other line is a failed run, never a guess), through the run's own shell started as the run is,
+so it finds what the run finds: for `<python> -m <module>` that python whether it finds the module (`install
+module pytest for python3 (that Python finds no pytest; ...)`), for any other command the shell whether it finds
+the word (`install jq (bash finds no jq)`). A runner that is there and fails is a failed run, whatever it printed; the run's output is not read.
 
 `task-verify.py --hook` (stdin: hook payload) is the TaskCreated and TaskCompleted hook. It runs nothing but git:
 - TaskCreated: the task's Verify command becomes a command of the session.
@@ -41,6 +46,7 @@ import os
 import re
 import shlex
 import subprocess
+import shutil
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -159,6 +165,124 @@ def spelled(words):
     return " ".join((words[0] if len(words) == 1 else shlex.join(words)).split())
 
 
+PYTHON = re.compile(r"(?:python[\d.]*|py)(?:\.exe)?", re.I)  # python3, python3.12, py, python.exe: a basename
+PLAIN = re.compile(r"[A-Za-z0-9_./:+=-]+")  # a word no shell reads anything into: no quote, separator, expansion
+# a plain name or path: led by a letter, digit, `_`, `/`, `./` or `../`, never only dots (`.`, `..`: PowerShell's
+# dot-sourcing and the like), never `-` or `=` (an option; an assignment, which changes what the run finds)
+COMMAND = re.compile(r"(?=.*[A-Za-z0-9_])(?:[A-Za-z0-9_/]|\.\.?/)[A-Za-z0-9_./:-]*")
+MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")  # a dotted module name
+PROBE_SECONDS = 10  # what one question about the runner may take; past it, the run reads as failed
+FINDS = "import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1]) else 3)"  # 3: no such module
+
+
+def first_command(cmd):
+    """(folders, words) when the command line is one plain simple command, after the leading `cd <dir> &&` steps
+    session-start writes for a stack's folder (they give the folder, `<dir>` a plain word). Plain: split on
+    whitespace, every word only letters, digits and `_ . / : + = -`, so no shell reads anything into it (no
+    separator, redirect, subshell, quote, glob or expansion anywhere), and the first word a plain name or path
+    (COMMAND), so no leading `NAME=value` either, in any shell. Anything else is not parsed (None): a failed run,
+    never a guess."""
+    words, folders = cmd.split(), []
+    while words[2:3] == ["&&"] and words[0] == "cd" and PLAIN.fullmatch(words[1]):
+        folders.append(words[1])
+        words = words[3:]
+    if not words or not all(PLAIN.fullmatch(w) for w in words) or not COMMAND.fullmatch(words[0]):
+        return None
+    return folders, words
+
+
+def cmd_finds(word, cwd, env):
+    """Whether cmd.exe, in `cwd`, finds `word`: cmd looks in its own folder first, then on PATH; a path, and a
+    relative PATH entry, are that folder's, not task-verify's own."""
+    if "/" in word:  # a path: a plain word holds no backslash
+        return shutil.which(os.path.join(cwd, word)) is not None
+    dirs = [cwd] + [os.path.join(cwd, d) for d in env.get("PATH", "").split(os.pathsep)]  # absolute entries stay
+    return shutil.which(word, path=os.pathsep.join(dirs)) is not None
+
+
+def python_m(words):
+    """(flags, top package) of `<python> [flags] -m <module>`; None for any other command"""
+    if not PYTHON.fullmatch(re.split(r"[\\/]", words[0])[-1]):
+        return None
+    flags, rest = [], words[1:]
+    while rest:
+        w = rest.pop(0)
+        if w.startswith("-m"):  # `-m pkg` or `-mpkg`
+            module = w[2:] or (rest[0] if rest else "")
+            return (flags, module.split(".")[0]) if MODULE.fullmatch(module) else None
+        if w in ("-X", "-W") and rest:
+            flags += [w, rest.pop(0)]
+        elif w.startswith("-") and not w.startswith("-c"):
+            flags.append(w)
+        else:
+            return None  # a script, -c, or no -m: not a module run
+    return None
+
+
+def probe(argv, cwd, env):
+    """the exit code of one bounded question; None when it could not be asked or did not answer in time"""
+    try:
+        return subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=PROBE_SECONDS).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def shell_lacks(exe, shell, word, cwd, env):
+    """True when `shell` says it finds no command `word` (builtins, functions and aliases count as found); False
+    when it finds one or cannot tell. The word is plain (first_command): no shell reads anything into it."""
+    if shell in shells.PS_SHELLS:
+        line = f"if (Get-Command -ErrorAction SilentlyContinue '{word}') {{ exit 0 }} else {{ exit 3 }}"
+        return probe(shells.command(exe, shell, line), cwd, env) == 3
+    if shell == "cmd":
+        return not cmd_finds(word, cwd, env)
+    # `command -v` exits 1 for none in bash and zsh, 127 in dash
+    return probe(shells.command(exe, shell, f"command -v {word} >/dev/null 2>&1"), cwd, env) in (1, 127)
+
+
+def finds_module(exe, shell, words, flags, pkg, cwd, env):
+    """The exit of `<python as the line names it> <flags> -c <find_spec line> <pkg>` run by the run's own shell, as
+    the run is started (shell, cwd, env): the python asked is the one the run's line reaches, its startup files
+    (BASH_ENV, ~/.zshenv) and PATH included. 0: found, 3: no such module; anything else: no answer from that python.
+    The words are plain (first_command); the find_spec line is double-quoted, one word in every shell: it holds no
+    `$`, backtick, `!`, `%` or quote for bash, PowerShell or cmd to read into."""
+    line = f'{" ".join([words[0], *flags])} -c "{FINDS}" {pkg}'
+    return probe(shells.command(exe, shell, line), cwd, env)
+
+
+def missing_runner(top, cmd, rc, exe, shell):
+    """What to install when the run failed because its runner is not there; None when the runner is there (a failed
+    run, whatever it printed), the run passed, or it cannot be told. Asked after a failing exit, and only of a line
+    that is one plain simple command (first_command; `a && b`, `a; b`, `NAME=x a`, a redirect, quote or `$` is never
+    asked). Every question goes through the run's own shell, started as the run is (shell, folder, environment),
+    so it finds what the run finds:
+    - `<python> [flags] -m <module>`: that shell runs `<python> [flags] -c <find_spec>` for the module's top package
+      (finds_module); 3 is no such module, 9009 no Python (the Windows Store stub, or cmd finding none).
+    - any other command, and a python that gave no answer: after an exit that shell gives a missing command (bash,
+      sh: 127; cmd: 9009; PowerShell: 1), the shell is asked whether it finds the word (shell_lacks).
+    A question that fails or takes over PROBE_SECONDS reads as a failed run, never n/a."""
+    if not rc:
+        return None
+    first = first_command(cmd)
+    if not first:
+        return None
+    folders, words = first
+    cwd, env = os.path.join(top, *folders), shells.env_for(exe, shell)  # the run's own folder and environment
+    module = python_m(words)
+    if module:
+        flags, pkg = module
+        answer = finds_module(exe, shell, words, flags, pkg, cwd, env)
+        if answer == 3:
+            readme = "; ekit's README § Development names the version CI installs" if pkg == "pytest" else ""
+            return f"install module {pkg} for {' '.join([words[0], *flags])} (that Python finds no {pkg}{readme})"
+        if answer == 9009:
+            return f"install Python: {words[0]} ran no Python (exit 9009, the Microsoft Store stub)"
+    if rc == (1 if shell in shells.PS_SHELLS else 9009 if shell == "cmd" else 127):
+        if shell_lacks(exe, shell, words[0], cwd, env):
+            return f"install {words[0]} ({shell} finds no {words[0]})"
+    return None
+
+
 def cmd_run(top, words):
     cmd = spelled(words)
     sh = shell_of(top, cmd)
@@ -170,6 +294,12 @@ def cmd_run(top, words):
         print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
         return 5
     rc = subprocess.run(shells.command(exe, sh["name"], cmd), cwd=top, env=shells.env_for(exe, sh["name"])).returncode
+    na = missing_runner(top, cmd, rc, exe, sh["name"])
+    if na:
+        record(top, cmd, None, sh["name"], na)
+        keep_shell(top, cmd, sh)
+        print(f"task-verify: `{cmd}` is n/a (env): {na}", file=sys.stderr)
+        return 5
     record(top, cmd, rc, sh["name"])  # hashed after the run: what the command left is what the hook will see
     keep_shell(top, cmd, sh)
     print(f"task-verify: `{cmd}` exited {rc} in {sh['name']}", file=sys.stderr)

@@ -253,7 +253,11 @@ Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-rev
 
 ## Development
 
-The suites are bash (`tests/*.test.sh`) plus Python unittest (`tests/py`), so contributors also need bash and `jq`.
+The suites are bash (`tests/*.test.sh`) plus Python unittest (`tests/py`), so contributors also need bash and `jq`,
+and pytest 9.2.0, the version CI installs: every session declares `python3 -m pytest` as a verify command, and the
+Stop gate holds `done` until it passes (without pytest it reads `n/a (env): install module pytest for python3`).
+CI installs pytest into a venv; so do the rows below, since a Python from apt or brew refuses a plain `pip install`
+(externally managed). Activate the venv in the shell Claude Code starts from, so `python3` there is the venv's.
 The same commands run on each OS:
 
 ```bash
@@ -263,9 +267,9 @@ python3 -m unittest discover -s tests/py   # the python unit tests alone (Window
 
 | OS | Setup | Notes |
 |---|---|---|
-| macOS | `brew install python jq` | stock bash 3.2 is enough; no `sha1sum` or `timeout` needed |
-| Windows | `winget install Git.Git Python.Python.3.13 jqlang.jq`, then run the suites in Git Bash | Developer Mode (Settings → System → For developers) for the symlink tests: without it they skip, naming the refusal |
-| Linux | `sudo apt install python3 jq git` (Debian, Ubuntu) / `sudo dnf install python3 jq git` (Fedora, RHEL) | nothing else |
+| macOS | `brew install python jq`, then `python3 -m venv ~/.venvs/ekit && ~/.venvs/ekit/bin/pip install pytest==9.2.0` and `source ~/.venvs/ekit/bin/activate` | stock bash 3.2 is enough; no `sha1sum` or `timeout` needed |
+| Windows | `winget install Git.Git Python.Python.3.13 jqlang.jq`, then run the suites in Git Bash. The default verify command runs `python3`, which python.org's Python does not install (it adds `python` and `py`): where `python3` is only the Microsoft Store stub, task-verify reads it `n/a (env): install Python`. Install pytest into the Python that `python3 -m pytest --version` reaches in Git Bash: `python3 -m pip install pytest==9.2.0` (a Windows Python is not externally managed) | Developer Mode (Settings → System → For developers) for the symlink tests: without it they skip, naming the refusal |
+| Linux | `sudo apt install python3 python3-venv jq git` (Debian, Ubuntu) / `sudo dnf install python3 jq git` (Fedora, RHEL), then `python3 -m venv ~/.venvs/ekit && ~/.venvs/ekit/bin/pip install pytest==9.2.0` and `source ~/.venvs/ekit/bin/activate` | nothing else |
 
 A fresh clone has LF files on every OS (`.gitattributes`). WSL is an alternative on Windows: clone inside WSL and run
 the suites there as on Linux. The Python suite runs natively on Windows too (`py -3 -m unittest discover -s tests/py`),

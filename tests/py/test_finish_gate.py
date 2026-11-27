@@ -15,6 +15,7 @@ import _kit
 
 fg = _kit.load("finish-gate")
 launcher = _kit.load("launcher")
+tv = _kit.load("task-verify")
 
 
 def transcript(tmp, mode="w"):
@@ -715,6 +716,46 @@ class TestRetry(GateCase):
         self.verifier.result = (1, "x")
         running = [{"type": "subagent", "status": "running"}]
         self.assertIsNone(self.stop(DONE, stop_hook_active=True, background_tasks=running))
+
+
+class TestRunnerNotInstalled(GateCase):
+    """#117: a verify command whose test runner is not installed holds a done report, and the reason names the fix;
+    task-verify answers in-process here, from its own record of the run."""
+
+    def task_verify(self, *argv):
+        """(exit code, stdout) of task-verify.py with these words, in this repo"""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("sys.argv", ["task-verify.py", "--repo", self.repo, *argv]), \
+                mock.patch.dict(os.environ, {"EKIT_SHELL": "bash"}), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            rc = tv.main()
+        return rc, out.getvalue().strip()
+
+    def gate_on(self, cmd):
+        self.start()
+        self.runner.tree = (0, "T1")
+        self.task_verify("--session", "s1", "declare", "--", cmd)
+        self.task_verify("run", "--", cmd)
+        with mock.patch.object(fg, "verifier", lambda repo, session: self.task_verify("check", session)):
+            return self.stop(DONE)
+
+    def test_a_python_runner_not_installed_names_what_to_install(self):
+        py = os.path.basename(sys.executable)  # a plain word, its folder first on PATH below
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
+        out = self.gate_on(f"{py} -m ekit_absent_runner -q")
+        self.assertEqual(out["decision"], "block")
+        self.assertIn(f"A verify command cannot run on this host: `{py} -m ekit_absent_runner -q`: n/a (env): install "
+                      f"module ekit_absent_runner for {py} (that Python finds no ekit_absent_runner). Give `## Finish: "
+                      "blocked`", out["reason"])
+        self.assertNotIn("exited", out["reason"])
+
+    def test_an_installed_runner_that_fails_is_not_green(self):
+        with open(os.path.join(self.repo, "ekit_runner.py"), "w") as f:
+            f.write("import ekit_absent_dep\n")
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
+        out = self.gate_on(f"{os.path.basename(sys.executable)} -m ekit_runner")
+        self.assertIn("Verify commands not green for the current files: ", out["reason"])
+        self.assertIn("-m ekit_runner`: the run exited 1", out["reason"])
 
 
 class TestVerifierProcess(unittest.TestCase):
