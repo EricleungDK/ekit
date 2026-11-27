@@ -3,7 +3,7 @@
 Fill every `<…>`; the text around them goes in as written. The agent sees nothing but this brief.
 
 ```
-Repo: <absolute path of your worktree>, branch `<branch>` (HEAD <sha>, pushed: yes/no; PR #<n> if any). Enter it before your first write: EnterWorktree with `path: <absolute path of your worktree>` (without `path` it makes a new worktree on a new branch). A hook blocks writes into any other worktree.
+Repo: <absolute path of your worktree>, branch `<branch>` (HEAD <sha>, pushed: yes/no; PR #<n> if any). Work in it by absolute path from your first write. In the repo, write only under `<absolute path of your worktree>`, and run every command as `cd <absolute path of your worktree> && …`; scratch files go in a temp dir outside the repo; never write into another worktree or the main checkout. This brief is your only isolation: no hook stops a write elsewhere.
 Spec: <issue link, or "free-form task"> — checklist items this unit owns: <items>.
 Unit: <name>; files you own: <paths>; do not edit: <other units' files>; depends on: <unit / interface or none>.
 Read first: <AGENTS.md, repo docs index, the specific docs/reports for this area>.

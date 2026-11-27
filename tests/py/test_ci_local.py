@@ -1,12 +1,15 @@
 """scripts/ci-local.py (#84): what CI runs on ekit's own PRs, on this machine, as one command.
 
-main(argv, run=...) in this process; the fake `run` stands for every command (git, the engine, uv, r3-local), so no step
-really runs here. Each test asserts the exit code and the printed lines, as the r3-local tests do."""
+main(argv, run=...) in this process; the fake `run` stands for every command (git, the engine, uv, r3-local, the
+scenario runner), so no step really runs here, except where a test hands the scenario runner a fixture repo of its own
+(#115): there the real runner runs it. Each test asserts the exit code and the printed lines, as the r3-local tests do."""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import _kit
 
@@ -15,6 +18,7 @@ SELF = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review-self.yml")
 CALLED = os.path.join(_kit.ROOT, ".github", "workflows", "mech-review.yml")
 ENGINE = os.path.join(_kit.ROOT, "scripts", "mech-review.py")
 R3_LOCAL = os.path.join(_kit.ROOT, "scripts", "r3-local.py")
+RUNNER = os.path.join(_kit.ROOT, "scripts", "scenarios.py")
 BASE, HEAD = "b" * 40, "a" * 40
 SUITE = ["uv", "run", "--no-project", "--python", "3.14", "python", "-m", "unittest", "discover", "-s", "tests/py"]
 
@@ -29,14 +33,17 @@ def envelope(summary, checks=None, entries=()):
 class Fake:
     """Answers each command by its kind; records (argv, cwd). Each step's answer is (rc, stdout, stderr)."""
 
-    def __init__(self, mech=None, probe=None, suite=None, r3=None, dirty="", branch="claude/x", leave=()):
+    def __init__(self, mech=None, probe=None, suite=None, r3=None, scenarios=None, dirty="", branch="claude/x",
+                 leave=()):
         self.calls = []
-        self.kinds = []  # the step command each call was, in order: mech, probe, suite, r3
+        self.kinds = []  # the step command each call was, in order: mech, probe, suite, r3, scenarios
         self.r0_dir = self.r0_dir_was = None  # the engine's --r0 dir, and what it was when the engine ran
         self.mech = mech or (0, envelope(f"all pass {HEAD}"), "")
         self.probe = probe or (0, "3.14\n", "")
         self.suite = suite or (0, "", "....\n----\nRan 4 tests in 0.1s\n\nOK\n")
         self.r3 = r3 or (0, f"all pass {HEAD}\nR3 pass (3/3 tested)\nmerged: not kept\n", "")
+        # "real": the scenario runner really runs (on a fixture repo the test made)
+        self.scenarios = scenarios or (0, "PASS a\nPASS a/b\nPASS: 2/2 scenarios\n", "")
         self.dirty, self.branch, self.leave = dirty, branch, leave
 
     def __call__(self, argv, cwd=None):
@@ -68,12 +75,15 @@ class Fake:
         if argv[1:3] == ["-I", R3_LOCAL]:
             self.kinds.append("r3")
             return self.r3
+        if argv[1:3] == ["-I", RUNNER]:
+            self.kinds.append("scenarios")
+            return ci.run_cmd(argv, cwd) if self.scenarios == "real" else self.scenarios
         raise AssertionError(f"unexpected command {argv}")
 
     def step(self, which):
-        """the calls of one step: mech (the engine), suite (uv), r3 (r3-local)"""
+        """the calls of one step: mech (the engine), suite (uv), r3 (r3-local), scenarios (the scenario runner)"""
         test = {"mech": lambda a: a[1:3] == ["-I", ENGINE], "suite": lambda a: a[0] == "uv",
-                "r3": lambda a: a[1:3] == ["-I", R3_LOCAL]}[which]
+                "r3": lambda a: a[1:3] == ["-I", R3_LOCAL], "scenarios": lambda a: a[1:3] == ["-I", RUNNER]}[which]
         return [(a, cwd) for a, cwd in self.calls if test(a)]
 
 
@@ -88,11 +98,11 @@ class Tmp(unittest.TestCase):
         return _kit.run_cli(argv, main=lambda a: ci.main(a, run=fake))
 
     def verdicts(self, r):
-        return [l for l in r.stdout.splitlines() if l.split(":")[0] in ("mech", "suite", "r3")]
+        return [l for l in r.stdout.splitlines() if l.split(":")[0] in ("mech", "suite", "r3", "scenarios")]
 
 
 class AllPass(Tmp):
-    def test_three_steps_pass_in_ci_order_and_the_command_exits_0(self):
+    def test_four_steps_pass_in_ci_order_then_the_scenarios_and_the_command_exits_0(self):
         fake = Fake()
         r = self.main(fake)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -100,8 +110,10 @@ class AllPass(Tmp):
             f"mech: passed: all pass {HEAD}",
             "suite: passed: Ran 4 tests in 0.1s (Python 3.14)",
             f"r3: passed: all pass {HEAD}",
+            "scenarios: passed: 2/2 scenarios",
         ])
-        self.assertEqual(fake.kinds, ["mech", "probe", "suite", "r3"])
+        self.assertEqual(fake.kinds, ["mech", "probe", "suite", "r3", "scenarios"])
+        self.assertIn("PASS a/b\n", r.stdout)  # the runner's own lines are shown
 
 
 class Inputs(Tmp):
@@ -170,6 +182,12 @@ class Inputs(Tmp):
         (argv, _), = fake.step("r3")
         self.assertNotIn("--env-dir", argv)
 
+    def test_the_scenarios_step_runs_every_scenario_with_the_checkouts_runner(self):
+        fake = Fake()
+        self.main(fake)
+        (argv, _), = fake.step("scenarios")
+        self.assertEqual(argv, [sys.executable, "-I", RUNNER, "--repo", self.tmp, "run"])
+
     def test_the_default_repo_and_base_are_this_checkout_and_origin_main(self):
         a = ci.parse([])
         self.assertEqual((a.repo, a.base, a.head_branch, a.r3_env_dir), (_kit.ROOT, "origin/main", None, None))
@@ -192,7 +210,8 @@ class Failed(Tmp):
         self.assertIn("fail R2-1 tests/py/t.py:3 assert removed\n", r.stdout)
         self.assertEqual(self.verdicts(r), [f"mech: failed: fail {HEAD} (1 fail, 0 confirm; ran: R1 R2 R4)",
                                             "suite: passed: Ran 4 tests in 0.1s (Python 3.14)",
-                                            f"r3: passed: all pass {HEAD}"])
+                                            f"r3: passed: all pass {HEAD}",
+                                            "scenarios: passed: 2/2 scenarios"])
 
     def test_confirm_entries_are_printed_and_do_not_fail_the_step(self):
         entry = {"id": "R2-2", "check": "R2", "severity": "confirm", "file": "tests/py/t.py", "line": 5,
@@ -254,6 +273,7 @@ class NotRun(Tmp):
             "suite: not run here: uv not found (uv: [Errno 2] No such file or directory: 'uv'): CI's Python 3.14 "
             "comes through uv",
             f"r3: passed: all pass {HEAD}",
+            "scenarios: passed: 2/2 scenarios",
         ])
 
     def test_no_python_314_for_uv_is_not_run_here(self):
@@ -306,7 +326,293 @@ class NotRun(Tmp):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(r.stderr, "ci-local: nope: not a commit (fatal: bad revision 'nope')\n")
         self.assertEqual(self.verdicts(r), [])
-        self.assertEqual([s for w in ("mech", "suite", "r3") for s in fake.step(w)], [])
+        self.assertEqual([s for w in ("mech", "suite", "r3", "scenarios") for s in fake.step(w)], [])
+
+
+class Scenarios(Tmp):
+    """The scenarios step (#115): every .ekit/scenarios scenario through the real runner, on a fixture repo of the
+    test's own. A FAIL fails the step, named; a scenario this machine cannot run is `not run here`, naming it and
+    what is missing; neither is a pass."""
+
+    def setUp(self):
+        super().setUp()
+        # every real run keeps its evidence in a store of the test's own, outside the fixture repo: never the
+        # caller's EKIT_STATE (an ekit session's live store)
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
+        self.state = state.name
+        patch = mock.patch.dict(os.environ, EKIT_STATE=self.state)
+        patch.start()
+        self.addCleanup(patch.stop)
+        os.environ.pop("EK_STATE", None)
+
+    def scenario(self, sid, body, fields=""):
+        d = os.path.join(self.tmp, ".ekit", "scenarios", sid)
+        os.makedirs(d)
+        with open(os.path.join(d, "SCENARIO.md"), "w") as f:
+            f.write(f"# {sid}\n- story: s\n- covers: c\n- steps: x\n- expected: y\n{fields}")
+        with open(os.path.join(d, "run.sh"), "w") as f:
+            f.write("#!/bin/bash\n" + body + "\n")
+
+    def commit(self):
+        for argv in (["init", "-q", "-b", "main"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "scenarios"]):
+            subprocess.run(["git", "-C", self.tmp] + argv, check=True, capture_output=True)
+
+    def run_scenarios(self):
+        self.commit()
+        r = self.main(Fake(scenarios="real"))
+        return r, self.verdicts(r)[3]
+
+    def test_a_failing_scenario_fails_the_step_and_the_command_naming_it(self):
+        self.scenario("good", "exit 0")
+        self.scenario("bad", 'echo "ASSERT FAILED: plan lines: expected [a] got [b]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 1)")
+        self.assertIn("FAIL bad: exit 1\n", r.stdout)
+
+    def test_scenarios_that_mark_a_feature_pass_though_the_runner_prints_a_features_line_last(self):
+        self.scenario("good", "exit 0", "- feature: plan\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("1 of 1 features working\n", r.stdout)
+        self.assertEqual(line, "scenarios: passed: 1/1 scenarios")
+
+    def test_a_failing_scenario_that_marks_a_feature_fails_the_step(self):
+        self.scenario("good", "exit 0", "- feature: plan\n")
+        self.scenario("bad", "exit 1", "- feature: plan\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 1)")
+
+    def test_a_real_run_keeps_its_evidence_in_the_tests_own_store_never_the_callers(self):
+        # an ekit session sets EKIT_STATE: a real run there must not write into that live store
+        self.scenario("good", "exit 0")
+        self.run_scenarios()
+        stored = [os.path.join(d, f) for d, _, fs in os.walk(self.state) for f in fs if f == "results.json"]
+        self.assertEqual(len(stored), 1, stored)
+
+    def test_a_scenario_that_says_it_cannot_run_here_is_not_run_here_naming_it_and_the_tool(self):
+        # lib.sh's fail, as stack-plan/session-start uses it: `fail "unrunnable here: <what is missing>"`
+        self.scenario("good", "exit 0")
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing (the git-only check needs '
+                                'it)" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: not run here: traced: strace is missing (the git-only check needs it)")
+
+    def test_a_failure_beside_an_unrunnable_scenario_fails_the_step_and_still_names_the_unrunnable_one(self):
+        self.scenario("bad", "exit 3")
+        self.scenario("isolated", 'echo "ASSERT FAILED: unrunnable here: unshare -n is not permitted" >&2; exit 1')
+        self.scenario("good", "exit 0")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 3 failed: bad (exit 3); "
+                               "not run here: isolated: unshare -n is not permitted")
+
+    def test_a_failure_beside_two_unrunnable_scenarios_names_each_of_them(self):
+        self.scenario("bad", "exit 3")
+        self.scenario("isolated", 'echo "ASSERT FAILED: unrunnable here: unshare -n is not permitted" >&2; exit 1')
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 3 failed: bad (exit 3); "
+                               "not run here: isolated: unshare -n is not permitted; traced: strace is missing")
+
+    def test_unrunnable_only_counts_as_the_last_line_the_scenario_wrote(self):
+        # the tool was there after all: what failed later is a FAIL, not a missing tool
+        self.scenario("later", 'echo "unrunnable here: strace is missing" >&2; echo "ASSERT FAILED: trace: '
+                               'expected [git] got [npm]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: later (exit 1)")
+
+    def test_an_assertion_whose_captured_output_ends_in_an_unrunnable_line_is_a_failure(self):
+        # lib.sh: fail "has: expected [PASS] got [$out]", $out two lines: the tail is captured text, not the message
+        self.scenario("quoted", 'echo "ASSERT FAILED: has: expected [PASS] got [x" >&2; '
+                                'echo "unrunnable here: strace is missing]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: quoted (exit 1)")
+
+    def test_an_assertion_that_quotes_an_unrunnable_line_is_a_failure(self):
+        self.scenario("inline", 'echo "ASSERT FAILED: has: got [unrunnable here: strace is missing]" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: inline (exit 1)")
+
+    def test_a_captured_unrunnable_assertion_after_the_scenarios_own_is_a_failure(self):
+        # a scenario of the runner quotes a nested scenario's transcript in its own failure
+        self.scenario("nested", 'echo "ASSERT FAILED: transcript: got [" >&2; '
+                                'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: nested (exit 1)")
+
+    def test_an_assert_line_on_stdout_does_not_hide_the_fail_message_on_stderr(self):
+        # stdout is the scenario's output, not its fail message: only stderr counts its ASSERT FAILED lines
+        self.scenario("traced", 'echo "ASSERT FAILED: nested: quoted from an inner run"; '
+                                'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: not run here: traced: strace is missing")
+
+    def test_an_unrunnable_line_on_stdout_is_no_fail_message(self):
+        self.scenario("loud", 'echo "ASSERT FAILED: unrunnable here: strace is missing"; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: loud (exit 1)")
+
+    def test_a_timeout_is_the_runners_failure_whatever_the_scenario_said_before(self):
+        os.environ["EKIT_SCENARIO_TIMEOUT"] = "1"  # setUp's patch restores it
+        self.scenario("slow", 'echo "ASSERT FAILED: unrunnable here: foo" >&2; sleep 5')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: slow (timeout after 1s)")
+
+    def test_a_bad_feature_line_is_the_runners_failure_whatever_the_scenario_said(self):
+        self.scenario("marked", 'echo "ASSERT FAILED: unrunnable here: foo" >&2; exit 1',
+                      "- feature: a\n- feature: b\n")
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 1 failed: marked (SCENARIO.md has more than one feature line "
+                               "(a, b): keep one)")
+
+    def test_a_run_that_modified_the_repo_fails_the_step(self):
+        self.scenario("writer", 'touch "$EKIT_REPO/left-behind"; exit 0')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: scenarios modified the repo: run in the temp cwd")
+
+    def evidence(self, doc):
+        """results.json where the runner keeps it: <git dir>/ekit/ (no EKIT_STATE; setUp's patch restores it)"""
+        self.commit()
+        os.environ.pop("EKIT_STATE", None)
+        if doc is not None:
+            os.makedirs(os.path.join(self.tmp, ".git", "ekit"))
+            with open(os.path.join(self.tmp, ".git", "ekit", "results.json"), "w") as f:
+                json.dump(doc, f)
+
+    def test_a_scenario_whose_shell_is_not_on_this_machine_is_not_run_here(self):
+        # what the runner itself reads as not run here (env): run.ps1 with no PowerShell, run.sh with no bash
+        log = os.path.join(self.tmp, "win.log")
+        with open(log, "w") as f:
+            f.write("command: powershell run.ps1\n--- stdout ---\n\n--- stderr ---\n\n--- exit: None ---\n")
+        self.evidence({"verdict": "NOT-RUN", "scenarios": [
+            {"id": "good", "exit": 0}, {"id": "win", "exit": None, "transcript": log,
+                                        "reason": "PowerShell is not on this machine (env)"}]})
+        out = "PASS good\nNOT-RUN win: PowerShell is not on this machine (env)\nNOT-RUN: 1/2 scenarios\n"
+        r = self.main(Fake(scenarios=(1, out, "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r)[3], "scenarios: not run here: win: PowerShell is not on this machine (env)")
+
+    def test_a_verdict_with_no_readable_results_is_not_run_here(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(1, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable "
+                                              r"results.json \(FileNotFoundError: ")
+
+    def fail_with(self, doc):
+        self.evidence(doc)
+        r = self.main(Fake(scenarios=(1, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Traceback", r.stderr)
+        return self.verdicts(r)[3]
+
+    def test_a_failed_row_with_no_transcript_is_not_run_here(self):
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1"}]})
+        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               "(KeyError: 'transcript')")
+
+    def test_a_transcript_that_is_gone_is_not_run_here(self):
+        gone = os.path.join(self.tmp, "gone.log")
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1", "transcript": gone}]})
+        self.assertRegex(line, r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               r"\(FileNotFoundError: ")
+
+    def test_a_transcript_that_is_not_a_path_is_not_run_here_and_no_fd_is_touched(self):
+        # an int is a file descriptor to open(): 5 would be closed under the process, 1 would read stdout
+        fd = os.open(os.devnull, os.O_RDONLY)
+        self.addCleanup(lambda: os.close(fd) if self.fd_open(fd) else None)
+        line = self.fail_with({"scenarios": [{"id": "bad", "exit": 1, "reason": "exit 1", "transcript": fd}]})
+        self.assertEqual(line, "scenarios: not run here: FAIL: 0/1 scenarios, but no readable results.json "
+                               f"(TypeError: transcript {fd!r} is not a path)")
+        self.assertTrue(self.fd_open(fd))
+
+    @staticmethod
+    def fd_open(fd):
+        try:
+            os.fstat(fd)
+            return True
+        except OSError:
+            return False
+
+    def test_scenarios_that_are_not_a_list_of_rows_are_not_run_here(self):
+        for doc in ({"scenarios": {"bad": {}}}, {"scenarios": ["bad"]}, ["bad"]):
+            with self.subTest(doc=doc):
+                self.assertRegex(self.fail_with(doc), r"^scenarios: not run here: FAIL: 0/1 scenarios, but no "
+                                                      r"readable results.json \(\w+Error: ")
+                os.remove(os.path.join(self.tmp, ".git", "ekit", "results.json"))
+                os.rmdir(os.path.join(self.tmp, ".git", "ekit"))
+
+    def test_a_fail_verdict_whose_results_name_no_failure_is_still_a_failure(self):
+        # the runner said FAIL: the machine is not to blame for what its rows leave out
+        line = self.fail_with({"scenarios": []})
+        self.assertEqual(line, "scenarios: failed: FAIL: 0/1 scenarios, but results.json names no failed or "
+                               "unrunnable scenario")
+
+    def test_a_not_run_or_short_pass_verdict_whose_results_name_nothing_is_not_run_here(self):
+        for out in ("NOT-RUN win: PowerShell is not on this machine (env)\nNOT-RUN: 0/1 scenarios\n",
+                    "PASS a\nPASS: 1/2 scenarios\n"):
+            with self.subTest(out=out):
+                self.evidence({"scenarios": []})
+                r = self.main(Fake(scenarios=(1, out, "")))
+                self.assertEqual(r.returncode, 1)
+                verdict = out.splitlines()[-1]
+                self.assertEqual(self.verdicts(r)[3], f"scenarios: not run here: {verdict}, but results.json names "
+                                                      "no failed or unrunnable scenario")
+                os.remove(os.path.join(self.tmp, ".git", "ekit", "results.json"))
+                os.rmdir(os.path.join(self.tmp, ".git", "ekit"))
+
+    def test_exit_0_with_a_fail_verdict_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 0/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 0/1 scenarios, but no readable ")
+
+    def test_exit_0_with_a_fail_verdict_for_every_scenario_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "FAIL bad: exit 1\nFAIL: 1/1 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: FAIL: 1/1 scenarios, but no readable ")
+
+    def test_a_pass_verdict_short_of_every_scenario_is_no_pass(self):
+        self.evidence(None)
+        r = self.main(Fake(scenarios=(0, "PASS a\nPASS: 1/2 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(self.verdicts(r)[3], r"^scenarios: not run here: PASS: 1/2 scenarios, but no readable ")
+
+    def test_no_scenario_run_is_no_pass(self):
+        r = self.main(Fake(scenarios=(0, "PASS: 0/0 scenarios\n", "")))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r)[3], "scenarios: not run here: no scenario ran (PASS: 0/0 scenarios)")
+
+    def test_a_repo_with_no_scenarios_is_not_run_here(self):
+        os.makedirs(os.path.join(self.tmp, "src"))
+        open(os.path.join(self.tmp, "src", "x.py"), "w").close()
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: not run here: scenarios.py run exit 2: no scenarios found. expected layout: "
+                               ".ekit/scenarios/<slug>/SCENARIO.md + run.sh, run.py or run.ps1 (one of them)")
+
+    def test_a_runner_that_ends_with_no_verdict_line_is_not_run_here(self):
+        crash = (1, "PASS a\n", "Traceback (most recent call last):\nOSError: [Errno 28] No space left on device\n")
+        r = self.main(Fake(scenarios=crash))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r)[3], "scenarios: not run here: scenarios.py run exit 1: "
+                                              "OSError: [Errno 28] No space left on device")
 
 
 class Dirty(Tmp):

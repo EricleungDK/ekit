@@ -28,6 +28,9 @@ def flat(text):
     return re.sub(r"\s+", " ", text)
 
 
+BRIEFS = ("brief-template.md", "taster-brief-template.md", "review-brief-template.md")
+
+
 class TestPlanTimeGates(unittest.TestCase):
     """#36: protected-path edits and worktree limits surface at plan time."""
 
@@ -42,15 +45,47 @@ class TestPlanTimeGates(unittest.TestCase):
         s = section(read("SKILL.md"), "3. Acceptance checklist")
         self.assertRegex(s, r"(?m)^- [^\n]*protected path[^\n]*Needs-you row")
 
-    def test_brief_has_agent_enter_its_worktree_before_its_first_write(self):
-        self.assertIn("enter it before your first write", flat(read("brief-template.md")).lower())
+    def test_brief_has_agent_work_in_its_worktree_by_absolute_path_from_its_first_write(self):
+        # #119 reverses "enter it before your first write" (EnterWorktree): briefs work by absolute path
+        self.assertIn("work in it by absolute path from your first write", flat(read("brief-template.md")).lower())
 
-    def test_worktree_entry_names_the_path_and_no_cd_fallback(self):
-        # EnterWorktree without `path` makes a new worktree; `cd` does not get Write/Edit past the hook
+    def test_worktree_work_names_the_path_and_no_cd_fallback(self):
+        # #119: a subagent's EnterWorktree is refused ("not an isolated worktree"); it writes by absolute path instead
         for name in ("brief-template.md", "taster-brief-template.md"):
             t = flat(read(name))
-            self.assertIn("EnterWorktree with `path: <", t, name)
+            self.assertIn("write only under `<", t, name)
             self.assertNotIn("else `cd", t, name)
+
+    def test_no_brief_template_asks_for_enter_worktree(self):
+        # #119: all 6 subagents of a run were told to EnterWorktree and got "not an isolated worktree"
+        for name in BRIEFS:
+            self.assertNotIn("EnterWorktree", read(name), name)
+
+    def test_every_brief_writes_by_absolute_path_and_runs_commands_as_cd_worktree(self):
+        for name in BRIEFS:
+            t = flat(read(name))
+            self.assertIn("write only under", t, name)
+            self.assertRegex(t, r"run every command as `cd <[^`>]+> && …`", name)
+
+    def test_every_brief_puts_scratch_files_in_a_temp_dir_outside_the_repo(self):
+        # review of #119 (F7): "write only under" read as a ban on the briefs' own temp-dir steps (install dir,
+        # EKIT_STATE, a temp worktree); the limit is for the repo, scratch goes outside it
+        for name in BRIEFS:
+            t = flat(read(name))
+            self.assertIn("In the repo, write only under", t, name)
+            self.assertIn("scratch files go in a temp dir outside the repo; never write into another worktree or the "
+                          "main checkout.", t, name)
+
+    def test_briefs_and_skill_say_the_brief_is_the_only_isolation(self):
+        # #119: no hook ekit ships blocked any of those writes; the claim that one does is gone
+        for name in BRIEFS:
+            self.assertIn("This brief is your only isolation: no hook stops a write elsewhere.", flat(read(name)), name)
+        coordinate = flat(section(read("SKILL.md"), "5. Coordinate"))
+        self.assertIn("No hook blocks a write into another session's worktree: the briefs are the only isolation", coordinate)
+        for name in BRIEFS + ("SKILL.md",):
+            t = flat(read(name))
+            self.assertNotIn("A hook blocks writes", t, name)
+            self.assertNotIn("write hook", t, name)
 
     def test_coordinate_verifies_foreign_head_in_scratch_worktree_and_own_checkout_stays(self):
         s = flat(section(read("SKILL.md"), "5. Coordinate")).lower()
@@ -59,16 +94,19 @@ class TestPlanTimeGates(unittest.TestCase):
         self.assertIn("your own checkout stays on its branch", s)
 
     def test_scratch_worktrees_live_under_claude_worktrees_and_are_entered_by_path(self):
-        # a copy outside .claude/worktrees/ is outside the write hook's allowed roots
-        for t in (flat(section(read("SKILL.md"), "5. Coordinate")), flat(read("review-brief-template.md"))):
+        # the orchestrator enters its scratch worktree by path; a reviewer (a subagent) works in it by path (#119)
+        coordinate, review = flat(section(read("SKILL.md"), "5. Coordinate")), flat(read("review-brief-template.md"))
+        for t in (coordinate, review):
             self.assertIn("<repo>/.claude/worktrees/<", t)
-            self.assertIn("EnterWorktree with `path:", t)
             self.assertNotIn("git worktree add <tmp>", t)
+        self.assertIn("EnterWorktree with `path:", coordinate)
+        self.assertIn("write only under that absolute path", review)
 
-    def test_taster_brief_names_its_worktree_and_how_to_enter_it(self):
+    def test_taster_brief_names_its_worktree_and_how_to_work_in_it(self):
+        # #119 reverses "enter it before your first write" (EnterWorktree): the taster works by absolute path
         t = flat(read("taster-brief-template.md"))
         self.assertIn("Worktree: <absolute path of the implementer's worktree>", t)
-        self.assertIn("enter it before your first write", t.lower())
+        self.assertIn("work in it by absolute path from your first write", t.lower())
 
     def test_taster_works_in_the_idle_implementers_worktree(self):
         s = flat(section(read("SKILL.md"), "Taste"))
@@ -103,6 +141,22 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
         ):
             self.assertIn(rule, t)
 
+    def test_review_evidence_rule_runs_ekit_hooks_and_task_verify_against_a_temp_store(self):
+        # #121: a reviewer's SessionStart run in a scratch worktree wrote into the main checkout's declared.json
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn("Run every ekit hook and every task-verify call with `EKIT_STATE` set to a temp dir", rule5)
+        self.assertIn('EKIT_STATE="$(mktemp -d)"', rule5)
+        self.assertIn("keyed by the git common dir", rule5)
+
+    def test_review_evidence_rule_reuses_one_temp_store_and_names_both_live_stores(self):
+        # review of #121: an inline EKIT_STATE per call gave each call a fresh store (F4: `check` exit 4, not 1);
+        # the common-dir key is task-verify's only, the finish gate keeps a shared state dir (F5)
+        rule5 = flat(read("review-brief-template.md").split("5. Evidence:", 1)[1].split("Report:", 1)[0])
+        self.assertIn('a temp dir, made once per reproduction and reused by each call (`export EKIT_STATE="$(mktemp -d)"` first)', rule5)
+        self.assertNotIn('EKIT_STATE="$(mktemp -d)" <py>', rule5)
+        self.assertIn("task-verify into the main checkout's git dir", rule5)
+        self.assertIn("the finish gate into the shared state dir", rule5)
+
     def test_taster_brief_carries_its_fields(self):
         t = flat(read("taster-brief-template.md"))
         for field in ("Read list:", "Criteria:", "Install:", "Runner:", "`can-fail` baseline:", "Commit scope:"):
@@ -111,6 +165,27 @@ class TestReviewAndTasterBriefs(unittest.TestCase):
     def test_taster_brief_is_black_box(self):
         t = flat(read("taster-brief-template.md"))
         self.assertIn("no source, diff, or implementer reasoning", t)
+
+    def test_taster_runs_mech_review_on_its_commit_before_the_report(self):
+        # #118: a taster committed scenarios that failed 4 mech entries; its commit's summary shows 0 fail first
+        t = flat(read("taster-brief-template.md"))
+        self.assertIn("Mech check:", t)
+        self.assertIn("scripts/mech-review.py all", t)
+        self.assertIn("--head HEAD", t)
+        self.assertIn("its `summary` shows 0 fail", t)
+        self.assertLess(t.index("Mech check:"), t.index("Report:"))
+
+    def test_taster_mech_range_is_its_own_commits_only(self):
+        # review of #118 (F1): from the can-fail baseline the range takes in the implementer's tests, and the
+        # taster, who commits only scenarios, could never reach 0 fail
+        t = flat(read("taster-brief-template.md"))
+        self.assertIn("--base <the HEAD sha of the Worktree line>", t)
+        self.assertNotIn("--base <the can-fail baseline ref>", t)
+        self.assertIn("An entry in a file you did not change goes into your report, not your diff.", t)
+
+    def test_taster_report_carries_the_mech_summary_with_0_fail(self):
+        report = flat(read("taster-brief-template.md")).split("Report:", 1)[1]
+        self.assertIn("the mech-review `summary` line of your commit, with 0 fail", report)
 
     def test_review_relay_and_taste_dispatch_fill_the_templates(self):
         skill = read("SKILL.md")
