@@ -7,7 +7,9 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -540,6 +542,493 @@ class VerifyLine(unittest.TestCase):
         ]:
             with self.subTest(text=text):
                 self.assertEqual(tv.declared(text), want)
+
+
+# this Python by its name, its folder first on PATH (setUp): a plain word, which a full path quoted is not
+PY = os.path.basename(sys.executable)
+
+
+class MissingRunner(VerifyCase):
+    """A run that fails because its runner is not installed is n/a (env) naming what to install (#117): after a
+    failing exit task-verify asks whether the runner is there. A runner that is there and fails is a failed run,
+    whatever it printed."""
+
+    def setUp(self):
+        super().setUp()
+        os.environ["PATH"] = os.path.dirname(sys.executable) + os.pathsep + os.environ["PATH"]
+        self.seen = []  # (argv, kwargs) of each faked process: the run, then the questions about it
+
+    def module(self, name, body, folder=""):
+        os.makedirs(os.path.join(self.repo, folder), exist_ok=True)
+        with open(os.path.join(self.repo, folder, f"{name}.py"), "w") as f:
+            f.write(body)
+
+    def call(self, argv, payload=None):
+        """VerifyCase.call, with what the run's own processes write to fd 1 and 2 kept in self.child_output, not
+        passed on: a runner's `No module named pytest` would otherwise land in this suite's own output"""
+        with tempfile.TemporaryFile() as out:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            saved = os.dup(1), os.dup(2)
+            os.dup2(out.fileno(), 1)
+            os.dup2(out.fileno(), 2)
+            try:
+                return super().call(argv, payload)
+            finally:
+                os.dup2(saved[0], 1)
+                os.dup2(saved[1], 2)
+                os.close(saved[0])
+                os.close(saved[1])
+                out.seek(0)
+                self.child_output = out.read().decode("utf-8", "replace")
+
+    def na(self, cmd, fix, task="t1"):
+        """`cmd` reads n/a (env) with `fix`: in run (exit 5, its line last on stderr), check and the task hook"""
+        rc, err = self.call(["--repo", self.repo, "run", "--", cmd])
+        self.ran = self.child_output  # what the run itself wrote, before the check below replaces it
+        self.assertEqual(rc, 5, err)
+        self.assertTrue(err.endswith(f"task-verify: `{cmd}` is n/a (env): {fix}\n"), err)
+        self.assertEqual(self.complete(f"Verify: `{cmd}`", task=task), self.blocked(f"n/a (env): {fix}", cmd))
+        self.assertIn(f"`{cmd}`: n/a (env): {fix}\n", self.check()[1])
+
+    def failed(self, cmd, rc, task="t1"):
+        """`cmd` ran and failed: its exit code, never n/a"""
+        self.assertEqual(self.run_cmd(cmd), rc)
+        self.complete(f"Verify: `{cmd}`", task=task)
+        self.assertIn(f"`{cmd}`: the run exited {rc}\n", self.check()[1])
+
+    def script(self, folder, body, name="python3"):
+        """a sh script `name` in `folder`: the run's bash starts it (Git Bash too), task-verify never does"""
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w", newline="\n") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def real_python(self, folder):
+        """a python3 in `folder` that is this Python"""
+        return self.script(folder, f'exec "{sys.executable.replace(os.sep, "/")}" "$@"\n')
+
+    def no_module_python(self, folder):
+        """a python3 in `folder` that finds no module (exit 3 for the probe) and fails every run (exit 1)"""
+        return self.script(folder, 'case "$1" in -c) exit 3;; esac\nexit 1\n')
+
+    def startup_puts_first(self, folder):
+        """BASH_ENV: a file bash reads before each `-c` line, putting `folder` first on PATH, as a profile might"""
+        env_file = os.path.join(os.path.realpath(self.tmp.name), "bash_env")
+        with open(env_file, "w", newline="\n") as f:
+            f.write(f'PATH="{folder.replace(os.sep, "/")}:$PATH"\n')
+        os.environ["BASH_ENV"] = env_file
+
+    def test_the_python_asked_is_the_one_the_runs_shell_finds_after_its_startup_file(self):
+        """BASH_ENV (zsh: ~/.zshenv) can change PATH before the line runs: the probe asks that python, not the one on
+        the PATH task-verify inherited"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.real_python(os.path.join(base, "venv"))
+        self.no_module_python(os.path.join(base, "sysbin"))
+        os.environ["PATH"] = os.path.join(base, "sysbin") + os.pathsep + os.environ["PATH"]
+        self.startup_puts_first(os.path.join(base, "venv"))
+        self.failed("python3 -m ekit_runner", 1)
+
+    def test_a_startup_file_putting_a_python_without_the_module_first_is_n_a(self):
+        """the mirror: the inherited PATH's python would find the module, the one the run uses does not"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.no_module_python(os.path.join(base, "nomod"))
+        self.real_python(os.path.join(base, "venv"))
+        os.environ["PATH"] = os.path.join(base, "venv") + os.pathsep + os.environ["PATH"]
+        self.startup_puts_first(os.path.join(base, "nomod"))
+        self.na("python3 -m ekit_runner", "install module ekit_runner for python3 (that Python finds no ekit_runner)")
+
+    def test_a_python_its_shell_does_not_find_is_named_as_the_command_to_install(self):
+        self.na("python9.99 -m pytest", "install python9.99 (bash finds no python9.99)")
+
+    def fake_runs(self, rc, answer):
+        """bash found and its process faked: the run exits `rc`; a python probe (a line that holds the find_spec
+        line) gets answer(argv): an exit code, or an exception it raises; git runs for real. Returns the probes'
+        (argv, cwd)."""
+        real, probes = subprocess.run, []
+
+        def run(argv, **kw):
+            if argv[0] == "git":
+                return real(argv, **kw)
+            self.seen.append((argv, kw))
+            if tv.FINDS in (argv if isinstance(argv, str) else " ".join(argv)):
+                probes.append((argv, kw.get("cwd")))
+                got = answer(argv)
+                if isinstance(got, BaseException):
+                    raise got
+                return subprocess.CompletedProcess(argv, got)
+            return subprocess.CompletedProcess(argv, rc)
+        patches = (mock.patch.object(tv.shells, "find", return_value="/fake/bash"),
+                   mock.patch.object(tv.subprocess, "run", side_effect=run),
+                   mock.patch.dict(os.environ, {"EKIT_SHELL": "bash"}))
+        return probes, patches
+
+    # the runner is not there
+
+    def test_python_m_of_a_module_not_installed_is_n_a_env_naming_the_module_and_python(self):
+        self.na(f"{PY} -m ekit_absent_runner -q",
+                f"install module ekit_absent_runner for {PY} (that Python finds no ekit_absent_runner)")
+
+    def test_pytest_missing_points_at_the_readme(self):
+        self.na(f"{PY} -I -S -m pytest -q",  # -S: no site-packages, so this Python finds no pytest
+                f"install module pytest for {PY} -I -S (that Python finds no pytest; ekit's README § Development "
+                "names the version CI installs)")
+        self.assertTrue("No module named pytest" in self.ran)  # the runner's own line is shown, not read
+
+    def test_a_submodule_of_a_package_not_installed_names_the_package(self):
+        self.na(f"{PY} -m ekit_absent_pkg.cli",
+                f"install module ekit_absent_pkg for {PY} (that Python finds no ekit_absent_pkg)")
+
+    def test_a_missing_module_is_found_whatever_else_the_interpreter_printed(self):
+        self.na(f"{PY} -X importtime -m ekit_absent_runner",  # importtime prints a line per import first
+                f"install module ekit_absent_runner for {PY} -X importtime (that Python finds no ekit_absent_runner)")
+
+    def test_a_stack_folder_is_where_the_module_is_asked_for(self):
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")  # in the repo root, not in sub
+        os.mkdir(os.path.join(self.repo, "sub"))
+        self.na(f"cd sub && {PY} -m ekit_runner",
+                f"install module ekit_runner for {PY} (that Python finds no ekit_runner)", task="sub")
+        self.module("ekit_other", "import sys\nsys.exit(1)\n", folder="sub")
+        self.failed(f"cd sub && {PY} -m ekit_other", 1, task="other")
+
+    def test_a_python_that_is_only_the_store_stub_is_n_a_env(self):
+        """the stub prints `Python was not found` and exits 9009, which only Windows can give: faked here"""
+        real = subprocess.run
+
+        def run(argv, **kw):
+            return real(argv, **kw) if argv[0] == "git" else subprocess.CompletedProcess(argv, 9009)
+        with mock.patch.object(tv.subprocess, "run", side_effect=run):
+            self.assertEqual(self.run_cmd("python3 -m pytest"), 5)
+        self.complete("Verify: `python3 -m pytest`")
+        self.assertEqual(self.check(), (1, "`python3 -m pytest`: n/a (env): install Python: python3 ran no Python "
+                                           "(exit 9009, the Microsoft Store stub)\n"))
+
+    def test_a_command_not_on_path_is_n_a_env_naming_it(self):
+        self.na("ekit_absent_tool117 --version", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)")
+
+    def test_a_line_with_a_leading_assignment_is_never_asked_about(self):
+        """NAME=value changes what the run finds (PATH=.venv/bin:..., PYTHONPATH=...): no line with one is read"""
+        self.failed("EKIT_X=1 ekit_absent_tool117", 127)
+        for shell, rc in (("powershell", 1), ("cmd", 9009)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(f"EKIT_X=1 ekit_absent_tool117 {shell}"), rc)
+
+    def test_a_command_word_that_is_no_plain_name_or_path_is_never_asked_about(self):
+        """`. ./x.ps1` (dot-sourcing), `..`, a word led by `-`: PowerShell's 1 and a probe that finds none would
+        read `install .`"""
+        for i, cmd in enumerate((". ./run-tests.ps1", ".. x", "-ekit_absent_tool117 x", "./ x")):
+            with self.subTest(cmd=cmd):
+                find, run, env = self.faked("pwsh", 1)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(cmd), 1)
+
+    def test_a_module_name_that_is_no_dotted_name_is_never_asked_about(self):
+        self.failed(f"{PY} -m ekit-absent-runner", 1)
+
+    def test_a_cd_into_a_folder_that_is_no_plain_word_is_never_asked_about(self):
+        """`cd sub$x` is `cd sub` to bash: the folder the run is in is not the word as written"""
+        for d in ("sub", "sub$x"):
+            os.mkdir(os.path.join(self.repo, d))
+        self.failed("cd sub$x && ekit_absent_tool117", 127)
+
+    def test_the_python_asked_is_the_one_the_run_finds_from_its_folder(self):
+        """a relative path or PATH entry is the run's folder's, not task-verify's own: task-verify runs from a folder
+        with no .venv, the repo's .venv python3 is this Python, and a later PATH entry's python3 finds nothing"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.real_python(os.path.join(self.repo, ".venv", "bin"))
+        self.no_module_python(os.path.join(base, "sysbin"))
+        os.environ["PATH"] = os.path.join(base, "sysbin") + os.pathsep + os.environ["PATH"]
+        os.mkdir(os.path.join(base, "elsewhere"))
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(os.path.join(base, "elsewhere"))
+        self.failed("./.venv/bin/python3 -m ekit_runner", 1, task="path")
+        os.environ["PATH"] = ".venv/bin" + os.pathsep + os.environ["PATH"]
+        self.failed("python3 -m ekit_runner", 1, task="entry")
+    def test_a_zero_exit_is_never_n_a(self):
+        self.assertEqual(self.run_cmd(f"{PY} -m ekit_absent_runner || true"), 0)
+        self.assertEqual(self.complete(f"Verify: `{PY} -m ekit_absent_runner || true`"), (0, ""))
+
+    def test_a_zero_exit_is_never_asked_about(self):
+        probes, patches = self.fake_runs(0, lambda argv: 3)  # a probe would say: no such module
+        with patches[0], patches[1], patches[2]:
+            self.assertEqual(self.run_cmd("python3 -m pytest"), 0)
+        self.assertEqual((probes, self.complete("Verify: `python3 -m pytest`")), ([], (0, "")))
+
+    def test_an_installed_runner_whose_test_cannot_import_is_a_failed_run(self):
+        self.module("ekit_runner", "import ekit_absent_dep\n")
+        self.failed(f"{PY} -m ekit_runner", 1)
+
+    def test_an_installed_runner_whose_only_line_says_no_module_named_it_is_a_failed_run(self):
+        self.module("ekit_runner", "import sys\nsys.stderr.write('ImportError while loading conftest: x.y: No module "
+                                   "named ekit_runner\\n')\nsys.exit(4)\n")
+        self.failed(f"{PY} -m ekit_runner", 4)
+
+    def test_an_installed_runner_exiting_127_over_a_missing_argument_word_is_a_failed_run(self):
+        self.module("ekit_runner", "import sys\nsys.stderr.write('sh: 1: ekit_absent_tool117: command not found\\n')\n"
+                                   "sys.exit(127)\n")
+        self.failed(f"{PY} -m ekit_runner -k ekit_absent_tool117", 127)
+
+    def test_exit_127_from_a_builtin_is_a_failed_run(self):
+        self.failed("exit 127", 127)
+
+    def test_only_the_first_command_is_asked_about(self):
+        self.failed("true && ekit_absent_tool117", 127)
+
+    def test_a_probe_that_hangs_is_a_failed_run(self):
+        probes, patches = self.fake_runs(1, lambda argv: subprocess.TimeoutExpired(argv, tv.PROBE_SECONDS))
+        with patches[0], patches[1], patches[2]:
+            self.failed("python3 -m pytest", 1)
+        self.assertEqual(len(probes), 1)
+
+    def test_the_default_command_with_its_runner_missing_is_n_a(self):
+        probes, patches = self.fake_runs(1, lambda argv: 3)  # 3: what the probe exits for no such module
+        with patches[0], patches[1], patches[2]:
+            self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's "
+                                         "README § Development names the version CI installs)")
+        self.assertTrue(probes[0][0][-1].startswith("python3 -c ") and probes[0][0][-1].endswith(" pytest"))
+
+    def test_a_line_that_is_not_one_plain_command_is_never_asked_about(self):
+        """only a plain simple command is parsed: a separator, redirect, subshell, quote or expansion anywhere in it
+        (assignments included) and the run is a failed run, as it was before #117"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        self.module("ekit_pkg", "import sys\nsys.exit(1)\n", folder="src")
+        os.mkdir(os.path.join(self.repo, "sub"))
+        for i, (cmd, rc) in enumerate((
+                (f"{PY} -m ekit_runner&&echo ok", 1),
+                (f"{PY} -m ekit_runner;echo $? >/dev/null; exit 1", 1),
+                ("true; ekit_absent_tool117", 127),
+                ("(cd sub && ekit_absent_tool117)", 127),
+                ("2>/dev/null ekit_absent_tool117", 127),
+                (f"PYTHONPATH=$PWD/src {PY} -m ekit_pkg", 1),
+                (f'PYTHONPATH="$(pwd)/src" {PY} -m ekit_pkg', 1),
+                ("ekit_absent_tool117 'a b'", 127))):
+            with self.subTest(cmd=cmd):
+                self.failed(cmd, rc, task=f"t{i}")
+
+    def test_a_probe_with_an_answer_it_does_not_know_is_a_failed_run(self):
+        for shell, rc, probe_rc in (("bash", 127, 2), ("powershell", 1, 7)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc, probe_rc)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(f"ekit_absent_tool117 {shell}"), rc)
+
+    def test_a_probe_that_errors_is_a_failed_run(self):
+        for i, answer in enumerate((lambda argv: 2, lambda argv: OSError("cannot start"))):
+            probes, patches = self.fake_runs(1, answer)
+            with self.subTest(i=i), patches[0], patches[1], patches[2]:
+                self.failed("python3 -m pytest", 1, task=f"t{i}")
+
+    def test_stdout_and_stderr_keep_their_order(self):
+        r = subprocess.run([sys.executable, "-I", os.path.join(_kit.SCRIPTS, "task-verify.py"), "--repo", self.repo,
+                            "run", "--", "echo o1; echo e1 >&2; echo o2; echo e2 >&2"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=60)
+        self.assertEqual(r.stdout.splitlines()[:4], ["o1", "e1", "o2", "e2"])
+
+    def test_a_closed_stderr_does_not_hang_the_run(self):
+        p = subprocess.Popen([sys.executable, "-I", os.path.join(_kit.SCRIPTS, "task-verify.py"), "--repo", self.repo,
+                              "run", "--", "for i in $(seq 1 30000); do echo line$i >&2; done; exit 1"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        p.stderr.readline()
+        p.stderr.close()
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            self.fail("the run hung once its stderr closed")
+
+    def test_a_child_left_running_does_not_hold_the_run(self):
+        start = time.monotonic()
+        self.assertEqual(self.run_cmd("(sleep 6; echo late >&2) & echo bg"), 0)
+        self.assertLess(time.monotonic() - start, 4)
+
+    # PowerShell and cmd, their processes faked
+
+    def faked(self, shell, rc, probe_rc=3):
+        """`shell` found and its process faked: the run exits `rc`, a probe (Get-Command, command -v) `probe_rc`;
+        git runs for real"""
+        real = subprocess.run
+
+        def run(argv, **kw):
+            if argv[0] == "git":
+                return real(argv, **kw)
+            self.seen.append((argv, kw))
+            line = argv if isinstance(argv, str) else " ".join(argv)
+            probing = "Get-Command" in line or "command -v" in line
+            return subprocess.CompletedProcess(argv, probe_rc if probing else rc, "", "")
+        return mock.patch.object(tv.shells, "find", return_value=f"/fake/{shell}"), \
+            mock.patch.object(tv.subprocess, "run", side_effect=run), \
+            mock.patch.dict(os.environ, {"EKIT_SHELL": shell})
+
+    def test_powershell_and_cmd_not_finding_the_command_is_n_a_env(self):
+        for shell, rc in (("powershell", 1), ("pwsh", 1), ("cmd", 9009)):
+            with self.subTest(shell=shell):
+                cmd = f"ekit_absent_tool117 -q {shell}"
+                find, run, env = self.faked(shell, rc)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(cmd), 5)
+                self.complete(f"Verify: `{cmd}`", task=shell)
+                self.assertIn(f"`{cmd}`: n/a (env): install ekit_absent_tool117 ({shell} finds no "
+                              "ekit_absent_tool117)\n", self.check()[1])
+
+    def test_cmd_finds_a_command_in_the_runs_own_folder_first(self):
+        """cmd.exe looks in its folder before PATH: a tool there is found, so its 9009 is its own"""
+        tool = os.path.join(self.repo, "ekit_tool_here" + (".exe" if os.name == "nt" else ""))
+        open(tool, "w").close()
+        os.chmod(tool, 0o755)
+        find, run, env = self.faked("cmd", 9009)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("ekit_tool_here -q"), 9009)
+
+    def test_a_tool_missing_in_a_stack_folder_is_n_a(self):
+        os.mkdir(os.path.join(self.repo, "sub"))
+        self.na("cd sub && ekit_absent_tool117", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)")
+
+    def test_a_lone_cd_step_is_never_asked_about(self):
+        os.mkdir(os.path.join(self.repo, "sub"))
+        find, run, env = self.faked("pwsh", 1)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("cd sub &&"), 1)
+
+    def test_cmd_finds_a_path_from_the_runs_own_folder(self):
+        """a word with a `/` is a path: cmd looks for it from its folder, not on PATH"""
+        tool = os.path.join(self.repo, "bin", "ekit_tool_here" + (".exe" if os.name == "nt" else ""))
+        os.mkdir(os.path.dirname(tool))
+        open(tool, "w").close()
+        os.chmod(tool, 0o755)
+        find, run, env = self.faked("cmd", 9009)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("bin/ekit_tool_here -q"), 9009)
+            self.assertEqual(self.run_cmd("bin/ekit_absent_tool117 -q"), 5)
+        self.complete("Verify: `bin/ekit_absent_tool117 -q`")
+        self.assertEqual(self.check(), (1, "`bin/ekit_absent_tool117 -q`: n/a (env): install bin/ekit_absent_tool117 "
+                                           "(cmd finds no bin/ekit_absent_tool117)\n"))
+
+    def test_the_module_question_is_one_line_each_shell_runs_the_same(self):
+        """`<python> [flags] -c "<find_spec>" <pkg>`, double-quoted: the find_spec line holds no `$`, backtick, `!` or
+        quote, so bash, PowerShell and cmd each pass it as one word"""
+        finds = ('"import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1]) else 3)"')
+        for shell, rc in (("bash", 1), ("pwsh", 1), ("cmd", 1)):
+            with self.subTest(shell=shell):
+                probes, patches = self.fake_runs(rc, lambda argv: 3)
+                with patches[0], patches[1], mock.patch.dict(os.environ, {"EKIT_SHELL": shell}):
+                    self.assertEqual(self.run_cmd(f"python3 -X utf8 -m pytest.main -q {shell}"), 5)
+                line = probes[0][0] if isinstance(probes[0][0], str) else probes[0][0][-1]
+                self.assertIn(f"python3 -X utf8 -c {finds} pytest", line)
+
+    def bash_says(self, cmd, rc, module=3, lookup=1):
+        """exit code of `run -- cmd` with bash faked: the run exits `rc`, the module question `module`, `command -v`
+        `lookup`"""
+        probes, patches = self.fake_runs(rc, lambda argv: module)
+        real_run = patches[1].kwargs["side_effect"]
+
+        def run(argv, **kw):
+            line = argv if isinstance(argv, str) else " ".join(argv)
+            if argv[0] != "git" and "command -v" in line:
+                self.seen.append((argv, kw))
+                return subprocess.CompletedProcess(argv, lookup)
+            return real_run(argv, **kw)
+        with patches[0], mock.patch.object(tv.subprocess, "run", side_effect=run), patches[2]:
+            return self.run_cmd(cmd)
+
+    def test_the_plain_word_rule_letter_by_letter(self):
+        """letters, digits and `_ . / : + = -` are plain; any other character in any word is not"""
+        self.assertEqual(self.bash_says("ekit_absent_tool117 --o=a:b+c./d_e-f9", 127), 5)
+        for i, ch in enumerate("&;()<>|$'\"`*?~{}[]!#%@,^\\"):
+            with self.subTest(ch=ch):
+                self.assertEqual(self.bash_says(f"ekit_absent_tool117 x{ch}y", 127), 127)
+
+    def test_the_command_word_rule(self):
+        for cmd in ("../ekit_absent_tool117", "/opt/ekit_absent_tool117", "./ekit_absent_tool117", "_ekit_absent",
+                    "9ekit_absent"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash_says(cmd, 127), 5)
+        for cmd in (".ekit_absent_tool117", "...", "./", "-x", "=x", "a=b"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash_says(cmd, 127), 127)
+
+    def test_which_words_are_a_python(self):
+        for i, py in enumerate(("python3.12", "python", "py", "python.exe", "Python3", "/usr/bin/python3")):
+            with self.subTest(py=py):
+                self.assertEqual(self.bash_says(f"{py} -m pytest", 1), 5)
+                self.complete(f"Verify: `{py} -m pytest`", task=f"t{i}")
+                self.assertIn(f"`{py} -m pytest`: n/a (env): install module pytest for {py} (", self.check()[1])
+        for py in ("pythonic", "cpython3", "py3x"):
+            with self.subTest(py=py):
+                self.assertEqual(self.bash_says(f"{py} -m pytest", 1), 1)
+
+    def test_which_lines_are_a_module_run(self):
+        for cmd, interp, pkg in (("python3 -E -m pytest", "python3 -E", "pytest"),
+                                 ("python3 -W ignore -m pytest", "python3 -W ignore", "pytest"),
+                                 ("python3 -X utf8 -I -mpytest", "python3 -X utf8 -I", "pytest"),
+                                 ("python3 -m ekit_a.b.c", "python3", "ekit_a")):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash_says(cmd, 1), 5)
+                self.complete(f"Verify: `{cmd}`", task=cmd)
+                self.assertIn(f"`{cmd}`: n/a (env): install module {pkg} for {interp} (", self.check()[1])
+        for cmd in ("python3 -m", "python3 -I", "python3 script.py -m pytest", "python3 -cpass -m pytest",
+                    "python3 -c pass -m pytest", "python3 -m 1abc", "python3 -m ekit-a"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.bash_says(cmd, 1), 1)
+
+    def test_the_module_question_is_asked_as_the_run_is_started(self):
+        """in the run's folder, with the run's environment, bounded by PROBE_SECONDS (10 s)"""
+        os.makedirs(os.path.join(self.repo, "a", "b"))
+        real_env_for = tv.shells.env_for  # the run's environment marked, as Windows marks it with Git Bash's dirs
+        with mock.patch.object(tv.shells, "env_for", lambda exe, name: dict(real_env_for(exe, name), EKIT_MARK="1")):
+            self.assertEqual(self.bash_says("cd a && cd b && python3 -m pytest", 1), 5)
+        (run_argv, run_kw), (q_argv, q_kw) = self.seen
+        self.assertEqual(os.path.normpath(q_kw["cwd"]), os.path.join(self.repo, "a", "b"))
+        self.assertEqual((q_kw["env"]["EKIT_MARK"], q_kw["env"], q_kw["timeout"], tv.PROBE_SECONDS),
+                         ("1", run_kw["env"], 10, 10))
+
+    def test_the_lookup_question_lines(self):
+        """bash: `command -v <word>`; its 1 (bash, zsh) and 127 (dash) are none found; PowerShell: Get-Command"""
+        for lookup, want in ((1, 5), (127, 5), (0, 127), (2, 127)):
+            with self.subTest(lookup=lookup):
+                self.seen = []
+                self.assertEqual(self.bash_says(f"ekit_absent_tool117 l{lookup}", 127, lookup=lookup), want)
+                self.assertEqual(self.seen[-1][0][-1], "command -v ekit_absent_tool117 >/dev/null 2>&1")
+        self.seen = []
+        find, run, env = self.faked("pwsh", 1)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("ekit_absent_tool117 ps"), 5)
+        self.assertTrue(self.seen[-1][0][-1].startswith(
+            "if (Get-Command -ErrorAction SilentlyContinue 'ekit_absent_tool117') { exit 0 } else { exit 3 }"))
+
+    def test_cmd_reads_a_relative_path_entry_from_the_runs_folder(self):
+        tool = os.path.join(self.repo, "tools", "ekit_tool_here" + (".exe" if os.name == "nt" else ""))
+        os.mkdir(os.path.dirname(tool))
+        open(tool, "w").close()
+        os.chmod(tool, 0o755)
+        os.environ["PATH"] = "tools" + os.pathsep + os.environ["PATH"]
+        find, run, env = self.faked("cmd", 9009)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("ekit_tool_here -q"), 9009)
+
+    def test_an_n_a_run_is_recorded_with_no_exit_code_in_its_shell(self):
+        self.assertEqual(self.run_cmd("ekit_absent_tool117 rec"), 5)
+        with open(os.path.join(self.repo, ".git", "ekit", "verify.json")) as f:
+            run = [r for r in json.load(f) if r["cmd"] == "ekit_absent_tool117 rec"][0]
+        with open(os.path.join(self.repo, ".git", "ekit", "shells.json")) as f:
+            kept = json.load(f)["ekit_absent_tool117 rec"]["name"]
+        self.assertEqual((run["rc"], run["shell"], run["na"], kept),
+                         (None, "bash", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)", "bash"))
+
+    def test_powershell_finding_the_command_and_cmd_with_another_exit_are_failed_runs(self):
+        for shell, rc, probe in (("powershell", 1, 0), ("pwsh", 3, 3), ("cmd", 1, 3)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc, probe)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(f"ekit_absent_tool117 -q {shell}"), rc)
 
 
 class Usage(VerifyCase):
