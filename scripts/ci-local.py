@@ -3,6 +3,7 @@
 of the plugin, and no other OS is simulated (the macOS job stays CI's).
 
 usage: python3 -I scripts/ci-local.py [--base REF] [--head-branch NAME] [--r3-env-dir DIR] [--repo DIR]
+                                      [--step mech|suite|r3|scenarios ...] [--unrunnable-ok]
 
 Steps, each run whatever the one before gave, with the inputs of .github/workflows/mech-review-self.yml, then the
 scenarios:
@@ -14,15 +15,20 @@ scenarios:
          (uv run --no-project): no uv.lock and no .venv in the repo; one left there anyway is a failed step.
   r3     scripts/r3-local.py with the same inputs and --mutation-budget 20: a fail entry or an unconfirmed survivor
          fails the step.
-  scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file), which no CI job runs (#115):
-         a FAIL fails the step, naming each; one this machine cannot run is not run here, naming it and what is
-         missing: the runner's NOT-RUN (no shell for its run file), or a scenario that exits non-zero with its own one
-         fail message on stderr, `ASSERT FAILED: unrunnable here: <what>` (lib.sh: fail "unrunnable here: ..."), as its
-         last stderr line and its only ASSERT FAILED line. A timeout or a bad folder stays a FAIL. No verdict line, or
-         PASS: 0/0, is not run here.
+  scenarios  every .ekit/scenarios scenario (scenarios.py run, the one beside this file; #115), as the tests
+         workflow's scenarios job runs it (#116): a FAIL fails the step, naming each; one this machine cannot run
+         is not run here, naming it and what is missing: the runner's NOT-RUN (no shell for its run file), or a
+         scenario that exits non-zero with its own one fail message on stderr, `ASSERT FAILED: unrunnable here: <what>`
+         (lib.sh: fail "unrunnable here: ..."), as its last stderr line and its only ASSERT FAILED line. A timeout or a
+         bad folder stays a FAIL. No verdict line, or PASS: 0/0, is not run here.
 mech and r3 test the HEAD commit (uncommitted changes are not in them); suite and scenarios run the working tree.
 Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that could not run is not a pass.
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
+--step runs only the steps named (repeatable; still in CI's order). --unrunnable-ok (#116: the tests workflow's
+scenarios job, `--step scenarios --unrunnable-ok`): a scenarios step that is not run here only for scenarios this
+machine cannot run, each named with what it lacks, does not fail the exit once at least one scenario passed; a FAIL
+beside them still does, and so does every scenario unrunnable, and any other not run here (no verdict line, PASS: 0/0,
+an unreadable results.json, or another step's).
 exit: 0 every step passed; 1 a step failed or could not run here; 2 usage, or a base that is not a commit (no step ran).
 """
 import argparse
@@ -197,8 +203,8 @@ def scenarios(run, a):
     if failed:
         also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
         return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
-    if unrunnable:
-        return NOT_RUN, "; ".join(unrunnable)
+    if unrunnable:  # a missing tool alone; the third value: one scenario passed, so --unrunnable-ok excuses it
+        return NOT_RUN, "; ".join(unrunnable), len(rows) > len(unrunnable)  # no failed row: every other one passed
     # the runner said FAIL, so it failed whatever its rows leave out; a NOT-RUN or a short PASS blames no scenario
     return FAILED if word == "FAIL" else NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or " \
                                                   "unrunnable scenario"
@@ -242,6 +248,12 @@ def parse(argv):
     p.add_argument("--head-branch", metavar="NAME", help="head branch for R1 (default: the checked-out branch)")
     p.add_argument("--r3-env-dir", metavar="DIR", help="r3-local's --env-dir (default: its temp dir, removed)")
     p.add_argument("--repo", default=ROOT, help="git repo (default: this checkout)")
+    p.add_argument("--step", action="append", choices=[n for n, _ in STEPS],
+                   help="run this step only (repeat for more; they run in CI's order). Default: every step")
+    p.add_argument("--unrunnable-ok", action="store_true",
+                   help="a scenarios step not run here only for scenarios this machine cannot run (each named), "
+                        "with at least one scenario passed, does not fail the exit (the tests workflow's scenarios "
+                        "job, #116)")
     return p.parse_args(argv)
 
 
@@ -259,11 +271,14 @@ def main(argv, run=run_cmd):
         print(f"ci-local: uncommitted changes are not in mech and r3 (they test {a.head_sha})", file=sys.stderr)
     results = []
     for name, step in STEPS:
+        if a.step and name not in a.step:
+            continue
         print(f"== {name}", flush=True)
-        results.append((name,) + step(run, a))
-    for name, verdict, detail in results:
+        verdict, detail, *why = step(run, a)
+        results.append((name, verdict, detail, why == [True] and a.unrunnable_ok))
+    for name, verdict, detail, _ in results:
         print(f"{name}: {verdict}: {detail}")
-    return 0 if all(v == PASSED for _, v, _ in results) else 1
+    return 0 if all(v == PASSED or excused for _, v, _, excused in results) else 1
 
 
 if __name__ == "__main__":

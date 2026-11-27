@@ -1088,6 +1088,47 @@ with tempfile.TemporaryDirectory() as ws:
         got = linked(body)
         check(f"guard: body {body!r} links {want or 'nothing'}", got == want, repr(got))
 
+# ---- #116: the tests workflow runs ci-local's scenarios step on every PR ----
+# EKIT_TESTS_WORKFLOW: another copy of tests.yml to check (a proposed edit, before it lands); default the repo's
+TWP = os.environ.get("EKIT_TESTS_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "tests.yml")
+with open(TWP) as f:
+    T = f.read().splitlines()
+ton = block(T, "on", 0) or []
+check("tests: on pull_request", "pull_request" in child_keys(ton), str(child_keys(ton)))
+tjobs = block(T, "jobs", 0) or []
+sc = block(tjobs, "scenarios", 2)
+check("tests: a scenarios job", sc is not None, f"jobs: {sorted(child_keys(tjobs))} in {TWP}")
+sc = sc or []
+sct = text(sc)
+check("tests scenarios: on ubuntu-latest", value(sc, "runs-on") == "ubuntu-latest", str(value(sc, "runs-on")))
+check("tests scenarios: no continue-on-error (a failed scenario is a red job)", "continue-on-error" not in sct, sct)
+check("tests scenarios: checks out the PR", "uses: actions/checkout@v4" in sct, sct)
+# an `if:` on the job or on any of its steps can skip the scenarios on a PR and leave the check green
+check("tests scenarios: no `if:` on the job or any step (nothing skips it on a PR)",
+      not [l for l in sc if re.match(r"\s*(- )?if\s*:", l)], str([l for l in sc if "if" in l]))
+# ci-local resolves --base origin/main: a shallow checkout has no such ref (exit 2, a false red)
+cko = next((n for n, l in enumerate(sc) if l.strip().lstrip("- ") == "uses: actions/checkout@v4"), None)
+ckw = block(sc[cko:] if cko is not None else [], "with") or []
+check("tests scenarios: checkout fetch-depth 0 (ci-local resolves origin/main)", value(ckw, "fetch-depth") == "0",
+      str(ckw))
+check("tests scenarios: installs strace", re.search(r"apt-get install -y( -qq)? strace\b", sct) is not None, sct)
+check("tests scenarios: unshare -n for the runner's user (a user namespace, its own uid mapped)",
+      "kernel.apparmor_restrict_unprivileged_userns=0" in sct and "unshare --map-current-user" in sct
+      and '>> "$GITHUB_PATH"' in sct, sct)
+check("tests scenarios: installs a pinned uv and uv's Python 3.9",
+      re.search(r"pipx install uv==\d+\.\d+\.\d+\n", sct + "\n") is not None and "uv python install 3.9" in sct, sct)
+runs = [l.strip() for l in sc if l.strip().startswith(("run:", "- run:"))]
+want_run = "run: python3 -I scripts/ci-local.py --step scenarios --unrunnable-ok"
+check("tests scenarios: its last step runs ci-local's scenarios step, a missing tool alone not red",
+      runs[-1:] == [want_run], str(runs))
+check(f"{os.path.basename(TWP)}: every ${{{{ }}}} line is an allowed non-shell key", interpolations(T) == [],
+      str(interpolations(T)))
+import subprocess
+helped = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "ci-local.py"), "--help"],
+                        capture_output=True, text=True)
+check("tests scenarios: ci-local takes the job's options", helped.returncode == 0 and "--step" in helped.stdout
+      and "--unrunnable-ok" in helped.stdout and "scenarios" in helped.stdout, helped.stdout + helped.stderr)
+
 print("")
 sys.exit(1 if FAILS else 0)
 PY
