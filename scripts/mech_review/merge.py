@@ -13,7 +13,7 @@ import hashlib
 import json
 
 from .report import ALL, CHECKS, entry, envelope, finalize
-from .mutants import partial_entry
+from .mutants import RISK_KEYS, partial_entry, risk_note, risk_of
 from .r0 import blocked, combine, mark
 
 OWNS = {"r2": ("R2",), "red": ("R1", "R4"), "mutants": ("R3",), "drift": ("D",), "r0": ("R0",)}
@@ -201,6 +201,18 @@ def shard_problems(base, head, n, shards):
     return out
 
 
+def sum_risk(shards, n):
+    """The run's per-class counts (#122): each class's tested and total summed over the n shards (each shard counts
+    its own share, shard 0 also those past the cap, so a sum counts each mutant once). None unless every shard is
+    there and carries counts that are its own count split by class (risk_of): a missing one, one from an older
+    engine, or one whose counts do not add up to its tested/total would make the sum wrong."""
+    got = [risk_of(((shards.get(k) or {}).get("checks") or {}).get("R3")) for k in range(n)]
+    if any(g is None for g in got):
+        return None
+    return {key: {f: sum(g[key][f] for g in got if key in g) for f in ("tested", "total")}
+            for key in RISK_KEYS if any(key in g for g in got)}
+
+
 def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     """The mutants job: R3 from n shard envelopes (0-based shard k of n). shards: {k: envelope or None},
     reasons: {k: why there is no envelope}. A missing shard fails R3 with a CI entry naming it; the other shards'
@@ -264,6 +276,11 @@ def combine_shards(base, head, n, shards, reasons, baseline_timing=None):
     if counted:
         check["tested"] = tested
         check["total"] = None if unknown else total
+    risk = sum_risk(shards, n)  # every shard's counts add up to its own count, so the sum adds up to this one
+    if risk is not None:
+        check["by_risk"] = risk
+        if n > 1:
+            check["note"] += risk_note(risk, "all shards, ")
     timing = combine_timing(timings, tested if counted else None, baseline_timing)
     if timing:
         check["timing"] = timing
