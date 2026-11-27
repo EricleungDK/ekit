@@ -24,9 +24,9 @@ from scripts.mech_review import cli
 
 ADAPTER = ".ekit/adapters/maven.toml"
 PLAN = ".ekit/stack-plan.toml"
-OLD = (r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time elapsed: [\d.]+ """
-       r"""sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
-NEW = r"""summary = '^(?:\[\w+\] )?(Tests run: \d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
+OLD = (r"""summary = '^\[(?:INFO|WARNING|ERROR)\] Tests run: (\d+, Failures: \d+, Errors: \d+, Skipped: \d+), Time """
+       r"""elapsed: [\d.]+ sec(?: <<< FAILURE!)? - in [\w$.]+\s*$'""")
+NEW = r"""summary = '^\[(?:INFO|WARNING|ERROR)\] Tests run: (\d+, Failures: \d+, Errors: \d+, Skipped: \d+)\s*$'"""
 TRAILER = "adapter-fix: R0-00e0bfc4\n"
 GIT = eval_git()
 
@@ -190,7 +190,7 @@ class RepairJavaRunner(Scaffold):
 
     def test_a_repair_whose_proof_fails_or_is_unproven_is_no_repair(self):
         for name, files, want in (
-                ("a cheat missed", {ADAPTER: self.fixed()[ADAPTER].replace('skip = ["Disabled",', "skip = [")},
+                ("a cheat missed", {ADAPTER: self.fixed()[ADAPTER].replace('skip = [\n  "Disabled",\n', "skip = [\n")},
                  r"(?m)^r0: not pass \(exit 1, R0 fail: R0 static half failed for the `maven` adapter: cheat `skip`"),
                 ("no fixtures", dict(self.fixed(), **{".ekit/adapters/maven.r0/skip.java.r0": None}),
                  r"(?m)^r0: not pass \(exit 0, R0 unproven: ")):
@@ -223,16 +223,17 @@ class RepairJavaRunner(Scaffold):
         """review rounds 1-3 [repair-diff-unbounded]: the allowlist is the adapter file alone, its TOML the base's but
         for the [run.outcome] and [run.list] patterns; each known way past an earlier grader reads `allow: no`"""
         fixed = self.fixed()[ADAPTER]
-        ctl = ".ekit/adapters/maven.r0/runtime/project/src/test/java/com/example/CtlTest.java.r0"
+        ctl = ".ekit/adapters/maven.r0/runtime/project/src/test/java/com/example/r0/CtlTest.java.r0"
         wf = ".github/workflows/mech-review.yml"
         to_maven2 = self.read(PLAN).replace('adapter = ".ekit/adapters/maven.toml"', 'adapter = ".ekit/adapters/maven2.toml"')
         shapes = {
             "the PR's code": {"src/main/java/com/example/Calc.java":
                               self.git("show", "claude/multiply:src/main/java/com/example/Calc.java")},
             "test = true": {ADAPTER: fixed.replace('test = "mvn -B -ntp test"', 'test = "true"')},
-            "a list command": {ADAPTER: fixed.replace('command = "mvn -B -ntp test -Djunit', 'command = "echo -Djunit')},
+            "a list command": {ADAPTER: fixed.replace('command = "mvn -B -ntp test -Dsurefire',
+                                                    'command = "echo -Dsurefire')},
             "a limit": {ADAPTER: fixed + "\n[limits]\ncensus = 50\n"},
-            "a gutted fixture": {ctl: self.read(ctl).split("    @Test\n    void fails()")[0] + "}\n"},
+            "a gutted fixture": {ctl: self.read(ctl).split("    @Test\n    void same()")[0] + "}\n"},
             "a renamed adapter": dict(self.copy_fixtures(".ekit/adapters/maven2.r0"),
                                       **{".ekit/adapters/maven2.toml": fixed, PLAN: to_maven2}),
             "the caller workflow": {wf: self.read(wf).replace("src/test/**", "nowhere/**")},

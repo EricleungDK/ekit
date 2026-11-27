@@ -1,31 +1,31 @@
 [INFO] Scanning for projects...
 [INFO] 
-[INFO] --------------------------< com.example:calc >--------------------------
-[INFO] Building calc 1.0
+[INFO] ----------------------< com.example:r0-controls >-----------------------
+[INFO] Building r0-controls 1.0
 [INFO]   from pom.xml
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
-[INFO] --- resources:3.3.1:resources (default-resources) @ calc ---
+[INFO] --- resources:3.3.1:resources (default-resources) @ r0-controls ---
 [INFO] skip non existing resourceDirectory /home/runner/work/calc/calc/src/main/resources
 [INFO] 
-[INFO] --- compiler:3.13.0:compile (default-compile) @ calc ---
+[INFO] --- compiler:3.13.0:compile (default-compile) @ r0-controls ---
 [INFO] Nothing to compile - all classes are up to date.
 [INFO] 
-[INFO] --- resources:3.3.1:testResources (default-testResources) @ calc ---
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ r0-controls ---
 [INFO] skip non existing resourceDirectory /home/runner/work/calc/calc/src/test/resources
 [INFO] 
-[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ calc ---
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ r0-controls ---
 [INFO] Nothing to compile - all classes are up to date.
 [INFO] 
-[INFO] --- surefire:3.5.2:test (default-test) @ calc ---
+[INFO] --- surefire:3.5.2:test (default-test) @ r0-controls ---
 [INFO] Using auto detected provider org.apache.maven.surefire.junitplatform.JUnitPlatformProvider
 [INFO] 
 [INFO] -------------------------------------------------------
 [INFO]  T E S T S
 [INFO] -------------------------------------------------------
-[INFO] Running com.example.CtlTest
-[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.056 s <<< FAILURE! -- in com.example.CtlTest
-[ERROR] com.example.CtlTest.fails -- Time elapsed: 0.027 s <<< FAILURE!
+[INFO] Running com.example.r0.CtlTest
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.064 s <<< FAILURE! -- in com.example.r0.CtlTest
+[ERROR] com.example.r0.CtlTest.same -- Time elapsed: 0.040 s <<< FAILURE!
 org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
 	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
 	at org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)
@@ -33,7 +33,7 @@ org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
 	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)
 	at org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)
 	at org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)
-	at com.example.CtlTest.fails(CtlTest.java:17)
+	at com.example.r0.CtlTest.same(CtlTest.java:14)
 	at java.base/java.lang.reflect.Method.invoke(Method.java:580)
 	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
 	at java.base/java.util.ArrayList.forEach(ArrayList.java:1596)
@@ -42,17 +42,17 @@ org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
 [INFO] Results:
 [INFO] 
 [ERROR] Failures: 
-[ERROR]   CtlTest.fails:17 expected: <4> but was: <3>
+[ERROR]   CtlTest.same:14 expected: <4> but was: <3>
 [INFO] 
 [ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0
 [INFO] 
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD FAILURE
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  1.252 s
-[INFO] Finished at: 2026-11-26T01:49:17Z
+[INFO] Total time:  1.581 s
+[INFO] Finished at: 2026-11-27T05:42:56Z
 [INFO] ------------------------------------------------------------------------
-[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.5.2:test (default-test) on project calc: There are test failures.
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.5.2:test (default-test) on project r0-controls: There are test failures.
 [ERROR] 
 [ERROR] See /home/runner/work/calc/calc/target/surefire-reports for the individual test results.
 [ERROR] See dump files (if any exist) [date].dump, [date]-jvmRun[N].dump and [date].dumpstream.

@@ -1,5 +1,5 @@
 #!/bin/bash
-# fixture: the Java reference adapter's fixture repo (tests/fixtures/java/base: Maven, JUnit 5, PIT), with the team's
+# fixture: the kit's Java fixture repo (tests/fixtures/java/base: Maven, JUnit 5, PIT), with the team's
 # own CI workflow, and no adapter file or stack plan. The run should end on a setup branch whose generated adapter
 # passes R0, with a stack plan entry `current` for the root and the caller workflow; ci.yml stays as it is, and no base
 # CI job is added (#23).

@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The java reference adapter's fixture repo (#22, tests/py/test_java_reference.py): Maven, JUnit 5, surefire, PIT. -->
 <project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.example</groupId>

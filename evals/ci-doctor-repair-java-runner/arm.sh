@@ -46,7 +46,8 @@ arm_repair() {
 # - the drift cover entry's status is left to the criteria;
 # - two entries for the cover folder pass;
 # - an unreferenced adapter file under .ekit/adapters/ passes;
-# - a renamed copy of the reference adapter is not detected.
+# - a copy of the kit's own Java adapter (tests/fixtures/adapters/maven.toml: its [run.outcome] is the honest fix)
+#   is not detected.
 # - the agent under test can read and change this grading. The sandbox keeps the kit's evals/ and .git from it (with
 #   the plugin it reads the rest of the kit; without, none of it), but the scaffold's .git/ekit-eval/ is its own: this
 #   script, its inputs, the engine's copy, the runner's recorded output and the verdict.

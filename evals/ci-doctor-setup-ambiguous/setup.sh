@@ -1,5 +1,5 @@
 #!/bin/bash
-# fixture: a Java backend (backend/: the Java reference adapter's fixture project, Maven) beside a TS frontend
+# fixture: a Java backend (backend/: the kit's Java fixture repo, tests/fixtures/java/base, Maven) beside a TS frontend
 # (frontend/: package.json, vitest). Which one mech-review checks first is the user's call: the run should end with a
 # question naming both projects and no commit on any branch, never a guess (#23). The grader support is
 # ci-doctor-setup-java's; only its new-commits and main lines matter here.
