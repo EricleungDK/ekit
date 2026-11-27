@@ -15,7 +15,7 @@ import os
 import time
 from collections import namedtuple
 
-from . import adapter_file, gitio, report, tomlfile
+from . import adapter_file, gitio, report, resolve, tomlfile
 from .resolve import SKIP_DIRS
 from .stack import ADAPTERS
 
@@ -35,6 +35,8 @@ Entry = namedtuple("Entry", "name folder adapter_ref adapter target_os status go
 Plan = namedtuple("Plan", "entries ignore")
 # has_plan: a plan exists where it was read; uncovered: manifest paths no entry covers; messages: lines for the user
 Drift = namedtuple("Drift", "has_plan uncovered messages")
+# a stack settled on one tree (stacks_at): its name, its folder (`.`: the repo root), its Adapter (an instance)
+Stack = namedtuple("Stack", "name folder adapter")
 
 
 class PlanError(ValueError):
@@ -518,3 +520,31 @@ def drift_at(repo, ref, now=None):
     uncovered, messages = judge(plan, tracked(repo, sha), lambda n: retiring_since(repo, sha, n),
                                 time.time() if now is None else now)
     return Drift(True, uncovered, messages)
+
+
+def _why(error):
+    """resolve's error as the reason alone: its `stack auto: ` lead and the caller-input advice dropped (no caller here)."""
+    return error.replace("stack auto: ", "", 1).replace(f"; {resolve.SET_INPUTS}", "")
+
+
+def stacks_at(repo, ref):
+    """The stacks CI runs on the tree at ref alone, no base (session start's default verify commands, #61): with a plan
+    there, the entries to_run keeps over its tracked paths, settled by resolve.from_plan; without one, `stack: auto`
+    detection (resolve.pick) over the built-ins and the repo's adapter files there. ([Stack], why): why names why none
+    is settled (several projects, none found, no stack to run in the plan), else None. PlanError: a bad plan or no
+    tomllib; adapter_file.AdapterFileError: a repo adapter file that does not read; gitio.Die: a git error."""
+    sha = gitio.resolve(repo, ref)
+    paths = tracked(repo, sha)
+    plan = at(repo, sha)
+    if plan is not None:
+        entries = to_run(plan, paths)
+        got = resolve.from_plan(entries)
+        if got["error"]:
+            return [], _why(got["error"])
+        return [Stack(e.name, e.folder, e.adapter) for e in entries], None
+    adapters = {**ADAPTERS, **repo_adapters(repo, sha, paths)}
+    got = resolve.pick(paths, adapters=adapters)
+    if got["error"]:
+        return [], _why(got["error"])
+    a = adapters[got["stack"]]
+    return [Stack(got["stack"], got["project_dir"], a() if isinstance(a, type) else a)], None

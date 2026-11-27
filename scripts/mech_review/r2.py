@@ -4,7 +4,7 @@ import re
 from collections import Counter
 
 from . import cochange
-from .gitio import added_lines, blob, changes
+from .gitio import added_lines, blob, changes, messages
 from .globs import any_glob
 from .parser_cmd import ParserError
 from .report import entry
@@ -23,9 +23,23 @@ def unmatched(xs, ys):
     return out
 
 
-def r2(rv, protected_globs, rules=()):
+SPEC_LINE = re.compile(r"^spec:[ \t]*#(\d+)[ \t]+reverses[ \t]+(\S(?:.*\S)?)[ \t]*$", re.M | re.ASCII)
+
+
+def spec_reversed(text, linked):
+    """{test name: issue N} from the `spec: #N reverses <test name>` lines of text (the range's commit messages, #53),
+    keeping only an N in linked (the issues the PR closes). Several lines for one test: the lowest linked N."""
+    out = {}
+    for n, name in SPEC_LINE.findall(text):
+        if int(n) in linked:
+            out[name] = min(out.get(name, int(n)), int(n))
+    return out
+
+
+def r2(rv, protected_globs, rules=(), linked=()):
     """R2 over mb..head: path rules (protected paths, mutation config) per change, the co-change rules over the range's
-    changed paths (rules: cochange.Rule list, #83), then r2_file per source file.
+    changed paths (rules: cochange.Rule list, #83), then r2_file per source file. linked: the issue numbers the PR
+    closes (#53): a removed test that a commit's `spec: #N reverses <name>` line names, N linked, is a confirm.
     An adapter file's parser command that fails (ParserError, #27) makes every file's entries one blocking CI entry,
     never a fallback; the path rules stay."""
     repo, mb, head, adapter, test_globs, _ = rv
@@ -33,6 +47,7 @@ def r2(rv, protected_globs, rules=()):
         adapter = adapter.in_checkout(repo)
     entries, files, failed = [], [], None
     added = added_lines(repo, mb, head)
+    spec = spec_reversed(messages(repo, mb, head), set(linked)) if linked else {}
     changed = changes(repo, mb, head)
     paths = [p for ch in changed for p in (ch.old, ch.new) if p]
     entries += cochange.check(rules, paths) + cochange.guards(repo, mb, head, rules, paths)
@@ -58,10 +73,22 @@ def r2(rv, protected_globs, rules=()):
         try:
             files += r2_file(adapter, test_globs, old, new,
                              blob(repo, mb, old) if old else None, blob(repo, head, new) if new else None,
-                             {ln for ln, _ in added.get(new, [])})
+                             {ln for ln, _ in added.get(new, [])}, spec)
         except ParserError as e:
             failed = parser_entry(new or old, e)
-    return entries + ([failed] if failed else files)
+    return entries + ([failed] if failed else _one_file_only(files))
+
+
+def _one_file_only(files):
+    """a spec line names one test: when its name is removed from several files the line is ambiguous, and each of
+    those removals stays the fail (#53 review F5)."""
+    seen = {}
+    for e in files:
+        if e["_key"].startswith(SPEC_KEY):
+            seen.setdefault(e["_key"][len(SPEC_KEY):], set()).add(e["file"])
+    many = {n for n, fs in seen.items() if len(fs) > 1}
+    return [_removed_fail(e["file"], e["line"], e["_key"][len(SPEC_KEY):], True)
+            if e["_key"].startswith(SPEC_KEY) and e["_key"][len(SPEC_KEY):] in many else e for e in files]
 
 
 def parser_entry(path, err):
@@ -72,11 +99,12 @@ def parser_entry(path, err):
                  "parser fails")
 
 
-def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
+def r2_file(adapter, test_globs, old, new, before, after, added=frozenset(), spec=None):
     """R2 rules for one source file, from its text alone (no git). Entries are not finalized.
     old/new: the file's path at base/head when it is a source file of this stack, else None. before/after: the text at
     those paths (None with the path). added: head line numbers the change adds; suppressions and mutation skips count
-    only there. A side that does not parse is the only result: its test changes cannot be checked."""
+    only there. spec: {test name: issue N} the PR's linked spec reverses (#53): such a removed test is a confirm.
+    A side that does not parse is the only result: its test changes cannot be checked."""
     path = new or old
     base_side = adapter
     if hasattr(adapter, "at"):  # a parser-backed adapter (#27): its command gets each side's own path
@@ -95,7 +123,7 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset()):
     bfns = base_side.test_fns(held_b) if held_b is not None else []
     afns = adapter.test_fns(held_a) if held_a is not None else []
     gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a)
-    entries = _removed(path, gone) + _renamed_changed(path, changed)
+    entries = _removed(path, gone, spec or {}) + _renamed_changed(path, changed)
     entries += _markers(adapter, path, afns, bfns, renamed)
     if before is not None:
         entries += _assert_counts(adapter, path, after, bas, aas, afns)
@@ -196,10 +224,26 @@ def _renamed_changed(path, changed):
                   "renaming a test to hide a changed or weakened assertion") for rf, nf in changed]
 
 
-def _removed(path, gone):
-    return [entry("R2", path, f.line, f.name, "agent-fixable", "fail", f"test fn `{f.name}` removed",
-                  "restore the test and make the code satisfy it; a removed test is not a fix",
-                  "deleting or renaming a test to hide a failure") for f in gone]
+SPEC_KEY = "spec-removed:"
+
+
+def _removed(path, gone, spec):
+    """a removed test is a fail, unless spec (#53) names it: then a confirm the reviewer decides against issue #N."""
+    return [entry("R2", path, f.line, SPEC_KEY + f.name, "agent-fixable", "confirm",
+                  f"test `{f.name}` removed, spec #{spec[f.name]} reverses it",
+                  f"confirm only against a quoted sentence of #{spec[f.name]} that reverses this test's assertion; "
+                  "with no such sentence, restore the test",
+                  "removing a test the spec does not reverse, or citing a spec that does not say so")
+            if f.name in spec else _removed_fail(path, f.line, f.name) for f in gone]
+
+
+def _removed_fail(path, line, name, several=False):
+    """the removed test's fail; several: a spec line named it, but tests of that name are removed in several files."""
+    hint = "restore the test and make the code satisfy it; a removed test is not a fix"
+    if several:
+        hint += " (the `spec: #N reverses` line names tests removed from several files, so it applies to none)"
+    return entry("R2", path, line, name, "agent-fixable", "fail", f"test fn `{name}` removed", hint,
+                 "deleting or renaming a test to hide a failure")
 
 
 def _markers(adapter, path, afns, bfns, renamed):

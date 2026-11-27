@@ -173,6 +173,14 @@ def max_mutants_arg(value):
     raise argparse.ArgumentTypeError(f"{value!r}: want a whole number >= 1")
 
 
+def issue_arg(value):
+    """--linked-issue: an issue number, N or #N (#53)."""
+    n = value[1:] if value.startswith("#") else value
+    if re.fullmatch(r"[0-9]+", n) and int(n) >= 1:  # ASCII digits only: str.isdigit takes ² and ٥٣
+        return int(n)
+    raise argparse.ArgumentTypeError(f"{value!r}: want an issue number, N or #N")
+
+
 def project_dir_arg(value):
     """Crate dir relative to the repo root: no `..`, not absolute; `./` and trailing `/` are dropped."""
     if not value or value.startswith("/") or ".." in value.split("/"):
@@ -210,10 +218,14 @@ def build_parser():
     p.add_argument("--agent-prefix", action="append", metavar="PREFIX",
                    help="agent branch prefix for R1, repeatable or comma-separated (default: " + " ".join(red.AGENT_PREFIXES)
                         + "); * matches every branch")
+    p.add_argument("--linked-issue", action="append", type=issue_arg, default=[], metavar="N",
+                   help="r2, all (#53): an issue the PR closes (N or #N), repeatable; a removed test a commit's "
+                        "`spec: #N reverses <test name>` line names, N linked, is a confirm, not a fail")
     p.add_argument("--test-cmd", metavar="CMD", help="test command for R1/R4 (default: the stack's: rust cargo test, python "
                                                        "pytest, ts node_modules/.bin/vitest or jest from package.json)")
-    p.add_argument("--project-dir", type=project_dir_arg, default=".", metavar="DIR",
-                   help="crate dir under the repo root (default .): R1, R4 and R3 run there; paths stay repo-root")
+    p.add_argument("--project-dir", type=project_dir_arg, default=None, metavar="DIR",
+                   help="crate dir under the repo root (default .): R1, R4 and R3 run there; paths stay repo-root; "
+                        "merge (#62): the leg's dir, its results must name it (default: unset, the stack alone is compared)")
     p.add_argument("--mutants-cmd", metavar="CMD", help="mutation tool for R3 (default: the stack's: rust cargo mutants, python "
                                                           "mutmut, ts node_modules/.bin/stryker)")
     p.add_argument("--mutation-budget", type=budget_arg, default=10.0, metavar="MIN",
@@ -283,7 +295,7 @@ def _review(args, adapter):
 
 def _mutants_file(args, adapter):
     """R3 through an adapter file (#19): mutation_tool.run (its declared tool, or n/a) in the envelope engine.run gives
-    the built-ins' mutants: the other checks skipped, the shard and its cap. Exit 1 on a fail entry, 2 on a git error."""
+    the built-ins' mutants: the other checks skipped, the shard and its cap, the stack and project dir (#62). Exit 1 on a fail entry, 2 on a git error."""
     try:
         base, head, rv = _review(args, adapter)
         with contextlib.ExitStack() as keep:  # --r0 (#21): R0's R3 control on shard 0
@@ -297,6 +309,7 @@ def _mutants_file(args, adapter):
     env = report.envelope(base, head, sorted(ents, key=lambda e: (e["file"], e["line"] == 0, e["line"], e["id"])), checks)
     k, _, n = (args.shard or "0/1").partition("/")
     env["shard"] = {"k": int(k), "n": int(n), "max_mutants": args.max_mutants}
+    env["stack"] = {"stack": args.stack, "project_dir": args.project_dir}  # merge counts only its leg's (#62)
     print(json.dumps(env, indent=2) if args.format == "json" else render_text(env))
     return 1 if any(e["severity"] == "fail" for e in env["entries"]) else 0
 
@@ -348,7 +361,8 @@ def _sha(repo, ref):
 
 
 def _merge(parser, args):
-    """Combine the baseline result and the mutants shard envelopes into one R3 envelope on stdout. Exit 1 on any fail entry."""
+    """Combine the baseline result and the mutants shard envelopes into one R3 envelope on stdout. Exit 1 on any fail entry.
+    Only the results of this leg count (#62): --stack, and --project-dir when given (merge.stack_problem)."""
     n = 1 if args.shards is None else args.shards
     if n < 0:
         parser.error("--shards N: want N >= 0")
@@ -384,6 +398,12 @@ def _merge(parser, args):
             reasons[k] = f"result is for an older head, not {head}"
         else:
             shards[k] = env
+    # a result for another stack or folder (#62) is not this leg's: it fails its shard, named, and is not counted
+    for k in list(shards):
+        why = merge.stack_problem(shards[k], args.stack, args.project_dir)
+        if why is not None:
+            del shards[k]
+            reasons[k] = why
     for k in range(n):
         shards.setdefault(k, None)
         reasons.setdefault(k, "no result file given")
@@ -470,7 +490,8 @@ def _not_built(args, adapter):
         base, head, _ = gitio.merge_base(args.repo, args.base, args.head)
         if args.check == "all":
             env = engine.run(args.repo, args.base, args.head, args.stack, args.test_paths, args.protected_paths,
-                             which="r2", project_dir=args.project_dir, adapter=adapter)
+                             which="r2", project_dir=args.project_dir, adapter=adapter,
+                             linked_issues=args.linked_issue)
             checks, entries = env["checks"], env["entries"]
             checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job "
                                                          "mutants)"}
@@ -732,6 +753,8 @@ def main(argv):
         return parser_install.main(argv[1:], project_dir_arg)
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.project_dir is None and args.check != "merge":  # merge alone tells an unset --project-dir from . (#62)
+        args.project_dir = "."
     adapter = None
     if args.adapter is None and args.check != "merge":
         try:  # #17: the repo's adapter file for this stack at the base, in place of a built-in of that name
@@ -763,6 +786,8 @@ def main(argv):
         parser.error("--fixtures applies to all and r0, and to red and mutants with --r0 (R0's fixture dir)")
     if args.r0 is not None and args.check not in R0_SIDE:
         parser.error("--r0 applies to red, all and mutants (R0's runtime half)")
+    if args.linked_issue and args.check not in ("r2", "all"):
+        parser.error("--linked-issue applies to r2 and all (the subcommands that run R2)")
     if args.check == "merge":
         return _merge(parser, args)
     if (adapter is not None and args.adapter is None and args.check != "r2" and args.stack in ADAPTERS
@@ -800,7 +825,8 @@ def main(argv):
                          test_cmd=args.test_cmd, mutants_cmd=args.mutants_cmd,
                          mutation_budget=args.mutation_budget, shard=args.shard, mutant_timeout=args.mutant_timeout,
                          project_dir=args.project_dir, adapter=adapter, max_mutants=args.max_mutants,
-                         fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack))
+                         fixtures_dir=args.fixtures, r0=_r0_inputs(args, adapter, args.stack),
+                         linked_issues=args.linked_issue)
     except (gitio.Die, r0.FixtureError) as e:
         print(f"mech-review: {e}", file=sys.stderr)
         return 2

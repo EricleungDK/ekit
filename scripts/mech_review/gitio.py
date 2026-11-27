@@ -104,3 +104,8 @@ def added_lines(repo, mb, head):
 
 def blob(repo, rev, path):
     return git(repo, "cat-file", "blob", f"{rev}:{path}")
+
+
+def messages(repo, mb, head):
+    """the full commit messages of mb..head, joined (#53: R2 reads its `spec: #N reverses <test>` lines)."""
+    return git(repo, "log", "--format=%B", f"{mb}..{head}")

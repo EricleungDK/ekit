@@ -51,7 +51,7 @@ mkdir adir;                                           bad "a directory" adir "ad
 bad "a missing path" nope.toml "adapter file nope.toml: cannot read"
 bad "stack not the file's name" good.toml "describes stack \`ktspec\`, not \`ts\`" r2 ts
 bad "stack case differs" good.toml "describes stack \`ktspec\`, not \`KtSpec\`" r2 KtSpec
-# #19: mutants, baseline and plan run R3 through a file's [mutation.tool]; merge reads no tree, so it stays a usage error
+# #19 and #17 let mutants, baseline and plan take a file; merge reads no tree, so --adapter stays a usage error there
 bad "merge with --adapter" "$TS" "--adapter applies to r2, red, all, mutants, baseline and plan (merge reads no tree)" merge ts
 for sc in mutants baseline plan; do
   o=$(python3 "$MR" "$sc" --repo "$R" --base "$BASE" --head "$HEAD" --stack ts --adapter "$TS" --test-paths 'tests/**' 2>err); rc=$?
