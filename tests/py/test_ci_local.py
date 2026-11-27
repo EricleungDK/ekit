@@ -411,6 +411,15 @@ class Scenarios(Tmp):
         self.assertEqual(line, "scenarios: failed: 1 of 3 failed: bad (exit 3); "
                                "not run here: isolated: unshare -n is not permitted")
 
+    def test_a_failure_beside_two_unrunnable_scenarios_names_each_of_them(self):
+        self.scenario("bad", "exit 3")
+        self.scenario("isolated", 'echo "ASSERT FAILED: unrunnable here: unshare -n is not permitted" >&2; exit 1')
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 3 failed: bad (exit 3); "
+                               "not run here: isolated: unshare -n is not permitted; traced: strace is missing")
+
     def test_unrunnable_only_counts_as_the_last_line_the_scenario_wrote(self):
         # the tool was there after all: what failed later is a FAIL, not a missing tool
         self.scenario("later", 'echo "unrunnable here: strace is missing" >&2; echo "ASSERT FAILED: trace: '
