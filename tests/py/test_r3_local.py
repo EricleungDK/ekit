@@ -844,6 +844,16 @@ class MachineLock(Tmp):
         self.assertIn("waiting for the r3-local run of pid ? (", r.stderr)
         self.assertIn("waited 0.001 min for the r3-local run of pid ?: R3 not run", r.stderr)
 
+    def test_a_pid_of_up_to_20_digits_is_named_and_a_longer_one_is_unknown(self):
+        """The holder's pid is read from a file anyone may write: at most 20 bytes are a pid (a 64-bit one has 20
+        digits), more is garbage, named `pid ?`, however much there is."""
+        for text, named in (("1" * 20, "1" * 20), ("1" * 21, "?"), ("7" * 19 + "\n", "7" * 19), ("8" * 40, "?")):
+            with self.subTest(text=text):
+                f = self.held(text)
+                r = self.main(Fake(), "--wait-limit", "0")
+                f.close()
+                self.assertIn(f"waiting for the r3-local run of pid {named} (", r.stderr)
+
     def test_a_killed_first_run_frees_the_machine_for_the_waiting_one(self):
         import subprocess
         import sys

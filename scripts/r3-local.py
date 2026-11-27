@@ -62,6 +62,7 @@ LOCK = ".ekit-r3-env.lock"  # held (flock) by the run using the env dir; holds t
 MACHINE_LOCK = "/tmp/ekit-r3-local.lock"
 MAX_WAIT_MIN = 1440  # --wait-limit's largest value: a day
 POLL_S = 0.1  # how often a waiting run tries the machine lock again
+PID_BYTES = 20  # the most a pid in the machine lock file takes: a 64-bit pid has 20 digits
 CLOCK = time.monotonic  # the waiting run's clock (tests stop it)
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
@@ -214,8 +215,11 @@ def _open_shared(path):
 
 
 def _holder(f):
+    """The pid the lock file holds, or "?": a file of more than PID_BYTES (anyone may write it) is not read."""
+    if os.fstat(f.fileno()).st_size > PID_BYTES:
+        return "?"
     f.seek(0)
-    pid = f.read(32).strip()
+    pid = f.read().strip()
     return pid if pid.isdigit() else "?"
 
 
