@@ -478,9 +478,16 @@ class TriageAdapterFix(Scaffold):
     def test_the_entry_r0_blocks_is_graded_as_held(self):
         r2 = next(e for e in json.loads(self.read("mech.json"))["entries"] if e["id"] == "R2-0734ae9c")
         self.assertEqual((r2["class"], r2.get("blocked")), ("agent-fixable", "R0"))
-        self.assertIn("`R2-0734ae9c` is marked `blocked: R0`: it gets no fix round now.",
-                      llm_graders(self.case)["next-action.md"])
-        self.assertIn("It plans no fix for it, now or for later", llm_graders(self.case)["next-action.md"])
+        held, route = llm_graders(self.case)["next-action-held.md"], llm_graders(self.case)["next-action-route.md"]
+        self.assertIn("`R2-0734ae9c`, marked `blocked: R0`, as held: it gets no fix round now.", held)
+        self.assertIn("It plans no fix for it, now or for later", held)
+        self.assertNotIn("R2-0734ae9c", route)  # the routing clause alone: a FAIL there is the routing's
+        self.assertIn("ci-doctor's repair mode", route)
+        weights = []
+        for name in ("next-action-route.md", "next-action-held.md"):  # one grader's weight, split
+            with open(os.path.join(self.case, "graders", name), encoding="utf-8") as f:
+                weights.append(float(re.search(r"(?m)^weight: (\S+)$", f.read()).group(1)))
+        self.assertEqual(sum(weights), 1.0)
 
 
 class TriageAdapterFixIsReal(Scaffold):

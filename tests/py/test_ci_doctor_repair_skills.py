@@ -180,7 +180,7 @@ class TriageLabel(unittest.TestCase):
 
     def test_a_held_entry_gets_no_fix_plan_until_the_repaired_adapter_reads_it(self):
         """#24: an entry R0 blocks is not worked on until the adapter-fix lands, so its plan is the hold alone: no
-        `Fix:` lines and no conditional fix for later (the triage eval's next-action criterion grades the same)"""
+        `Fix:` lines and no conditional fix for later (the triage eval's next-action-held criterion grades the same)"""
         s = flat(section(self.text, "Gate"))
         self.assertIn("its plan is the hold alone", s)
         self.assertIn("no `Fix:` lines", s)
