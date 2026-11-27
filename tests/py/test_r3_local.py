@@ -838,6 +838,30 @@ class MachineLock(Tmp):
         self.assertEqual((r.returncode, fake.calls, len(reads)), (3, [], 2))
         self.assertIn("r3-local: waited 0 min for the r3-local run of pid 4242: R3 not run", r.stderr)
 
+    def test_a_wait_ends_when_its_minutes_are_up_and_says_so_once(self):
+        """A clock 20 s a read: with a 1 min limit the run tries at 20 s, 40 s and 60 s, gives up at 60 s, and says it
+        waits once, not at each try."""
+        self.held("4242")
+        reads = []
+
+        def clock():
+            reads.append(1)
+            return 20.0 * (len(reads) - 1)
+
+        fake = Fake()
+        with mock.patch.object(r3, "CLOCK", clock):
+            r = self.bounded(fake, "--wait-limit", "1")
+        self.assertEqual((r.returncode, fake.calls, len(reads)), (3, [], 4))
+        self.assertEqual(r.stderr.count("waiting for the r3-local run of pid 4242"), 1, r.stderr)
+
+    def test_a_run_that_waited_holds_only_its_own_pid(self):
+        f = self.held("4242")
+        self.free_at_first_wait(f.close)
+        r = self.main(Fake(count=1), "--wait-limit", "1")
+        self.assertIn("waiting for the r3-local run of pid 4242 (", r.stderr)
+        with open(self.machine) as g:
+            self.assertEqual(g.read(), str(os.getpid()))
+
     def test_a_lock_file_holding_no_pid_names_the_holder_as_unknown(self):
         self.held("garbage\nmore")
         r = self.main(Fake(), "--wait-limit", "0.001")
@@ -1051,6 +1075,35 @@ class MachineLock(Tmp):
         with self.opens(answer):
             self.assert_refused("it keeps going and coming back")
 
+    def test_a_lock_file_that_keeps_going_is_tried_three_times_never_opened_if_another_made_it(self):
+        """Three tries, each an open and an exclusive create; a create that finds a file another run made goes round
+        again, never opens that file."""
+        tries = []
+
+        def answer(flags):
+            tries.append(flags & (os.O_CREAT | os.O_EXCL))
+            if flags & os.O_CREAT and flags & os.O_EXCL:
+                return FileExistsError(17, "File exists", self.machine)
+            if flags & os.O_CREAT:
+                return None  # a create that opens what is there
+            return FileNotFoundError(2, "No such file or directory", self.machine)
+
+        with open(self.machine, "w"):
+            pass
+        with self.opens(answer):
+            self.assert_refused("it keeps going and coming back")
+        self.assertEqual(tries, [0, os.O_CREAT | os.O_EXCL] * 3)
+
+    def test_any_other_open_error_is_exit_2_naming_it(self):
+        with self.opens(lambda flags: OSError(errno.EIO, "Input/output error", self.machine)):
+            self.assert_refused("cannot open it (Input/output error)")
+
+    def test_a_refused_lock_file_is_closed(self):
+        os.mkfifo(self.machine)
+        before = len(os.listdir("/dev/fd"))
+        self.assert_refused("not a regular file")
+        self.assertEqual(len(os.listdir("/dev/fd")), before)
+
     def test_a_lock_file_this_user_may_not_make_is_exit_2_naming_why(self):
         def answer(flags):
             if flags & os.O_CREAT:
@@ -1146,6 +1199,29 @@ class MachineLock(Tmp):
         t = flat(r.stdout)
         self.assertIn("minutes to wait for another run on this machine (default 90)", t)
         self.assertIn("3 waited past --wait-limit for another run on this machine (R3 not run)", t)
+
+
+class MachinePoll(Tmp):
+    """#120: the waiting run's own pace, unpatched: it tries the lock again every 0.1 s, and waits 90 min by default."""
+
+    def test_a_waiting_run_tries_again_every_tenth_of_a_second(self):
+        f = open(self.machine, "w")
+        self.addCleanup(f.close)
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        naps = []
+
+        def sleep(s):
+            naps.append(s)
+            f.close()
+
+        with mock.patch.object(r3, "SLEEP", sleep):
+            r = self.main(Fake(count=1), "--wait-limit", "1")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(naps, [0.1])
+
+    def test_the_wait_limit_is_90_minutes_by_default(self):
+        self.assertEqual(r3.parse(["--base", "main", "--stack", "python"]).wait_limit, 90)
 
 
 def flat(text):

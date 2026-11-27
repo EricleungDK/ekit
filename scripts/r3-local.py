@@ -64,6 +64,7 @@ MAX_WAIT_MIN = 1440  # --wait-limit's largest value: a day
 POLL_S = 0.1  # how often a waiting run tries the machine lock again
 PID_BYTES = 20  # the most a pid in the machine lock file takes: a 64-bit pid has 20 digits
 CLOCK = time.monotonic  # the waiting run's clock (tests stop it)
+SLEEP = time.sleep  # and its nap between tries
 # what this python's tarfile offers, read once (tests patch these, never tarfile: 3.14 reads its own globals)
 HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
 EXTRACT_TAKES_FILTER = "filter" in inspect.signature(tarfile.TarFile.extract).parameters
@@ -244,7 +245,7 @@ def hold_machine(path, limit_min):
                 f.close()
                 raise Waited(f"waited {limit_min:g} min for the r3-local run of pid {pid}: R3 not run; run it again "
                              "when that run ends, or pass a larger --wait-limit")
-            time.sleep(min(POLL_S, left))
+            SLEEP(min(POLL_S, left))
         except OSError as e:  # no lock to be had here (ENOLCK, ...): waiting would not change that
             f.close()
             raise Stop(f"machine lock {path}: cannot lock it ({e.strerror})")
