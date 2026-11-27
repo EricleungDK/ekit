@@ -11,7 +11,7 @@ import unittest
 
 import _kit
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
-from test_eval_scaffold import case_dir, eval_git
+from test_eval_scaffold import case_dir, eval_git, names_path, scaffold_without_kit
 
 CASE = case_dir("stack-plan-js-to-ts")
 GIT = eval_git()
@@ -158,6 +158,39 @@ class EndState(Scaffold):
             f.write("")
         subprocess.run([*GIT, "-C", self.repo, "commit", "-qm", "empty", "--allow-empty"], check=True)
         self.assertIn("ts-entry: yes", self.verdict())  # HEAD still has the plan: the working tree is not read
+
+
+class SelfContained(Scaffold):
+    """the verdict reads only .git/ekit-eval/ (the engine's copy there): the eval sandbox denies the kit's evals/ with
+    the plugin and the whole kit without it, and a verdict that reads the kit then names a harness problem"""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(tmp.name), "repo")
+        os.mkdir(self.repo)
+        self.kit = scaffold_without_kit("stack-plan-js-to-ts", self.repo)
+
+    def test_the_good_end_state_passes_with_the_kit_gone(self):
+        self.assertFalse(os.path.exists(self.kit))
+        self.commit(JS_RETIRING + TS)
+        lines = self.verdict()
+        self.assertRegex(lines[2], r"^drift: clean \(exit 0, D pass")
+        self.assertEqual(lines[-2:], ["by-git: yes", "migrated: yes"])
+        self.assertEqual(names_path(os.path.join(self.repo, ".git", "ekit-eval"), self.kit), [])
+
+    def test_a_crash_keeps_the_lines_before_it(self):
+        fake = os.path.join(os.path.dirname(self.repo), "fake")
+        os.makedirs(os.path.join(fake, "scripts"))
+        with open(os.path.join(fake, "scripts", "mech-review.py"), "w") as f:
+            f.write('print(\'{"checks": [], "entries": []}\')\n')  # checks a list: .get() raises
+        with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
+            f.write(fake)
+        self.commit(JS_RETIRING + TS)
+        lines = self.verdict()
+        self.assertEqual(lines[:2], ["ts-entry: yes", "js-retiring: yes"])
+        self.assertRegex(lines[2], r"^verdict: crashed \(AttributeError: ")
+        self.assertEqual(lines[3:], ["migrated: no"])
 
 
 @unittest.skipIf(os.name == "nt", "a bash script named git on PATH: POSIX only (the evals run in WSL on Windows)")

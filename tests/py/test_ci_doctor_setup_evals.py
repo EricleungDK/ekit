@@ -16,7 +16,7 @@ import unittest
 
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 import _kit
-from test_eval_scaffold import case_dir, eval_git  # the tests' own checkout's case, never R3's copy (#24)
+from test_eval_scaffold import case_dir, eval_git, names_path, scaffold_without_kit  # the checkout's case (#24)
 
 
 ADAPTERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures", "adapters")
@@ -30,6 +30,17 @@ BASE_JOB = ("jobs:\n  test:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses
             "      - run: mvn -B -ntp test\n")
 
 GIT = eval_git()
+
+
+def base_ci(runs_on="ubuntu-latest", extra="", order=None):
+    """a base CI workflow for the generated adapter: checkout, setup-java, then its [commands] (install, build, lint,
+    test) as run steps, in `order` when given, `extra` lines appended to the steps"""
+    with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
+        cmds = dict(re.findall(r'(?m)^(install|build|lint|test) = "(.*)"$', f.read()))
+    runs = "".join(f"      - run: {cmds[k]}\n" for k in (("install", "build", "lint", "test") if order is None else order))
+    return (f"name: base\non:\n  pull_request:\njobs:\n  build:\n    runs-on: {runs_on}\n    steps:\n"
+            "      - uses: actions/checkout@v4\n      - name: toolchain\n        uses: actions/setup-java@v4\n"
+            "        with:\n          distribution: temurin\n          java-version: \"17\"\n" + runs + extra)
 
 
 def plan(status, folder=".", name="maven"):
@@ -128,7 +139,24 @@ class SetupJava(Scaffold):
             "entry: calc adapter .ekit/adapters/maven.toml status current", "target-os: linux",
             "r0: pass (static half: 17 of 17 cases proved)", "census: 3/3 of the repo's tests read",
             "copied: no", "drift: clean (exit 0, D pass, 0 entries)", "caller: yes", "ci-kept: yes", "base-jobs: none",
+            "base-ci: n/a (the team's CI stays)",
             "setup: yes"])
+
+    def test_a_crash_keeps_the_lines_before_it(self):
+        self.setup_commit(files={".ekit/stack-plan.toml": "stack = 1\n"})  # an int: the entry loop raises
+        text = self.verdict()
+        self.assertRegex(text, r"^branch: ekit-setup\nby-git: yes\nmain: untouched\nnew-commits: 1\n"
+                               r"verdict: crashed \(TypeError: .*\)\nsetup: no\n\Z")
+        self.assertEqual(self.passing(), ["committed-by-git.md"])
+
+    def test_the_scaffold_keeps_the_reference_adapter_as_hashes_only(self):
+        ekit = os.path.join(self.repo, ".git", "ekit-eval")
+        with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
+            line = next(x for x in f.read().splitlines() if x.startswith("summary = "))
+        self.assertEqual(names_path(ekit, line), [])  # no copy of its text to read
+        self.assertFalse(os.path.exists(os.path.join(ekit, "engine", "tests")))
+        self.setup_commit(copy=True)  # and a copy is still caught
+        self.assertRegex(self.verdict(), r"(?m)^copied: yes \(\.ekit/adapters/java\.toml is the kit's ")
 
     def test_a_setup_branch_written_by_hand_is_no_commit_by_git(self):
         self.setup_commit()
@@ -278,17 +306,95 @@ class SetupJavaNoCi(Scaffold):
                       "[commands] test)", self.verdict())
 
 
+class SelfContainedSetup(Scaffold):
+    """the verdict reads only .git/ekit-eval/ (the engine's copy, the reference's hashes): the eval sandbox denies the
+    kit's evals/ with the plugin and the whole kit without it"""
+    CASE = "ci-doctor-setup-java-no-ci"
+
+    def setUp(self):
+        self.case = case_dir(self.CASE)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(tmp.name), "repo")
+        os.mkdir(self.repo)
+        self.kit = scaffold_without_kit(self.CASE, self.repo)
+
+    def test_the_good_setup_passes_every_grader_with_the_kit_gone(self):
+        self.assertFalse(os.path.exists(self.kit))
+        self.setup_commit(files={".github/workflows/java-base-ci.yml": base_ci()})
+        self.assertEqual(self.passing(), ["base-ci.md", "base-jobs.md", "census.md", "committed-by-git.md",
+                                          "r0-pass.md", "setup.md"])
+        self.assertIn("copied: no\n", self.verdict())
+        self.assertEqual(names_path(os.path.join(self.repo, ".git", "ekit-eval"), self.kit), [])
+
+
+class SetupJavaNoCiBaseCi(Scaffold):
+    """base-ci: the one job the setup adds runs the adapter's [commands] in order on the target OS's runner, with no
+    step but those and checkout and toolchain setup"""
+    CASE = "ci-doctor-setup-java-no-ci"
+
+    def test_the_adapters_commands_in_order_on_ubuntu_latest_pass(self):
+        self.setup_commit(files={".github/workflows/java-base-ci.yml": base_ci()})
+        self.assertRegex(self.verdict(), r"(?m)^base-ci: yes \(\.github/workflows/java-base-ci\.yml job build\)$")
+        self.assertIn("base-ci.md", self.passing())
+
+    def test_a_block_scalar_run_reads_one_command_per_line(self):
+        with open(os.path.join(ADAPTERS, "java.toml"), encoding="utf-8") as f:
+            cmds = re.findall(r'(?m)^(?:install|build|lint|test) = "(.*)"$', f.read())
+        text = base_ci(order=()) + "      - name: all\n        run: |\n" + "".join(f"          {c}\n" for c in cmds)
+        self.setup_commit(files={".github/workflows/java-base-ci.yml": text})
+        self.assertIn("base-ci.md", self.passing())
+
+    def test_another_runner_order_step_or_job_fails(self):
+        cases = {
+            "runs-on": (base_ci(runs_on="ubuntu-24.04"), "runs-on 'ubuntu-24.04', want 'ubuntu-latest'"),
+            "order": (base_ci(order=("install", "build", "test", "lint")), "runs ["),
+            "a step": (base_ci(extra="      - uses: actions/upload-artifact@v4\n"), "a step uses actions/upload-artifact"),
+            "a command": (base_ci(extra="      - run: mvn -B verify\n"), "want the adapter's commands"),
+            "two jobs": (base_ci() + "  more:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n",
+                         "2 jobs added beside the callers, want one"),
+        }
+        for name, (text, why) in cases.items():
+            with self.subTest(case=name):
+                self.git("checkout", "-q", "main")
+                self.setup_commit(files={".github/workflows/java-base-ci.yml": text}, branch=f"setup-{len(name)}"
+                                  f"-{name.replace(' ', '-')}")
+                self.assertRegex(self.verdict(), r"(?m)^base-ci: no \(")
+                self.assertIn(why, self.verdict())
+                self.assertNotIn("base-ci.md", self.passing())
+
+
 class SetupPlanned(Scaffold):
     CASE = "ci-doctor-setup-planned"
 
+    def test_application_code_in_a_new_commit_or_the_working_tree_fails(self):
+        self.setup_commit(status="planned", files={".github/workflows/build.yml": BASE_JOB})
+        self.assertIn("app-code: none\n", self.verdict())
+        self.assertIn("no-app-code.md", self.passing())
+        self.write({"pom.xml": "<project/>\n"})
+        self.git("add", "-A")
+        self.git("commit", "-qm", "pom")
+        self.git("reset", "-q", "--hard", "HEAD~1")  # gone from the branch, still in the reflog
+        self.assertIn("app-code: yes (pom.xml at the root)\n", self.verdict())
+        self.write({"src/main/java/A.java": "class A {}\n"})
+        self.git("checkout", "-q", "-b", "other")  # a ref move: the working tree as it is now
+        self.assertIn("app-code: yes (pom.xml, src at the root)\n", self.verdict())
+        self.assertNotIn("no-app-code.md", self.passing())
+
+    def test_the_r0_fixtures_project_is_no_application_code(self):
+        self.setup_commit(status="planned", files={".github/workflows/build.yml": BASE_JOB,
+                                                   ".ekit/adapters/maven.r0/runtime/project/pom.xml": "<project/>\n"})
+        self.assertIn("app-code: none\n", self.verdict())
+
     def test_a_planned_entry_with_a_proven_adapter_and_base_jobs_passes(self):
         self.setup_commit(status="planned", files={".github/workflows/build.yml": BASE_JOB})
-        self.assertEqual(self.passing(), ["committed-by-git.md", "plan-planned.md", "r0-pass.md", "setup.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "no-app-code.md", "plan-planned.md", "r0-pass.md",
+                                          "setup.md"])
         self.assertIn("census: no repo tests yet\ncopied: no\ndrift: clean (exit 0, D pass, 0 entries)", self.verdict())
 
     def test_a_current_entry_with_no_manifest_fails(self):
         self.setup_commit(status="current", files={".github/workflows/build.yml": BASE_JOB})
-        self.assertEqual(self.passing(), ["committed-by-git.md", "r0-pass.md"])
+        self.assertEqual(self.passing(), ["committed-by-git.md", "no-app-code.md", "r0-pass.md"])
 
     def test_the_start_state_passes_no_grader(self):
         self.assertEqual(self.passing(), [])

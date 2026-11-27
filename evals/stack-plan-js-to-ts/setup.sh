@@ -39,10 +39,13 @@ TOML
 # Grader support: whenever HEAD or a ref moves (commit, reset, checkout, merge, rebase), the end state at HEAD (the
 # committed plan read with tomllib, and the kit's own drift check on HEAD) goes to .git/ekit-eval/verdict.txt, which the
 # regex graders read; `migrated: yes` needs all three. The trigger is evals/git-shim.sh, which evals/run.sh puts first
-# on PATH as `git` (the eval sandbox turns git hooks off). Git only; nothing printed. The kit's path is data in a file,
-# never shell text.
+# on PATH as `git` (the eval sandbox turns git hooks off). Git and the kit's engine, copied into .git/ekit-eval/engine
+# (evals/verdict-kit.sh: the sandbox may deny the kit itself); nothing printed. `kit` names that copy, relative to
+# .git/ekit-eval/ (an absolute path is read as one). A crash keeps this run's lines and adds its own.
 mkdir -p .git/ekit-eval
-printf '%s' "$(cd "$(dirname "$0")/../.." && pwd -P)" > .git/ekit-eval/kit
+source "$(dirname "$0")/../verdict-kit.sh"
+copy_engine .git/ekit-eval/engine
+printf 'engine' > .git/ekit-eval/kit
 cat > .git/ekit-eval/verdict.py <<'PY'
 import json, os, subprocess, sys
 here = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
@@ -53,9 +56,19 @@ env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TRE
                                                         "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
 def git(*a):
     return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env)
-with open(os.path.join(here, "ekit-eval", "kit"), encoding="utf-8") as f:
-    kit = f.read()
+VERDICT = os.path.join(here, "ekit-eval", "verdict.txt")
 lines = []
+try:  # no verdict of an earlier ref move outlives this one
+    os.remove(VERDICT)
+except OSError:
+    pass
+def crashed(kind, value, tb):
+    """any exception: this run's lines so far, then the crash; `migrated: no`"""
+    with open(VERDICT, "w") as f:
+        f.write("\n".join(lines + [f"verdict: crashed ({kind.__name__}: {str(value)[:300]})", "migrated: no"]) + "\n")
+sys.excepthook = crashed
+with open(os.path.join(here, "ekit-eval", "kit"), encoding="utf-8") as f:
+    kit = os.path.join(here, "ekit-eval", f.read())  # the engine's copy (relative); an absolute path stays itself
 try:
     import tomllib
     stacks = tomllib.loads(git("show", "HEAD:.ekit/stack-plan.toml").stdout).get("stack", [])
@@ -103,7 +116,7 @@ lines.append("by-git: " + ("no (HEAD is on no branch)" if not on else "no (no co
                            if tip == start else "yes" if newest == tip else
                            f"no (the tip of {on} is not the newest entry of its reflog: a ref written by hand)"))
 lines.append(f"migrated: {'yes' if ts and retiring and clean else 'no'}")  # the one end state: all three at once
-with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
+with open(VERDICT, "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
 git add -A; git commit -qm "greet: js package, stack plan"

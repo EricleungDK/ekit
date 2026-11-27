@@ -3,12 +3,16 @@
 # so the kit tracks no python file outside its test paths) grades the setup branch and writes
 # .git/ekit-eval/verdict.txt, which the regex graders read. The trigger is evals/git-shim.sh, which evals/run.sh puts
 # first on PATH as `git` (the eval sandbox turns git hooks off). $1: the case's expect.json (the script's header). The
-# kit's path is data in a file, never shell text.
+# verdict reads only .git/ekit-eval/: the kit's engine is copied there (evals/verdict-kit.sh), and the kit's reference
+# adapter only as hashes (reference.json, for `copied:`), never its text. `kit` names the copy, relative to
+# .git/ekit-eval/ (an absolute path is read as one).
 arm_verdict() {
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   mkdir -p .git/ekit-eval
-  printf '%s' "$(cd "$here/../.." && pwd -P)" > .git/ekit-eval/kit
+  source "$here/../verdict-kit.sh"
+  copy_engine .git/ekit-eval/engine
+  printf 'engine' > .git/ekit-eval/kit
   printf '%s\n' "$1" > .git/ekit-eval/expect.json
   git rev-parse HEAD > .git/ekit-eval/start
   cat > .git/ekit-eval/verdict.py <<'PY'
@@ -20,7 +24,10 @@ arm_verdict() {
 # checks at once. Git and the kit's own engine only (r0 static half, r2 for the census, drift; doctor's workflow
 # reader); nothing printed. A harness problem (no kit, no tomllib) says `harness:`. An adapter or fixtures copied from
 # the kit's reference (tests/fixtures/adapters/java.toml, java.r0) is no setup: `copied: yes`.
-# A known limit: the agent under test can open this grading (the kit's evals/, the scaffold's .git/ekit-eval/).
+# A known limit: the agent under test can read and change this grading. The sandbox keeps the kit's evals/ and .git
+# from it (with the plugin it reads the rest of the kit; without, none of it), but the scaffold's .git/ekit-eval/ is
+# its own: this script, its inputs, the engine's copy and the verdict. A crash keeps this run's lines and adds its own.
+import hashlib
 import json
 import os
 import re
@@ -46,7 +53,45 @@ def read(name):
         return f.read()
 
 
-expect, kit, start = json.loads(read("expect.json")), read("kit"), read("start").strip()
+def same(text):
+    """text with comments (#, //, /* */) and whitespace dropped: a copy reads the same, whatever its comments"""
+    return re.sub(r"\s+", "", re.sub(r"/\*[\s\S]*?\*/|//[^\n]*|#[^\n]*", "", text))
+
+
+def digest(text):
+    return hashlib.sha256(same(text).encode("utf-8")).hexdigest()
+
+
+if sys.argv[1:2] == ["--reference"]:  # the scaffold: the reference adapter's hashes, its text never kept
+    ref_dir = sys.argv[2]
+    fixtures = {}
+    for root, _, names in os.walk(os.path.join(ref_dir, "java.r0")):
+        for fn in names:
+            rel = os.path.relpath(os.path.join(root, fn), os.path.join(ref_dir, "java.r0")).replace(os.sep, "/")
+            with open(os.path.join(root, fn), encoding="utf-8") as f:
+                fixtures[rel] = digest(f.read())
+    with open(os.path.join(ref_dir, "java.toml"), encoding="utf-8") as f:
+        reference = {"adapter": digest(f.read()), "fixtures": fixtures}
+    with open(os.path.join(here, "ekit-eval", "reference.json"), "w", encoding="utf-8") as f:
+        json.dump(reference, f, sort_keys=True)
+    sys.exit(0)
+VERDICT = os.path.join(here, "ekit-eval", "verdict.txt")
+lines, ok = [], []
+try:  # no verdict of an earlier ref move outlives this one
+    os.remove(VERDICT)
+except OSError:
+    pass
+
+
+def crashed(kind, value, tb):
+    """any exception: this run's lines so far, then the crash; `setup: no`"""
+    with open(VERDICT, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines + [f"verdict: crashed ({kind.__name__}: {str(value)[:300]})", "setup: no"]) + "\n")
+
+
+sys.excepthook = crashed
+expect, start = json.loads(read("expect.json")), read("start").strip()
+kit = os.path.join(here, "ekit-eval", read("kit"))  # the engine's copy (relative); an absolute path stays itself
 engine = os.path.join(kit, "scripts", "mech-review.py")
 sys.path.insert(0, os.path.join(kit, "scripts"))
 try:
@@ -54,7 +99,6 @@ try:
 except Exception as e:
     doctor = stack_plan = None
     kit_error = f"{type(e).__name__}: {e}"
-lines, ok = [], []
 
 # the setup branch, among the branches other than main (the PR's base) that hold a new commit: the one the main
 # checkout's HEAD is on, else the newest whose tree holds a stack plan, else the newest
@@ -81,6 +125,15 @@ commits = set(git("rev-list", "--all", "--reflog", "--not", start).stdout.split(
 for w in git("reflog", "show", "--format=%H", "refs/stash").stdout.split():
     commits -= {w, *git("rev-list", "--parents", "-n", "1", w).stdout.split()[2:]}
 lines.append(f"new-commits: {len(commits)}")
+# a planned stack (no manifest yet): no application code (pom.xml or src/ at the root) in any new commit, nor in the main
+# checkout's working tree as it is now (a file written and removed again before this run, or in a linked worktree's
+# tree, is not seen); its own grader, outside `setup:`
+if expect["status"] == "planned" and not ref:
+    lines.append("app-code: n/a (no setup branch)")
+elif expect["status"] == "planned":
+    code = sorted({n for c in commits for n in git("ls-tree", "--name-only", c, "pom.xml", "src").stdout.split()}
+                  | {n for n in ("pom.xml", "src") if os.path.lexists(os.path.join(repo, n))})
+    lines.append("app-code: " + ("none" if not code else f"yes ({', '.join(code)} at the root)"))
 
 
 def folder(v):
@@ -124,31 +177,22 @@ lines.append(f"target-os: {target}")
 ok.append(target == expect["target_os"])
 
 
-def same(text):
-    """text with comments (#, //, /* */) and whitespace dropped: a copy reads the same, whatever its comments"""
-    return re.sub(r"\s+", "", re.sub(r"/\*[\s\S]*?\*/|//[^\n]*|#[^\n]*", "", text))
-
-
 def copied(path):
     """`copied: no`, or `copied: yes (...)` when the adapter file is the kit's reference, or more than half of the
     reference's fixture files are there, the same, under the same name in the adapter's fixture dir"""
     # A known limit (the owner's call, #23): a text check, so a renamed copy (the stack's name and the fixtures' class
     # names changed) reads `copied: no`. The orchestrator reads the run's trace before it uses a generated adapter.
-    ref_dir = os.path.join(kit, "tests", "fixtures", "adapters")
-    if not os.path.isfile(os.path.join(ref_dir, "java.toml")):
-        return "copied: not checked: harness: the kit's tests/fixtures/adapters/java.toml is not there"
-    with open(os.path.join(ref_dir, "java.toml"), encoding="utf-8") as f:
-        why = [f"{path} is the kit's tests/fixtures/adapters/java.toml"] \
-            if same(git("show", f"{ref}:{path}").stdout) == same(f.read()) else []
+    try:
+        reference = json.loads(read("reference.json"))
+    except (OSError, ValueError):
+        return "copied: not checked: harness: no reference.json in .git/ekit-eval/ (the scaffold's hashes)"
+    why = [f"{path} is the kit's tests/fixtures/adapters/java.toml"] \
+        if digest(git("show", f"{ref}:{path}").stdout) == reference["adapter"] else []
     mine = path[:-len(".toml")] + ".r0/"
-    ref_files, equal = [], 0
-    for root, _, names in os.walk(os.path.join(ref_dir, "java.r0")):
-        for fn in names:
-            rel = os.path.relpath(os.path.join(root, fn), os.path.join(ref_dir, "java.r0")).replace(os.sep, "/")
-            ref_files.append(rel)
-            with open(os.path.join(root, fn), encoding="utf-8") as f:
-                theirs = git("show", f"{ref}:{mine}{rel}")
-                equal += theirs.returncode == 0 and same(theirs.stdout) == same(f.read())
+    ref_files, equal = sorted(reference["fixtures"]), 0
+    for rel in ref_files:
+        theirs = git("show", f"{ref}:{mine}{rel}")
+        equal += theirs.returncode == 0 and digest(theirs.stdout) == reference["fixtures"][rel]
     if equal * 2 > len(ref_files):
         why.append(f"{equal} of {len(ref_files)} fixture files are java.r0's")
     return f"copied: yes ({'; '.join(why)})" if why else "copied: no"
@@ -248,9 +292,58 @@ elif test_cmd and any(test_cmd in t for t in added.values()):
 else:
     lines.append(f"base-jobs: no test command ({where}: none runs the adapter's [commands] test)")
 ok.append(lines[-1].startswith("base-jobs: yes" if expect["ci"] == "write" else "base-jobs: none"))
+RUNNERS = {"linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest"}
+SETUP_ACTION = re.compile(r"(?:actions/checkout|[\w.-]+/(?:[\w.-]+/)*setup-[\w.-]+)@")
+
+
+def steps_of(body):
+    """(runs-on, [(uses, [run lines])]) of a job, read as doctor.sections reads block-style YAML; a block scalar run
+    gives one line per command"""
+    top = doctor.sections(body.splitlines())
+    runs_on = top.get("runs-on", ("", []))[0].strip().strip("'\"")
+    block = [x for x in top.get("steps", ("", []))[1] if x.strip() and not x.lstrip().startswith("#")]
+    ind = min((len(x) - len(x.lstrip()) for x in block if x.strip().startswith("- ")), default=0)
+    items = []
+    for line in block:
+        if len(line) - len(line.lstrip()) == ind and line.strip().startswith("- "):
+            items.append([" " * (ind + 2) + line.strip()[2:]])
+        elif items:
+            items[-1].append(line)
+    out = []
+    for item in items:
+        keys = doctor.sections(item)
+        uses = keys.get("uses", ("", []))[0].strip().strip("'\"")
+        value, under = keys.get("run", ("", []))
+        run = [x.strip() for x in under if x.strip()] if value.strip() in ("", "|", "|-", "|+", ">", ">-", ">+") \
+            else [value.strip().strip("'\"")]
+        out.append((uses, run))
+    return runs_on, out
+
+
+# the base CI job (ci write): the one job the setup added beside the callers runs the adapter's [commands] in order
+# (install, build, lint, test, an empty one left out) on the target OS's runner, with no step but those, checking out
+# and setting up the toolchain (setup.md step 6); its own grader, outside `setup:`
+want = [c for c in ((adapter.get("commands") or {}).get(k) for k in ("install", "build", "lint", "test")) if c] \
+    if isinstance(adapter.get("commands"), dict) else []
+if expect["ci"] != "write":
+    lines.append("base-ci: n/a (the team's CI stays)")
+elif not doctor:
+    lines.append("base-ci: not run: harness: the kit's engine does not import")
+elif len(added) != 1:
+    lines.append(f"base-ci: no ({len(added)} jobs added beside the callers, want one: {where or 'none'})")
+else:
+    (wf, job), body = next(iter(added.items()))
+    runs_on, steps = steps_of(body)
+    why = [] if runs_on == RUNNERS.get(target) else [f"runs-on {runs_on!r}, want {RUNNERS.get(target)!r}"]
+    why += [f"a step uses {u}" for u, _ in steps if u and not SETUP_ACTION.match(u)]
+    ran = [c for _, run in steps for c in run]
+    if ran != want:
+        why.append(f"runs {ran}, want the adapter's commands {want}")
+    lines.append(f"base-ci: yes ({wf} job {job})" if not why else f"base-ci: no ({wf} job {job}: {'; '.join(why)})")
 lines.append(f"setup: {'yes' if all(ok) else 'no'}")
-with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w", encoding="utf-8") as f:
+with open(VERDICT, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
 PY
+  python3 -I .git/ekit-eval/verdict.py --reference "$here/../../tests/fixtures/adapters"
   python3 -I .git/ekit-eval/verdict.py  # the start state's verdict
 }

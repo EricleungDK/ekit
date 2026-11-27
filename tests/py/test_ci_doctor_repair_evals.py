@@ -19,7 +19,7 @@ import unittest
 
 from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" starts WSL's launcher
 from test_ci_doctor_setup_evals import graders
-from test_eval_scaffold import case_dir, eval_git
+from test_eval_scaffold import case_dir, eval_git, names_path, scaffold_without_kit
 from scripts.mech_review import cli
 
 ADAPTER = ".ekit/adapters/maven.toml"
@@ -249,8 +249,11 @@ class RepairJavaRunner(Scaffold):
         self.write({".ekit/stack-plan.toml": "stack = 1\n"})
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "plan")
-        self.assertEqual(self.passing(), [])
-        self.assertRegex(self.verdict(), r"^verdict: crashed \(TypeError: .*\)\nrepair: no\n$")
+        # the lines before the crash stand (the branch, git's commit); none after it, and no line of an earlier run
+        self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md"])
+        self.assertRegex(self.verdict(), r"^branch: claude/adapter-fix\nby-git: yes\n[\s\S]*\nverdict: crashed "
+                                         r"\(TypeError: .*\)\nrepair: no\n\Z")
+        self.assertNotIn("r0: pass", self.verdict())
 
     def test_a_missing_kit_is_named_a_harness_problem(self):
         with open(os.path.join(self.repo, ".git", "ekit-eval", "kit"), "w") as f:
@@ -262,6 +265,29 @@ class RepairJavaRunner(Scaffold):
 
 
 WEB = '\n[[stack]]\nname = "web"\nfolder = "web"\nadapter = "ts"\nstatus = "{}"\n'
+
+
+class SelfContainedRepair(Scaffold):
+    """the verdict reads only .git/ekit-eval/ (the engine's copy, the recorded runner output): the eval sandbox denies
+    the kit's evals/ with the plugin, where the recorded output lives (four live runs crashed on it: FileNotFoundError),
+    and the whole kit without it (`proof: not run: harness`)"""
+
+    def setUp(self):
+        self.case = case_dir(self.CASE)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = os.path.join(os.path.realpath(tmp.name), "repo")
+        os.mkdir(self.repo)
+        self.kit = scaffold_without_kit(self.CASE, self.repo)
+
+    CASE, ALL, fixed = RepairJavaRunner.CASE, RepairJavaRunner.ALL, RepairJavaRunner.fixed
+
+    def test_the_repaired_adapter_passes_every_grader_with_the_kit_gone(self):
+        self.assertFalse(os.path.exists(self.kit))
+        self.commit(self.fixed())
+        self.assertEqual(self.passing(), self.ALL)
+        self.assertIn("replay: 5/5 runs read right; census 3/3", self.verdict())
+        self.assertEqual(names_path(os.path.join(self.repo, ".git", "ekit-eval"), self.kit), [])
 
 
 class RepairDrift(Scaffold):
@@ -358,8 +384,8 @@ class RepairDrift(Scaffold):
         self.write({PLAN: "ignore = 5\n" + self.read(PLAN)})
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "plan")
-        self.assertEqual(self.passing(), [])
-        self.assertIn("verdict: crashed (TypeError: ", self.verdict())
+        self.assertEqual(self.passing(), ["committed-by-git.md", "own-branch.md"])  # the lines before the crash
+        self.assertRegex(self.verdict(), r"\nverdict: crashed \(TypeError: .*\)\nrepair: no\n\Z")
 
     def test_a_plan_that_neither_covers_nor_ignores_the_folder_fails(self):
         self.commit(self.plan(WEB.format("planned").replace('folder = "web"', 'folder = "site"')))

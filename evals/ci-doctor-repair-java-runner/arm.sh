@@ -3,12 +3,17 @@
 # so the kit tracks no python file outside its test paths) grades the repair branch and writes
 # .git/ekit-eval/verdict.txt, which the regex graders read. The trigger is evals/git-shim.sh, which evals/run.sh puts
 # first on PATH as `git` (the eval sandbox turns git hooks off). $1: the case's expect.json (the script's header). The
-# kit's path is data in a file, never shell text. The coding branch is the one checked out when this runs.
+# verdict reads only .git/ekit-eval/: the kit's engine is copied there (evals/verdict-kit.sh), and the newer runner's
+# recorded output (runner/ beside this file) too. `kit` names the engine's copy, relative to .git/ekit-eval/ (an
+# absolute path is read as one). The coding branch is the one checked out when this runs.
 arm_repair() {
   local here
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   mkdir -p .git/ekit-eval
-  printf '%s' "$(cd "$here/../.." && pwd -P)" > .git/ekit-eval/kit
+  source "$here/../verdict-kit.sh"
+  copy_engine .git/ekit-eval/engine
+  cp -R "$here/runner" .git/ekit-eval/runner
+  printf 'engine' > .git/ekit-eval/kit
   printf '%s\n' "$1" > .git/ekit-eval/expect.json
   printf '%s %s %s\n' "$(git rev-parse main)" "$(git symbolic-ref --short HEAD)" "$(git rev-parse HEAD)" \
     > .git/ekit-eval/start
@@ -42,9 +47,11 @@ arm_repair() {
 # - two entries for the cover folder pass;
 # - an unreferenced adapter file under .ekit/adapters/ passes;
 # - a renamed copy of the reference adapter is not detected.
-# - the agent under test can open this grading: the kit's evals/ (case headers, graders, this script) and the
-#   scaffold's .git/ekit-eval/.
-# Any exception writes a verdict no grader passes; an earlier verdict never outlives a ref move.
+# - the agent under test can read and change this grading. The sandbox keeps the kit's evals/ and .git from it (with
+#   the plugin it reads the rest of the kit; without, none of it), but the scaffold's .git/ekit-eval/ is its own: this
+#   script, its inputs, the engine's copy, the runner's recorded output and the verdict.
+# An exception keeps this run's lines, then `verdict: crashed (...)` and `repair: no`; an earlier verdict never
+# outlives a ref move.
 # `repair: yes` needs every line it checks at once. Git and the kit's own engine only; nothing printed. A harness
 # problem (no kit, no tomllib) says `harness:`.
 import json
@@ -80,13 +87,14 @@ except OSError:
 
 
 def crashed(kind, value, tb):
-    """any exception: a verdict no grader passes (the git shim hides the traceback)"""
+    """any exception: this run's lines so far, then the crash and `repair: no` (the git shim hides the traceback)"""
     with open(VERDICT, "w", encoding="utf-8") as f:
-        f.write(f"verdict: crashed ({kind.__name__}: {str(value)[:300]})\nrepair: no\n")
+        f.write("\n".join(lines + [f"verdict: crashed ({kind.__name__}: {str(value)[:300]})", "repair: no"]) + "\n")
 
 
 sys.excepthook = crashed
-expect, kit = json.loads(read("expect.json")), read("kit")  # after the hook: a malformed one is a crashed verdict
+expect = json.loads(read("expect.json"))  # after the hook: a malformed one is a crashed verdict
+kit = os.path.join(here, "ekit-eval", read("kit"))  # the engine's copy (relative); an absolute path stays itself
 main0, coding, coding0 = read("start").split()
 engine = os.path.join(kit, "scripts", "mech-review.py")
 sys.path.insert(0, os.path.join(kit, "scripts"))
@@ -315,7 +323,7 @@ else:
             lines.append(line)
             ok.append(passed)
             # the newer runner's recorded output, read through the tip's adapter as R0's runtime half reads a run
-            rec = os.path.join(kit, "evals", "ci-doctor-repair-java-runner", "runner")
+            rec = os.path.join(here, "ekit-eval", "runner")  # the scaffold's copy of the recorded output
             with open(os.path.join(rec, "runs.json"), encoding="utf-8") as f:
                 runs = json.load(f)
             out = {}

@@ -43,6 +43,38 @@ def eval_git(root=None):
     return [shells.find("bash"), os.path.join(os.path.dirname(case_dir("stack-plan-js-to-ts", root)), "git-shim.sh")]
 
 
+def scaffold_without_kit(case, repo):
+    """the case's scaffold run from a throwaway copy of the kit (its evals/, scripts/, tests/fixtures/ and plugin
+    manifest), the copy then removed: what the verdict reads afterwards is the scaffold's own .git/ekit-eval/, as in the
+    eval sandbox, which denies the kit's evals/ with the plugin and the whole kit without it. Returns the copy's path
+    (gone), for a test to check that nothing in the scaffold names it."""
+    import shutil
+    top = os.path.dirname(os.path.dirname(case_dir(case)))
+    holder = tempfile.mkdtemp()
+    kit = os.path.join(holder, "kit")
+    skip = shutil.ignore_patterns("__pycache__", "*.pyc", "results")
+    for rel in ("evals", "scripts", os.path.join("tests", "fixtures"), ".claude-plugin"):
+        shutil.copytree(os.path.join(top, rel), os.path.join(kit, rel), ignore=skip)
+    bash = shells.find("bash")
+    try:
+        subprocess.run([bash, os.path.join(kit, "evals", os.path.basename(case_dir(case)), "setup.sh")], cwd=repo,
+                       check=True, capture_output=True, env=shells.env_for(bash, "bash"))
+    finally:
+        shutil.rmtree(holder)
+    return kit
+
+
+def names_path(root, path):
+    """the files under root whose bytes hold path"""
+    hits = []
+    for at, _, names in os.walk(root):
+        for fn in names:
+            with open(os.path.join(at, fn), "rb") as f:
+                if path.encode() in f.read():
+                    hits.append(os.path.relpath(os.path.join(at, fn), root))
+    return hits
+
+
 CASE = case_dir("orchestrate-mech-tick")
 GATE = os.path.join(_kit.SCRIPTS, "finish-gate.py")
 
