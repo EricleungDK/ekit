@@ -167,30 +167,37 @@ def spelled(words):
 
 PYTHON = re.compile(r"(?:python[\d.]*|py)(?:\.exe)?", re.I)  # python3, python3.12, py, python.exe: a basename
 PLAIN = re.compile(r"[A-Za-z0-9_./:+=-]+")  # a word no shell reads anything into: no quote, separator, expansion
-COMMAND = re.compile(r"[A-Za-z0-9_./:][A-Za-z0-9_./:-]*")  # a plain name or path
-ASSIGN = re.compile(r"[A-Za-z_]\w*=")  # `NAME=value` before a command (POSIX shells)
+# a plain name or path: led by a letter, digit, `_`, `/`, `./` or `../`, never only dots (`.`, `..`: PowerShell's
+# dot-sourcing and the like), never `-` or `=` (an option; an assignment, which changes what the run finds)
+COMMAND = re.compile(r"(?=.*[A-Za-z0-9_])(?:[A-Za-z0-9_/]|\.\.?/)[A-Za-z0-9_./:-]*")
 MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")  # a dotted module name
 PROBE_SECONDS = 10  # what one question about the runner may take; past it, the run reads as failed
 FINDS = "import importlib.util as u, sys; sys.exit(0 if u.find_spec(sys.argv[1]) else 3)"  # 3: no such module
 
 
-def first_command(cmd, shell):
-    """(folder, assignments, words) when the command line is one plain simple command, after the leading
-    `cd <dir> &&` steps session-start writes for a stack's folder (they give the folder) and, in a POSIX shell,
-    leading `NAME=value` words (the assignments). Plain: split on whitespace, every word only letters, digits and
-    `_ . / : + = -`, so no shell reads anything into it (no separator, redirect, subshell, quote, glob or
-    expansion anywhere, a value included) and the words are what the shell runs; the command word is a plain name or
-    path. Anything else is not parsed (None): a failed run, never a guess."""
+def first_command(cmd):
+    """(folder, words) when the command line is one plain simple command, after the leading `cd <dir> &&` steps
+    session-start writes for a stack's folder (they give the folder, `<dir>` a plain word). Plain: split on
+    whitespace, every word only letters, digits and `_ . / : + = -`, so no shell reads anything into it (no
+    separator, redirect, subshell, quote, glob or expansion anywhere), and the first word a plain name or path
+    (COMMAND), so no leading `NAME=value` either, in any shell. Anything else is not parsed (None): a failed run,
+    never a guess."""
     words = cmd.split()
-    folder, assigned = "", {}
+    folder = ""
     while len(words) > 3 and words[0] == "cd" and words[2] == "&&" and PLAIN.fullmatch(words[1]):
         folder, words = os.path.join(folder, words[1]), words[3:]
-    if not words or not all(PLAIN.fullmatch(w) for w in words):
+    if not words or not all(PLAIN.fullmatch(w) for w in words) or not COMMAND.fullmatch(words[0]):
         return None
-    while words and ASSIGN.match(words[0]) and shell not in shells.PS_SHELLS + ("cmd",):
-        name, _, value = words[0].partition("=")
-        assigned[name], words = value, words[1:]
-    return (folder, assigned, words) if words and COMMAND.fullmatch(words[0]) else None
+    return folder, words
+
+
+def resolve(word, cwd, env):
+    """The file the run's shell starts for `word` from `cwd`, or None: a path, and a relative PATH entry, are the
+    run's folder's, not task-verify's own."""
+    if "/" in word or os.sep in word:
+        return shutil.which(os.path.join(cwd, word))
+    dirs = [os.path.join(cwd, d) for d in env.get("PATH", "").split(os.pathsep)]  # an absolute entry stays as it is
+    return shutil.which(word, path=os.pathsep.join(dirs))
 
 
 def python_m(words):
@@ -229,7 +236,7 @@ def found_in_shell(exe, shell, word, cwd, env):
         rc = probe(shells.command(exe, shell, line), cwd, env)
         return {0: True, 3: False}.get(rc)
     if shell == "cmd":
-        return shutil.which(word, path=env.get("PATH")) is not None
+        return resolve(word, cwd, env) is not None
     rc = probe(shells.command(exe, shell, f"command -v {shlex.quote(word)} >/dev/null 2>&1"), cwd, env)
     return {0: True, 1: False, 127: False}.get(rc)
 
@@ -237,7 +244,8 @@ def found_in_shell(exe, shell, word, cwd, env):
 def missing_runner(top, cmd, rc, exe, shell):
     """What to install when the run failed because its runner is not there; None when the runner is there (a failed
     run, whatever it printed), the run passed, or it cannot be told. Asked after a failing exit, and only of a line
-    that is one plain simple command (first_command; `a && b`, `a; b`, a redirect, quote or `$` is never asked):
+    that is one plain simple command (first_command; `a && b`, `a; b`, `NAME=x a`, a redirect, quote or `$` is never
+    asked), in the run's folder and environment, the command found as the run finds it (resolve):
     - `<python> [flags] -m <module>`: that python, with those flags, in that folder, is asked for the module's top
       package (importlib.util.find_spec); a python that answers 9009 is the Windows Store stub, no Python at all.
     - any other command (and a python not on PATH): the shell is asked whether it finds the word, after an exit
@@ -245,15 +253,15 @@ def missing_runner(top, cmd, rc, exe, shell):
     A question that fails or takes over PROBE_SECONDS reads as a failed run, never n/a."""
     if not rc:
         return None
-    first = first_command(cmd, shell)
+    first = first_command(cmd)
     if not first:
         return None
-    folder, assigned, words = first
-    cwd, env = os.path.join(top, folder), dict(shells.env_for(exe, shell), **assigned)
+    folder, words = first
+    cwd, env = os.path.join(top, folder), shells.env_for(exe, shell)  # the run's own folder and environment
     if not os.path.isdir(cwd):
         return None
     module = python_m(words)
-    py = shutil.which(words[0], path=env.get("PATH")) if module else None
+    py = resolve(words[0], cwd, env) if module else None
     if py:
         flags, pkg = module
         interp = " ".join([words[0]] + flags)

@@ -626,10 +626,13 @@ class MissingRunner(VerifyCase):
         self.na(f"{PY} -X importtime -m ekit_absent_runner",  # importtime prints a line per import first
                 f"install module ekit_absent_runner for {PY} -X importtime (that Python finds no ekit_absent_runner)")
 
-    def test_a_missing_module_in_a_stack_folder_and_with_env_assignments(self):
+    def test_a_stack_folder_is_where_the_module_is_asked_for(self):
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")  # in the repo root, not in sub
         os.mkdir(os.path.join(self.repo, "sub"))
-        self.na(f"cd sub && EKIT_X=1 {PY} -m ekit_absent_runner",
-                f"install module ekit_absent_runner for {PY} (that Python finds no ekit_absent_runner)")
+        self.na(f"cd sub && {PY} -m ekit_runner",
+                f"install module ekit_runner for {PY} (that Python finds no ekit_runner)", task="sub")
+        self.module("ekit_other", "import sys\nsys.exit(1)\n", folder="sub")
+        self.failed(f"cd sub && {PY} -m ekit_other", 1, task="other")
 
     def test_a_python_that_is_only_the_store_stub_is_n_a_env(self):
         """the stub prints `Python was not found` and exits 9009, which only Windows can give: faked here"""
@@ -646,14 +649,65 @@ class MissingRunner(VerifyCase):
     def test_a_command_not_on_path_is_n_a_env_naming_it(self):
         self.na("ekit_absent_tool117 --version", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)")
 
-    def test_a_command_not_on_path_after_env_assignments(self):
-        self.na("EKIT_X=1 ekit_absent_tool117", "install ekit_absent_tool117 (bash finds no ekit_absent_tool117)")
+    def test_a_line_with_a_leading_assignment_is_never_asked_about(self):
+        """NAME=value changes what the run finds (PATH=.venv/bin:..., PYTHONPATH=...): no line with one is read"""
+        self.failed("EKIT_X=1 ekit_absent_tool117", 127)
+        for shell, rc in (("powershell", 1), ("cmd", 9009)):
+            with self.subTest(shell=shell):
+                find, run, env = self.faked(shell, rc)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(f"EKIT_X=1 ekit_absent_tool117 {shell}"), rc)
+
+    def test_a_command_word_that_is_no_plain_name_or_path_is_never_asked_about(self):
+        """`. ./x.ps1` (dot-sourcing), `..`, a word led by `-`: PowerShell's 1 and a probe that finds none would
+        read `install .`"""
+        for i, cmd in enumerate((". ./run-tests.ps1", ".. x", "-ekit_absent_tool117 x", "./ x")):
+            with self.subTest(cmd=cmd):
+                find, run, env = self.faked("pwsh", 1)
+                with find, run, env:
+                    self.assertEqual(self.run_cmd(cmd), 1)
+
+    def test_a_module_name_that_is_no_dotted_name_is_never_asked_about(self):
+        self.failed(f"{PY} -m ekit-absent-runner", 1)
+
+    def test_a_cd_into_a_folder_that_is_no_plain_word_is_never_asked_about(self):
+        """`cd sub$x` is `cd sub` to bash: the folder the run is in is not the word as written"""
+        for d in ("sub", "sub$x"):
+            os.mkdir(os.path.join(self.repo, d))
+        self.failed("cd sub$x && ekit_absent_tool117", 127)
+
+    @unittest.skipIf(os.name == "nt", "its pythons are sh scripts; tests/windows-smoke.py runs the real shells there")
+    def test_the_python_asked_is_the_one_the_run_finds_from_its_folder(self):
+        """a relative path or PATH entry is the run's folder's, not task-verify's own: here task-verify runs from a
+        folder with no .venv, the repo's .venv python3 is this Python, and a later PATH entry's python3 finds
+        nothing"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        venv = os.path.join(self.repo, ".venv", "bin")
+        os.makedirs(venv)
+        with open(os.path.join(venv, "python3"), "w") as f:
+            f.write(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
+        os.chmod(os.path.join(venv, "python3"), 0o755)
+        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 1\n')  # first on PATH, till .venv/bin goes before it
+        elsewhere = os.path.join(os.path.realpath(self.tmp.name), "elsewhere")
+        os.mkdir(elsewhere)
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(elsewhere)
+        self.failed("./.venv/bin/python3 -m ekit_runner", 1, task="path")
+        os.environ["PATH"] = ".venv/bin" + os.pathsep + os.environ["PATH"]
+        self.failed("python3 -m ekit_runner", 1, task="entry")
 
     # the runner is there: a failed run
 
     def test_a_zero_exit_is_never_n_a(self):
         self.assertEqual(self.run_cmd(f"{PY} -m ekit_absent_runner || true"), 0)
         self.assertEqual(self.complete(f"Verify: `{PY} -m ekit_absent_runner || true`"), (0, ""))
+
+    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
+    def test_a_zero_exit_is_never_asked_about(self):
+        self.fake_python('case "$1" in -c) exit 3;; esac\nexit 0\n')  # a probe would say: no such module
+        self.assertEqual(self.run_cmd("python3 -m pytest"), 0)
+        self.assertEqual(self.complete("Verify: `python3 -m pytest`"), (0, ""))
 
     def test_an_installed_runner_whose_test_cannot_import_is_a_failed_run(self):
         self.module("ekit_runner", "import ekit_absent_dep\n")
@@ -675,11 +729,13 @@ class MissingRunner(VerifyCase):
     def test_only_the_first_command_is_asked_about(self):
         self.failed("true && ekit_absent_tool117", 127)
 
+    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_a_probe_that_hangs_is_a_failed_run(self):
         self.fake_python('case "$1" in -c) sleep 5;; esac\nexit 1\n')  # the run fails; the probe hangs
         with mock.patch.object(tv, "PROBE_SECONDS", 0.5):
             self.failed("python3 -m pytest", 1)
 
+    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_the_default_command_with_its_runner_missing_is_n_a(self):
         self.fake_python('case "$1" in -c) exit 3;; esac\nexit 1\n')  # 3: what the probe exits for no such module
         self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's README "
@@ -710,6 +766,7 @@ class MissingRunner(VerifyCase):
                 with find, run, env:
                     self.assertEqual(self.run_cmd(f"ekit_absent_tool117 {shell}"), rc)
 
+    @unittest.skipIf(os.name == "nt", "its python3 is a sh script; tests/windows-smoke.py runs the real shells there")
     def test_a_probe_that_errors_is_a_failed_run(self):
         self.fake_python('case "$1" in -c) exit 2;; esac\nexit 1\n')
         self.failed("python3 -m pytest", 1)
