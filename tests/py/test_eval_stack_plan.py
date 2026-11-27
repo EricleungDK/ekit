@@ -193,7 +193,6 @@ class SelfContained(Scaffold):
         self.assertEqual(lines[3:], ["migrated: no"])
 
 
-@unittest.skipIf(os.name == "nt", "a bash script named git on PATH: POSIX only (the evals run in WSL on Windows)")
 class ShimAsGit(Scaffold):
     """evals/run.sh's install: the shim as `git`, first on PATH. It finds the real git past itself, its git output
     and exit status are the real git's, and the verdict script's own git calls (and the kit's) do not recurse into a
