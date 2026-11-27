@@ -596,26 +596,64 @@ class MissingRunner(VerifyCase):
         self.complete(f"Verify: `{cmd}`", task=task)
         self.assertIn(f"`{cmd}`: the run exited {rc}\n", self.check()[1])
 
-    def python_file(self, folder, on_path=True):
-        """a `python3` file in `folder` (python3.exe on Windows), first on PATH unless on_path is False: what the
-        run and the probe start is faked (fake_runs), so its content is never run"""
+    def script(self, folder, body, name="python3"):
+        """a sh script `name` in `folder`: the run's bash starts it (Git Bash too), task-verify never does"""
         os.makedirs(folder, exist_ok=True)
-        exe = os.path.join(folder, "python3" + (".exe" if os.name == "nt" else ""))
-        open(exe, "w").close()
-        os.chmod(exe, 0o755)
-        if on_path:
-            os.environ["PATH"] = folder + os.pathsep + os.environ["PATH"]
-        return exe
+        path = os.path.join(folder, name)
+        with open(path, "w", newline="\n") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+        return path
+
+    def real_python(self, folder):
+        """a python3 in `folder` that is this Python"""
+        return self.script(folder, f'exec "{sys.executable.replace(os.sep, "/")}" "$@"\n')
+
+    def no_module_python(self, folder):
+        """a python3 in `folder` that finds no module (exit 3 for the probe) and fails every run (exit 1)"""
+        return self.script(folder, 'case "$1" in -c) exit 3;; esac\nexit 1\n')
+
+    def startup_puts_first(self, folder):
+        """BASH_ENV: a file bash reads before each `-c` line, putting `folder` first on PATH, as a profile might"""
+        env_file = os.path.join(os.path.realpath(self.tmp.name), "bash_env")
+        with open(env_file, "w", newline="\n") as f:
+            f.write(f'PATH="{folder.replace(os.sep, "/")}:$PATH"\n')
+        os.environ["BASH_ENV"] = env_file
+
+    def test_the_python_asked_is_the_one_the_runs_shell_finds_after_its_startup_file(self):
+        """BASH_ENV (zsh: ~/.zshenv) can change PATH before the line runs: the probe asks that python, not the one on
+        the PATH task-verify inherited"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.real_python(os.path.join(base, "venv"))
+        self.no_module_python(os.path.join(base, "sysbin"))
+        os.environ["PATH"] = os.path.join(base, "sysbin") + os.pathsep + os.environ["PATH"]
+        self.startup_puts_first(os.path.join(base, "venv"))
+        self.failed("python3 -m ekit_runner", 1)
+
+    def test_a_startup_file_putting_a_python_without_the_module_first_is_n_a(self):
+        """the mirror: the inherited PATH's python would find the module, the one the run uses does not"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.no_module_python(os.path.join(base, "nomod"))
+        self.real_python(os.path.join(base, "venv"))
+        os.environ["PATH"] = os.path.join(base, "venv") + os.pathsep + os.environ["PATH"]
+        self.startup_puts_first(os.path.join(base, "nomod"))
+        self.na("python3 -m ekit_runner", "install module ekit_runner for python3 (that Python finds no ekit_runner)")
+
+    def test_a_python_its_shell_does_not_find_is_named_as_the_command_to_install(self):
+        self.na("python9.99 -m pytest", "install python9.99 (bash finds no python9.99)")
 
     def fake_runs(self, rc, answer):
-        """bash found and its process faked: the run exits `rc`; a python probe (argv[-2] the find_spec line) gets
-        answer(argv): an exit code, or an exception it raises; git runs for real. Returns the probes' argv."""
+        """bash found and its process faked: the run exits `rc`; a python probe (a line that holds the find_spec
+        line) gets answer(argv): an exit code, or an exception it raises; git runs for real. Returns the probes'
+        (argv, cwd)."""
         real, probes = subprocess.run, []
 
         def run(argv, **kw):
             if argv[0] == "git":
                 return real(argv, **kw)
-            if isinstance(argv, list) and len(argv) > 2 and argv[-2] == tv.FINDS:
+            if tv.FINDS in (argv if isinstance(argv, str) else " ".join(argv)):
                 probes.append((argv, kw.get("cwd")))
                 got = answer(argv)
                 if isinstance(got, BaseException):
@@ -699,29 +737,24 @@ class MissingRunner(VerifyCase):
 
     def test_the_python_asked_is_the_one_the_run_finds_from_its_folder(self):
         """a relative path or PATH entry is the run's folder's, not task-verify's own: task-verify runs from a folder
-        with no .venv, the repo has one, and a later PATH entry holds another python3 (it finds no module)"""
-        venv = self.python_file(os.path.join(self.repo, ".venv", "bin"), on_path=False)
-        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "sysbin"))
-        elsewhere = os.path.join(os.path.realpath(self.tmp.name), "elsewhere")
-        os.mkdir(elsewhere)
+        with no .venv, the repo's .venv python3 is this Python, and a later PATH entry's python3 finds nothing"""
+        self.module("ekit_runner", "import sys\nsys.exit(1)\n")
+        base = os.path.realpath(self.tmp.name)
+        self.real_python(os.path.join(self.repo, ".venv", "bin"))
+        self.no_module_python(os.path.join(base, "sysbin"))
+        os.environ["PATH"] = os.path.join(base, "sysbin") + os.pathsep + os.environ["PATH"]
+        os.mkdir(os.path.join(base, "elsewhere"))
         here = os.getcwd()
         self.addCleanup(os.chdir, here)
-        os.chdir(elsewhere)
-        os.environ["PATH"] = os.path.join(".venv", "bin") + os.pathsep + os.environ["PATH"]
-        for i, cmd in enumerate(("./.venv/bin/python3 -m ekit_runner", "python3 -m ekit_runner")):
-            with self.subTest(cmd=cmd):
-                probes, patches = self.fake_runs(1, lambda argv: 0 if os.path.samefile(argv[0], venv) else 3)
-                with patches[0], patches[1], patches[2]:
-                    self.assertEqual(self.run_cmd(cmd), 1)
-                self.assertTrue(os.path.samefile(probes[0][0][0], venv))
-                self.assertEqual(os.path.normpath(probes[0][1]), self.repo)
-
+        os.chdir(os.path.join(base, "elsewhere"))
+        self.failed("./.venv/bin/python3 -m ekit_runner", 1, task="path")
+        os.environ["PATH"] = ".venv/bin" + os.pathsep + os.environ["PATH"]
+        self.failed("python3 -m ekit_runner", 1, task="entry")
     def test_a_zero_exit_is_never_n_a(self):
         self.assertEqual(self.run_cmd(f"{PY} -m ekit_absent_runner || true"), 0)
         self.assertEqual(self.complete(f"Verify: `{PY} -m ekit_absent_runner || true`"), (0, ""))
 
     def test_a_zero_exit_is_never_asked_about(self):
-        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
         probes, patches = self.fake_runs(0, lambda argv: 3)  # a probe would say: no such module
         with patches[0], patches[1], patches[2]:
             self.assertEqual(self.run_cmd("python3 -m pytest"), 0)
@@ -748,19 +781,17 @@ class MissingRunner(VerifyCase):
         self.failed("true && ekit_absent_tool117", 127)
 
     def test_a_probe_that_hangs_is_a_failed_run(self):
-        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
         probes, patches = self.fake_runs(1, lambda argv: subprocess.TimeoutExpired(argv, tv.PROBE_SECONDS))
         with patches[0], patches[1], patches[2]:
             self.failed("python3 -m pytest", 1)
         self.assertEqual(len(probes), 1)
 
     def test_the_default_command_with_its_runner_missing_is_n_a(self):
-        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
         probes, patches = self.fake_runs(1, lambda argv: 3)  # 3: what the probe exits for no such module
         with patches[0], patches[1], patches[2]:
             self.na("python3 -m pytest", "install module pytest for python3 (that Python finds no pytest; ekit's "
                                          "README § Development names the version CI installs)")
-        self.assertEqual(probes[0][0][-1], "pytest")
+        self.assertTrue(probes[0][0][-1].startswith("python3 -c ") and probes[0][0][-1].endswith(" pytest"))
 
     def test_a_line_that_is_not_one_plain_command_is_never_asked_about(self):
         """only a plain simple command is parsed: a separator, redirect, subshell, quote or expansion anywhere in it
@@ -788,7 +819,6 @@ class MissingRunner(VerifyCase):
                     self.assertEqual(self.run_cmd(f"ekit_absent_tool117 {shell}"), rc)
 
     def test_a_probe_that_errors_is_a_failed_run(self):
-        self.python_file(os.path.join(os.path.realpath(self.tmp.name), "bin"))
         for i, answer in enumerate((lambda argv: 2, lambda argv: OSError("cannot start"))):
             probes, patches = self.fake_runs(1, answer)
             with self.subTest(i=i), patches[0], patches[1], patches[2]:
@@ -845,6 +875,15 @@ class MissingRunner(VerifyCase):
                 self.complete(f"Verify: `{cmd}`", task=shell)
                 self.assertIn(f"`{cmd}`: n/a (env): install ekit_absent_tool117 ({shell} finds no "
                               "ekit_absent_tool117)\n", self.check()[1])
+
+    def test_cmd_finds_a_command_in_the_runs_own_folder_first(self):
+        """cmd.exe looks in its folder before PATH: a tool there is found, so its 9009 is its own"""
+        tool = os.path.join(self.repo, "ekit_tool_here" + (".exe" if os.name == "nt" else ""))
+        open(tool, "w").close()
+        os.chmod(tool, 0o755)
+        find, run, env = self.faked("cmd", 9009)
+        with find, run, env:
+            self.assertEqual(self.run_cmd("ekit_tool_here -q"), 9009)
 
     def test_powershell_finding_the_command_and_cmd_with_another_exit_are_failed_runs(self):
         for shell, rc, probe in (("powershell", 1, 0), ("pwsh", 3, 3), ("cmd", 1, 3)):

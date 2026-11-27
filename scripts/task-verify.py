@@ -16,8 +16,8 @@ keeps the shell it was given in (shells.current()), and every later `run` of it 
 calls `run`. A command whose shell this machine lacks is not run: `run` exits 5, and the command reads
 `n/a (env)`, never a pass. So does a run that failed because its runner is not installed (#117), naming what to
 install: after a failing exit of a line that is one plain command, task-verify asks whether its runner is there
-(missing_runner; any other line is a failed run, never a guess): for
-`<python> -m <module>` that python whether it finds the module (`install module pytest for python3 (that Python
+(missing_runner; any other line is a failed run, never a guess), through the run's own shell started as the run is,
+so it finds what the run finds: for `<python> -m <module>` that python whether it finds the module (`install module pytest for python3 (that Python
 finds no pytest; ...)`), for any other command the shell whether it finds the word (`install jq (bash finds no
 jq)`). A runner that is there and fails is a failed run, whatever it printed; the run's output is not read.
 
@@ -191,13 +191,13 @@ def first_command(cmd):
     return folder, words
 
 
-def resolve(word, cwd, env):
-    """The file the run's shell starts for `word` from `cwd`, or None: a path, and a relative PATH entry, are the
-    run's folder's, not task-verify's own."""
+def cmd_finds(word, cwd, env):
+    """Whether cmd.exe, in `cwd`, finds `word`: cmd looks in its own folder first, then on PATH; a path, and a
+    relative PATH entry, are that folder's, not task-verify's own."""
     if "/" in word or os.sep in word:
-        return shutil.which(os.path.join(cwd, word))
-    dirs = [os.path.join(cwd, d) for d in env.get("PATH", "").split(os.pathsep)]  # an absolute entry stays as it is
-    return shutil.which(word, path=os.pathsep.join(dirs))
+        return shutil.which(os.path.join(cwd, word)) is not None
+    dirs = [cwd] + [os.path.join(cwd, d) for d in env.get("PATH", "").split(os.pathsep)]  # absolute entries stay
+    return shutil.which(word, path=os.pathsep.join(dirs)) is not None
 
 
 def python_m(words):
@@ -236,20 +236,35 @@ def found_in_shell(exe, shell, word, cwd, env):
         rc = probe(shells.command(exe, shell, line), cwd, env)
         return {0: True, 3: False}.get(rc)
     if shell == "cmd":
-        return resolve(word, cwd, env) is not None
+        return cmd_finds(word, cwd, env)
     rc = probe(shells.command(exe, shell, f"command -v {shlex.quote(word)} >/dev/null 2>&1"), cwd, env)
     return {0: True, 1: False, 127: False}.get(rc)
+
+
+def finds_module(exe, shell, words, flags, pkg, cwd, env):
+    """The exit of `<python as the line names it> <flags> -c <find_spec line> <pkg>` run by the run's own shell, as
+    the run is started (shell, cwd, env): the python asked is the one the run's line reaches, its startup files
+    (BASH_ENV, ~/.zshenv) and PATH included. 0: found, 3: no such module; anything else: no answer from that python.
+    The words are plain (first_command); only the find_spec line is quoted."""
+    if shell in shells.PS_SHELLS:
+        line = f"{' '.join([words[0], *flags])} -c {shells.ps_literal(FINDS)} {pkg}"
+    elif shell == "cmd":
+        line = f'{" ".join([words[0], *flags])} -c "{FINDS}" {pkg}'
+    else:
+        line = f"{' '.join([words[0], *flags])} -c {shlex.quote(FINDS)} {pkg}"
+    return probe(shells.command(exe, shell, line), cwd, env)
 
 
 def missing_runner(top, cmd, rc, exe, shell):
     """What to install when the run failed because its runner is not there; None when the runner is there (a failed
     run, whatever it printed), the run passed, or it cannot be told. Asked after a failing exit, and only of a line
     that is one plain simple command (first_command; `a && b`, `a; b`, `NAME=x a`, a redirect, quote or `$` is never
-    asked), in the run's folder and environment, the command found as the run finds it (resolve):
-    - `<python> [flags] -m <module>`: that python, with those flags, in that folder, is asked for the module's top
-      package (importlib.util.find_spec); a python that answers 9009 is the Windows Store stub, no Python at all.
-    - any other command (and a python not on PATH): the shell is asked whether it finds the word, after an exit
-      that shell gives a missing command (bash, sh: 127; cmd: 9009; PowerShell: 1).
+    asked). Every question goes through the run's own shell, started as the run is (shell, folder, environment),
+    so it finds what the run finds:
+    - `<python> [flags] -m <module>`: that shell runs `<python> [flags] -c <find_spec>` for the module's top package
+      (finds_module); 3 is no such module, 9009 no Python (the Windows Store stub, or cmd finding none).
+    - any other command, and a python that gave no answer: after an exit that shell gives a missing command (bash,
+      sh: 127; cmd: 9009; PowerShell: 1), the shell is asked whether it finds the word (found_in_shell).
     A question that fails or takes over PROBE_SECONDS reads as a failed run, never n/a."""
     if not rc:
         return None
@@ -261,17 +276,14 @@ def missing_runner(top, cmd, rc, exe, shell):
     if not os.path.isdir(cwd):
         return None
     module = python_m(words)
-    py = resolve(words[0], cwd, env) if module else None
-    if py:
+    if module:
         flags, pkg = module
-        interp = " ".join([words[0]] + flags)
-        answer = probe([py, *flags, "-c", FINDS, pkg], cwd, env)
+        answer = finds_module(exe, shell, words, flags, pkg, cwd, env)
         if answer == 3:
             readme = "; ekit's README § Development names the version CI installs" if pkg == "pytest" else ""
-            return f"install module {pkg} for {interp} (that Python finds no {pkg}{readme})"
+            return f"install module {pkg} for {' '.join([words[0], *flags])} (that Python finds no {pkg}{readme})"
         if answer == 9009:
             return f"install Python: {words[0]} ran no Python (exit 9009, the Microsoft Store stub)"
-        return None
     if rc == (1 if shell in shells.PS_SHELLS else 9009 if shell == "cmd" else 127):
         if found_in_shell(exe, shell, words[0], cwd, env) is False:
             return f"install {words[0]} ({shell} finds no {words[0]})"
