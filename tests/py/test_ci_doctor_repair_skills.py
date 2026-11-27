@@ -279,6 +279,18 @@ class TriageLabel(unittest.TestCase):
         self.assertIn("triaged from that run", s)
         self.assertIn("Each `agent-fixable` fail that Gate 3 does not hold: open its fix plan", flat(self.text))
 
+    def test_a_held_entry_plan_is_one_sentence_and_the_repair_runs_apart_from_the_prs_agent(self):
+        """an eval run wrote "If it still fails then, it becomes a normal fix round for me" for a held entry (Gate 3
+        quoted that phrase as the thing to avoid); another cast itself as the one who runs the repair"""
+        s = flat(section(self.text, "Gate"))
+        self.assertIn('the one sentence "read again, and triaged from that run, once the PR runs on the repaired '
+                      'adapter"', s)
+        self.assertNotIn("if it still fails", s)
+        row = next(line for line in self.text.splitlines() if line.startswith("| `adapter-fix`"))
+        self.assertIn("| No edit by the PR's agent, on this branch. Next, apart from that agent: the orchestrator or a "
+                      "person starts ci-doctor's repair mode", row)
+        self.assertIn("a person merges it, then this PR runs again on the fixed base", row)
+
     def test_a_held_entry_rejoins_once_r0_is_waived_or_the_repair_stops(self):
         s = flat(section(self.text, "Gate"))
         self.assertIn("once a person waives the R0 entry, or the repair stops out of budget", s)
