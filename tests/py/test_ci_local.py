@@ -197,6 +197,16 @@ class Inputs(Tmp):
         self.assertEqual(r.returncode, 0)
         self.assertIn("exit: 0 every step passed; 1 a step failed or could not run here;", " ".join(r.stdout.split()))
 
+    def test_help_says_what_step_and_unrunnable_ok_do(self):
+        r = _kit.run_cli(["--help"], main=lambda a: ci.main(a, run=Fake()))
+        self.assertEqual(r.returncode, 0)
+        out = " ".join(r.stdout.split())
+        self.assertIn("--step {mech,suite,r3,scenarios} run this step only (repeat for more; they run in CI's order). "
+                      "Default: every step --unrunnable-ok", out)
+        self.assertIn("--unrunnable-ok a scenarios step not run here only for scenarios this machine cannot run (each "
+                      "named), with at least one scenario passed, does not fail the exit (the tests workflow's "
+                      "scenarios job, #116)", out)
+
 
 class Failed(Tmp):
     """Any step that did not pass fails the command; the others still run and report."""
@@ -359,10 +369,10 @@ class Scenarios(Tmp):
                      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "scenarios"]):
             subprocess.run(["git", "-C", self.tmp] + argv, check=True, capture_output=True)
 
-    def run_scenarios(self):
+    def run_scenarios(self, *extra):
         self.commit()
-        r = self.main(Fake(scenarios="real"))
-        return r, self.verdicts(r)[3]
+        r = self.main(Fake(scenarios="real"), *extra)
+        return r, self.verdicts(r)[-1]
 
     def test_a_failing_scenario_fails_the_step_and_the_command_naming_it(self):
         self.scenario("good", "exit 0")
@@ -378,6 +388,79 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("1 of 1 features working\n", r.stdout)
         self.assertEqual(line, "scenarios: passed: 1/1 scenarios")
+
+    # --unrunnable-ok (#116): the tests workflow's scenarios job goes red on a failed scenario, never on a missing tool
+    def test_unrunnable_ok_a_scenario_this_machine_cannot_run_is_named_and_exits_0(self):
+        self.scenario("good", "exit 0")
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: traced: strace is missing"])
+
+    def test_unrunnable_ok_every_scenario_unrunnable_ran_nothing_and_exits_1(self):
+        # nothing passed: a job with every tool installed that ran no scenario is no green job
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        self.scenario("isolated", 'echo "ASSERT FAILED: unrunnable here: unshare -n is not permitted" >&2; exit 1')
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: isolated: unshare -n is not permitted; "
+                                            "traced: strace is missing"])
+
+    def test_unrunnable_ok_a_failure_beside_an_unrunnable_scenario_still_exits_1_naming_both(self):
+        self.scenario("bad", "exit 3")
+        self.scenario("traced", 'echo "ASSERT FAILED: unrunnable here: strace is missing" >&2; exit 1')
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: failed: 1 of 2 failed: bad (exit 3); "
+                               "not run here: traced: strace is missing")
+
+    def test_unrunnable_ok_all_passing_exits_0(self):
+        self.scenario("good", "exit 0")
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(line, "scenarios: passed: 1/1 scenarios")
+
+    def test_unrunnable_ok_a_run_with_no_scenarios_is_no_missing_tool_and_exits_1(self):
+        os.makedirs(os.path.join(self.tmp, "src"))
+        open(os.path.join(self.tmp, "src", "x.py"), "w").close()
+        r, line = self.run_scenarios("--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertRegex(line, r"^scenarios: not run here: scenarios.py run exit 2: no scenarios found")
+
+    def test_unrunnable_ok_a_runner_with_no_verdict_line_exits_1(self):
+        crash = (1, "PASS a\n", "OSError: [Errno 28] No space left on device\n")
+        r = self.main(Fake(scenarios=crash), "--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: scenarios.py run exit 1: "
+                                            "OSError: [Errno 28] No space left on device"])
+
+    def test_unrunnable_ok_a_short_pass_whose_rows_name_nothing_exits_1(self):
+        self.evidence({"scenarios": []})
+        r = self.main(Fake(scenarios=(1, "PASS a\nPASS: 1/2 scenarios\n", "")), "--step", "scenarios",
+                      "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: PASS: 1/2 scenarios, but results.json names no "
+                                            "failed or unrunnable scenario"])
+
+    def test_unrunnable_ok_a_shell_the_runner_cannot_find_is_a_missing_tool_and_exits_0(self):
+        log = os.path.join(self.tmp, "win.log")
+        with open(log, "w") as f:
+            f.write("command: powershell run.ps1\n--- stdout ---\n\n--- stderr ---\n\n--- exit: None ---\n")
+        self.evidence({"verdict": "NOT-RUN", "scenarios": [
+            {"id": "good", "exit": 0}, {"id": "win", "exit": None, "transcript": log,
+                                        "reason": "PowerShell is not on this machine (env)"}]})
+        out = "PASS good\nNOT-RUN win: PowerShell is not on this machine (env)\nNOT-RUN: 1/2 scenarios\n"
+        r = self.main(Fake(scenarios=(1, out, "")), "--step", "scenarios", "--unrunnable-ok")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), ["scenarios: not run here: win: PowerShell is not on this machine (env)"])
+
+    def test_unrunnable_ok_excuses_no_other_steps_not_run_here(self):
+        self.scenario("good", "exit 0")
+        self.commit()
+        r = self.main(Fake(scenarios="real", probe=(127, "", "uv: not found\n")), "--unrunnable-ok")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r)[1], "suite: not run here: uv not found (uv: not found): CI's Python 3.14 "
+                                              "comes through uv")
 
     def test_a_failing_scenario_that_marks_a_feature_fails_the_step(self):
         self.scenario("good", "exit 0", "- feature: plan\n")
@@ -613,6 +696,31 @@ class Scenarios(Tmp):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(self.verdicts(r)[3], "scenarios: not run here: scenarios.py run exit 1: "
                                               "OSError: [Errno 28] No space left on device")
+
+
+class Steps(Tmp):
+    """--step picks the steps (#116: the tests workflow's scenarios job runs ci-local's scenarios step alone)."""
+
+    def test_one_step_runs_that_step_alone(self):
+        fake = Fake()
+        r = self.main(fake, "--step", "scenarios")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), ["scenarios: passed: 2/2 scenarios"])
+        self.assertEqual(fake.kinds, ["scenarios"])
+
+    def test_steps_named_out_of_order_run_in_ci_order(self):
+        fake = Fake()
+        r = self.main(fake, "--step", "r3", "--step", "mech")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.verdicts(r), [f"mech: passed: all pass {HEAD}", f"r3: passed: all pass {HEAD}"])
+        self.assertEqual(fake.kinds, ["mech", "r3"])
+
+    def test_an_unknown_step_is_a_usage_error_and_runs_nothing(self):
+        fake = Fake()
+        r = self.main(fake, "--step", "lint")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("invalid choice: 'lint'", r.stderr)
+        self.assertEqual(fake.kinds, [])
 
 
 class Dirty(Tmp):
