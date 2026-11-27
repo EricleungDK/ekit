@@ -1103,6 +1103,14 @@ sct = text(sc)
 check("tests scenarios: on ubuntu-latest", value(sc, "runs-on") == "ubuntu-latest", str(value(sc, "runs-on")))
 check("tests scenarios: no continue-on-error (a failed scenario is a red job)", "continue-on-error" not in sct, sct)
 check("tests scenarios: checks out the PR", "uses: actions/checkout@v4" in sct, sct)
+# an `if:` on the job or on any of its steps can skip the scenarios on a PR and leave the check green
+check("tests scenarios: no `if:` on the job or any step (nothing skips it on a PR)",
+      not [l for l in sc if re.match(r"\s*(- )?if\s*:", l)], str([l for l in sc if "if" in l]))
+# ci-local resolves --base origin/main: a shallow checkout has no such ref (exit 2, a false red)
+cko = next((n for n, l in enumerate(sc) if l.strip().lstrip("- ") == "uses: actions/checkout@v4"), None)
+ckw = block(sc[cko:] if cko is not None else [], "with") or []
+check("tests scenarios: checkout fetch-depth 0 (ci-local resolves origin/main)", value(ckw, "fetch-depth") == "0",
+      str(ckw))
 check("tests scenarios: installs strace", re.search(r"apt-get install -y( -qq)? strace\b", sct) is not None, sct)
 check("tests scenarios: unshare -n for the runner's user (a user namespace, its own uid mapped)",
       "kernel.apparmor_restrict_unprivileged_userns=0" in sct and "unshare --map-current-user" in sct

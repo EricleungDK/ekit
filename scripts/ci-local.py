@@ -254,7 +254,8 @@ def parse(argv):
                    help="run this step only (repeat for more; they run in CI's order). Default: every step")
     p.add_argument("--unrunnable-ok", action="store_true",
                    help="a scenarios step not run here only for scenarios this machine cannot run (each named), "
-                        "with at least one scenario passed, does not fail the exit (the tests workflow's scenarios job, #116)")
+                        "with at least one scenario passed, does not fail the exit (the tests workflow's scenarios "
+                        "job, #116)")
     return p.parse_args(argv)
 
 
