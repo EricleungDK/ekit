@@ -146,6 +146,17 @@ class Round3(unittest.TestCase):
                     "grep -r x .github/workflows/ > /tmp/out"):
             self.assertNotRegex(call(command=cmd, description="d"), NOTHING_BASH)
 
+    def test_r0_draft_counts_no_run_on_the_kits_reference_adapters(self):
+        for case in ("ci-doctor-setup-proof-fails", "ci-doctor-repair-budget"):
+            rx = re.compile(front(os.path.join(case_dir(case), "graders", "r0-draft.md"))[0]["input_match"])
+            for cmd in ("python3 /k/scripts/mech-review.py r0 --repo . --adapter .ekit/adapters/go.toml",
+                        "python3 /k/scripts/mech-review.py r0 --adapter=/tmp/s/go.toml",
+                        'python3 /k/scripts/mech-review.py r0 --adapter "/tmp/s/go.toml"'):
+                self.assertRegex(call(command=cmd), rx)
+            for cmd in ("python3 /k/scripts/mech-review.py r0 --adapter /k/tests/fixtures/adapters/java.toml",
+                        "python3 /k/scripts/mech-review.py drift --repo ."):
+                self.assertNotRegex(call(command=cmd), rx)
+
     def test_each_trace_judge_kept_is_worded_to_its_excerpt(self):
         for case, name in EXCERPT_JUDGES:
             with self.subTest(case=case, grader=name):
