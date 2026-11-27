@@ -365,3 +365,18 @@ class TestVerifiedCommit(unittest.TestCase):
     def test_a_refusal_goes_back_to_the_agent(self):
         s = self.relay()
         self.assertIn("a refusal goes back to the agent verbatim with SendMessage", s)
+
+
+class TestR3OneUnitAtATime(unittest.TestCase):
+    """#120: two units ran R3 at once on one machine; their shards shared the CPUs and hit the budget (one run tested 0
+    of 204 mutants). Units' local R3 runs go one after another."""
+
+    def test_the_skill_runs_units_r3_one_after_another(self):
+        s = flat(section(read("SKILL.md"), "6. Verify acceptance"))
+        self.assertIn("Local R3 runs go one unit at a time, never in parallel: tell the next unit to run R3 only "
+                      "once the one before has reported", s)
+
+    def test_the_brief_runs_r3_only_on_the_orchestrators_go(self):
+        t = flat(read("brief-template.md"))
+        self.assertIn("One unit at a time on a machine: run it only when the orchestrator says so", t)
+        self.assertIn("exit 3, waited past `--wait-limit` for another run, is R3 not run, never a pass", t)
