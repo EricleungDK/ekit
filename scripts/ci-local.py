@@ -3,6 +3,7 @@
 of the plugin, and no other OS is simulated (the macOS job stays CI's).
 
 usage: python3 -I scripts/ci-local.py [--base REF] [--head-branch NAME] [--r3-env-dir DIR] [--repo DIR]
+                                      [--step mech|suite|r3|scenarios ...] [--unrunnable-ok]
 
 Steps, each run whatever the one before gave, with the inputs of .github/workflows/mech-review-self.yml, then the
 scenarios:
@@ -23,6 +24,10 @@ scenarios:
 mech and r3 test the HEAD commit (uncommitted changes are not in them); suite and scenarios run the working tree.
 Each step ends as `<step>: passed|failed|not run here: <detail>`; a step that could not run is not a pass.
 --r3-env-dir keeps r3-local's tool and results (its --env-dir; your own dir, never one another run uses).
+--step runs only the steps named (repeatable; still in CI's order). --unrunnable-ok (#116: the tests workflow's scenarios
+job, `--step scenarios --unrunnable-ok`): a scenarios step that is not run here only for scenarios this machine cannot
+run, each named with what it lacks, does not fail the exit; a FAIL beside them still does, and so does any other not run
+here (no verdict line, PASS: 0/0, an unreadable results.json, or another step's).
 exit: 0 every step passed; 1 a step failed or could not run here; 2 usage, or a base that is not a commit (no step ran).
 """
 import argparse
@@ -51,6 +56,7 @@ UV = ["uv", "run", "--no-project", "--python", CI_PYTHON]
 LEFT_BEHIND = ("uv.lock", ".venv")  # what a uv run with a project writes into the repo
 
 PASSED, FAILED, NOT_RUN = "passed", "failed", "not run here"
+UNRUNNABLE_ONLY = "unrunnable only"  # a step's third value: not run here only for scenarios this machine cannot run
 # a scenario's own fail message when this machine lacks a tool it needs (lib.sh: fail "unrunnable here: <what>")
 UNRUNNABLE = re.compile(r"^ASSERT FAILED: unrunnable here: (.+)$")
 # the runner's verdict line, once every scenario ran; an unfiltered run may print `N of M features working` after it
@@ -197,8 +203,8 @@ def scenarios(run, a):
     if failed:
         also = f"; not run here: {'; '.join(unrunnable)}" if unrunnable else ""
         return FAILED, f"{len(failed)} of {len(rows)} failed: {', '.join(failed)}{also}"
-    if unrunnable:
-        return NOT_RUN, "; ".join(unrunnable)
+    if unrunnable:  # a missing tool alone: what --unrunnable-ok excuses
+        return NOT_RUN, "; ".join(unrunnable), UNRUNNABLE_ONLY
     # the runner said FAIL, so it failed whatever its rows leave out; a NOT-RUN or a short PASS blames no scenario
     return FAILED if word == "FAIL" else NOT_RUN, f"{verdict.group(0)}, but results.json names no failed or " \
                                                   "unrunnable scenario"
@@ -242,6 +248,11 @@ def parse(argv):
     p.add_argument("--head-branch", metavar="NAME", help="head branch for R1 (default: the checked-out branch)")
     p.add_argument("--r3-env-dir", metavar="DIR", help="r3-local's --env-dir (default: its temp dir, removed)")
     p.add_argument("--repo", default=ROOT, help="git repo (default: this checkout)")
+    p.add_argument("--step", action="append", choices=[n for n, _ in STEPS],
+                   help="run this step only (repeat for more; they run in CI's order). Default: every step")
+    p.add_argument("--unrunnable-ok", action="store_true",
+                   help="a scenarios step not run here only for scenarios this machine cannot run (each named) does "
+                        "not fail the exit (the tests workflow's scenarios job, #116)")
     return p.parse_args(argv)
 
 
@@ -259,11 +270,14 @@ def main(argv, run=run_cmd):
         print(f"ci-local: uncommitted changes are not in mech and r3 (they test {a.head_sha})", file=sys.stderr)
     results = []
     for name, step in STEPS:
+        if a.step and name not in a.step:
+            continue
         print(f"== {name}", flush=True)
-        results.append((name,) + step(run, a))
-    for name, verdict, detail in results:
+        verdict, detail, *why = step(run, a)
+        results.append((name, verdict, detail, why == [UNRUNNABLE_ONLY] and a.unrunnable_ok))
+    for name, verdict, detail, _ in results:
         print(f"{name}: {verdict}: {detail}")
-    return 0 if all(v == PASSED for _, v, _ in results) else 1
+    return 0 if all(v == PASSED or excused for _, v, _, excused in results) else 1
 
 
 if __name__ == "__main__":
