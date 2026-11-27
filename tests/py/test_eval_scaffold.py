@@ -13,13 +13,66 @@ from scripts import shells  # bash: Git Bash on Windows, where a bare "bash" sta
 
 
 
-def case_dir(name):
-    """evals/<name> of the repo. The mutation run (R3) executes the tests from a copy under <repo>/mutants/ that
-    holds the scripts and the tests only: the eval cases are then one level up."""
-    root = _kit.ROOT
-    while not os.path.isdir(os.path.join(root, "evals", name)) and os.path.dirname(root) != root:
-        root = os.path.dirname(root)
-    return os.path.join(root, "evals", name)
+def case_dir(name, root=None):
+    """evals/<name> of the git checkout that holds root (default _kit.ROOT, the tests' own checkout): its top, as
+    `git rev-parse --show-toplevel` names it. R3's mutation run executes the tests from a copy under
+    <checkout>/mutants/ that holds evals/ too (mutants.also_copy), its scripts mutated: a plain dir inside the checkout,
+    so the case, its scaffold and the kit its hooks call are the checkout's, the code as written. A worktree inside
+    another checkout (<repo>/.claude/worktrees/<name>) is a checkout of its own: its own case. Outside git, or a top
+    with no such case: the nearest evals/<name> above root, else evals/<name> of root, for the error to name."""
+    root = os.path.abspath(root or _kit.ROOT)
+    here = root
+    while not os.path.isdir(here) and os.path.dirname(here) != here:
+        here = os.path.dirname(here)
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+                                                            "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
+    top = subprocess.run(["git", "-C", here, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                         env=env)  # a git hook's GIT_DIR would make it answer the cwd
+    if top.returncode == 0 and os.path.isdir(os.path.join(top.stdout.strip(), "evals", name)):
+        return os.path.join(top.stdout.strip(), "evals", name)
+    at = root
+    while not os.path.isdir(os.path.join(at, "evals", name)) and os.path.dirname(at) != at:
+        at = os.path.dirname(at)
+    return os.path.join(at if os.path.isdir(os.path.join(at, "evals", name)) else root, "evals", name)
+
+
+def eval_git(root=None):
+    """argv that runs git as the agent under an eval does: through evals/git-shim.sh, which evals/run.sh puts first on
+    PATH as `git` and which runs a case's verdict script after each ref move (the eval sandbox turns git hooks off, so
+    a scaffold installs none). The shim is the one beside case_dir's cases, the checkout's."""
+    return [shells.find("bash"), os.path.join(os.path.dirname(case_dir("stack-plan-js-to-ts", root)), "git-shim.sh")]
+
+
+def scaffold_without_kit(case, repo):
+    """the case's scaffold run from a throwaway copy of the kit (its evals/, scripts/, tests/fixtures/ and plugin
+    manifest), the copy then removed: what the verdict reads afterwards is the scaffold's own .git/ekit-eval/, as in the
+    eval sandbox, which denies the kit's evals/ with the plugin and the whole kit without it. Returns the copy's path
+    (gone), for a test to check that nothing in the scaffold names it."""
+    import shutil
+    top = os.path.dirname(os.path.dirname(case_dir(case)))
+    holder = tempfile.mkdtemp()
+    kit = os.path.join(holder, "kit")
+    skip = shutil.ignore_patterns("__pycache__", "*.pyc", "results")
+    for rel in ("evals", "scripts", os.path.join("tests", "fixtures"), ".claude-plugin"):
+        shutil.copytree(os.path.join(top, rel), os.path.join(kit, rel), ignore=skip)
+    bash = shells.find("bash")
+    try:
+        subprocess.run([bash, os.path.join(kit, "evals", os.path.basename(case_dir(case)), "setup.sh")], cwd=repo,
+                       check=True, capture_output=True, env=shells.env_for(bash, "bash"))
+    finally:
+        shutil.rmtree(holder)
+    return kit
+
+
+def names_path(root, path):
+    """the files under root whose bytes hold path"""
+    hits = []
+    for at, _, names in os.walk(root):
+        for fn in names:
+            with open(os.path.join(at, fn), "rb") as f:
+                if path.encode() in f.read():
+                    hits.append(os.path.relpath(os.path.join(at, fn), root))
+    return hits
 
 
 CASE = case_dir("orchestrate-mech-tick")

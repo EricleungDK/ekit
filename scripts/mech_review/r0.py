@@ -21,7 +21,8 @@ a run of non-blank lines, and one test has two asserts, each on a line of its ow
 Built-in stacks: BUILTIN_FIXTURES/<stack>. An adapter file: `<file without .toml>.r0/` beside it, or --fixtures.
 
 The editing rules (`editing`): a PR may edit an adapter file or the stack plan without a person; R0 judges the adapter
-(on the PR's version) and the drift check the plan. Only loosening a limit (LIMITS, the plan's `ignore` list) or
+(the file given with --adapter; in CI, without it, the repo's adapter file as it is at the base) and the drift check
+the plan. Only loosening a limit (LIMITS, the plan's `ignore` list) or
 changing a target OS needs a person: one `needs-human` entry naming each. Tightening needs no one.
 
 The runtime half (#21: census, assert density, runner controls, the fingerprint) builds on this module: a new half adds
@@ -565,13 +566,48 @@ def _norm(folder):
 
 
 def _by_folder(repo, sha, entries):
-    """{folder: (stack entry, its adapter side at sha)} of plan entries, folders normalised; a folder twice keeps its
-    first entry."""
+    """{folder: [(stack entry, its adapter side at sha)]} of plan entries, folders normalised, every entry kept in
+    plan order (a migration holds two entries for one folder; a PR may add a decoy before the real one)."""
     out = {}
     for st in entries:
-        if isinstance(st, dict) and isinstance(st.get("folder"), str) and _norm(st["folder"]) not in out:
-            out[_norm(st["folder"])] = (st, _adapter_side(repo, sha, st.get("adapter")))
+        if isinstance(st, dict) and isinstance(st.get("folder"), str):
+            out.setdefault(_norm(st["folder"]), []).append((st, _adapter_side(repo, sha, st.get("adapter"))))
     return out
+
+
+def _ref(adapter):
+    """a plan `adapter` value as stack_plan reads it: a path (a `/` or `.toml`) normalised, `./` and all spellings of it
+    one; a built-in's name as it is."""
+    if isinstance(adapter, str) and ("/" in adapter or adapter.endswith(".toml")):
+        return _norm(adapter)
+    return adapter
+
+
+DEFAULT_SIDE = ({}, ("linux", {}, None, None, None))  # a folder new to the plan: linux, the default limits, no tool
+
+
+def _twins(head_entry, base_entries):
+    """the base entries a head entry is compared with: its twin, the base entry with the same `adapter` (of two such,
+    the one with the same status; of two with none the same, each); with no twin, every base entry of the folder (a
+    person decides when the head entry differs from any); a folder new to the plan, the defaults."""
+    if not base_entries:
+        return [DEFAULT_SIDE]
+    ref = _ref(head_entry.get("adapter"))
+    same = [b for b in base_entries if _ref(b[0].get("adapter")) == ref]
+    if not same:
+        return base_entries
+    status = [b for b in same if b[0].get("status") == head_entry.get("status")]
+    return status[:1] or same
+
+
+def _departed(head_entries, base_entries):
+    """the base entries of a folder no head entry is compared with (_twins): they leave the folder. A head entry with no
+    twin is compared with every base entry of its folder already, so only a twin match leaves one out. With no head
+    entry left there, none: a folder with no entry is the drift check's."""
+    if not head_entries:
+        return []
+    kept = [id(b) for h, _ in head_entries for b in _twins(h, base_entries)]
+    return [b for b in base_entries if id(b) not in kept]
 
 
 def _value(text):
@@ -725,9 +761,9 @@ def _raw_differs(b, h, key):
 def editing(repo, mb, head, adapter_paths=()):
     """The editing rules: [one needs-human entry] when mb..head loosens a limit, changes a target OS or changes an
     adapter file's [mutation.tool] (#19: R3 then runs another tool, or none), else []. Read
-    where they are defined: the plan (`ignore`; each stack, matched by folder, its target-os and its adapter's, each
-    side's adapter read through that side's plan, so a new adapter file or a renamed stack is still compared; a file
-    missing on one side reads the defaults), each adapter file's [limits] (one that does not load at head is named),
+    where they are defined: the plan (`ignore`; every stack, each head entry compared with its twin in its folder
+    (_twins), its target-os and its adapter's, each side's adapter read through that side's plan, so a new adapter
+    file or a renamed stack is still compared; a file missing on one side reads the defaults), each adapter file's [limits] (one that does not load at head is named),
     adapter_paths (compared as is), and the max-mutants and mutation-budget inputs of every workflow that calls
     mech-review.yml. Without tomllib (python < 3.11) a changed plan or adapter file is the entry: never passed silently."""
     items, files = [], []
@@ -750,18 +786,44 @@ def editing(repo, mb, head, adapter_paths=()):
         entries = {side: [st for st in (plans[side] or plans[other] or {}).get("stack") or [] if isinstance(st, dict)]
                    for side, other in (("base", "head"), ("head", "base"))}
         bf, hf = _by_folder(repo, mb, entries["base"]), _by_folder(repo, head, entries["head"])
-        for folder in sorted(hf):  # a head stack with no base match compares with the defaults (linux, LIMITS)
-            bst, (b_os, b_lim, _, _, b_tool) = bf.get(folder, ({}, ("linux", {}, None, None, None)))
-            hst, (h_os, h_lim, h_path, h_err, h_tool) = hf[folder]
-            b_os, h_os = bst.get("target-os") or b_os, hst.get("target-os") or h_os
-            if b_os != h_os:
-                where = PLAN if bst.get("target-os") != hst.get("target-os") else h_path
-                add([f"stack in folder `{folder}` target-os {b_os} -> {h_os} in {where}"], where)
-            if h_err:
-                add([f"the adapter file of the stack in folder `{folder}` does not load: {h_err}"], h_path)
-            add(_looser(b_lim, h_lim, "limits.", f"for the stack in folder `{folder}` ({h_path})"), h_path or PLAN)
-            if b_tool != h_tool and not h_err:  # R3's tool: added, removed or changed, a person's call (#19)
-                add([f"[mutation.tool] of the stack in folder `{folder}` changed ({h_path})"], h_path or PLAN)
+        seen = set()  # one item once: a head entry compared with several base entries may give the same one twice
+
+        def once(new, path):
+            add([x for x in new if not (x in seen or seen.add(x))], path)
+
+        for folder in sorted(hf):
+            # a folder with one entry on each side keeps the plain wording; with more, each finding names its entry
+            several = len(hf[folder]) > 1 or len(bf.get(folder, [])) > 1
+            for hst, (h_os, h_lim, h_path, h_err, h_tool) in hf[folder]:
+                stack = f"stack `{hst.get('name')}`" if several else "stack"
+                shown = h_path or hst.get("adapter")  # a built-in has no file: its name
+                if h_err:
+                    once([f"the adapter file of the {stack} in folder `{folder}` does not load: {h_err}"], h_path)
+                for bst, (b_os, b_lim, _, _, b_tool) in _twins(hst, bf.get(folder, [])):
+                    bo, ho = bst.get("target-os") or b_os, hst.get("target-os") or h_os
+                    if bo != ho:
+                        where = PLAN if bst.get("target-os") != hst.get("target-os") or not h_path else h_path
+                        once([f"{stack} in folder `{folder}` target-os {bo} -> {ho} in {where}"], where)
+                    once(_looser(b_lim, h_lim, "limits.", f"for the {stack} in folder `{folder}` ({shown})"),
+                         h_path or PLAN)
+                    if b_tool != h_tool and not h_err:  # R3's tool: added, removed or changed, a person's call (#19)
+                        once([f"[mutation.tool] of the {stack} in folder `{folder}` changed ({shown})"], h_path or PLAN)
+        # a removal is judged like an edit: a base entry that leaves a folder where head entries stay is compared with
+        # each of them, so dropping the entry that ran never moves the runner, loosens a limit or swaps the tool
+        for folder in sorted(bf):
+            for bst, (b_os, b_lim, _, _, b_tool) in _departed(hf.get(folder, []), bf[folder]):
+                for hst, (h_os, h_lim, h_path, h_err, h_tool) in hf[folder]:
+                    gone, stack = bst.get("name"), f"stack `{hst.get('name')}`"
+                    shown = h_path or hst.get("adapter")
+                    bo, ho = bst.get("target-os") or b_os, hst.get("target-os") or h_os
+                    if bo != ho:
+                        once([f"stack `{gone}` leaves folder `{folder}`: {stack} target-os {bo} -> {ho} in {PLAN}"],
+                             PLAN)
+                    once(_looser(b_lim, h_lim, "limits.", f"for the {stack} in folder `{folder}` in place of `{gone}` "
+                                                          f"({shown})"), h_path or PLAN)
+                    if b_tool != h_tool and not h_err:
+                        once([f"[mutation.tool] of the {stack} in folder `{folder}`, in place of `{gone}`, changed "
+                              f"({shown})"], h_path or PLAN)
         for p in adapter_paths:
             b, h = _adapter_side(repo, mb, p), _adapter_side(repo, head, p)
             if h[3]:

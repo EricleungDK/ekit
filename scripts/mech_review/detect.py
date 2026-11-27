@@ -1,0 +1,135 @@
+"""Setup detection (#23): the projects no built-in stack and no repo adapter file covers, for ci-doctor's setup mode.
+
+A project is a folder holding a manifest of a kind in KINDS that no known adapter lists (`known`: the manifest names
+the built-ins and the repo's adapter files list), outside fixture, vendored and build folders (resolve.SKIP_DIRS); the
+shallowest such folders count, as in resolve.candidates. For each: its language (the kind's language with the most
+source files under the folder), build tool, test framework (the first of the kind's needles found in a manifest of
+that build under the folder, any depth: a solution's test project too) and target OS (OS_RULES, else linux), with the
+reason. Git only: names and blobs at one commit, nothing run.
+"""
+import fnmatch
+import re
+from collections import namedtuple
+
+from . import gitio
+from .resolve import SKIP_DIRS
+
+# pattern: a manifest's file name (fnmatch, case-sensitive; `<dir>/<file>`: a dir holding that file is the manifest);
+# languages: (language, source extension), the first wins a tie; frameworks: (needle, name), the first needle a manifest
+# of the build holds (lowercase, matched against the lowercased text) names it
+Kind = namedtuple("Kind", "pattern build languages frameworks")
+JVM_LANGUAGES = (("java", ".java"), ("kotlin", ".kt"))
+# JUnit Platform before plain junit: Jupiter's artifact or group, Gradle's useJUnitPlatform(), Spring Boot's starter
+JVM_TESTS = (("junit-jupiter", "junit5"), ("junit.jupiter", "junit5"), ("usejunitplatform", "junit5"),
+             ("spring-boot-starter-test", "junit5"), ("testng", "testng"), ("junit", "junit4"))
+DOTNET_LANGUAGES = (("csharp", ".cs"), ("fsharp", ".fs"))
+DOTNET_TESTS = (("xunit", "xunit"), ("nunit", "nunit"), ("mstest", "mstest"))
+KINDS = (
+    Kind("pom.xml", "maven", JVM_LANGUAGES, JVM_TESTS),
+    Kind("build.gradle", "gradle", JVM_LANGUAGES, JVM_TESTS),
+    Kind("build.gradle.kts", "gradle", JVM_LANGUAGES, JVM_TESTS),
+    Kind("settings.gradle", "gradle", JVM_LANGUAGES, JVM_TESTS),  # the build's root: its folders (buildSrc) below it
+    Kind("settings.gradle.kts", "gradle", JVM_LANGUAGES, JVM_TESTS),
+    Kind("*.sln", "dotnet", DOTNET_LANGUAGES, DOTNET_TESTS),
+    Kind("*.csproj", "dotnet", DOTNET_LANGUAGES, DOTNET_TESTS),
+    Kind("Package.swift", "swiftpm", (("swift", ".swift"),), ()),
+    Kind("go.mod", "go", (("go", ".go"),), (("", "testing"),)),  # go's own: every module tests with `go test`
+    Kind("*.xcodeproj/project.pbxproj", "xcode", (("swift", ".swift"), ("objective-c", ".m")), ()),
+)
+# the target OS a project's tests need (#23): the first rule whose pattern a manifest of its build holds, else linux.
+# why names that file: {file}
+OsRule = namedtuple("OsRule", "build pattern os why")
+OS_RULES = (
+    OsRule("dotnet", re.compile(r"<UseWPF>\s*true\s*</UseWPF>|60dc8134-eba5-43b8-bcc9-bb4bc16c2548"
+                                r"|<Reference\s+Include=\"PresentationFramework\b", re.I), "windows",
+           "`{file}` is a WPF app (UseWPF, the WPF project type or a PresentationFramework reference): it builds and "
+           "runs on Windows only"),
+    OsRule("xcode", re.compile(""), "macos", "`{file}`: an Xcode project (an iOS or macOS app) builds on macOS only"),
+    OsRule("swiftpm", re.compile(r"\.iOS\s*\("), "macos",
+           "`{file}` names an iOS platform: an iOS app's tests run on macOS only"),
+)
+BUILDS = tuple(sorted({k.build for k in KINDS}))
+EXTRA = {"dotnet": ("Directory.Build.props",)}  # read like the build's manifests, never a project of its own
+EVIDENCE_SKIP = SKIP_DIRS - {"tests", "test"}  # a test project's manifest names the test framework
+XML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+# a string literal (kept: `"**/*Test.class"` opens no comment) or a comment (dropped), leftmost first: a text block,
+# a double- or single-quoted string, Groovy's `~/.../` pattern (a slashy string). Not read: a slashy string without the
+# `~` (`/a\/*b/`, read as a division) and a dollar-slashy one (`$/.../$`); a `/*` in one can drop the lines after it
+C_COMMENT = re.compile(r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|~/(?:\\.|[^/\\\n])*/'
+                       r'|/\*[\s\S]*?\*/|//[^\n]*')
+COMMENTS = {".xml": XML_COMMENT, ".csproj": XML_COMMENT, ".props": XML_COMMENT, ".swift": C_COMMENT,
+            ".gradle": C_COMMENT, ".kts": C_COMMENT}
+LINUX = "no Windows- or Apple-only project file"
+
+
+def _manifest(path):
+    """(kind, folder, manifest name) of a manifest path, or None."""
+    parts = path.split("/")
+    for k in KINDS:
+        n = k.pattern.count("/") + 1
+        if len(parts) >= n and fnmatch.fnmatchcase("/".join(parts[-n:]), k.pattern):
+            return k, "/".join(parts[:-n]) or ".", parts[-n]
+    return None
+
+
+def _under(path, folder):
+    return folder == "." or path.startswith(folder + "/")
+
+
+def projects(repo, head, paths, known, project_dir=None, build=None):
+    """[{project_dir, manifests, language, build, test_framework, target_os, target_os_why}], sorted by folder: the
+    shallowest projects no known adapter covers (every manifest of one build in a folder is one project, covered when
+    any of them, or its file, is a known name: an adapter may list only `build.gradle.kts`, or `project.pbxproj`), or
+    with project_dir only the ones in that folder (any depth); build: only that build's."""
+    groups = {}  # (folder, build) -> (manifests, the names they go by): one project, covered by any name known
+    for path in paths:
+        m = _manifest(path)
+        if m is None or SKIP_DIRS & set(m[1].split("/")) or build not in (None, m[0].build):
+            continue
+        manifests, names = groups.setdefault((m[1], m[0].build), ([], set()))
+        manifests.append(m[2])
+        names.update({m[2], path.rpartition("/")[2]})
+    found = {k: manifests for k, (manifests, names) in groups.items() if not names & set(known)}
+    if project_dir:
+        found = {k: v for k, v in found.items() if k[0] == project_dir}
+    elif found:
+        top = min(depth(folder) for folder, _ in found)
+        found = {k: v for k, v in found.items() if depth(k[0]) == top}
+    return [_describe(repo, head, paths, folder, build, manifests)
+            for (folder, build), manifests in sorted(found.items())]
+
+
+def depth(folder):
+    """a folder's depth: `.` is 0, `a` is 1, `a/b` is 2."""
+    return folder.count("/") + (folder != ".")
+
+
+def _describe(repo, head, paths, folder, build, manifests):
+    kinds = [k for k in KINDS if k.build == build]
+    mine = [p for p in paths if _under(p, folder)]
+    counts = [(sum(p.endswith(ext) for p in mine), lang) for lang, ext in kinds[0].languages]
+    language = max(counts, key=lambda c: c[0])[1]
+    extra = EXTRA.get(build, ())
+    evidence = [p for p in mine if ((_manifest(p) or (None,))[0] in kinds or p.rpartition("/")[2] in extra)
+                and not EVIDENCE_SKIP & set(p.split("/")[:-1])]
+    texts = {p: _text(repo, head, p) for p in evidence}
+    framework = next((name for needle, name in kinds[0].frameworks
+                      if any(needle in t.lower() for t in texts.values())), None)
+    target_os, why = next(((r.os, r.why.format(file=f)) for r in OS_RULES if r.build == build
+                           for f, t in sorted(texts.items()) if r.pattern.search(t)), ("linux", LINUX))
+    return {"project_dir": folder, "manifests": sorted(manifests), "language": language,
+            "build": build, "test_framework": framework, "target_os": target_os, "target_os_why": why}
+
+
+def _text(repo, head, path):
+    """the file at head as text, its comments dropped: UTF-16 by its byte-order mark (Visual Studio writes some
+    project files so), else UTF-8."""
+    raw = gitio.blob(repo, head, path).encode("utf-8", "surrogateescape")
+    text = raw.decode("utf-16", "replace") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8-sig", "replace")
+    rx = COMMENTS.get("." + path.rpartition(".")[2])
+    return rx.sub(_uncommented, text) if rx else text
+
+
+def _uncommented(m):
+    """a match of a COMMENTS pattern: a string literal stays, a comment goes"""
+    return m.group(0) if m.group(0)[0] in "\"'~" else ""

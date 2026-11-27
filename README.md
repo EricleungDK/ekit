@@ -7,7 +7,7 @@ Coding agents finish fast, and some of that speed comes from skipping a failing 
 - **In the session**: skills and hooks that make the agent classify a red test before touching code, try the result the way a user would, and end with a report where every claim has a command and its output next to it.
 - **On the pull request**: a GitHub workflow that checks the diff mechanically. Did a test get deleted or weakened? Does a new test actually fail without the fix? Would the tests notice if the changed code were wrong?
 
-Works in Claude Code, Codex, GitHub Copilot, and any agent that reads [Agent Skills](https://skills.sh). The PR checks support Rust, Python and TypeScript/JavaScript.
+Works in Claude Code, Codex, GitHub Copilot, and any agent that reads [Agent Skills](https://skills.sh). The PR checks support any language the adapter format, or a parser command, can describe: Rust, Python and TypeScript/JavaScript are built in, and any other such language gets an adapter file that `/ekit:ci-doctor` generates and proves for your repo, with R3 where a mutation tool exists ([adding a language](docs/adding-a-language.md)).
 
 ## What it looks like
 
@@ -122,7 +122,7 @@ Copies editable skill files. Update: `npx skills@latest update`.
 
 ### Setup per OS
 
-The plugin needs Python 3.9 or newer (standard library only) and Git, on macOS, Windows or Linux. No bash and no WSL:
+The plugin needs Python 3.9 or newer (3.11+ to add a language: [adding a language](docs/adding-a-language.md#before-you-start); standard library only) and Git, on macOS, Windows or Linux. No bash and no WSL:
 each hook starts the first of `python3`, `py -3` and `python` that is 3.9+, in whichever shell Claude Code gives it,
 and one message names what is missing when none is.
 
@@ -174,17 +174,20 @@ git clone --depth 1 https://github.com/EricleungDK/ekit ~/.ekit
 
 1. Install (above) and start a session. From now on a red test gets classified before the agent edits code.
 2. Give it a task through the orchestrator: `/ekit:orchestrate-agent fix #12`. It writes an acceptance checklist, delegates, reviews, and may not stop until the finish report is given.
-3. Put the checks on your PRs: `/ekit:ci-doctor`. It detects your stack, writes the workflow, and opens a PR for you to merge.
+3. Put the checks on your PRs: `/ekit:ci-doctor`. It detects your stack, writes the workflow, and opens a PR for you to merge. A language with no built-in stack gets a generated adapter file first: [adding a language](docs/adding-a-language.md).
 
 ## Words used here
 
 | Term | Meaning |
 |---|---|
 | **mech-review** | The mechanical PR checks. Same input, same output; no model involved. |
+| **R0 adapter proof** | The stack's adapter catches a fixed list of cheats and finds every test the runner lists. A failure goes to a repair PR, never to the PR's agent. |
 | **R1 red-first** | At least one new or changed test fails on the base branch's code. Proves the test can catch the change. Agent branches only. |
 | **R2 test-diff guard** | No test deleted, skipped or weakened; no unreasoned lint suppression; no edit to protected paths. |
-| **R3 mutation** | The changed lines are deliberately broken, one small change at a time; a test must notice each. |
+| **R3 mutation** | The changed lines are deliberately broken, one small change at a time; a test must notice each. Needs a mutation tool: a language without one reads `n/a`. |
 | **R4 determinism** | Each new or changed test passes 5 times in a row. |
+| **adapter file** | `.ekit/adapters/<name>.toml`: a language described as data (tests, asserts, skips, runner, mutation tool), for a stack that is not built in. |
+| **stack plan** | `.ekit/stack-plan.toml`: the repo's stacks, planned, current or retiring. A manifest no stack covers fails the PR. |
 | **entry** | One finding. `fail` blocks, `confirm` asks a reviewer, `waived` was let through by a person. |
 | **waiver** | A `/mech-waive <id> <reason>` PR comment from a person with write access. Agents cannot waive. |
 | **scenario** | A script in `.ekit/scenarios/` that installs your deliverable and uses it like a user would. |
@@ -225,21 +228,21 @@ A reusable GitHub workflow. It posts one comment per PR and sets one check, `mec
 |---|---|
 | `guard` | R2: tests not weakened or deleted. Reads the diff only; runs no PR code. |
 | `red-first` | R1: new tests fail before the fix. R4: results are deterministic. |
-| `mutants` | R3: mutation testing on the changed lines (cargo-mutants, mutmut, Stryker). Runs only when production code changed. |
+| `mutants` | R3: mutation testing on the changed lines (cargo-mutants, mutmut, Stryker, or the tool an adapter file declares; `n/a` with none). Runs only when production code changed. |
 
-- **Stacks**: Rust, Python, TypeScript/JavaScript.
+- **Stacks**: any language the adapter format, or a parser command, can describe. Rust, Python and TypeScript/JavaScript are built in; any other language through an adapter file that ci-doctor generates and proves ([adding a language](docs/adding-a-language.md)). R3 reads `n/a` for a language whose adapter declares no mutation tool.
 - **Agent branches**: R1 runs on branches starting with `agent/`, `claude/`, `codex/`, `copilot/` or `cursor/` (configurable; `*` for all).
 - **Waivers**: a person with write access can let one entry through with `/mech-waive <id> <reason>`; the comment offers the line ready to copy, and the waiver shows with their name. A placeholder reason or an edited comment does not waive. With the [re-run caller](docs/mech-review-ci.md#waiver-re-run), the check updates on its own. Nothing in the PR itself can waive.
 - **Forks**: on a read-only token the result goes to the job summary and the check still passes or fails on it.
 
-Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-review-ci.md). The testing rules behind the checks: [docs/testing-standard.md](docs/testing-standard.md).
+Adopt with `/ekit:ci-doctor`, or by hand: [docs/mech-review-ci.md](docs/mech-review-ci.md). A language with no built-in stack: [docs/adding-a-language.md](docs/adding-a-language.md). The testing rules behind the checks: [docs/testing-standard.md](docs/testing-standard.md).
 
 <details>
 <summary>Scripts</summary>
 
 | Script | Does |
 |---|---|
-| `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
+| `scripts/mech-review.py` | Review engine: `r2`, `red`, `all`, `baseline`, `mutants`, `merge`, `plan`, `doctor`, `resolve`, `r0`, `drift`, `parser-install`. Contract JSON; exit 0 pass / 1 fail / 2 usage. `--help` for flags. |
 | `scripts/scenarios.py` | Scenario runner: `run [ID]`, `check`, `can-fail REF`, `seeded ID`, `tree-hash`. Each scenario has one run file: `run.py` (this Python), `run.sh` (bash) or `run.ps1` (PowerShell). Files a scenario saves to `$EKIT_ARTIFACT_DIR` (screenshots) are kept beside its transcript. A `- feature: <name>` line in SCENARIO.md marks a seeded scenario: a full `run` and a fresh `check` end with `N of M features working`; `seeded ID` reads one that already passes `CHECKS NOTHING YET`. |
 | `scripts/task-verify.py` | `declare -- CMD`: makes CMD a verify command of the session. `run -- CMD`: runs it and records the result for the current files. `check SESSION`: the Stop gate's question. `--hook`: the task hook. |
 | `scripts/mech-comment.py` | Merges job results, applies waivers, renders and posts the PR comment. Exit 0 pass / 1 fail / 3 API error / 4 no result. |
@@ -285,7 +288,7 @@ Skill evals (kit dev only):
 evals/run.sh                     # all cases; options go to `claude plugin eval`, e.g. --case 'triage-*' -j 4
 ```
 
-On Linux the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`. On macOS `evals/run.sh` puts the real `git` first on `PATH`: the `/usr/bin/git` shim cannot run inside the sandbox. On both, the sandbox blocks writes under `.git/worktrees`, where the scenario runner and mech-review's trial make their scratch worktrees: graders for those cases check the commands run and what the agent says about them, not a runner PASS. `.git/ekit` stays writable, so verify commands are declared and recorded as in a real session.
+On Linux the eval sandbox needs `bubblewrap` + `socat` and no symlinks inside `~/.docker`, and it denies writes under `/tmp`, where the harness makes each run's repo: `evals/run.sh` points `TMPDIR` at `~/.cache/ekit-eval/tmp` unless yours is outside `/tmp` already. The sandbox turns git hooks off (seen on Linux; macOS not checked), so on every OS `evals/run.sh` puts `evals/git-shim.sh` first on `PATH` as `git`: it runs a case's verdict script after each ref move. On macOS `evals/run.sh` puts the real `git` first on `PATH`: the `/usr/bin/git` shim cannot run inside the sandbox. On both, the sandbox blocks writes under `.git/worktrees`, where the scenario runner and mech-review's trial make their scratch worktrees: graders for those cases check the commands run and what the agent says about them, not a runner PASS. `.git/ekit` stays writable, so verify commands are declared and recorded as in a real session.
 
 Changes per release: [CHANGELOG.md](CHANGELOG.md).
 

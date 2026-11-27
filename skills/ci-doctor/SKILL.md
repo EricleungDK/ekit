@@ -1,6 +1,6 @@
 ---
 name: ci-doctor
-description: Set up or repair a repo's mech-review CI. Use when adopting mech-review, or when its check reports `no result`, `n/a`, or a CI entry.
+description: Set up or repair a repo's mech-review CI. Use when adopting mech-review, when its check reports `no result`, `n/a`, or a CI entry, or for an `adapter-fix` entry.
 ---
 
 Ends in a PR a person merges. `.github/**` is a human decision, so your last action is opening that PR.
@@ -9,7 +9,20 @@ Ends in a PR a person merges. `.github/**` is a human decision, so your last act
 
 ## 1. Diagnose
 
-Run `DOCTOR` on the default branch, no hints. Several projects found → ask which, then pass `--stack` and `--project-dir`.
+Started on an `adapter-fix` entry (a PR's mech-review, an orchestrator's hand-off): follow [repair.md](repair.md).
+
+A setup PR's own `no result` (its base resolves no stack), and that of a repo whose plan has only `planned` entries, are expected (`<kit>/docs/mech-review-ci.md`, Setup mode, Known gaps): no reason to run setup again.
+
+Else run `DOCTOR` on the default branch, no hints. Its `mode` picks the way on:
+
+- `ask`: several projects. Ask the user which, naming each as the entry does and what the pick means: a built-in stack is adopted as it is; one with `no adapter` gets an adapter written and proved for this repo first (setup.md). Then rerun with `--project-dir`, `--stack` or both (the entry's hint).
+- `repair`: the repo's own adapter file or stack plan does not read, an adapter file of its own finds no project (it may be meant for the one found), or a stack is the repo's adapter file's, which doctor does not trial: follow [repair.md](repair.md).
+- `setup`: a project no adapter covers: follow [setup.md](setup.md), which takes step 3's callers and step 5's PR from here.
+- `adopt`: the steps below.
+- null: read the entry.
+  - `no project found: no ...`: the repo holds no manifest. If the user named the stack to come ("a Java API"), that is setup mode for a planned stack: follow [setup.md](setup.md). Else ask what the repo will hold.
+  - `no project found for <stack or folder>`: what you passed matched nothing. Ask again, naming the projects the hint lists.
+  - `this python cannot read the repo's adapter files ...`: rerun `DOCTOR` with a Python 3.11 or newer; with none here, stop and report it.
 
 Keep `inputs`, `trial` and each entry's `hint`: the hint is the exact fix.
 
@@ -58,15 +71,15 @@ Ask the user for `protected-paths` beyond `.github/**`, and whether their agent 
 
 ## 4. Iterate
 
-Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0. An entry that survives its fix twice → stop with a Needs-you block (finish).
+Commit (doctor reads HEAD), then rerun `DOCTOR`. Done when it exits 0, or when its one entry is the `adapter-file` `confirm` of the repo's own adapter file (it exits 1: doctor trials the built-in stacks only, and setup.md's or repair.md's proof stands in for that). An entry that survives its fix twice → stop with a Needs-you block (finish).
 
 `env` entries on this machine may be local-only: a missing tool here says nothing about the runner, and `mutation_tool: absent` gets no entry because CI installs it. Report them as verification debt unless the workflow also lacks the input.
 
 ## 5. Open the PR
 
-Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say the PR's own mech-review check goes red `needs-human` by design (it edits `.github/**`): the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green.
+Push and open the PR. Body: doctor's `summary` at the branch head, the `trial` verdicts, each input and why. Say how the PR's own mech-review check reads. A repo with a built-in stack: red `needs-human` by design (it edits `.github/**`); the owner reads the change, posts that entry's ready-made `/mech-waive <id> <reason>` line with a reason, re-runs the failed `report` job (the mech-waive caller only works once merged: GitHub runs comment workflows from the default branch), and merges on green. A setup PR (setup.md) whose base resolves no stack (no built-in project there): `no result`, red with nothing to waive; the owner merges on the proof report and makes the check required only after the merge. One whose base resolves a built-in stack beside the new one: the check runs, as for a repo with a built-in stack, and setup.md step 8 names its entries.
 
-Report the PR URL via finish. Stopped before the PR (blocked, no remote, asked to) → the final report itself carries the full caller YAML and PR body.
+Report the PR URL via finish. Stopped before the PR with its files ready (no remote, asked to, step 4's Needs-you stop) → the final report itself carries the full caller YAML and PR body. A proof that did not pass (setup.md, repair.md) has no PR to show: its report is the blocked one that file names.
 
 ## Stack plan
 

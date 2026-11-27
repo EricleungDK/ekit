@@ -11,7 +11,7 @@ import re
 import shlex
 import shutil
 
-from . import gitio, mutants, red, report
+from . import adapter_file, detect, gitio, mutants, red, report, stack_plan
 from .globs import any_glob
 from .mutants import DEFAULT_CMD as RUST_MUTANTS
 from .resolve import candidates, pick
@@ -19,10 +19,12 @@ from .stack import ADAPTERS
 
 CALLER = "EricleungDK/ekit/.github/workflows/mech-review.yml@"
 CALLERS = (CALLER, "EricleungDK/ek/.github/workflows/mech-review.yml@")  # + pre-rename callers
+WAIVER = "EricleungDK/ekit/.github/workflows/mech-waive.yml@"
 
 
 def is_caller(text):
     return any(c in text for c in CALLERS)
+
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 APT = re.compile(r"\bapt(?:-get)?\s+install\s+([^\n#|&;]*)")
 EXPR = re.compile(r"\$\{\{.*?\}\}")
@@ -37,12 +39,76 @@ SANDBOX_INPUTS = ("extra-apt-packages: bubblewrap; "
                   "setup-command: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0")
 NOT_YOURS = "merging or pushing the CI change yourself"
 NOT_SKIP = "skipping or deselecting tests in the caller to get a green trial"
+NOT_UNPROVEN = "opening the setup PR before its adapter passes R0"
 DEFAULT_TEST_PATHS = "tests/**"
 SCENARIOS = ".ekit/scenarios/"  # taste-it scenarios (and their fixtures): test support in every stack (#39)
 SCENARIO_GLOB = SCENARIOS + "**"
 MUTMUT_PYTEST = "-p no:randomly -p no:random-order"  # what mutmut 3.8.1 adds to its pytest run (runners/harness.py)
 LS_TREE = re.compile(r"(\d+) \w+ (\w+)\t(.*)", re.S)  # a record of `git ls-tree -z`
 MISSING = re.compile(r"No such file or directory: (['\"])(.+?)\1")
+
+
+def own_ci(repo, head, paths):
+    """the repo's own CI workflow files (#23): each one is_ci reads as the team's CI. Setup mode writes base CI jobs only
+    when there is none."""
+    return [p for p in sorted(paths) if WORKFLOW.match(p) and is_ci(gitio.blob(repo, head, p))]
+
+
+def _calls_ekit(text):
+    return is_caller(text) or WAIVER in text
+
+
+CI_EVENTS = {"push", "pull_request", "pull_request_target", "merge_group"}
+YAML_KEY = re.compile(r"""^(['"]?)([\w-]+)\1\s*:(?:\s+(.*?))?\s*$""")
+TAGS_ONLY = {"tags", "tags-ignore"}
+
+
+def sections(lines):
+    """{key: (inline value, [lines under it])} of the keys at the outermost indent of a block of YAML lines: a reading
+    of the block style a workflow is written in, not a YAML parser. Comment lines, blank lines and ` #` comments after
+    a value are dropped."""
+    lines = [re.sub(r"\s+#.*$", "", line) for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if not lines:
+        return {}
+    out, key, top = {}, None, min(len(x) - len(x.lstrip()) for x in lines)
+    for line in lines:
+        m = YAML_KEY.match(line.strip()) if len(line) - len(line.lstrip()) == top else None
+        if m:
+            key = m.group(2)
+            out[key] = (m.group(3) or "", [])
+        elif key is not None:
+            out[key][1].append(line)
+    return out
+
+
+def jobs(text):
+    """{job id: its lines} of a workflow's `jobs:`, or None when they are written in flow style (`jobs: {test: ...}`),
+    which this reader does not read"""
+    block = sections(text.splitlines()).get("jobs")
+    if block and block[0] not in ("", "{}"):
+        return None
+    return {k: v for k, (_, v) in sections(block[1]).items()} if block else {}
+
+
+def _events(on):
+    """the events a workflow's `on:` names, or None when it holds a shape this reader does not read (a flow mapping)
+    or there is no `on:`. A push of tags only is a release: left out."""
+    if on is None or on[0].startswith("{"):
+        return None
+    value, block = on
+    items = value.strip("[]").split(",") if value else [x.strip()[1:] for x in block if x.strip().startswith("- ")]
+    if value or items:
+        return {x.strip().strip("'\"") for x in items}
+    return {k for k, (_, under) in sections(block).items() if k != "push" or not under or set(sections(under)) - TAGS_ONLY}
+
+
+def is_ci(text):
+    """the workflow is the team's CI: it holds a job that calls no ekit workflow (a build or test job of its own), and
+    its trigger is a push or a pull request (a push of tags only is a release). A trigger or jobs this reader cannot
+    read count, so base jobs are never written beside a team's CI"""
+    events, found = _events(sections(text.splitlines()).get("on")), jobs(text)
+    own = found is None or any(not any(_calls_ekit(line) for line in job) for job in found.values())
+    return own and (events is None or bool(events & CI_EVENTS))
 
 
 def read_ci(texts):
@@ -493,6 +559,57 @@ def _channel(repo, head, project_dir, paths):
     return None
 
 
+def _reads_toml():
+    try:
+        import tomllib  # noqa: F401 - python 3.11+: adapter files and the stack plan are TOML
+    except ImportError:
+        return False
+    return True
+
+
+def _repo_adapters(repo, head, paths):
+    """({name: (adapter, path)}, own, entries, ignore) as resolve reads them at head (#17): each
+    .ekit/adapters/<name>.toml (a file named like a built-in replaces it) and each adapter file the stack plan names,
+    read one by one; own: the paths of the adapter files that define a stack of their own (not named like a built-in),
+    read or not; entries: a file or a plan that does not read; ignore: the plan's ignore folders. None for the dict
+    when this python has no TOML reader and the repo has either."""
+    files = [p for p in sorted(paths) if p.rpartition("/")[0] == stack_plan.ADAPTERS_DIR and p.endswith(".toml")]
+    if (files or stack_plan.PATH in paths) and not _reads_toml():
+        return None, [], [report.entry(
+            "doctor", "", 0, "toml", "env", "fail",
+            "this python cannot read the repo's adapter files and stack plan (tomllib, python 3.11 or newer): doctor "
+            "cannot tell which manifests they cover", "rerun doctor with python 3.11 or newer", NOT_UNPROVEN)], ()
+    mine, entries = {}, []
+    own = [p for p in files if p.rpartition("/")[2][:-len(".toml")] not in ADAPTERS]
+    for path in files:
+        try:
+            mine.update((n, (a, path)) for n, a in stack_plan.repo_adapters(repo, head, [path]).items())
+        except adapter_file.AdapterFileError as e:
+            entries.append(report.entry("doctor", path, 0, "adapter-file", "adapter-fix", "fail",
+                                        f"the repo's adapter file does not read: {e}",
+                                        "repair it (ci-doctor's repair mode, #24), then rerun doctor", NOT_UNPROVEN))
+    try:
+        plan = stack_plan.at(repo, head)
+    except stack_plan.PlanError as e:
+        plan = None
+        entries.append(report.entry("doctor", stack_plan.PATH, 0, "stack-plan", "adapter-fix", "fail",
+                                    f"the stack plan does not read: {e}",
+                                    "repair it (ci-doctor's repair mode, #24), then rerun doctor", NOT_UNPROVEN))
+    for e in plan.entries if plan else ():
+        if e.adapter_ref not in ADAPTERS:
+            own += [e.adapter_ref] if e.adapter_ref not in own else []
+            if e.adapter is not None:
+                mine.setdefault(e.adapter.name, (e.adapter, e.adapter_ref))
+    return mine, sorted(own), entries, tuple(plan.ignore) if plan else ()
+
+
+def _envelope(head, detected, inputs, tried, setup, mode, entries):
+    entries = report.finalize(entries)
+    summary = f"fail {head} ({len(entries)} problems)" if entries else f"ok {head}"
+    return {"ekit": report.ekit_version(), "head": head, "detected": detected, "inputs": inputs, "trial": tried,
+            "setup": setup, "mode": mode, "entries": entries, "summary": summary}
+
+
 def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, runner=None):
     try:
         gitio.git(repo, "rev-parse", "--git-dir")
@@ -500,19 +617,63 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         raise gitio.Die(f"not a git repo: {repo}")
     head = gitio.resolve(repo, head_ref)
     paths = gitio.git(repo, "ls-tree", "-r", "--name-only", head).splitlines()
-    found = [c for c in candidates(paths) if (not stack or c[0] == stack) and (not project_dir or c[1] == project_dir)]
-    if project_dir and stack and not found:
-        found = [(stack, project_dir)]
+    mine, own, entries, ignore = _repo_adapters(repo, head, paths)
     detected = {"stack": None, "project_dir": None}
-    inputs, entries, tried = {}, [], {"tests": "skipped"}
-    if len(found) != 1:
+    inputs, tried, setup, mode = {}, {"tests": "skipped"}, None, None
+    if mine is None:  # no TOML reader here: which manifests the repo's adapters cover is unknown, so nothing is routed
+        return _envelope(head, detected, inputs, tried, setup, mode, entries)
+    adapters = {**ADAPTERS, **{n: a for n, (a, _) in mine.items()}}
+    named = stack in adapters  # else a build of a project no adapter covers (detect.BUILDS), or none
+    scan = [p for p in paths if not any(stack_plan.holds(f, p) for f in ignore)]  # the plan's ignore: no projects
+    found = [c for c in candidates(scan, adapters)
+             if (not stack or c[0] == stack) and (not project_dir or c[1] == project_dir)]
+    if project_dir and named and not found:
+        found = [(stack, project_dir)]
+    known = {m for a in adapters.values() for m in a.manifests}
+    new = [] if named else detect.projects(repo, head, scan, known, project_dir, stack)
+    if found and new:  # one pool, the shallowest wins: the deeper projects are tooling, whichever kind (#23)
+        top = min(detect.depth(found[0][1]), detect.depth(new[0]["project_dir"]))
+        found = [c for c in found if detect.depth(c[1]) == top]
+        new = [p for p in new if detect.depth(p["project_dir"]) == top]
+    if new:
+        setup = {"projects": new, "own_ci": own_ci(repo, head, paths)}
+    if new and len(found) + len(new) > 1:
+        mode = "ask"
+        names = ", ".join([f"{s} in {d}" for s, d in found]
+                          + [f"{p['language']} ({p['build']}, no adapter) in {p['project_dir']}" for p in new])
+        entries.append(report.entry("doctor", "", 0, "ambiguous", "needs-human", "fail", f"several projects: {names}",
+                                    "pick one with --project-dir, --stack (a built-in, or the build of a project with "
+                                    "no adapter) or both", "guessing the project"))
+    elif new:
+        p = new[0]
+        manifest = p["manifests"][0] if p["project_dir"] == "." else f"{p['project_dir']}/{p['manifests'][0]}"
+        homes = {path: a for a, path in mine.values()}
+        orphans = [x for x in own if x not in homes or not candidates(scan, {"own": homes[x]})]
+        if orphans and not (project_dir or stack):  # an adapter of the repo's own finds no project: it may be this one's
+            mode = "repair"
+            entries.append(report.entry(
+                "doctor", manifest, 0, "own-adapter", "adapter-fix", "fail",
+                f"no adapter lists `{manifest}` ({p['language']}, {p['build']}), and the repo's own adapter files "
+                f"{_listed(orphans)} find no project: one may be meant for it",
+                "repair or extend that adapter file (ci-doctor's repair mode, #24) rather than set up a second one; "
+                "the owner decides", NOT_UNPROVEN))
+        else:
+            mode = "setup"
+            entries.append(report.entry("doctor", manifest, 0, "no-adapter", "adapter-fix", "fail",
+                                        f"no built-in or adapter file covers `{manifest}` ({p['language']}, "
+                                        f"{p['build']})", "set up its adapter with ci-doctor's setup mode, starting "
+                                        "from `setup`", NOT_UNPROVEN))
+    elif len(found) != 1:
         if found:
+            mode = "ask"
             names = ", ".join(f"{s} in {d}" for s, d in found)
             entries.append(report.entry("doctor", "", 0, "ambiguous", "needs-human", "fail", f"several projects: {names}",
                                         "pick one with --stack and --project-dir", "guessing the project"))
         elif stack or project_dir:
             asked = " in ".join(x for x in (stack, project_dir) if x)
-            names = ", ".join(f"{s} in {d}" for s, d in candidates(paths)) or "none"
+            names = ", ".join([f"{s} in {d}" for s, d in candidates(scan, adapters)]
+                              + [f"{p['language']} ({p['build']}, no adapter) in {p['project_dir']}"
+                                 for p in detect.projects(repo, head, scan, known)]) or "none"
             entries.append(report.entry("doctor", "", 0, "no-match", "needs-human", "fail", f"no project found for {asked}",
                                         f"projects here: {names}; passing both --stack and --project-dir overrides detection",
                                         "guessing the project"))
@@ -520,8 +681,18 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
             entries.append(report.entry("doctor", "", 0, "no-project", "needs-human", "fail",
                                         "no project found: no " + ", ".join(m for a in ADAPTERS.values() for m in a.manifests),
                                         "pass --stack and --project-dir", "guessing the project"))
+    elif found[0][0] not in ADAPTERS:
+        mode = "repair"
+        detected = {"stack": found[0][0], "project_dir": found[0][1]}
+        entries.append(report.entry(
+            "doctor", mine[found[0][0]][1], 0, "adapter-file", "adapter-fix", "confirm",
+            f"`{found[0][0]}` in {found[0][1]} is checked through the repo's adapter file: doctor trial-runs the "
+            "built-in stacks only",
+            f"prove it with `r0 --stack {found[0][0]} --project-dir {found[0][1]}` (static half; `red --r0` runs the "
+            "runtime half) and `drift`; ci-doctor's repair mode (#24) takes it from there", NOT_UNPROVEN))
     else:
         stack, project_dir = found[0]
+        mode = "adopt"
         detected = {"stack": stack, "project_dir": project_dir}
         flows = sorted(p for p in paths if WORKFLOW.match(p))
         texts = {p: gitio.blob(repo, head, p) for p in flows}
@@ -536,7 +707,6 @@ def run(repo, head_ref="HEAD", stack=None, project_dir=None, run_trial=True, run
         if run_trial:
             tried, trial_entries = trial(repo, head, stack, project_dir, runner or red.default_runner())
             entries = trial_entries + entries
-    entries = report.finalize(entries)
-    summary = f"fail {head} ({len(entries)} problems)" if entries else f"ok {head}"
-    return {"ekit": report.ekit_version(), "head": head, "detected": detected, "inputs": inputs, "trial": tried,
-            "entries": entries, "summary": summary}
+    if mode != "ask" and any(e["_key"] in ("adapter-file", "stack-plan") and e["severity"] == "fail" for e in entries):
+        mode = "repair"  # a repo adapter file or plan that does not read: repaired before anything is set up on it
+    return _envelope(head, detected, inputs, tried, setup, mode, entries)

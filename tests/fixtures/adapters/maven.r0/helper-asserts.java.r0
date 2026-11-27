@@ -1,0 +1,30 @@
+// R0 seed (maven): each test is a run of non-blank lines; `adds` has two asserts, each on its own line.
+package com.example.r0;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+
+class SeedTest {
+    static int add(int a, int b) {
+        return a + b;
+    }
+
+    static void check(int x) {
+        assertEquals(3, x);
+        assertTrue(x > 0);
+    }
+
+    @Test
+    void adds() {
+        int x = add(1, 2);
+        check(x);
+    }
+
+    @Test
+    void addsZero() {
+        assertEquals(2, add(0, 2));
+    }
+}

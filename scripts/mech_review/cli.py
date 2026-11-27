@@ -10,7 +10,7 @@ import signal
 import sys
 import tempfile
 
-from . import (adapter_file, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, r0_runtime, red,
+from . import (adapter_file, detect, doctor, engine, gitio, merge, mutation_tool, parser_cmd, parser_install, r0, r0_runtime, red,
                report, resolve, stack_plan)
 from .stack import ADAPTERS
 
@@ -88,7 +88,19 @@ summary (one line, text format first line and envelope `summary`):
 
 doctor (`doctor [--repo .] [--stack S] [--project-dir D] [--no-trial]`, no base or head): finds the stack and project dir,
   reads .github/workflows, trial-runs the tests and the mutation tool at HEAD in a throwaway worktree, and prints
-  {ekit, head, detected, inputs, trial, entries, summary}: `inputs` is what the caller needs, each entry names one exact fix.
+  {ekit, head, detected, inputs, trial, setup, mode, entries, summary}: `inputs` is what the caller needs, each entry
+  names one exact fix. The repo's adapters are read as resolve reads them (the built-ins, .ekit/adapters/<name>.toml,
+  the adapter files the stack plan names); one that does not read is an entry. `mode` (#23): adopt (one built-in
+  project), setup, repair (a stack of the repo's adapter file, which doctor does not trial; an adapter file or plan that
+  does not read; an uncovered project while an own adapter file finds no project and nothing was picked: repair mode,
+  #24), ask (several projects: one `ambiguous` entry naming them all; built-in and uncovered share one pool, the
+  shallowest wins), or null. `setup` is null unless a project no
+  adapter covers is found (pom.xml, build.gradle[.kts], settings.gradle[.kts], *.sln, *.csproj, Package.swift,
+  *.xcodeproj, go.mod; outside the plan's ignore folders; a build's manifests in one folder are one project): then {projects: [{project_dir, manifests, language, build, test_framework,
+  target_os, target_os_why}], own_ci: [the team's CI workflows: run on push, pull_request, pull_request_target or
+  merge_group, with a job that calls no ekit workflow; what it cannot parse counts]}. target_os: windows for a WPF app (UseWPF, the WPF project
+  type, PresentationFramework), macos for an Xcode project or a Package.swift naming .iOS, else linux. --stack takes a
+  built-in or such a project's build (maven, gradle, dotnet, swiftpm, xcode, go): every ask has an answer.
   Exit 0 no problems, 1 any problem, 2 usage or git error. Writes nothing.
 
 resolve (`resolve --base B --head H [--repo .] [--stack auto|S] [--project-dir D] [--adapter FILE]`): the workflow's
@@ -403,7 +415,8 @@ def _merge(parser, args):
 def _doctor(argv):
     p = argparse.ArgumentParser(prog="mech-review.py doctor", description="find a repo's mech-review setup; see the main --help")
     p.add_argument("--repo", default=".", help="git repo (default .)")
-    p.add_argument("--stack", choices=sorted(ADAPTERS), help="settles several candidate projects")
+    p.add_argument("--stack", choices=sorted({*ADAPTERS, *detect.BUILDS}),
+                   help="settles several candidate projects: a built-in, or the build of a project no adapter covers")
     p.add_argument("--project-dir", type=project_dir_arg, metavar="DIR", help="settles several candidate projects")
     p.add_argument("--no-trial", action="store_true", help="read the tree only; run nothing")
     args = p.parse_args(argv)
@@ -629,6 +642,9 @@ def _r0_repo(args, adapter, path):
                             fixtures_dir=fixtures)
         except (gitio.Die, r0.FixtureError) as e:
             print(f"mech-review: {e}", file=sys.stderr)
+            return 2
+        except Exception as e:  # never exit 1 with no result: the guard keeps an exit-1 result
+            print(f"mech-review: r0 crashed: {type(e).__name__}: {e}", file=sys.stderr)
             return 2
         finally:
             os.chdir(here)

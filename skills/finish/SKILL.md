@@ -67,7 +67,7 @@ Any ⚠️ row means the report says "done except the rows marked ⚠️", never
 
 ### Blocked
 
-The same blocker 3×, a mech id at its 3rd fix round (failure-triage, mech.md rounds), a denied command, a missing credential or quota: stop retrying, and mark the goal **blocked**, not complete.
+The same blocker 3×, a mech id at its 3rd fix round (failure-triage, mech.md rounds; an `adapter-fix` entry counts no fix round: ci-doctor's repair has its own budget), a denied command, a missing credential or quota: stop retrying, and mark the goal **blocked**, not complete.
 
 ```
 ## Finish: blocked

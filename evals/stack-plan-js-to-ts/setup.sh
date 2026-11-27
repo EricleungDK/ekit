@@ -38,23 +38,37 @@ status = "current"
 TOML
 # Grader support: whenever HEAD or a ref moves (commit, reset, checkout, merge, rebase), the end state at HEAD (the
 # committed plan read with tomllib, and the kit's own drift check on HEAD) goes to .git/ekit-eval/verdict.txt, which the
-# regex graders read; `migrated: yes` needs all three. Git only; nothing printed. The kit's path is data in a file, never
-# shell text.
+# regex graders read; `migrated: yes` needs all three. The trigger is evals/git-shim.sh, which evals/run.sh puts first
+# on PATH as `git` (the eval sandbox turns git hooks off). Git and the kit's engine, copied into .git/ekit-eval/engine
+# (evals/verdict-kit.sh: the sandbox may deny the kit itself); nothing printed. `kit` names that copy, relative to
+# .git/ekit-eval/ (an absolute path is read as one). A crash keeps this run's lines and adds its own.
 mkdir -p .git/ekit-eval
-printf '%s' "$(cd "$(dirname "$0")/../.." && pwd -P)" > .git/ekit-eval/kit
+source "$(dirname "$0")/../verdict-kit.sh"
+copy_engine .git/ekit-eval/engine
+printf 'engine' > .git/ekit-eval/kit
 cat > .git/ekit-eval/verdict.py <<'PY'
 import json, os, subprocess, sys
 here = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], capture_output=True,
                       text=True).stdout.strip()  # the main checkout's .git, from it or from any linked worktree
 repo = os.path.dirname(here)  # the main checkout: its HEAD is the end state, whichever worktree moved a ref
-# a hook runs with the worktree's GIT_DIR (and index) set: dropped, so git reads the main checkout
+# a caller's GIT_DIR (and index), a linked worktree's: dropped, so git reads the main checkout
 env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                                                         "GIT_OBJECT_DIRECTORY", "GIT_PREFIX")}
 def git(*a):
     return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env)
-with open(os.path.join(here, "ekit-eval", "kit"), encoding="utf-8") as f:
-    kit = f.read()
+VERDICT = os.path.join(here, "ekit-eval", "verdict.txt")
 lines = []
+try:  # no verdict of an earlier ref move outlives this one
+    os.remove(VERDICT)
+except OSError:
+    pass
+def crashed(kind, value, tb):
+    """any exception: this run's lines so far, then the crash; `migrated: no`"""
+    with open(VERDICT, "w") as f:
+        f.write("\n".join(lines + [f"verdict: crashed ({kind.__name__}: {str(value)[:300]})", "migrated: no"]) + "\n")
+sys.excepthook = crashed
+with open(os.path.join(here, "ekit-eval", "kit"), encoding="utf-8") as f:
+    kit = os.path.join(here, "ekit-eval", f.read())  # the engine's copy (relative); an absolute path stays itself
 try:
     import tomllib
     stacks = tomllib.loads(git("show", "HEAD:.ekit/stack-plan.toml").stdout).get("stack", [])
@@ -88,13 +102,23 @@ else:
         clean = r.returncode == 0 and d.get("status") == "pass" and not entries
         lines.append(f"drift: {'clean' if clean else 'not clean'} (exit {r.returncode}, D {d.get('status')}, "
                      f"{len(entries)} entries, messages {json.dumps(d.get('messages', []))})")
+# committed with git on the branch that ends checked out: HEAD is on a branch beyond the scaffold's commit, and git moved
+# it there (its tip is the newest entry of its own reflog; a ref written by hand leaves none)
+on = git("symbolic-ref", "-q", "HEAD").stdout.strip()
+tip = git("rev-parse", "-q", "--verify", "HEAD").stdout.strip()
+try:
+    with open(os.path.join(here, "ekit-eval", "start"), encoding="utf-8") as f:
+        start = f.read().strip()
+except OSError:  # the scaffold's own commit, before it records the start
+    start = tip
+newest = git("reflog", "show", "-n", "1", "--format=%H", on).stdout.strip() if on else ""
+lines.append("by-git: " + ("no (HEAD is on no branch)" if not on else "no (no commit beyond the scaffold's)"
+                           if tip == start else "yes" if newest == tip else
+                           f"no (the tip of {on} is not the newest entry of its reflog: a ref written by hand)"))
 lines.append(f"migrated: {'yes' if ts and retiring and clean else 'no'}")  # the one end state: all three at once
-with open(os.path.join(here, "ekit-eval", "verdict.txt"), "w") as f:
+with open(VERDICT, "w") as f:
     f.write("\n".join(lines) + "\n")
 PY
-# reference-transaction: every ref update (commit, reset, merge, rebase); post-checkout: a switch of HEAD alone
-# (never failing the model's git command: exit 0 whatever the verdict script did)
-printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/reference-transaction
-printf '#!/bin/sh\npython3 -I "$(git rev-parse --path-format=absolute --git-common-dir)/ekit-eval/verdict.py" >/dev/null 2>&1\nexit 0\n' > .git/hooks/post-checkout
-chmod +x .git/hooks/reference-transaction .git/hooks/post-checkout
 git add -A; git commit -qm "greet: js package, stack plan"
+git rev-parse HEAD > .git/ekit-eval/start
+python3 -I .git/ekit-eval/verdict.py  # the start state's verdict
