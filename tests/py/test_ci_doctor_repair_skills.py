@@ -95,6 +95,28 @@ class Repair(unittest.TestCase):
         self.assertIn("Every stage passes → commit the edit on the repair branch", s)
         self.assertIn("/mech-waive", s)
 
+    def test_a_runtime_pattern_is_written_from_every_control_the_entry_names(self):
+        """all four eval repairs wrote the outcome pattern from the one control they saw and misread `no-such-test`;
+        CI's logs carry no control's output, only the first line the entry quotes"""
+        s = flat(section(self.text, "3. Edit"))
+        self.assertIn("for every control the entry names, `no-such-test` (a run where no test matches) included", s)
+        self.assertIn("CI's logs hold none of it (the entry quotes each control's first line only)", s)
+        self.assertIn("checked against step 3's output of every control the entry names, the one that runs no test "
+                      "included", flat(section(self.text, "4. Prove it")))
+
+    def test_a_drift_repair_is_proved_against_the_base_in_a_scratch_clone(self):
+        """an eval run proved with `drift --base HEAD --head HEAD` (SKILL.md's Stack plan line), merged the coding
+        branch in the repo itself, and told the PR's agent to edit the plan"""
+        self.assertIn("(its format: SKILL.md's Stack plan; its proof: step 4 here)", flat(section(self.text, "3. Edit")))
+        self.assertIn("**The PR on the fix**, in the same scratch clone", flat(section(self.text, "4. Prove it")))
+        self.assertIn("the PR's agent leaves the plan as it is", flat(section(self.text, "5. Open the adapter-fix PR")))
+
+    def test_a_repair_out_of_budget_counts_its_rounds_and_shows_no_pr_body(self):
+        s = flat(section(self.text, "4. Prove it"))
+        self.assertIn("Budget spent or a format gap", s)
+        self.assertIn("the rounds run of the budget (`3 of 5`)", s)
+        self.assertIn("This report carries no PR body.", s)
+
     def test_the_pr_body_says_how_ci_judges_it(self):
         s = flat(section(self.text, "5. Open the adapter-fix PR"))
         self.assertIn("proves the base branch's copy", s)
