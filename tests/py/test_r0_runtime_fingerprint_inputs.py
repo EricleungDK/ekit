@@ -135,28 +135,62 @@ class TsToolchain(_Repo):
         self.assertEqual(self.r3_probes(head, prog)[1][1:],
                          [f"{prog} --version: not probed (in the reviewed checkout: {os.path.realpath(prog)})"])
 
-    def test_a_mutants_cmd_whose_node_is_in_the_checkout_is_not_probed(self):
-        """review round 2, F7: Stryker's `#!/usr/bin/env node` finds node on PATH; a node planted in the checkout,
-        first on PATH, is never run by the Stryker probe (nor by the node probe)"""
-        head = self.commit({"package.json": pkg("vitest")})
+    def plant(self):
+        """(marker, the planted node's dir, a Stryker whose `#!/usr/bin/env node` finds node on PATH, a dir outside the
+        checkout with a node of its own): the planted node, in the checkout, touches the marker when it runs"""
         marker = os.path.join(self.tmp, "planted-node-ran")
         planted = os.path.join(self.repo, "bin", "node")
-        os.makedirs(os.path.dirname(planted))
-        with open(planted, "w") as f:
-            f.write(f"#!/bin/sh\ntouch {marker}\necho v99.0.0\n")
-        os.chmod(planted, 0o755)
-        where = os.path.join(self.tmp, "stryker-install")
-        os.makedirs(where)
-        prog = os.path.join(where, "stryker")
+        outside = os.path.join(self.tmp, "outside-bin", "node")
+        for path, text in ((planted, f"#!/bin/sh\ntouch {marker}\necho v99.0.0\n"),
+                           (outside, "#!/bin/sh\necho 10.0.0 from the node outside\n")):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(text)
+            os.chmod(path, 0o755)
+        prog = os.path.join(self.tmp, "stryker-install", "stryker")
+        os.makedirs(os.path.dirname(prog))
         with open(prog, "w") as f:
             f.write("#!/usr/bin/env node\nconsole.log('10.0.0')\n")
         os.chmod(prog, 0o755)
-        os.environ["PATH"] = os.path.dirname(planted) + os.pathsep + os.environ["PATH"]
-        real = os.path.realpath(planted)
+        return marker, os.path.dirname(planted), prog, os.path.dirname(outside)
+
+    def test_a_mutants_cmd_whose_node_is_in_the_checkout_runs_none_of_it(self):
+        """review round 2, F7; round 3: a node planted in the checkout, first on PATH, never runs: the probe's PATH
+        drops that entry, so Stryker's `env node` finds the node outside (the node probe names the planted one)"""
+        head = self.commit({"package.json": pkg("vitest")})
+        marker, planted, prog, outside = self.plant()
+        os.environ["PATH"] = os.pathsep.join([planted, outside, os.environ["PATH"]])
+        real = os.path.realpath(os.path.join(planted, "node"))
         self.assertEqual(self.r3_probes(head, prog)[1], [
             f"node --version: not probed (in the reviewed checkout: {real})",
-            f"{prog} --version: not probed (its interpreter `node` in the reviewed checkout: {real})"])
+            f"{prog} --version: 10.0.0 from the node outside"])
         self.assertFalse(os.path.exists(marker))
+
+    def test_a_node_linked_into_the_checkout_is_not_probed(self):
+        """a dir outside the checkout whose `node` links into it: the interpreter's real path is checked"""
+        head = self.commit({"package.json": pkg("vitest")})
+        marker, planted, prog, outside = self.plant()
+        os.remove(os.path.join(outside, "node"))
+        os.symlink(os.path.join(planted, "node"), os.path.join(outside, "node"))
+        os.environ["PATH"] = os.pathsep.join([outside, os.environ["PATH"]])
+        real = os.path.realpath(os.path.join(planted, "node"))
+        self.assertEqual(self.r3_probes(head, prog)[1][1],
+                         f"{prog} --version: not probed (its interpreter `node` in the reviewed checkout: {real})")
+        self.assertFalse(os.path.exists(marker))
+
+    def test_a_relative_path_entry_never_reaches_the_probe(self):
+        """review round 3, R2: a relative PATH entry resolves against the probe's own dir, where the engine's check of
+        `node` never looked: the probe's PATH holds only absolute entries, links resolved, none in the checkout"""
+        head = self.commit({"package.json": pkg("vitest")})
+        marker, planted, prog, outside = self.plant()
+        up = "../" * (len(os.path.realpath(tempfile.gettempdir()).strip(os.sep).split(os.sep)) + 1)
+        rel = up + os.path.realpath(planted).lstrip(os.sep)  # the planted bin, as the probe's dir reaches it
+        link = os.path.join(self.tmp, "linked-bin")
+        os.symlink(planted, link)  # an absolute entry whose real path is in the checkout
+        os.environ["PATH"] = os.pathsep.join([rel, "", ".", link, outside, os.environ["PATH"]])
+        probes = self.r3_probes(head, prog)[1]
+        self.assertFalse(os.path.exists(marker), probes)
+        self.assertEqual(probes[1], f"{prog} --version: 10.0.0 from the node outside", probes)
 
     def test_a_mutants_cmd_that_is_no_absolute_path_is_not_probed(self):
         """review round 2, M4: a bare name or a relative path enters the key by its words only"""
@@ -295,6 +329,33 @@ class Jdk(_Repo):
                 self.assertEqual(self.probes()[0],
                                  f"mvn --version: not probed (JAVA_HOME is not an absolute path: {java_home})")
                 self.assertFalse(os.path.exists(os.path.join(self.bin, "ran")))
+
+    def test_a_per_process_java_home_is_not_probed(self):
+        """review round 3, R1: /proc/self/cwd resolves against each process's own cwd: the engine's and mvn's differ"""
+        deep = os.path.join(self.tmp, "deep", "a", "b", "c")
+        os.makedirs(deep)
+        jdk = os.path.join(self.repo, "jdk")
+        os.makedirs(jdk)
+        here = os.getcwd()
+        os.chdir(deep)
+        self.addCleanup(os.chdir, here)
+        for java_home in ("/proc/self/cwd/../.." + jdk, "/dev/fd/0/../.." + jdk, "/proc/1/root" + jdk):
+            with self.subTest(java_home=java_home):
+                os.environ["JAVA_HOME"] = java_home
+                self.assertEqual(self.probes()[0],
+                                 f"mvn --version: not probed (JAVA_HOME names a per-process path: {java_home})")
+                self.assertFalse(os.path.exists(os.path.join(self.bin, "ran")))
+
+    def test_the_probe_gets_java_home_resolved(self):
+        """review round 3: the probe is handed the path the engine checked (links resolved), never the string"""
+        real = os.path.join(self.tmp, "jdks", "jdk-21")
+        os.makedirs(real)
+        link = os.path.join(self.tmp, "jdk-current")
+        os.symlink(real, link)
+        os.environ["JAVA_HOME"] = link + os.sep + "."
+        self.assertEqual(self.probes()[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d"
+                                           "825b); Java version: 17.0.9, vendor: Test, runtime: "
+                                           + os.path.realpath(real))
 
     def test_a_java_home_beside_the_checkout_is_probed(self):
         """review round 2, M3: <checkout>2 shares the checkout's prefix and is not in it"""
@@ -559,7 +620,8 @@ OS:            Linux 6.8.0 amd64
 
 
 class Interpreter(unittest.TestCase):
-    """guards (review round 2, F7): which `#!` interpreter a probed script's check resolves."""
+    """guards (review round 2, F7; round 3, R3 and R4): what a probed script's `#!` line makes of the probe, given the
+    probe's PATH."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -572,30 +634,113 @@ class Interpreter(unittest.TestCase):
         with open(self.node, "w") as f:
             f.write("#!/bin/sh\n")
         os.chmod(self.node, 0o755)
-        env = mock.patch.dict(os.environ, {"PATH": os.path.dirname(self.node) + os.pathsep + os.environ["PATH"]})
-        env.start()
-        self.addCleanup(env.stop)
+        self.path = [os.path.realpath(os.path.dirname(self.node))] + [
+            d for d in os.environ["PATH"].split(os.pathsep) if d]
 
-    def inside(self, first_line):
+    def refused(self, first_line):
         from scripts.mech_review import r0_runtime
         prog = os.path.join(self.out, "tool")
         with open(prog, "w") as f:
             f.write(first_line + "\nrest\n")
-        return r0_runtime._interpreter_inside(prog, (self.checkout,))
+        return r0_runtime._interpreter_refused(prog, (self.checkout,), self.path)
 
-    def test_the_interpreter_each_line_names(self):
-        real = os.path.realpath(self.node)
-        for line, want in (("#!/usr/bin/env node", ("node", real)), ("#!/usr/bin/env -S node --x", ("node", real)),
-                           ("#!/usr/bin/env A=1 node", ("node", real)), (f"#!{self.node} -x", ("node", real)),
-                           ("#! /usr/bin/env node", ("node", real)), ("#!/bin/sh", None), ("#!/usr/bin/env", None),
-                           ("#!", None), ("echo no shebang", None), ("#!/usr/bin/env sh", None)):
+    def test_what_each_line_gives(self):
+        inside = f"its interpreter `node` in the reviewed checkout: {os.path.realpath(self.node)}"
+
+        def unread(words):
+            return f"its `#!` env line is not one plain program name: `{words}`"
+
+        for line, want in (
+                ("#!/usr/bin/env node", inside), ("#! /usr/bin/env node", inside), (f"#!{self.node} -x", inside),
+                ("#!/usr/bin/env node --x", inside),
+                ("#!/usr/bin/env -S node --x", unread("/usr/bin/env -S node --x")),
+                ("#!/usr/bin/env -Snode", unread("/usr/bin/env -Snode")),
+                ("#!/usr/bin/env --split-string=node", unread("/usr/bin/env --split-string=node")),
+                ("#!/usr/bin/env -S -u X node", unread("/usr/bin/env -S -u X node")),
+                ("#!/usr/bin/env -S -C /tmp node", unread("/usr/bin/env -S -C /tmp node")),
+                ("#!/usr/bin/env A=1 node", unread("/usr/bin/env A=1 node")),
+                ("#!/usr/bin/env", unread("/usr/bin/env")),
+                ("#!node", "its `#!` interpreter `node` is not an absolute path"),
+                ("#!/bin/sh", None), ("#!", None), ("echo no shebang", None), ("#!/usr/bin/env sh", None),
+                ("#!/usr/bin/env no-such-program-here", None)):
             with self.subTest(line=line):
-                self.assertEqual(self.inside(line), want)
+                self.assertEqual(self.refused(line), want)
 
     def test_a_program_that_is_no_regular_file_is_not_read(self):
+        """R4: stat first, so a FIFO (stat mocked) is never opened"""
+        import stat as st
         from scripts.mech_review import r0_runtime
-        self.assertIsNone(r0_runtime._interpreter_inside(self.out, (self.checkout,)))
-        self.assertIsNone(r0_runtime._interpreter_inside(os.path.join(self.out, "gone"), (self.checkout,)))
+        prog = os.path.join(self.out, "tool")
+        with open(prog, "w") as f:
+            f.write("#!/usr/bin/env node\n")
+        real = os.stat
+
+        def fifo(path, *a, **k):
+            got = real(path, *a, **k)
+            return os.stat_result((st.S_IFIFO | 0o755,) + tuple(got)[1:]) if str(path) == prog else got
+
+        with mock.patch("os.stat", fifo), mock.patch("builtins.open", side_effect=AssertionError("opened")):
+            self.assertIsNone(r0_runtime._interpreter_refused(prog, (self.checkout,), self.path))
+        self.assertIsNone(r0_runtime._interpreter_refused(self.out, (self.checkout,), self.path))
+        self.assertIsNone(r0_runtime._interpreter_refused(os.path.join(self.out, "gone"), (self.checkout,), self.path))
+
+    def test_only_the_first_256_bytes_are_read(self):
+        """R4: one read of 256 bytes, never the whole program"""
+        from scripts.mech_review import r0_runtime
+        prog = os.path.join(self.out, "tool")
+        with open(prog, "w") as f:
+            f.write("#!/usr/bin/env node\n" + "x" * 4096)
+        real, sizes = open, []
+
+        class Capped:
+            def __init__(self, f):
+                self.f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.f.close()
+
+            def read(self, n=-1):
+                sizes.append(n)
+                return self.f.read(n)
+
+        with mock.patch("builtins.open", lambda p, *a, **k: Capped(real(p, *a, **k))):
+            self.assertIsNotNone(r0_runtime._interpreter_refused(prog, (self.checkout,), self.path))
+        self.assertEqual(sizes, [256])
+
+    def test_the_probe_path_keeps_only_absolute_real_entries_outside_the_checkout(self):
+        from scripts.mech_review import r0_runtime
+        link = os.path.join(self.out, "to-bin")
+        os.symlink(os.path.dirname(self.node), link)
+        other = os.path.join(self.out, "other")
+        os.makedirs(other)
+        other_link = os.path.join(self.out, "other-link")
+        os.symlink(other, other_link)
+        path = os.pathsep.join(["", ".", "rel/bin", os.path.dirname(self.node), link, other_link, other, "/usr/bin"])
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.assertEqual(r0_runtime._probe_path((self.checkout,)),
+                             [os.path.realpath(other), os.path.realpath("/usr/bin")])
+
+
+class OrdinaryProbes(unittest.TestCase):
+    """guard (review round 3): on an ordinary machine the resolved PATH changes no probe line: each reads what the
+    program prints when run with this PATH"""
+
+    def test_each_built_in_probe_reads_what_the_program_prints(self):
+        from scripts.mech_review import r0_runtime
+        with mock.patch.dict(os.environ):
+            os.environ.pop("MECH_TEST_STUB", None)
+            for argv in (["python3", "--version"], ["node", "--version"], ["cargo", "--version"]):
+                with self.subTest(argv=argv):
+                    if shutil.which(argv[0]) is None:
+                        self.assertEqual(r0_runtime.probe(argv, False, ()), f"{argv[0]} --version: not probed (not "
+                                                                            "found on PATH)")
+                        continue
+                    r = subprocess.run(argv, capture_output=True, text=True, cwd=tempfile.gettempdir())
+                    first = next(ln.strip() for ln in (r.stdout + r.stderr).splitlines() if ln.strip())
+                    self.assertEqual(r0_runtime.probe(argv, False, ()), f"{argv[0]} --version: {first}")
 
 
 class JdkLine(unittest.TestCase):

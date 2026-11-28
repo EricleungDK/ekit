@@ -221,16 +221,78 @@ def probes(adapter, part, cmds):
     return out
 
 
-def _probe_env():
-    # JAVA_HOME: the JDK a build tool runs on (mvn, gradle), as the tests' run sees it (#106)
-    keep = ("PATH", "HOME", "SYSTEMROOT", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN", "JAVA_HOME")
-    return {**{k: os.environ[k] for k in keep if k in os.environ}, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+# paths each process resolves its own way (/proc/self/cwd, /dev/fd/N)
+PER_PROCESS = ("/proc", "/dev/fd", "/dev/stdin", "/dev/stdout", "/dev/stderr")
 
 
-def _interpreter_inside(prog, roots):
-    """(name, real path) of the interpreter a script's `#!` line names when it resolves into one of roots (the
-    reviewed checkout), else None: `#!/usr/bin/env node` is the `node` PATH finds (the program rules apply to it as to
-    the probed program), `#!/abs/interp` that path. Only a regular file's first line is read, never run."""
+def _under(path, top):
+    top = top.rstrip(os.sep)
+    return path == top or path.startswith(top + os.sep)
+
+
+def _inside(real, roots):
+    """True when the real path is, or lies in, one of roots (the reviewed checkout), roots' links resolved."""
+    return any(_under(real, os.path.realpath(root)) for root in roots)
+
+
+def _probe_path(roots):
+    """[dir] of the probe's PATH (#106 review round 3): each absolute entry of this PATH, resolved to its real path,
+    once; a relative or empty entry (it resolves against the probe's own dir, not where any check looked) and one whose
+    real path is in roots (the reviewed checkout) are dropped. The interpreter check and the probe see this PATH."""
+    out = []
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if not d or not os.path.isabs(d):
+            continue
+        real = os.path.realpath(d)
+        if real not in out and not _inside(real, roots):
+            out.append(real)
+    return out
+
+
+def _java_home(roots):
+    """(JAVA_HOME as the probe gets it or None, why no probe runs or None). A build tool runs the JDK JAVA_HOME names
+    (#106 review F2), so the probe is handed only a value the engine resolved and checked, never the string: not
+    absolute (it resolves against wherever the tool runs) or naming a per-process path (/proc, /dev/fd: each process
+    resolves it its own way) is refused; else its real path, refused when it is in roots (the reviewed checkout)."""
+    java_home = os.environ.get("JAVA_HOME")
+    if not java_home:
+        return None, None
+    if not os.path.isabs(java_home):
+        return None, f"JAVA_HOME is not an absolute path: {java_home[:200]}"
+    real = os.path.realpath(java_home)
+    if any(_under(p, top) for p in (re.sub(r"/+", "/", java_home), real) for top in PER_PROCESS):
+        return None, f"JAVA_HOME names a per-process path: {java_home[:200]}"
+    if _inside(real, roots):
+        return None, f"JAVA_HOME in the reviewed checkout: {real}"
+    return real, None
+
+
+def _probe_env(path, java_home):
+    """the probe's environment: a few toolchain variables, PATH as _probe_path gives it, JAVA_HOME as _java_home does
+    (the JDK a build tool runs on, mvn and gradle, as the tests' run sees it, #106)."""
+    keep = ("HOME", "SYSTEMROOT", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env.update({"PATH": os.pathsep.join(path), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
+    if java_home:
+        env["JAVA_HOME"] = java_home
+    return env
+
+
+def _which(name, path):
+    found = shutil.which(name, path=os.pathsep.join(path)) if path else None
+    return found if found and os.path.isabs(found) else None
+
+
+ENV_WORD = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*\Z")  # a program name env runs as it is: no option, no assignment
+
+
+def _interpreter_refused(prog, roots, path):
+    """why the script prog's `#!` interpreter keeps the probe from running, else None (#106 review F7, round 3).
+    `#!/abs/interp` is that path; `#!/usr/bin/env NAME` the NAME the probe's PATH (path) finds; both refused when their
+    real path is in roots (the reviewed checkout). An env line with an option, an assignment, no program or anything
+    but one plain program name first (`-S`, `--split-string=`, `A=1`, `-C dir`) is refused: what env would run is not
+    read with certainty.
+    A relative interpreter is refused too. Only a regular file's first 256 bytes are read, never run."""
     real = os.path.realpath(prog)
     try:
         if not stat.S_ISREG(os.stat(real).st_mode):
@@ -242,38 +304,26 @@ def _interpreter_inside(prog, roots):
     if not head.startswith(b"#!"):
         return None
     words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
-    if words and os.path.basename(words[0]) == "env":
-        words = [w for w in words[1:] if not w.startswith("-") and "=" not in w][:1]
     if not words:
         return None
-    name = words[0]
-    found = name if os.path.isabs(name) else mutation_tool._program_path(name)
-    inside = mutation_tool._in_checkout(found, roots) if found else None
-    return (os.path.basename(name), inside) if inside else None
-
-
-def _java_home_refused(roots):
-    """why JAVA_HOME keeps the probe from running, else None. The probe passes JAVA_HOME on, and a build tool runs the
-    JDK it names (#106 review F2): refused when it is not an absolute path (it would resolve against wherever the tool
-    runs, never where this check does, so no check of it holds) and when its real path is, or lies in, one of roots
-    (the reviewed checkout)."""
-    java_home = os.environ.get("JAVA_HOME")
-    if not java_home:
-        return None
-    if not os.path.isabs(java_home):
-        return f"JAVA_HOME is not an absolute path: {java_home[:200]}"
-    real = os.path.realpath(java_home)
-    for root in roots:
-        top = os.path.realpath(root)
-        if real == top or real.startswith(top.rstrip(os.sep) + os.sep):
-            return f"JAVA_HOME in the reviewed checkout: {real}"
-    return None
+    if not os.path.isabs(words[0]):
+        return f"its `#!` interpreter `{words[0][:100]}` is not an absolute path"
+    found = words[0]
+    if os.path.basename(words[0]) == "env":
+        if len(words) < 2 or not ENV_WORD.match(words[1]):
+            return f"its `#!` env line is not one plain program name: `{' '.join(words)[:200]}`"
+        found = _which(words[1], path)
+        if found is None:
+            return None  # env finds nothing on the probe's PATH: the probe runs and says so
+    inside = mutation_tool._in_checkout(found, roots)
+    return f"its interpreter `{os.path.basename(found)}` in the reviewed checkout: {inside}" if inside else None
 
 
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
     refuse it (not found, in the reviewed checkout, a launcher an adapter file names, a script whose `#!` interpreter
-    is in the checkout, a JAVA_HOME that is relative or in the checkout). Runs in an empty temp dir. The line kept is
+    is in the checkout or not read, a JAVA_HOME that is relative, per-process or in the checkout). Runs in an empty
+    temp dir, with only resolved values: PATH and JAVA_HOME as _probe_path and _java_home give them. The line kept is
     the first that starts with `version` (pip show's `Version: 3.8.1`), else the first; a JDK line beside it
     (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the JDK the build runs on (#106)."""
     label = " ".join(argv)
@@ -287,16 +337,17 @@ def probe(argv, from_file, roots):
     inside = mutation_tool._in_checkout(prog, roots)
     if inside:
         return f"{label}: not probed (in the reviewed checkout: {inside})"
-    interp = _interpreter_inside(prog, roots)
-    if interp:  # #106 review round 2, F7: Stryker's `#!/usr/bin/env node` runs the node PATH finds
-        return f"{label}: not probed (its interpreter `{interp[0]}` in the reviewed checkout: {interp[1]})"
-    java_home = _java_home_refused(roots)
-    if java_home:  # mvn and gradle run $JAVA_HOME/bin/java: never one the PR controls (#106 review F2)
-        return f"{label}: not probed ({java_home})"
+    path = _probe_path(roots)
+    why = _interpreter_refused(prog, roots, path)  # Stryker's `#!/usr/bin/env node` runs the node path finds
+    if why:
+        return f"{label}: not probed ({why})"
+    java_home, why = _java_home(roots)  # mvn and gradle run $JAVA_HOME/bin/java: never one the PR controls
+    if why:
+        return f"{label}: not probed ({why})"
     if os.path.basename(argv[0]) == "cargo" and len(argv) > 1 and not argv[1].startswith("-"):
         # `cargo mutants` runs `cargo-mutants` from PATH: that binary keeps the same rules (#21 review N2)
         sub = f"cargo-{argv[1]}"
-        sub_prog = mutation_tool._program_path(sub)
+        sub_prog = _which(sub, path)  # cargo finds it on the probe's PATH
         if sub_prog is None:
             return f"{label}: not probed (`{sub}` not found on PATH)"
         inside = mutation_tool._in_checkout(sub_prog, roots)
@@ -305,7 +356,7 @@ def probe(argv, from_file, roots):
     with tempfile.TemporaryDirectory(prefix="ekit-r0-probe-") as tmp:
         try:
             r = subprocess.run(red.stubbed([prog] + list(argv[1:]), os.environ.get("MECH_TEST_STUB")), cwd=tmp,
-                               env=_probe_env(), capture_output=True, timeout=PROBE_TIMEOUT)
+                               env=_probe_env(path, java_home), capture_output=True, timeout=PROBE_TIMEOUT)
         except (OSError, subprocess.TimeoutExpired) as e:
             return f"{label}: did not answer ({type(e).__name__})"
     lines = [ln.strip() for ln in (r.stdout + r.stderr).decode("utf-8", "replace").splitlines() if ln.strip()]
