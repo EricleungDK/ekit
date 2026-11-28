@@ -41,6 +41,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -226,6 +227,31 @@ def _probe_env():
     return {**{k: os.environ[k] for k in keep if k in os.environ}, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 
 
+def _interpreter_inside(prog, roots):
+    """(name, real path) of the interpreter a script's `#!` line names when it resolves into one of roots (the
+    reviewed checkout), else None: `#!/usr/bin/env node` is the `node` PATH finds (the program rules apply to it as to
+    the probed program), `#!/abs/interp` that path. Only a regular file's first line is read, never run."""
+    real = os.path.realpath(prog)
+    try:
+        if not stat.S_ISREG(os.stat(real).st_mode):
+            return None
+        with open(real, "rb") as f:
+            head = f.read(256)
+    except OSError:
+        return None
+    if not head.startswith(b"#!"):
+        return None
+    words = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").split()
+    if words and os.path.basename(words[0]) == "env":
+        words = [w for w in words[1:] if not w.startswith("-") and "=" not in w][:1]
+    if not words:
+        return None
+    name = words[0]
+    found = name if os.path.isabs(name) else mutation_tool._program_path(name)
+    inside = mutation_tool._in_checkout(found, roots) if found else None
+    return (os.path.basename(name), inside) if inside else None
+
+
 def _java_home_refused(roots):
     """why JAVA_HOME keeps the probe from running, else None. The probe passes JAVA_HOME on, and a build tool runs the
     JDK it names (#106 review F2): refused when it is not an absolute path (it would resolve against wherever the tool
@@ -246,8 +272,8 @@ def _java_home_refused(roots):
 
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
-    refuse it (not found, in the reviewed checkout, a launcher an adapter file names, a JAVA_HOME that is relative or
-    in the checkout). Runs in an empty temp dir. The line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else
+    refuse it (not found, in the reviewed checkout, a launcher an adapter file names, a script whose `#!` interpreter
+    is in the checkout, a JAVA_HOME that is relative or in the checkout). Runs in an empty temp dir. The line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else
     the first; a JDK line beside it (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the
     JDK the build runs on (#106)."""
     label = " ".join(argv)
@@ -261,6 +287,9 @@ def probe(argv, from_file, roots):
     inside = mutation_tool._in_checkout(prog, roots)
     if inside:
         return f"{label}: not probed (in the reviewed checkout: {inside})"
+    interp = _interpreter_inside(prog, roots)
+    if interp:  # #106 review round 2, F7: Stryker's `#!/usr/bin/env node` runs the node PATH finds
+        return f"{label}: not probed (its interpreter `{interp[0]}` in the reviewed checkout: {interp[1]})"
     java_home = _java_home_refused(roots)
     if java_home:  # mvn and gradle run $JAVA_HOME/bin/java: never one the PR controls (#106 review F2)
         return f"{label}: not probed ({java_home})"

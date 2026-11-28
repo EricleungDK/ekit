@@ -135,6 +135,37 @@ class TsToolchain(_Repo):
         self.assertEqual(self.r3_probes(head, prog)[1][1:],
                          [f"{prog} --version: not probed (in the reviewed checkout: {os.path.realpath(prog)})"])
 
+    def test_a_mutants_cmd_whose_node_is_in_the_checkout_is_not_probed(self):
+        """review round 2, F7: Stryker's `#!/usr/bin/env node` finds node on PATH; a node planted in the checkout,
+        first on PATH, is never run by the Stryker probe (nor by the node probe)"""
+        head = self.commit({"package.json": pkg("vitest")})
+        marker = os.path.join(self.tmp, "planted-node-ran")
+        planted = os.path.join(self.repo, "bin", "node")
+        os.makedirs(os.path.dirname(planted))
+        with open(planted, "w") as f:
+            f.write(f"#!/bin/sh\ntouch {marker}\necho v99.0.0\n")
+        os.chmod(planted, 0o755)
+        where = os.path.join(self.tmp, "stryker-install")
+        os.makedirs(where)
+        prog = os.path.join(where, "stryker")
+        with open(prog, "w") as f:
+            f.write("#!/usr/bin/env node\nconsole.log('10.0.0')\n")
+        os.chmod(prog, 0o755)
+        os.environ["PATH"] = os.path.dirname(planted) + os.pathsep + os.environ["PATH"]
+        real = os.path.realpath(planted)
+        self.assertEqual(self.r3_probes(head, prog)[1], [
+            f"node --version: not probed (in the reviewed checkout: {real})",
+            f"{prog} --version: not probed (its interpreter `node` in the reviewed checkout: {real})"])
+        self.assertFalse(os.path.exists(marker))
+
+    def test_a_mutants_cmd_that_is_no_absolute_path_is_not_probed(self):
+        """review round 2, M4: a bare name or a relative path enters the key by its words only"""
+        head = self.commit({"package.json": pkg("vitest")})
+        for cmd in ("stryker", "node_modules/.bin/stryker"):
+            with self.subTest(cmd=cmd):
+                fp, probes = self.r3_probes(head, cmd)
+                self.assertEqual([p.split(":")[0] for p in probes], ["node --version"])
+
     def test_an_unchanged_tree_keeps_its_fingerprint(self):
         head = self.commit({"package.json": pkg("vitest")})
         self.write({"node_modules/vitest/package.json": installed("2.1.9")})
