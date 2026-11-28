@@ -5,6 +5,7 @@ never a traceback. Through cli.main in this process, with the runners beside it.
 import errno
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import mutants, red
 from test_adapter_mutation_cli import ELEMENTS, Case, adapter_text
 from test_adapter_run import TEST_FRESH, Fixture
+from test_issue107_exec import past_the_arg_limit
 from test_mutmut_run import SUB1, DiffOfSub
 
 REAL_POPEN = subprocess.Popen
@@ -50,9 +52,9 @@ class DeclaredToolStart(Case):
         return r.returncode, env["checks"]["R3"], [(e["check"], e["class"], e["problem"]) for e in env["entries"]]
 
     def test_an_argument_past_the_limit_is_an_r3_fail_naming_it(self):
-        for err, why in ((OSError(errno.E2BIG, "Argument list too long", "mut"), "Argument list too long"),
+        for err, why in ((OSError(errno.E2BIG, os.strerror(errno.E2BIG), "mut"), os.strerror(errno.E2BIG)),
                          (ValueError("embedded null byte"), "embedded null byte"),
-                         (OSError(errno.EMFILE, "Too many open files", "mut"), "Too many open files")):
+                         (OSError(errno.EMFILE, os.strerror(errno.EMFILE), "mut"), os.strerror(errno.EMFILE))):
             with self.subTest(why=why):
                 rc, check, ents = self.r3(err)
                 self.assertEqual((rc, check["status"]), (1, "fail"))
@@ -61,7 +63,7 @@ class DeclaredToolStart(Case):
                 self.assertEqual(ents, [("R3", "agent-fixable", check["note"])])
 
     def test_the_programs_own_error_stays_not_installed(self):
-        rc, check, ents = self.r3(OSError(errno.EACCES, "Permission denied", self.stub))
+        rc, check, ents = self.r3(OSError(errno.EACCES, os.strerror(errno.EACCES), self.stub))
         self.assertEqual((rc, check["status"], ents), (0, "n/a", []))
         self.assertIn("not installed (env)", check["note"])
 
@@ -101,9 +103,9 @@ class Runners(unittest.TestCase):
         os.environ.pop("MECH_TEST_STUB", None)
 
     def test_both_runners_share_the_split(self):
-        big = [sys.executable, "-c", "pass", "x" * 200000]
+        big = [sys.executable, "-c", "pass", "x" * past_the_arg_limit()]
         for run in (lambda a: red.default_runner()(a, self.tmp), lambda a: mutants.default_runner()(a, self.tmp, 10)):
-            with self.assertRaisesRegex(red.CannotStart, "could not start: Argument list too long"):
+            with self.assertRaisesRegex(red.CannotStart, "could not start: " + re.escape(os.strerror(errno.E2BIG))):
                 run(big)
             with self.assertRaisesRegex(red.CannotStart, "could not start: embedded null byte"):
                 run([sys.executable, "-c", "pass", "a\x00b"])

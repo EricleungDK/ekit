@@ -5,8 +5,8 @@ prints STUB_OUT and writes no report (test_adapter_mutation_cli's fixture)."""
 import unittest
 from unittest import mock
 
+import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import report
-
 from test_adapter_mutation_cli import ELEMENTS, Case, adapter_text
 
 GOAL_RESOLVE = ("[ERROR] Failed to execute goal on project calc: Could not resolve dependencies for project "

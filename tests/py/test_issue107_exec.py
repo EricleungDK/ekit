@@ -5,18 +5,31 @@ import json
 import errno
 import os
 import re
-import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
+import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import red
 from test_adapter_run import TEST_FRESH, TS_FILE, Fixture
 
 FIX = "give it the execute bit and a `#!` line whose interpreter exists, {fix}, or set setup-command ({what})"
 NPM = "run the adapter's install command (`npm ci`)"
 R1_WHAT, R4_WHAT = "tests on the base's production code", "new or changed tests"
+
+
+def past_the_arg_limit():
+    """a length for one argument that no exec on this platform takes (E2BIG): past SC_ARG_MAX, the limit for all the
+    arguments and the environment together (macOS has only that one, about 1 MiB), so past Linux's 128 KiB for a
+    single argument too. A limit the platform does not say, or one past 4 MiB (Linux with a large stack), reads as
+    4 MiB: still past Linux's single-argument limit."""
+    try:
+        limit = os.sysconf("SC_ARG_MAX")
+    except (AttributeError, ValueError, OSError):
+        limit = -1
+    return (limit if 0 < limit <= 4 << 20 else 4 << 20) + (64 << 10)
 
 
 def note(prog, err, what, fix=NPM):
@@ -52,12 +65,12 @@ class CannotRun(Fixture):
 
     def test_a_program_without_the_execute_bit_is_env_naming_it_and_the_error(self):
         self.runner_file("#!/bin/sh\nexit 0\n", 0o644)
-        self.assert_env("node_modules/.bin/vitest", "Permission denied")
+        self.assert_env("node_modules/.bin/vitest", os.strerror(errno.EACCES))
 
     def test_the_same_through_all(self):
         self.runner_file("#!/bin/sh\nexit 0\n", 0o644)
         checks = self.checks(check="all")
-        self.assertEqual(checks["R1"]["note"], note("node_modules/.bin/vitest", "Permission denied", R1_WHAT))
+        self.assertEqual(checks["R1"]["note"], note("node_modules/.bin/vitest", os.strerror(errno.EACCES), R1_WHAT))
 
     def test_a_directory_in_the_programs_place_is_env(self):
         os.makedirs(os.path.join(self.repo, "node_modules", ".bin", "vitest"))
@@ -73,25 +86,27 @@ class CannotRun(Fixture):
 
     def test_an_executable_file_the_os_cannot_execute_is_env(self):
         self.runner_file("not a program\n", 0o755)  # sh would run it; the kernel refuses it: ENOEXEC
-        self.assert_env("node_modules/.bin/vitest", "Exec format error")
+        self.assert_env("node_modules/.bin/vitest", os.strerror(errno.ENOEXEC))
 
     def test_a_binary_whose_loader_is_missing_is_env_not_a_missing_program(self):
-        with open(shutil.which("true"), "rb") as f:
-            elf = f.read()
-        interp = re.search(rb"/[\w./-]*ld[\w.-]*\.so[\w.]*\x00", elf[:4096])  # PT_INTERP, early in a dynamic ELF
-        self.assertIsNotNone(interp, "`true` is a dynamic ELF binary on the systems the suite runs on")
-        gone = b"/" + b"x" * (interp.end() - interp.start() - 2) + b"\x00"  # same length: the ELF stays well formed
-        self.runner_file("", 0o755)
-        with open(os.path.join(self.repo, "node_modules", ".bin", "vitest"), "wb") as f:
-            f.write(elf[:interp.start()] + gone + elf[interp.end():])
-        self.assert_env("node_modules/.bin/vitest", "its interpreter or loader is missing")
+        """a program that is there, not a `#!` script, whose exec says ENOENT: what a binary whose loader is missing
+        gives the runner (Linux's dynamic ELF; the exec's error is simulated, so no system binary is needed)."""
+        self.runner_file("\x7fELF not a real binary\n", 0o755)
+        real = subprocess.run
+
+        def run(argv, *a, **k):
+            if argv[0] == "node_modules/.bin/vitest":
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), argv[0])
+            return real(argv, *a, **k)
+        with mock.patch.object(red.subprocess, "run", run):
+            self.assert_env("node_modules/.bin/vitest", "its interpreter or loader is missing")
 
     def test_an_absolute_program_path_is_named_as_given(self):
         stub = os.path.join(self.tmp, "runner")
         with open(stub, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
         os.chmod(stub, 0o644)
-        self.assert_env(stub, "Permission denied", stub=stub)
+        self.assert_env(stub, os.strerror(errno.EACCES), stub=stub)
 
     def test_a_program_found_on_path_with_a_bad_interpreter_is_env(self):
         bin_dir = os.path.join(self.tmp, "bin")
@@ -123,8 +138,15 @@ class TheArgumentsCannotPass(Fixture):
     """#107 review F1: an OSError that the arguments, the environment or the dir cause (a test name past the OS's
     limit for one argument: E2BIG) is no `n/a`: the program is fine, the run is not. R1 and R4 fail naming it."""
 
+    def test_the_length_used_is_past_the_platforms_whole_argument_limit(self):
+        self.assertGreater(past_the_arg_limit(), min(os.sysconf("SC_ARG_MAX"), 4 << 20))
+        self.assertGreater(past_the_arg_limit(), 128 << 10)
+        for limit, platform in ((1 << 20, "macOS"), (2 << 20, "Linux"), (-1, "unknown"), (1 << 30, "a large stack")):
+            with self.subTest(platform), mock.patch.object(os, "sysconf", return_value=limit):
+                self.assertGreater(past_the_arg_limit(), max(min(limit, 4 << 20), 128 << 10))
+
     def test_a_test_name_too_long_to_pass_fails_r1_and_r4_never_na(self):
-        long = "f" * 140000  # one argument past Linux's 128 KiB limit for a single argument
+        long = "f" * past_the_arg_limit()  # no exec on this platform takes one argument this long
         test = TEST_FRESH.replace('"fresh"', f'"{long}"')
         base, head = self.ts_repo("x pass pass\n", files={"tests/calc.test.ts": test})
         r = self.red(base, head, adapter=None)
@@ -134,8 +156,10 @@ class TheArgumentsCannotPass(Fixture):
         got = [(e["check"], e["class"], e["problem"]) for e in env["entries"]]
         self.assertEqual([g[:2] for g in got], [("R1", "agent-fixable"), ("R4", "agent-fixable")])
         for _, _, problem in got:
-            self.assertRegex(problem, r"`[^`]+` could not start: Argument list too long \(its arguments: 14\d{4} "
-                                      r"bytes\)\)?$")
+            m = re.search(rf"`[^`]+` could not start: {re.escape(os.strerror(errno.E2BIG))} \(its arguments: (\d+) "
+                          r"bytes\)\)?$", problem)
+            self.assertIsNotNone(m, problem)
+            self.assertGreater(int(m.group(1)), len(long))
 
 
 class RunnerSplit(unittest.TestCase):
@@ -174,17 +198,18 @@ class RunnerSplit(unittest.TestCase):
                                 str(cm.exception))
 
     def test_a_real_e2big_names_the_size_of_the_arguments(self):
+        n = past_the_arg_limit()
         with self.assertRaises(red.CannotStart) as cm:
-            red.default_runner()([sys.executable, "-c", "pass", "x" * 200000], self.tmp)
-        self.assertEqual(str(cm.exception), f"`{sys.executable}` could not start: Argument list too long (its "
-                                            f"arguments: {len(sys.executable) + 1 + 3 + 5 + 200001} bytes)")
+            red.default_runner()([sys.executable, "-c", "pass", "x" * n], self.tmp)
+        self.assertEqual(str(cm.exception), f"`{sys.executable}` could not start: {os.strerror(errno.E2BIG)} (its "
+                                            f"arguments: {len(os.fsencode(sys.executable)) + 1 + 3 + 5 + n + 1} bytes)")
 
     def test_a_dir_to_run_in_that_is_gone_is_a_named_stop_not_a_missing_program(self):
         gone = os.path.join(self.tmp, "gone")
         with self.assertRaises(red.CannotStart) as cm:
             red.default_runner()([sys.executable, "-c", "pass"], gone)
-        self.assertEqual(str(cm.exception), f"`{sys.executable}` could not start in `{gone}`: No such file or "
-                                            "directory")
+        self.assertEqual(str(cm.exception), f"`{sys.executable}` could not start in `{gone}`: "
+                                            f"{os.strerror(errno.ENOENT)}")
 
     def test_a_directory_found_on_path_is_named_a_directory(self):
         bin_dir = os.path.join(self.tmp, "bin")
@@ -200,7 +225,7 @@ class RunnerSplit(unittest.TestCase):
             f.write("#!/bin/sh\n")
         with mock.patch.dict(os.environ, {"PATH": bin_dir}):
             self.assertEqual(red.default_runner()(["myrunner"], self.tmp),
-                             (None, "myrunner: cannot run: Permission denied"))
+                             (None, f"myrunner: cannot run: {os.strerror(errno.EACCES)}"))
 
 
 if __name__ == "__main__":
