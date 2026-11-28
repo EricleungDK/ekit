@@ -26,14 +26,22 @@ def with_runners(text):
     return text.replace("[run.list]", RUNNERS + "[run.list]", 1)
 
 
+def linked_tmp(case):
+    """a temp dir reached through a link, as macOS's are (/var -> /private/var): a path built from it is not its real
+    path, so a test that compares a path the engine resolved must resolve its expected value too (CI hooks-macos)"""
+    tmp = tempfile.TemporaryDirectory()
+    case.addCleanup(tmp.cleanup)
+    os.makedirs(os.path.join(tmp.name, "real"))
+    os.symlink(os.path.join(tmp.name, "real"), os.path.join(tmp.name, "via"))
+    return os.path.join(tmp.name, "via")
+
+
 class _Repo(unittest.TestCase):
     """a git repo of a built-in stack in a temp dir; fp() is `r0 --fingerprint PART` on it."""
     stack = None
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = tmp.name
+        self.tmp = linked_tmp(self)
         self.repo = os.path.join(self.tmp, "repo")
         os.makedirs(self.repo)
         env = mock.patch.dict(os.environ)
@@ -361,14 +369,16 @@ class Jdk(_Repo):
         """review round 2, M3: <checkout>2 shares the checkout's prefix and is not in it"""
         os.environ["JAVA_HOME"] = self.repo + "2"
         self.assertEqual(self.probes()[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d"
-                                           f"825b); Java version: 17.0.9, vendor: Test, runtime: {self.repo}2")
+                                           "825b); Java version: 17.0.9, vendor: Test, runtime: "
+                                           + os.path.realpath(self.repo + "2"))  # the probe gets the real path
 
     def test_the_probe_line_names_maven_and_the_jdk(self):
         r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.head, "--head", self.head, "--stack", "maven",
                           "--adapter", MAVEN, "--fingerprint", "run"])
         probes = json.loads(r.stdout)["probes"]
         self.assertEqual(probes[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d825b); "
-                                    "Java version: 17.0.9, vendor: Test, runtime: /opt/jdk-17", probes)
+                                    "Java version: 17.0.9, vendor: Test, runtime: " + os.path.realpath("/opt/jdk-17"),
+                         probes)
 
 
 class _Runners(Case):
@@ -456,9 +466,7 @@ class TreeInputLines(unittest.TestCase):
     """guards: the lines tree_inputs reads from a tree, as the fingerprint hashes them (values from the spec)."""
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = tmp.name
+        self.root = linked_tmp(self)
 
     def write(self, rel, text):
         full = os.path.join(self.root, *rel.split("/"))
@@ -624,10 +632,9 @@ class Interpreter(unittest.TestCase):
     probe's PATH."""
 
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.checkout = os.path.join(tmp.name, "checkout")
-        self.out = os.path.join(tmp.name, "out")
+        base = linked_tmp(self)
+        self.checkout = os.path.join(base, "checkout")
+        self.out = os.path.join(base, "out")
         for d in (os.path.join(self.checkout, "bin"), self.out):
             os.makedirs(d)
         self.node = os.path.join(self.checkout, "bin", "node")
@@ -677,7 +684,9 @@ class Interpreter(unittest.TestCase):
 
         def fifo(path, *a, **k):
             got = real(path, *a, **k)
-            return os.stat_result((st.S_IFIFO | 0o755,) + tuple(got)[1:]) if str(path) == prog else got
+            # the check stats the program's real path, the one it would open (macOS: /var is /private/var)
+            same = os.path.realpath(str(path)) == os.path.realpath(prog)
+            return os.stat_result((st.S_IFIFO | 0o755,) + tuple(got)[1:]) if same else got
 
         with mock.patch("os.stat", fifo), mock.patch("builtins.open", side_effect=AssertionError("opened")):
             self.assertIsNone(r0_runtime._interpreter_refused(prog, (self.checkout,), self.path))
@@ -748,9 +757,7 @@ class JdkLine(unittest.TestCase):
 
     def probe(self, text):
         from scripts.mech_review import r0_runtime
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        prog = os.path.join(tmp.name, "tool")
+        prog = os.path.join(linked_tmp(self), "tool")
         with open(prog, "w") as f:
             f.write(text)
         os.chmod(prog, 0o755)
