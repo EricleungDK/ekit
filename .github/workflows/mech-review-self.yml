@@ -5,6 +5,9 @@ name: mech-review (ekit self)
 
 on:
   pull_request:
+  # #109: main's run writes the R0 runtime cache every PR reads (a PR run can write only its own scope)
+  push:
+    branches: [main]
 
 permissions:
   contents: read

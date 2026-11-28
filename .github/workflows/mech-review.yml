@@ -96,21 +96,22 @@ jobs:
       - name: resolve stack and project-dir
         id: resolve
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # a push run (#109: it warms R0's runtime cache) has no PR: the pushed commit is base and head
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           STACK: ${{ inputs.stack }}
           PROJECT_DIR: ${{ inputs.project-dir }}
         run: |
           set -uo pipefail
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" resolve --repo "$GITHUB_WORKSPACE/caller" \
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" resolve --repo "$GITHUB_WORKSPACE/caller" \
             --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR" > stack.json || rc=$?
           # exit 1 = no stack (the error is the result, reported by the report job). exit 2+ = usage or git error.
           if [ "$rc" -gt 1 ]; then
             echo "::error::mech-review resolve exit $rc (usage or git error): no stack"
             exit "$rc"
           fi
-          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
 
@@ -146,7 +147,12 @@ jobs:
   guard:
     name: mech-review guard (R2)${{ matrix.label }}
     needs: [stack]
+    # a PR run only (#109): R2 and R0's static half check the PR's diff
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # runs PR-steered code (the parser install, #27): read-only token, as red-first (#109)
+    permissions:
+      contents: read
     strategy:
       # one stack's crash never cancels another stack's checks
       fail-fast: false
@@ -176,7 +182,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" drift --repo "$GITHUB_WORKSPACE/caller" \
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" drift --repo "$GITHUB_WORKSPACE/caller" \
             --base "$BASE_SHA" --head "$HEAD_SHA" > mech-review-drift.json 2> mech-review-drift.err || rc=$?
           cat mech-review-drift.err >&2
           # exit 0 clean, messages only or no plan (no D in it), 1 the fail entry, 2 with a result (a bad plan: D fails
@@ -206,12 +212,12 @@ jobs:
         # the declared package, a blocking CI entry, never a pass
         continue-on-error: true
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           STACK: ${{ matrix.stack }}
           PROJECT_DIR: ${{ matrix.project-dir }}
         shell: bash
         run: |
-          python3 -I - <<'PY'
+          python3 -I -S - <<'PY'
           import json
           import os
           import shlex
@@ -223,7 +229,7 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as out:
               out.write(f"EKIT_PARSER_HOME={home}\n")
           env = dict(os.environ, EKIT_PARSER_HOME=home)
-          p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
+          p = subprocess.run([sys.executable, "-I", "-S", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
                               f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--stack", os.environ["STACK"],
                               "--project-dir", os.environ["PROJECT_DIR"], "--home", home], stdout=subprocess.PIPE, env=env)
           try:
@@ -276,7 +282,7 @@ jobs:
           done <<< "$PROTECTED_PATHS"
           # #53: the issues the PR body closes (GitHub's closing keywords: close, fix, resolve and their forms; #N, this
           # repo's owner/name#N or issue URL), for R2's spec-reversed removals; none found: every removal stays a fail
-          linked=$(python3 -I -c '
+          linked=$(python3 -I -S -c '
           import os, re
           repo = re.escape(os.environ["REPO"])
           ref = r"(?:(?:" + repo + r")?#|https://github\.com/" + repo + r"/issues/)([0-9]+)\b"
@@ -290,7 +296,7 @@ jobs:
           for n in $linked; do args+=(--linked-issue "$n"); done
           echo "linked issues: $(echo $linked)"
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r2 "${args[@]}" > mech-review.json 2> mech-review.err || rc=$?
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r2 "${args[@]}" > mech-review.json 2> mech-review.err || rc=$?
           cat mech-review.err >&2
           # exit 1 = fail entries: a result, saved and reported. exit 2+ = usage or git error: no result.
           if [ "$rc" -gt 1 ]; then
@@ -312,7 +318,7 @@ jobs:
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 "${args[@]}" > mech-review-r0.json 2> mech-review-r0.err || rc=$?
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 "${args[@]}" > mech-review-r0.json 2> mech-review-r0.err || rc=$?
           cat mech-review-r0.err >&2
           # git and adapter only, seconds; its result rides in the guard's artifact beside R2's. exit 1 = a fail entry
           # (adapter-fix, or needs-human for a loosened limit): a result, kept. exit 2+ = usage or git error: no result,
@@ -433,12 +439,12 @@ jobs:
         # the declared package, a blocking CI entry, never a pass
         continue-on-error: true
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
           STACK: ${{ matrix.stack }}
           PROJECT_DIR: ${{ matrix.project-dir }}
         shell: bash
         run: |
-          python3 -I - <<'PY'
+          python3 -I -S - <<'PY'
           import json
           import os
           import shlex
@@ -450,7 +456,7 @@ jobs:
           with open(os.environ["GITHUB_ENV"], "a") as out:
               out.write(f"EKIT_PARSER_HOME={home}\n")
           env = dict(os.environ, EKIT_PARSER_HOME=home)
-          p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
+          p = subprocess.run([sys.executable, "-I", "-S", f"{ws}/ekit/scripts/mech-review.py", "parser-install", "--repo",
                               f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--stack", os.environ["STACK"],
                               "--project-dir", os.environ["PROJECT_DIR"], "--home", home], stdout=subprocess.PIPE, env=env)
           try:
@@ -484,15 +490,15 @@ jobs:
         # #21: the key of a passed proof in the cache below. No key (an error here) only means the red step proves it
         id: r0fp
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           STACK: ${{ matrix.stack }}
           PROJECT_DIR: ${{ matrix.project-dir }}
         run: |
           set -uo pipefail
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 --repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" \
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 --repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" \
             --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR" --fingerprint run > r0-fingerprint.json || exit 0
-          python3 -I - "$GITHUB_OUTPUT" <<'PY' || exit 0
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY' || exit 0
           import json, sys
           key = json.load(open("r0-fingerprint.json"))["key"]
           with open(sys.argv[1], "a") as f:
@@ -503,16 +509,20 @@ jobs:
         run: rm -rf "$HOME/.cache/ekit-r0"
       - name: R0 runtime cache (run)
         # a hit skips the proof (the engine re-checks the file names its own fingerprint); a miss only re-runs it.
-        # The engine writes the file only when the proof passes, so only a pass is ever saved
+        # The engine writes the file only when the proof passes, so only a pass is ever saved (the saves below).
+        # #109: the warm key (only a push to the default branch writes it; every PR reads it) and this PR's own:
+        # GitHub tries the run's own scope first, and either entry is a pass of this fingerprint
+        id: r0cache
         if: steps.r0fp.outputs.key != ''
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ekit-r0
           key: ${{ steps.r0fp.outputs.key }}
+          restore-keys: ${{ steps.r0fp.outputs.key }}-pr
       - name: R1 red-first, R4 determinism
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           HEAD_REF: ${{ github.head_ref }}
           AGENT_PREFIX: ${{ inputs.agent-branch-prefix }}
           STACK: ${{ matrix.stack }}
@@ -530,7 +540,7 @@ jobs:
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" red "${args[@]}" > mech-review-red.json 2> mech-review-red.err || rc=$?
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" red "${args[@]}" > mech-review-red.json 2> mech-review-red.err || rc=$?
           cat mech-review-red.err >&2
           # exit 1 = fail entries: a result, saved and reported. exit 2+ = usage or git error: no result.
           if [ "$rc" -gt 1 ]; then
@@ -538,6 +548,20 @@ jobs:
             echo "::error::mech-review red-first exit $rc (usage or git error): no result"
             exit "$rc"
           fi
+      - name: R0 runtime cache save (run, default branch)
+        # #109: the warm entry, written only by a push to the default branch (a PR run cannot write its scope)
+        if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.r0fp.outputs.key != '' && steps.r0cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ekit-r0
+          key: ${{ steps.r0fp.outputs.key }}
+      - name: R0 runtime cache save (run, this PR)
+        # this PR's later runs reuse its own pass; its key is not the warm one, so a PR never writes the warm entry
+        if: github.event_name == 'pull_request' && steps.r0fp.outputs.key != '' && steps.r0cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ekit-r0
+          key: ${{ steps.r0fp.outputs.key }}-pr
       - name: upload red-first result
         if: always()
         uses: actions/upload-artifact@v4
@@ -550,6 +574,8 @@ jobs:
   plan:
     name: mech-review plan (R3 runs?)
     needs: [stack]
+    # a PR run only (#109): a push run has no diff to mutate (its baseline and mutants are skipped with it)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     # git only, no PR code: the write token stays here, away from the jobs that run PR code (#46). One job for every leg
     # (#17): run is true when any stack's R3 runs; legs, the baseline's matrix, are the stacks whose R3 runs; runs maps
@@ -583,7 +609,7 @@ jobs:
           TEST_PATHS: ${{ inputs.test-paths }}
         run: |
           set -eu
-          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY'
           import json
           import os
           import subprocess
@@ -594,7 +620,7 @@ jobs:
           legs = json.loads(os.environ["LEGS"])
           runs = {}
           for leg in legs:  # each stack in its own folder: the plan entry, and a repo adapter file, are found by it
-              p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py", "plan", "--repo",
+              p = subprocess.run([sys.executable, "-I", "-S", f"{ws}/ekit/scripts/mech-review.py", "plan", "--repo",
                                   f"{ws}/caller", "--base", os.environ["BASE_SHA"], "--head", os.environ["HEAD_SHA"],
                                   "--stack", leg["stack"], "--project-dir", leg["project-dir"], *tests],
                                  stdout=subprocess.PIPE)
@@ -721,7 +747,7 @@ jobs:
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" baseline "${args[@]}" > mech-review-baseline.json 2> mech-review-baseline.err || rc=$?
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" baseline "${args[@]}" > mech-review-baseline.json 2> mech-review-baseline.err || rc=$?
           cat mech-review-baseline.err >&2
           # exit 0 = a result (a failed or timed-out baseline is a result too). exit 2+ = usage or git error: no result.
           if [ "$rc" -gt 1 ]; then
@@ -729,7 +755,7 @@ jobs:
             echo "::error::mech-review baseline exit $rc (usage or git error): no result"
             exit "$rc"
           fi
-          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY'
           import json
           import os
           import sys
@@ -780,7 +806,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
-          python3 -I - "$GITHUB_OUTPUT" <<'PY'
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY'
           import json
           import os
           import sys
@@ -929,8 +955,8 @@ jobs:
           set -uo pipefail
           args=(--repo "$GITHUB_WORKSPACE/caller" --base "$BASE_SHA" --head "$HEAD_SHA" --stack "$STACK" --project-dir "$PROJECT_DIR")
           if [ "$STACK" = "ts" ]; then args+=(--mutants-cmd "$STRYKER_BIN"); fi
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 "${args[@]}" --fingerprint r3 > r0-fingerprint.json || exit 0
-          python3 -I - "$GITHUB_OUTPUT" <<'PY' || exit 0
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 "${args[@]}" --fingerprint r3 > r0-fingerprint.json || exit 0
+          python3 -I -S - "$GITHUB_OUTPUT" <<'PY' || exit 0
           import json, sys
           key = json.load(open("r0-fingerprint.json"))["key"]
           with open(sys.argv[1], "a") as f:
@@ -940,11 +966,14 @@ jobs:
         if: matrix.shard == 0
         run: rm -rf "$HOME/.cache/ekit-r0"
       - name: R0 runtime cache (r3)
+        # as red-first's (#109): the warm key and this PR's own; saved after the shard below
+        id: r0cache
         if: matrix.shard == 0 && steps.r0fp.outputs.key != ''
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ekit-r0
           key: ${{ steps.r0fp.outputs.key }}
+          restore-keys: ${{ steps.r0fp.outputs.key }}-pr
       - name: R3 mutation on the diff (shard)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -976,7 +1005,7 @@ jobs:
             if [ -n "$g" ]; then args+=(--test-paths "$g"); fi
           done <<< "$TEST_PATHS"
           rc=0
-          python3 -I "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" mutants "${args[@]}" > mech-review-mutants.json 2> mech-review-mutants.err || rc=$?
+          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" mutants "${args[@]}" > mech-review-mutants.json 2> mech-review-mutants.err || rc=$?
           cat mech-review-mutants.err >&2
           # exit 1 = fail entries: a result, saved and reported. exit 2+ = usage or git error: no result.
           if [ "$rc" -gt 1 ]; then
@@ -984,6 +1013,20 @@ jobs:
             echo "::error::mech-review mutants exit $rc (usage or git error): no result"
             exit "$rc"
           fi
+      - name: R0 runtime cache save (r3, default branch)
+        # #109: the warm entry, written only by a push to the default branch (a PR run cannot write its scope)
+        if: matrix.shard == 0 && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && steps.r0fp.outputs.key != '' && steps.r0cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ekit-r0
+          key: ${{ steps.r0fp.outputs.key }}
+      - name: R0 runtime cache save (r3, this PR)
+        # this PR's later runs reuse its own pass; its key is not the warm one, so a PR never writes the warm entry
+        if: matrix.shard == 0 && github.event_name == 'pull_request' && steps.r0fp.outputs.key != '' && steps.r0cache.outputs.cache-matched-key == ''
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ekit-r0
+          key: ${{ steps.r0fp.outputs.key }}-pr
       - name: upload mutants result
         if: always()
         uses: actions/upload-artifact@v4
@@ -996,7 +1039,8 @@ jobs:
   report:
     name: mech-review report
     needs: [stack, guard, red-first, plan, baseline, shards, mutants]
-    if: always()
+    # a PR run only (#109): a push run has no PR to comment on
+    if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: ekit comment poster checkout (the ref this workflow was called at)
@@ -1067,7 +1111,7 @@ jobs:
             if [ -f "$f" ]; then args+=(--envelope "$k=$f"); fi
           done
           rc=0
-          python3 -I ekit/scripts/mech-review.py merge "${args[@]}" > mutants-merged.json 2> mutants-merged.err || rc=$?
+          python3 -I -S ekit/scripts/mech-review.py merge "${args[@]}" > mutants-merged.json 2> mutants-merged.err || rc=$?
           cat mutants-merged.err >&2
           if [ "$rc" -gt 1 ]; then
             rm -f mutants-merged.json
@@ -1100,7 +1144,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -u
-          python3 -I - <<'PY'
+          python3 -I -S - <<'PY'
           import json
           import os
           import subprocess
@@ -1134,7 +1178,7 @@ jobs:
                   except (OSError, ValueError, TypeError, KeyError):
                       count = 0
                   count = count if isinstance(count, int) and not isinstance(count, bool) and 0 <= count <= 4 else 0
-                  args = [sys.executable, "-I", "ekit/scripts/mech-review.py", "merge", "--base", os.environ["BASE_SHA"],
+                  args = [sys.executable, "-I", "-S", "ekit/scripts/mech-review.py", "merge", "--base", os.environ["BASE_SHA"],
                           "--head", os.environ["HEAD_SHA"], "--stack", leg["stack"],
                           "--project-dir", leg["project-dir"], "--shards", str(count)]
                   if os.path.isfile(base):
@@ -1169,14 +1213,14 @@ jobs:
         run: |
           # no stack: no check ran; the comment says why (the projects found and the inputs to set)
           if [ "$STACK_RESULT" != "success" ]; then
-            python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+            python3 -I -S ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
               --reason "${STACK_ERROR:-the stack job produced no stack (see its log)}"
             exit $?
           fi
           # several stacks (#17): one comment, a row per stack; the drift result is the repo's
           if [ -z "$STACK" ]; then
             if [ ! -f stacks.json ]; then
-              python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+              python3 -I -S ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
                 --reason "the report could not list the stacks' results (see its log)"
               exit $?
             fi
@@ -1184,7 +1228,7 @@ jobs:
             if [ -f drift-result/mech-review-drift.json ]; then
               extra+=(--envelope drift=drift-result/mech-review-drift.json)
             fi
-            python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" --stacks stacks.json \
+            python3 -I -S ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" --stacks stacks.json \
               "${extra[@]}" --reason "no JSON from the job (see its log)"
             exit $?
           fi
@@ -1195,7 +1239,7 @@ jobs:
           if [ -f drift-result/mech-review-drift.json ]; then
             extra+=(--envelope drift=drift-result/mech-review-drift.json)
           fi
-          python3 -I ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
+          python3 -I -S ekit/scripts/mech-comment.py --pr "$PR_NUMBER" --head "$HEAD_SHA" \
             --envelope r2=r2-result/mech-review.json \
             --envelope r0=r2-result/mech-review-r0.json \
             --envelope red=red-result/mech-review-red.json \

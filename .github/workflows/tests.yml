@@ -18,6 +18,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Maven downloads (the Java reference tests, #22)
+        # #109: keyed on the Java fixture poms, so the tests do not fetch every dependency on every run
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-${{ hashFiles('tests/fixtures/**/pom.xml', 'tests/fixtures/**/pom.xml.r0') }}
+          restore-keys: ${{ runner.os }}-m2-
       - name: tests/run.sh
         run: bash tests/run.sh
 
