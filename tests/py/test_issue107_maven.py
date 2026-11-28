@@ -45,6 +45,10 @@ class MavenResolution(Case):
                 f"{FAILURE}[ERROR] Failed to execute goal on project calc: Could not resolve dependencies for project "
                 "com.x:calc:jar:1.0\n[ERROR] dependency: junit:junit:jar:4.13 (test)\n"
                 "[ERROR] \tCould not transfer artifact junit:junit:jar:4.13 from/to central\n" + TRAILER,
+                # Maven 3.9: the phrase on the goal line, the cause list after it without one (review N3)
+                f"{FAILURE}[ERROR] Failed to execute goal on project calc: Could not resolve dependencies for project "
+                "com.x:calc:jar:1.0\n[ERROR] dependency: junit:junit:jar:4.13 (test)\n"
+                "[ERROR] \tjunit:junit:jar:4.13 was not found in https://repo.maven.apache.org/maven2\n" + TRAILER,
                 f"{FAILURE}[ERROR] Failed to execute goal on project calc: dependencies failed\n"
                 "[ERROR] \trepo.maven.apache.org: Unknown host repo.maven.apache.org\n" + TRAILER,
                 # colour: Maven without -B
