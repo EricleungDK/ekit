@@ -13,6 +13,7 @@ import re
 import shlex
 
 from . import declared, parser_cmd
+from .gitio import Die
 from .globs import any_glob
 from .scan import Call, escaped_line_break, line_of, norm, source_lines, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
@@ -336,6 +337,7 @@ class DataAdapter(Adapter):
             src = os.path.join(repo, project_dir, rel)
             dst = os.path.join(wt, project_dir, rel)
             if os.path.isdir(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
+                _no_link_on_the_way(wt, os.path.join(project_dir, rel), rel)
                 os.symlink(os.path.abspath(src), dst)
                 made.append(dst)
         return made
@@ -481,6 +483,18 @@ class DataAdapter(Adapter):
         if self._count("skipped", text):
             return "none"
         return "none" if rc == 0 else "error"
+
+
+def _no_link_on_the_way(wt, path, rel):
+    """Die when a dir on the way to path (worktree relative) is a link (#107 review F5): a link made through it lands
+    where the load check of [run].links did not look (a PR's `vendor -> build` puts `vendor/node_modules` under
+    `build`, which R3 may clear whole)."""
+    cur = wt
+    for part in os.path.normpath(path).split(os.sep):  # path itself is not there yet: only the dirs above it count
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise Die(f"run.links `{rel}`: `{os.path.relpath(cur, wt)}` in the checkout is a link: the engine makes "
+                      "no link through it")
 
 
 def _matches(rx, text):

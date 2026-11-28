@@ -110,7 +110,9 @@ class ReportUnderALink(Case):
                                     (["node_modules/"], "node_modules/r.json", "node_modules/"),
                                     (["a//b"], "a/b/r.json", "a//b"),
                                     (["deps", "Node_Modules"], "node_modules/r.json", "Node_Modules"),
-                                    (["out/deps"], "out", "out/deps")):
+                                    (["out/deps"], "out", "out/deps"),
+                                    (["caf\u00e9"], "cafe\u0301/r.json", "caf\u00e9"),  # NFC link, NFD report
+                                    (["cafe\u0301"], "caf\u00e9", "cafe\u0301")):
             with self.subTest(links=links, report=report):
                 self.assertEqual(self.load_error(linked(links, report)), (
                     f"mech-review: mutation.tool.report: `{report}` and run.links `{link}` overlap: clearing the "
@@ -151,6 +153,37 @@ class TheRunKeepsEngineLinks(Case):
         self.assertEqual((check["status"], check["note"]), ("fail", problem))
         self.assertEqual([e["problem"] for e in ents], [problem])
         self.assertEqual(os.listdir(os.path.join(self.repo, "out")), ["keep.txt"])
+
+
+class NoLinkThroughALink(Case):
+    """#107 review F5: worktree_setup makes no link whose parent dir is reached through a link in the checkout (the
+    PR's `vendor -> build`): such a link would land where the load check did not look (under `build`, the report path,
+    which clearing removes whole). A named error, never a link made there."""
+
+    def setUp(self):
+        super().setUp()
+        self.pr()
+        os.symlink("build", os.path.join(self.repo, "vendor"))
+        os.makedirs(os.path.join(self.repo, "build"))
+        with open(os.path.join(self.repo, "build", ".keep"), "w") as f:
+            f.write("")
+        with open(os.path.join(self.repo, ".gitignore"), "w") as f:
+            f.write("node_modules/\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "vendor")
+        self.head = self.git("rev-parse", "HEAD")
+        os.makedirs(os.path.join(self.repo, "build", "node_modules"))  # the caller's install, untracked
+        self.text = linked(["vendor/node_modules"], report="build")
+
+    def test_mutants_stops_naming_the_link(self):  # R1 and R4 make their worktrees' links the same way
+        r, _ = self.cli("mutants", self.adapter(self.text))
+        self.assertEqual((r.returncode, r.stdout), (2, ""), r.stderr)
+        self.assertEqual(r.stderr.strip(), "mech-review: run.links `vendor/node_modules`: `vendor` in the checkout "
+                                           "is a link: the engine makes no link through it")
+        self.assertTrue(os.path.isdir(os.path.join(self.repo, "build", "node_modules")))
+
+    def test_the_load_check_passes_this_layout(self):
+        adapter_file.load(self.adapter(self.text))
 
 
 class ClearPathKeepsEngineLinks(unittest.TestCase):
