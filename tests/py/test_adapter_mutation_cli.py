@@ -338,9 +338,12 @@ class NotRun(Case):
         """the runner could not fetch the tool or a dependency: still a fail, never a pass, and the entry is CI's (check
         CI, class env, as a job with no result), not the PR's."""
         self.pr()
-        for out in ("[INFO] Scanning\n[ERROR] Failed: Could not resolve dependencies for project x\n",
-                    "[ERROR] Could not transfer artifact org.pitest:pitest:jar:1.17.4 from/to central\n",
-                    "[ERROR] ... Unknown host repo.maven.apache.org\n"):
+        # #107: Maven's own goal-failure line only (these words elsewhere: tests/py/test_issue107_maven.py)
+        for out in ("[INFO] Scanning\n[ERROR] Failed to execute goal on project x: Could not resolve dependencies for "
+                    "project x\n",
+                    "[ERROR] Failed to execute goal on project x: Could not transfer artifact "
+                    "org.pitest:pitest:jar:1.17.4 from/to central\n",
+                    "[ERROR] Failed to execute goal on project x: ... Unknown host repo.maven.apache.org\n"):
             with self.subTest(out):
                 r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_OUT": out, "STUB_RC": "1"})
                 self.assertEqual((r.returncode, env["checks"]["R3"]["status"]), (1, "fail"))

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 
 PLUGIN = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".claude-plugin", "plugin.json"))
 CHECKS = ("R1", "R2", "R3", "R4")
@@ -34,16 +35,41 @@ def entry(check, file, line, key, cls, severity, problem, hint, forbidden):
 
 
 RESOLUTION_FAILED = ("Could not resolve", "Could not transfer artifact", "Unknown host")  # Maven's: the network, not the PR
+GOAL_FAILED = "[ERROR] Failed to execute goal "  # Maven's goal-failure line: the one place RESOLUTION_FAILED counts
+BANNERS = ("[INFO] BUILD FAILURE", "[INFO] BUILD SUCCESS")  # what Maven prints after every test's output
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def resolution_failed(output):
+    """Maven's goal-failure block says a dependency could not be fetched (#107): an `[ERROR] Failed to execute goal`
+    line, with the `[ERROR] <text>` lines that continue it, holds a RESOLUTION_FAILED phrase. Only Maven's own lines
+    count: those after its last BUILD banner, which it prints after every test's output (none after BUILD SUCCESS: no
+    goal failed), or, with no banner (-q), the last goal-failure line alone. The same words a test prints anywhere else
+    never count. Lines split at LF (a CR before it is ignored), colour codes dropped."""
+    lines = [ANSI.sub("", l).rstrip() for l in (output or "").split("\n")]
+    banners = [i for i, l in enumerate(lines) if l in BANNERS]
+    if banners:
+        lines = lines[banners[-1] + 1:]
+    goals = [i for i, l in enumerate(lines) if l.startswith(GOAL_FAILED)]
+    for g in goals if banners else goals[-1:]:
+        block = [lines[g]]
+        for l in lines[g + 1:]:
+            if not l.startswith("[ERROR] ") or l[8:].startswith("-> "):  # "[ERROR]" alone, rstripped, ends it too
+                break
+            block.append(l)
+        if any(s in l for l in block for s in RESOLUTION_FAILED):
+            return True
+    return False
 
 
 def no_report(tool, where, why, output=""):
     """(R3 check, entries) when the mutation tool ran and left no report (#22 review round 2): the run did not judge the
     change, and the tool is installed, so it is no toolchain absence: R3 fails with one entry, never n/a (env) or a
-    pass. why: the first line of its output, or its exit code. When the output shows that a dependency could not be
-    fetched (RESOLUTION_FAILED), the entry is a CI one (check CI, class env, as a job with no result is): the runner,
-    not the PR; else R3's, agent-fixable."""
+    pass. why: the first line of its output, or its exit code. When Maven's goal-failure line shows that a dependency
+    could not be fetched (resolution_failed), the entry is a CI one (check CI, class env, as a job with no result is):
+    the runner, not the PR; else R3's, agent-fixable."""
     problem = f"{tool} ran and wrote no report ({where}): mutants not read: {why}"
-    ci = any(s in (output or "") for s in RESOLUTION_FAILED)
+    ci = resolution_failed(output)
     return {"status": "fail", "note": problem}, finalize([entry(
         "CI" if ci else "R3", "", 0, "no-report", "env" if ci else "agent-fixable", "fail", problem,
         "read the tool's run log: the code at head must build and its tests pass under the tool; if the tool or its "
