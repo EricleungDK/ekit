@@ -20,6 +20,7 @@ from .report import entry
 TEST_RUNS = 5  # R4: each new or changed test, this many times at head
 TEST_TIMEOUT = 900  # seconds per run; a timeout is a verdict, not a crash
 NOT_FOUND = ": not found"  # the runner's output when the executable is missing (rc None)
+CANNOT_RUN = ": cannot run: "  # `<program>: cannot run: <error>`: it exists, the OS will not start it (rc None, #107)
 
 
 def stubbed(argv, stub):
@@ -38,13 +39,34 @@ def default_runner():
         argv = stubbed(argv, stub)
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=TEST_TIMEOUT)
-        except FileNotFoundError:
-            return None, argv[0] + NOT_FOUND
         except subprocess.TimeoutExpired:
             return "timeout", ""
+        except OSError as e:
+            why = cannot_start(argv[0], cwd, e)
+            return None, argv[0] + (CANNOT_RUN + why if why else NOT_FOUND)
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
 
     return run
+
+
+def cannot_start(prog, cwd, err):
+    """why prog, which the OS refused to start with err, exists but cannot run; '' when it is not there (not found).
+    A program with no execute bit, a directory, a file the OS cannot execute; ENOENT on a file that is there is its
+    `#!` interpreter that is missing (#107)."""
+    path = os.path.join(cwd, prog) if os.sep in prog or (os.altsep and os.altsep in prog) else shutil.which(prog)
+    if not path or not os.path.exists(path):  # a dangling link is a program that is not there
+        return "" if isinstance(err, FileNotFoundError) else (err.strerror or str(err))
+    if os.path.isdir(path):
+        return "Is a directory"
+    if isinstance(err, FileNotFoundError):
+        try:
+            with open(path, "rb") as f:
+                first = f.readline(512)
+        except OSError:
+            first = b""
+        words = first[2:].decode("utf-8", "replace").split() if first.startswith(b"#!") else []
+        return f"bad interpreter `{words[0]}`" if words else "its interpreter or loader is missing"
+    return err.strerror or str(err)
 
 
 @contextlib.contextmanager
@@ -158,6 +180,10 @@ def absent(cmd, what, first="", adapter=None):
         return f"{name} not installed (env): `{first}`: install the test deps, or set setup-command ({what})"
     install = getattr(adapter, "commands", {}).get("install", "").strip()
     fix = f"run the adapter's install command (`{install}`)" if install else "install it"
+    if CANNOT_RUN in first:  # the runner's rc None: the program is there and will not start (#107)
+        prog, _, why = first.rpartition(CANNOT_RUN)
+        return (f"test program cannot run (env): `{prog}`: {why}: give it the execute bit and a `#!` line whose "
+                f"interpreter exists, {fix}, or set setup-command ({what})")
     if getattr(adapter, "from_file", False) and first and not first.endswith(NOT_FOUND):
         return f"toolchain absent (env): `{first}`: {fix}, or set setup-command ({what})"
     return f"toolchain absent: `{shlex.split(cmd)[0]}` not found (env): {fix}, or set setup-command ({what})"
