@@ -433,13 +433,23 @@ class TreeInputLines(unittest.TestCase):
             self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"), [
                 "rust-toolchain.toml: (unreadable)", "rust-toolchain: (unreadable)"])
 
-    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs here")
-    def test_a_pin_that_is_a_fifo_is_never_opened(self):
+    def test_a_pin_that_is_a_fifo_or_a_dir_is_never_opened(self):
+        """a FIFO could block the open: stat says it is one (mocked, so it runs where os.mkfifo does not), and a dir"""
+        import stat as st
         from scripts.mech_review import stack
-        os.mkfifo(os.path.join(self.root, "rust-toolchain"))
-        with mock.patch("builtins.open", side_effect=AssertionError("opened a FIFO")):
+        self.write("rust-toolchain", "1.80.0\n")
+        os.makedirs(os.path.join(self.root, "rust-toolchain.toml"))
+        real = os.stat
+
+        def fifo(path, *a, **k):
+            got = real(path, *a, **k)
+            if str(path).endswith(os.sep + "rust-toolchain"):
+                return os.stat_result((st.S_IFIFO | 0o644,) + tuple(got)[1:])
+            return got
+
+        with mock.patch("os.stat", fifo), mock.patch("builtins.open", side_effect=AssertionError("opened a pin")):
             self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"),
-                             ["rust-toolchain: (not a regular file)"])
+                             ["rust-toolchain.toml: (not a regular file)", "rust-toolchain: (not a regular file)"])
 
 
 # `gradle --version` as Gradle 8.10 prints it
