@@ -347,7 +347,7 @@ def probe(argv, from_file, roots):
     if os.path.basename(argv[0]) == "cargo" and len(argv) > 1 and not argv[1].startswith("-"):
         # `cargo mutants` runs `cargo-mutants` from PATH: that binary keeps the same rules (#21 review N2)
         sub = f"cargo-{argv[1]}"
-        sub_prog = _which(sub, path)  # cargo finds it on the probe's PATH
+        sub_prog = mutation_tool._program_path(sub)  # the probe's PATH finds this one too, or one is refused here
         if sub_prog is None:
             return f"{label}: not probed (`{sub}` not found on PATH)"
         inside = mutation_tool._in_checkout(sub_prog, roots)
