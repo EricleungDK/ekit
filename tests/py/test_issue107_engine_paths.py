@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import _kit
-from scripts.mech_review import adapter_file, engine, mutants, mutation_tool
+from scripts.mech_review import adapter_file, engine, gitio, mutants, mutation_tool
 from scripts.mech_review.gitio import Review, merge_base
 from test_adapter_mutation_cli import ELEMENTS, Case, adapter_text
 from test_adapter_run import MINI_RUN
@@ -184,6 +184,41 @@ class NoLinkThroughALink(Case):
 
     def test_the_load_check_passes_this_layout(self):
         adapter_file.load(self.adapter(self.text))
+
+
+class LinkParents(unittest.TestCase):
+    """#107 review N2, N4: only the dirs of a link's own path below the project dir count; a project dir reached through
+    a link (`app -> packages/app`) is the caller's choice, and both the report and the links are relative to it."""
+
+    def setUp(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo, self.wt = os.path.join(tmp.name, "repo"), os.path.join(tmp.name, "wt")
+        for top in (self.repo, self.wt):
+            os.makedirs(os.path.join(top, "packages", "app", "a", "real"))
+            os.symlink(os.path.join("packages", "app"), os.path.join(top, "app"))
+        os.makedirs(os.path.join(self.repo, "packages", "app", "node_modules"))
+        os.makedirs(os.path.join(self.repo, "packages", "app", "a", "real", "node_modules"))
+
+    def setup_links(self, links):
+        path = os.path.join(os.path.dirname(self.wt), "mini.toml")
+        with open(path, "w") as f:
+            f.write(linked(links))
+        return adapter_file.load(path).worktree_setup(self.repo, self.wt, "app")
+
+    def test_a_project_dir_reached_through_a_link_gets_its_links(self):
+        self.assertEqual(self.setup_links(["node_modules"]), [os.path.join(self.wt, "app", "node_modules")])
+        self.assertTrue(os.path.islink(os.path.join(self.wt, "packages", "app", "node_modules")))
+
+    def test_a_link_under_a_nested_linked_dir_is_refused_naming_it(self):
+        os.symlink("real", os.path.join(self.wt, "packages", "app", "a", "vendor"))
+        os.symlink("real", os.path.join(self.repo, "packages", "app", "a", "vendor"))
+        with self.assertRaises(gitio.Die) as cm:
+            self.setup_links(["a/vendor/node_modules"])
+        self.assertEqual(str(cm.exception), "run.links `a/vendor/node_modules`: `a/vendor` in the checkout is a link: "
+                                            "the engine makes no link through it")
+        self.assertFalse(os.path.lexists(os.path.join(self.wt, "packages", "app", "a", "real", "node_modules")))
 
 
 class ClearPathKeepsEngineLinks(unittest.TestCase):
