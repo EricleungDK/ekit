@@ -8,6 +8,7 @@ from .gitio import added_lines, blob, changes, messages
 from .globs import any_glob
 from .parser_cmd import ParserError
 from .report import entry
+from .scan import lf_line, line_breaks, source_lines
 
 def unmatched(xs, ys):
     """xs minus exact (fn, kind, left, right) matches in ys, multiset-aware."""
@@ -122,7 +123,7 @@ def r2_file(adapter, test_globs, old, new, before, after, added=frozenset(), spe
     aas = [a for a in adapter.assertions(held_a) if whole_a or a.scope] if held_a is not None else []
     bfns = base_side.test_fns(held_b) if held_b is not None else []
     afns = adapter.test_fns(held_a) if held_a is not None else []
-    gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a)
+    gone, renamed, changed = _renames(bfns, afns, bas, aas, held_b, held_a, line_breaks(adapter))
     entries = _removed(path, gone, spec or {}) + _renamed_changed(path, changed)
     entries += _markers(adapter, path, afns, bfns, renamed)
     if before is not None:
@@ -158,17 +159,18 @@ RENAME_MATCH = 0.6  # difflib's ratio over the non-assert body lines, for a rena
 RENAME_SHARED = 3  # non-assert body lines the two must share, at least, and at least half of the old test's
 
 
-def _body(text, span, skip=frozenset()):
+def _body(text, span, skip=frozenset(), breaks="lf"):
     """the stripped non-blank lines of a test's body, span (first, last) from the adapter (after the signature, up to
-    its end), leaving out the line numbers in skip (its assert lines). No span: no body."""
+    its end), leaving out the line numbers in skip (its assert lines). No span: no body. breaks: how the adapter's line
+    numbers count lines (scan.line_breaks), so the lines are the span's."""
     if not span:
         return []
-    lines = text.splitlines()
+    lines = source_lines(text, breaks)
     first, last = span
     return [ln.strip() for no, ln in enumerate(lines[first - 1:last], start=first) if ln.strip() and no not in skip]
 
 
-def _renames(bfns, afns, bas, aas, before=None, after=None):
+def _renames(bfns, afns, bas, aas, before=None, after=None, breaks="lf"):
     """(removed fns, {new name: old fn}, [(old fn, new fn)]). A removed fn whose asserts reappear unchanged in a new fn
     (one-to-one, non-empty) is a rename, not a removal. Then a removed fn with asserts and a new fn with no fewer, whose
     non-assert body lines (the adapter's body span) match at least RENAME_MATCH and share at least RENAME_SHARED lines
@@ -196,11 +198,11 @@ def _renames(bfns, afns, bas, aas, before=None, after=None):
             had = sigs(bas, rf.name)
             if not had:  # no assert: no "assertions changed" to confirm
                 continue
-            rb = _body(before, rf.body, {a.line for a in bas if a.fn == rf.name})
+            rb = _body(before, rf.body, {a.line for a in bas if a.fn == rf.name}, breaks)
             for nf in new:
                 if len(sigs(aas, nf.name)) < len(had):  # a dropped assert is no rename
                     continue
-                nb = _body(after, nf.body, {a.line for a in aas if a.fn == nf.name})
+                nb = _body(after, nf.body, {a.line for a in aas if a.fn == nf.name}, breaks)
                 m = difflib.SequenceMatcher(None, rb, nb, autojunk=False)
                 shared = sum(b.size for b in m.get_matching_blocks())
                 if rb and nb and shared >= RENAME_SHARED and 2 * shared >= len(rb) and m.ratio() >= RENAME_MATCH:
@@ -357,22 +359,31 @@ def _touches(line, end_line, added):
     return any(ln in added for ln in range(line, end_line + 1))
 
 
+def _git_lines(adapter, after, line, end_line):
+    """(line, end_line) of the adapter's numbering as git's diff numbers them (#107 review N8: python's lone CRs)."""
+    breaks = line_breaks(adapter)
+    return lf_line(after, line, breaks), lf_line(after, end_line, breaks)
+
+
 def _suppressions(adapter, path, after, added):
-    """a lint suppression without a reason, on a line the change adds."""
+    """a lint suppression without a reason, on a line the change adds (git's lines: the adapter's converted)."""
     out = []
     for sup in adapter.suppressions(after):
-        if sup.reason or not _touches(sup.line, sup.end_line, added):
+        line, end_line = _git_lines(adapter, after, sup.line, sup.end_line)
+        if sup.reason or not _touches(line, end_line, added):
             continue
         problem, hint = adapter.suppression_text(sup)
-        out.append(entry("R2", path, sup.line, sup.lints, "agent-fixable", "fail", problem, hint,
+        out.append(entry("R2", path, line, sup.lints, "agent-fixable", "fail", problem, hint,
                          "silencing a lint without a reason"))
     return out
 
 
 def _mutation_skips(adapter, path, after, added):
-    """a marker that hides production code from R3, on a line the change adds."""
+    """a marker that hides production code from R3, on a line the change adds (git's lines: the adapter's converted)."""
+    skips = [(*_git_lines(adapter, after, line, end_line), marker)
+             for line, end_line, marker in adapter.mutation_skips(after)]
     return [entry("R2", path, line, "mutation-skip", "needs-human", "fail",
                   f"mutation skip added: `{marker}` hides this code from R3",
                   "remove it and add the test R3 asks for; if the code truly cannot be tested, a person decides",
                   "hiding code from mutation testing (R3)")
-            for line, end_line, marker in adapter.mutation_skips(after) if _touches(line, end_line, added)]
+            for line, end_line, marker in skips if _touches(line, end_line, added)]

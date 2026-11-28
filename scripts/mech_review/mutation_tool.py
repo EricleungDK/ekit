@@ -20,8 +20,8 @@ from collections import namedtuple
 from . import adapter_file, red
 from .gitio import added_lines, git
 from .mutants import (DEFAULT_MAX_MUTANTS, HOW, PROBE_TIMEOUT, _check, _crate_path, _files_baseline, _first_line,
-                      _payload, _repo_path, _under, crate_check, default_runner, line_ranges, partial_entry, shard_files,
-                      shard_index, stryker_desc)
+                      _payload, _repo_path, _under, cannot_start, crate_check, default_runner, line_ranges,
+                      partial_entry, shard_files, shard_index, stryker_desc)
 from .report import entry, finalize, no_report
 
 MAX_REPORT_BYTES = 64 * 1024 * 1024  # a report larger than this is not read (n/a): no tool's real report comes near it
@@ -289,7 +289,7 @@ def _in_worktree(r, wt):
     stop = _guard_program(r, wt)
     if stop:
         return stop
-    r.rv.adapter.worktree_setup(r.rv.repo, wt, r.rv.project_dir)
+    made = r.rv.adapter.worktree_setup(r.rv.repo, wt, r.rv.project_dir) or []
     stop = _probe(r, crate)
     if stop:
         return stop
@@ -297,7 +297,7 @@ def _in_worktree(r, wt):
     if stop:
         return stop
     ranges, outside, stop = _ranges(r)
-    return _not_mutated(stop or _run_tool(r, wt, crate, extra, ranges), r.tool, outside)
+    return _not_mutated(stop or _run_tool(r, wt, crate, extra, ranges, made), r.tool, outside)
 
 
 def _guard_program(r, wt):
@@ -406,16 +406,17 @@ def _argv(r, extra, ranges, config):
     return argv
 
 
-def _run_tool(r, wt, crate, extra, ranges):
-    """clear the report path, write the runner's config (no repo config), run the tool, then read what it left."""
+def _run_tool(r, wt, crate, extra, ranges, made=()):
+    """clear the report path, write the runner's config (no repo config), run the tool, then read what it left. made:
+    the links worktree_setup made ([run].links), which clearing never removes."""
     t = r.tool
-    why = _clear_path(wt, crate, t["report"])  # a report (or link) the PR committed is never read or followed
+    why = _clear_path(wt, crate, t["report"], made)  # a report (or link) the PR committed is never read or followed
     if why:
         return _path_fail(f"{t['name']} report {t['report']}", why)
     config = next((c for c in r.rv.adapter.mutation.get("config_files", [])
                    if os.path.lexists(os.path.join(crate, c))), None)
     if config is None and extra.get("config") is not None:
-        why = _clear_path(wt, crate, extra["config_file"])
+        why = _clear_path(wt, crate, extra["config_file"], made)
         if why:
             return _path_fail(f"{t['name']} config {extra['config_file']}", why)
         with open(os.path.join(crate, extra["config_file"]), "w", encoding="utf-8") as fh:
@@ -579,11 +580,13 @@ def _in_checkout(prog, roots):
     return None
 
 
-def _clear_path(wt, crate, rel):
+def _clear_path(wt, crate, rel, keep=()):
     """make rel (a file under the crate dir) free for the run to write, never following a link: each part on the way
     that is a link, or not a dir where one is needed, is removed (the worktree's copy only; the tool makes the dirs it
-    writes into, as on a clean checkout); at rel itself a link or file is removed, a dir removed whole. None, or why
-    not (an OSError, or a crate dir that leads out of the worktree)."""
+    writes into, as on a clean checkout); at rel itself a link or file is removed, a dir removed whole. A part that is
+    one of keep (the links the engine made for [run].links, #107: the same file, however the path is spelled) is never
+    removed: why not. None, or why not (an OSError, or a crate dir that leads out of the worktree)."""
+    kept = {_file_key(p) for p in keep} - {None}
     top = os.path.realpath(wt)
     if not os.path.realpath(crate).startswith(top.rstrip(os.sep) + os.sep) and os.path.realpath(crate) != top:
         return "the project dir leads out of the checkout"
@@ -597,6 +600,8 @@ def _clear_path(wt, crate, rel):
                 st = os.lstat(cur)
             except FileNotFoundError:
                 break  # nothing there, nor below it
+            if _file_key(cur, st) in kept:
+                return f"it goes through `{'/'.join(parts[:i + 1])}`, a link the engine made for run.links"
             if last and stat.S_ISDIR(st.st_mode):
                 shutil.rmtree(cur)
             elif last or not stat.S_ISDIR(st.st_mode):  # a link (to a dir too), a file, anything else
@@ -605,6 +610,15 @@ def _clear_path(wt, crate, rel):
     except OSError as e:
         return e.strerror or str(e)
     return None
+
+
+def _file_key(path, st=None):
+    """(device, inode): what names one file however its path is spelled; None when nothing is there."""
+    try:
+        st = st or os.lstat(path)
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino
 
 
 def _path_fail(what, why):
@@ -653,7 +667,11 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     runner = runner or default_runner()
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    try:
+        check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner,
+                                                 max_mutants=max_mutants)
+    except red.CannotStart as e:  # the run's error, not the tool's: a fail naming it (#107 review N7)
+        return cannot_start(e)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check, ents)]
     return check, ents

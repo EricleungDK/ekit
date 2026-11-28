@@ -44,4 +44,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
-        run: python3 -I ekit/scripts/mech-rerun.py --pr "$PR_NUMBER"
+        run: python3 -I -S ekit/scripts/mech-rerun.py --pr "$PR_NUMBER"

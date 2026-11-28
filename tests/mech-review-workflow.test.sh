@@ -113,8 +113,16 @@ red_has_perm = any(l.strip() == "permissions:" for l in (block(jobs, "red-first"
 mut_job = block(jobs, "mutants") or []
 mut_has_perm = any(l.strip() == "permissions:" for l in mut_job)
 base_has_perm = any(l.strip() == "permissions:" for l in (block(jobs, "baseline") or []))
-check("reusable: job-level permissions only on red-first, baseline and mutants (PR code jobs; guard, plan, report inherit top-level)",
-      red_has_perm and mut_has_perm and base_has_perm and len(job_perm_lines) == 3, f"job-level permissions lines: {job_perm_lines}")
+guard_has_perm = any(l.strip() == "permissions:" for l in (block(jobs, "guard") or []))
+# #109: guard runs PR-steered code (the parser install, #27) and gets its own contents: read block
+check("reusable: job-level permissions only on guard, red-first, baseline and mutants (PR code jobs, #109; plan and "
+      "report inherit top-level)",
+      guard_has_perm and red_has_perm and mut_has_perm and base_has_perm and len(job_perm_lines) == 4,
+      f"job-level permissions lines: {job_perm_lines}")
+_gperm = block(block(jobs, "guard") or [], "permissions") or []
+check("guard: job-level permissions exactly contents read (#109: it runs the PR-steered parser install)",
+      {k: value(_gperm, k) for k in child_keys(_gperm)} == {"contents": "read"},
+      str({k: value(_gperm, k) for k in child_keys(_gperm)}))
 check("reusable: jobs are exactly stack + guard + red-first + report + plan + baseline + shards + mutants (#46, #17)",
       child_keys(jobs) == {"stack", "guard", "red-first", "report", "plan", "baseline", "shards", "mutants"},
       str(child_keys(jobs)))
@@ -308,6 +316,84 @@ check("mutants: uploads its JSON artifact per stack and shard", "mech-review-mut
 # passed fingerprint the workflow cache remembers. A miss only re-runs the proof; the engine writes the pass file
 # only on a pass and reads it only when it names the fingerprint it computed itself, so a hit never turns fail to pass
 R0_DIR = '"$HOME/.cache/ekit-r0"'
+# #109, the warm cache: GitHub lets a pull_request run read the default branch's caches but write only its own (the
+# PR's) scope. So a push to the default branch writes the warm key, which every PR reads; a PR run saves only under
+# its own key (the warm key plus -pr), so it never writes the warm entry. The restore names both keys; GitHub searches
+# the run's own scope first, so a PR reads its own -pr entry when it has one, else main's warm one: either is a pass
+# of the same fingerprint
+R0_WARM_KEY = "${{ steps.r0fp.outputs.key }}"
+R0_PR_KEY = "${{ steps.r0fp.outputs.key }}-pr"
+R0_ON_DEFAULT_PUSH = ("github.event_name == 'push'",
+                      "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
+R0_ON_PR = ("github.event_name == 'pull_request'",)
+
+
+def if_terms(st):
+    """the && terms of a step's (stripped lines') one-line if:, or None when it is anything but a plain && of terms
+    (an ||, a status function such as always(), a block scalar, two if: lines, none): those can run it on any event."""
+    ifs = [l[len("if:"):].strip() for l in st if l.startswith("if:")]
+    if len(ifs) != 1:
+        return None
+    c = ifs[0]
+    if c.startswith("${{") and c.endswith("}}"):
+        c = c[3:-2].strip()
+    if not c or "||" in c or c[0] in "|>" or re.search(r"\b(always|cancelled|failure|success)\s*\(", c):
+        return None
+    return [t.strip() for t in c.split("&&")]
+
+
+def all_steps(lines):
+    """every step (named or not) of every steps: list in lines, each as its stripped lines (the `- ` dropped)."""
+    out, cur, at = [], None, None
+    for l in lines:
+        if not meaningful(l):
+            if cur is not None:
+                cur.append(l.strip())
+            continue
+        i, s = indent(l), l.strip()
+        if s == "steps:":
+            at, cur = i, None
+            continue
+        if at is not None and i <= at:
+            at, cur = None, None
+            continue
+        if at is not None and i == at + 2 and s.startswith("- "):
+            cur = [s[2:].strip()]
+            out.append(cur)
+        elif cur is not None:
+            cur.append(s)
+    return out
+
+
+def r0_cache_misuse(lines):
+    """[(why, step's first line)] for each cache step of lines that could write the warm R0 key from a run other than a
+    push to the default branch (#109): a combined actions/cache (it saves on every event), a save whose key is neither
+    the warm key nor the PR's, a warm save whose if: is not a plain && naming that push, a PR save not gated on PRs."""
+    out = []
+    for st in all_steps(lines):
+        uses = next((l.split("uses:", 1)[1].split("#")[0].strip() for l in st if l.startswith("uses:")), "")
+        if not uses.startswith("actions/cache"):
+            if uses and any("steps.r0fp.outputs.key" in l for l in st):  # another action handed the R0 key
+                out.append(("an action other than actions/cache/restore or save given the R0 key", st[0]))
+            continue
+        what = uses.split("@", 1)[0]
+        if what == "actions/cache/restore":
+            continue
+        if what != "actions/cache/save":
+            out.append(("not restore or save only (a combined cache saves from every run)", st[0]))
+            continue
+        keys = [l[len("key:"):].strip() for l in st if l.startswith("key:")]
+        terms = set(if_terms(st) or [])
+        if keys == [R0_WARM_KEY]:
+            if if_terms(st) is None or not set(R0_ON_DEFAULT_PUSH) <= terms:
+                out.append(("a warm-key save not gated on a push to the default branch", st[0]))
+        elif keys == [R0_PR_KEY]:
+            if if_terms(st) is None or not set(R0_ON_PR) <= terms:
+                out.append(("a PR-key save not gated on pull_request", st[0]))
+        else:
+            out.append((f"a save of a key neither warm nor the PR's: {keys}", st[0]))
+    return out
+
 _at = next(i for i, l in enumerate(red) if l.strip() == "- name: R1 red-first, R4 determinism")
 red_run_at = next(i for i in range(_at, len(red)) if red[i].strip().startswith("STACK:"))  # the run step's STACK line
 
@@ -325,10 +411,28 @@ for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", m
     check(f"{job}: the R0 {part} fingerprint step prints the cache key (r0 --fingerprint {part}), never stops the job",
           "id: r0fp" in fp and f"--fingerprint {part}" in text(fp) and "|| exit 0" in text(fp)
           and 'key={key}' in text(fp), text(fp))
-    check(f"{job}: the R0 {part} cache is actions/cache, keyed by the fingerprint step, at the dir the engine gets",
-          "uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache and "key: ${{ steps.r0fp.outputs.key }}" in cache
+    # #109: restore only (a combined actions/cache saves from every run), naming the warm key (main's push run writes
+    # it) and this PR's own; whichever GitHub finds is a pass of the same fingerprint
+    check(f"{job}: the R0 {part} cache is actions/cache/restore (#109), keyed by the fingerprint step, at the dir the "
+          "engine gets, and this PR's own key",
+          "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache
+          and "key: ${{ steps.r0fp.outputs.key }}" in cache and f"restore-keys: {R0_PR_KEY}" in cache
+          and "id: r0cache" in cache
           and "path: ~/.cache/ekit-r0" in cache and any(l.startswith("if:") and "steps.r0fp.outputs.key != ''" in l
                                                         for l in cache), str(cache))
+    for who, key, gate in (("default branch", R0_WARM_KEY, R0_ON_DEFAULT_PUSH), ("this PR", R0_PR_KEY, R0_ON_PR)):
+        sv = step(lines, f"R0 runtime cache save ({part}, {who})")
+        terms = if_terms(sv)
+        want = set(gate) | {"steps.r0fp.outputs.key != ''", "steps.r0cache.outputs.cache-matched-key == ''"}
+        if shard0:
+            want.add("matrix.shard == 0")
+        check(f"{job}: the R0 {part} save for {who} (#109): actions/cache/save of key {key}, after the run, only on a miss"
+              + (" and shard 0" if shard0 else "") + ", its if: exactly && of " + " and ".join(gate) + " and the miss",
+              "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in sv
+              and [l for l in sv if l.startswith("key:")] == [f"key: {key}"] and "path: ~/.cache/ekit-r0" in sv
+              and terms is not None and set(terms) == want  # exact: an extra term (`&& false`) turns it off
+              and f"R0 runtime cache save ({part}, {who})" in names
+              and names.index(f"R0 runtime cache save ({part}, {who})") > names.index(run_name), str((sv, terms)))
     clear = step(lines, f"R0 runtime cache dir cleared ({part})")
     check(f"{job}: fingerprint, cleared dir, cache, then the run that passes --r0 (review B1: nothing a setup command "
           "or install script planted survives a miss)",
@@ -356,6 +460,197 @@ _moved = [l.split("STACK:")[0] + "STACK: ${{ matrix.moved }}" if i == red_run_at
 check("R0 fingerprint expressions check is live: a run step's STACK that moved alone is caught",
       _moved != red and stack_env(step(_moved, "R0 runtime fingerprint (run)"))
       != stack_env(step(_moved, "R1 red-first, R4 determinism")))
+
+# ---- #109: only a push to the default branch writes the warm R0 key; that push run reaches red-first ----
+check("R0 cache (#109): no cache step anywhere in the workflow can write the warm key from a pull_request run",
+      r0_cache_misuse(W) == [], str(r0_cache_misuse(W)))
+_SHA = "0057852bfaa89a56745cba8c7296529d2fc39830"
+_PUSH = "github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+
+
+def cache_step(cond, key, uses=f"actions/cache/save@{_SHA} # v4.3.0"):
+    """one cache step's lines, under a steps: line: its if: (None: none), the action and the key it saves."""
+    return (["    steps:", "      - name: s"] + ([f"        if: {cond}"] if cond is not None else [])
+            + [f"        uses: {uses}", "        with:", "          path: ~/.cache/ekit-r0", f"          key: {key}"])
+
+
+for name, bad in {
+    "a combined actions/cache on the R0 dir": cache_step(_PUSH, R0_WARM_KEY, f"actions/cache@{_SHA} # v4.3.0"),
+    "a warm save with if: always()": cache_step("always()", R0_WARM_KEY),
+    "a warm save with no if:": cache_step(None, R0_WARM_KEY),
+    "a warm save gated on push || a PR": cache_step(_PUSH + " || github.event_name == 'pull_request'", R0_WARM_KEY),
+    "a warm save on push && always()": cache_step(_PUSH + " && always()", R0_WARM_KEY),
+    "a warm save on any push (no default-branch ref)": cache_step("github.event_name == 'push'", R0_WARM_KEY),
+    "a second save of the warm key, gated on a PR": cache_step("github.event_name == 'pull_request'", R0_WARM_KEY,
+                                                               f"actions/cache/save@{_SHA}"),
+    "a save of another spelling of the key": cache_step(_PUSH, "${{ steps.r0fp.outputs.key}}"),
+    "another action given the warm key": cache_step(_PUSH, R0_WARM_KEY, f"someone/cache@{_SHA}"),
+    "a PR-key save on every event": cache_step("steps.r0fp.outputs.key != ''", R0_PR_KEY),
+}.items():
+    check(f"R0 cache check is live (#109): {name} is caught", len(r0_cache_misuse(bad)) == 1, str(r0_cache_misuse(bad)))
+_good = (cache_step(f"matrix.shard == 0 && {_PUSH} && steps.r0fp.outputs.key != ''", R0_WARM_KEY)
+         + cache_step("github.event_name == 'pull_request' && steps.r0fp.outputs.key != ''", R0_PR_KEY)[1:])
+check("R0 cache check (#109): a warm save gated on the default-branch push and a PR-key save gated on PRs pass",
+      r0_cache_misuse(_good) == [], str(r0_cache_misuse(_good)))
+# the push run: ekit's caller triggers on a push to main; the jobs that need a PR (its base for R2 and the plan, its
+# number for the comment) are skipped there; stack and red-first take the pushed commit as base and head (an empty diff:
+# R4 has no changed test, R1 is off for a non-agent branch, R0's run part proves the head's fingerprint and saves it)
+_son = block(read(".github/workflows/mech-review-self.yml") or [], "on", 0) or []
+_spush = block(_son, "push") or []
+check("self (#109): on push to main too, so main's run writes the warm R0 cache",
+      "push" in child_keys(_son) and value(_spush, "branches") == "[main]", str(_spush))
+for job_name in ("guard", "plan", "report"):
+    _jif = next((l.strip()[len("if:"):].strip() for l in child_lines(block(jobs, job_name)) if l.strip().startswith("if:")),
+                "")  # raw: value() strips a closing quote
+    check(f"{job_name} (#109): skipped on a push run (it needs a PR)", "github.event_name == 'pull_request'" in _jif
+          and "||" not in _jif, _jif)
+PUSH_SHAS = {"BASE_SHA": "${{ github.event.pull_request.base.sha || github.sha }}",
+             "HEAD_SHA": "${{ github.event.pull_request.head.sha || github.sha }}"}
+
+
+def sha_env(st):
+    return {l.split(":", 1)[0]: l.split(":", 1)[1].strip() for l in st if l.startswith(("BASE_SHA:", "HEAD_SHA:"))}
+
+
+for job_name, step_name in (("stack", "resolve stack and project-dir"), ("red-first", "R0 runtime fingerprint (run)"),
+                            ("red-first", "R1 red-first, R4 determinism")):
+    _se = sha_env(step(block(jobs, job_name) or [], step_name))
+    check(f"{job_name}: {step_name} takes the PR's base and head, else the pushed commit for both (#109)",
+          _se == PUSH_SHAS, str(_se))
+for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("mutants", "R3 mutation on the diff (shard)")):
+    jl = block(jobs, job_name) or []
+    part = "run" if job_name == "red-first" else "r3"
+    check(f"{job_name}: the R0 {part} fingerprint reads BASE_SHA and HEAD_SHA as the run step does (#109: the key names "
+          "what the run proves)",
+          sha_env(step(jl, f"R0 runtime fingerprint ({part})")) == sha_env(step(jl, run_name)) != {},
+          f"{sha_env(step(jl, f'R0 runtime fingerprint ({part})'))} vs {sha_env(step(jl, run_name))}")
+
+
+
+# The steps the warm save depends on, by name, with their exact if: (None: none), and the if: values the other steps of
+# red-first and the jobs it needs hold today: a new condition on the push path is added here on purpose, never by a
+# workflow edit alone (review 2, N1: an if: on a PR-only context, `1 == 2`, an actor test, each skips the save on push)
+PUSH_PATH_IFS = {
+    "R0 runtime fingerprint (run)": None,
+    "R0 runtime cache dir cleared (run)": None,
+    "R0 runtime cache (run)": "steps.r0fp.outputs.key != ''",
+    "R1 red-first, R4 determinism": None,
+    "R0 runtime cache save (run, default branch)": "github.event_name == 'push' && github.ref == format('refs/heads/{0}', "
+                                                   "github.event.repository.default_branch) && steps.r0fp.outputs.key "
+                                                   "!= '' && steps.r0cache.outputs.cache-matched-key == ''",
+    "R0 runtime cache save (run, this PR)": "github.event_name == 'pull_request' && steps.r0fp.outputs.key != '' && "
+                                            "steps.r0cache.outputs.cache-matched-key == ''",
+}
+PUSH_PATH_OTHER_IFS = {None, "matrix.stack == 'rust'", "matrix.stack == 'python'", "matrix.stack == 'ts'",
+                       "runner.os == 'Linux' && inputs.extra-apt-packages != ''", "inputs.setup-command != ''",
+                       "steps.resolve.outputs.error != ''", "always()"}
+TIMEOUT_FLOOR = 10  # minutes: a timeout-minutes on the push path below it can stop the run before the save
+# The engine call each script step makes, which nothing may exit before (an early `exit 0` skips the key or the proof)
+PUSH_PATH_CALLS = {"R0 runtime fingerprint (run)": 'python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 ',
+                   "R1 red-first, R4 determinism": 'python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" red '}
+
+
+def push_path(lines):
+    """[why] the push run cannot reach red-first's warm save (#109): a job red-first needs, or red-first itself, with a
+    job-level if: (guard, plan and report have one, so needing them skips red-first on push); red-first's needs other
+    than [stack]; a step the save depends on missing or with an if: other than its pinned one; any other step there
+    with an if: not in today's set; a timeout-minutes under the floor; an exit before the fingerprint's or the red
+    step's engine call, or a fingerprint step that no longer writes key= to GITHUB_OUTPUT. Known limits (a text check):
+    a script that stops another way before its engine call (kill, a failing command under set -e), and an added step
+    that fails the job before the save, which turns the push run red where anyone sees it."""
+    out, js = [], block(lines, "jobs", 0) or []
+    rf_needs = value(block(js, "red-first") or [], "needs") or ""
+    if rf_needs != "[stack]":
+        out.append(f"red-first needs {rf_needs!r}, not [stack]")
+    seen, todo = set(), ["red-first"]
+    while todo:
+        j = todo.pop()
+        if j in seen:
+            continue
+        seen.add(j)
+        jl = block(js, j) or []
+        if any(l.strip().startswith("if:") for l in child_lines(jl)):
+            out.append(f"{j}: a job-level if: (the push run needs it)")
+        todo += [n for n in re.split(r"[\s,\[\]]+", value(jl, "needs") or "") if n]
+        for l in jl:
+            m = re.match(r"\s*(?:- +)?timeout-minutes:\s*(.*)$", l)
+            if m and not (m.group(1).strip().isdigit() and int(m.group(1)) >= TIMEOUT_FLOOR):
+                out.append(f"{j}: {l.strip()!r} (under {TIMEOUT_FLOOR} minutes, or not a number)")
+        for st in all_steps(jl):
+            name = st[0][len("name: "):] if st[0].startswith("name: ") else None
+            ifs = [l[len("if:"):].strip() for l in st if l.startswith("if:")]
+            cond = ifs[0] if len(ifs) == 1 else (None if not ifs else "\n".join(ifs))
+            if j == "red-first" and name in PUSH_PATH_IFS:
+                if cond != PUSH_PATH_IFS[name]:
+                    out.append(f"red-first: step {name!r} has if: {cond!r}, pinned {PUSH_PATH_IFS[name]!r}")
+            elif cond not in PUSH_PATH_OTHER_IFS:
+                out.append(f"{j}: step {st[0]!r} has if: {cond!r}, not one of today's")
+    rf = block(js, "red-first") or []
+    names = {l.strip()[len("- name: "):] for l in rf if l.strip().startswith("- name: ")}
+    out += [f"red-first: no step {n!r}" for n in PUSH_PATH_IFS if n not in names]
+    for name, call in PUSH_PATH_CALLS.items():
+        st = step(rf, name)
+        at = next((i for i, l in enumerate(st) if l.startswith(call)), None)
+        if at is None:
+            out.append(f"red-first: {name!r} makes no {call.strip()!r} call")
+        elif any(re.search(r"\bexit\b", l) for l in st[:at]):
+            out.append(f"red-first: {name!r} can exit before its engine call")
+    fp = step(rf, "R0 runtime fingerprint (run)")
+    if not (any(l.endswith('"$GITHUB_OUTPUT" <<\'PY\' || exit 0') for l in fp) and 'f.write(f"key={key}\\n")' in fp):
+        out.append("red-first: the fingerprint step no longer writes key= to GITHUB_OUTPUT")
+    return out
+
+
+check("push run (#109): stack -> red-first -> the warm save runs on a push (no job if: on the way, red-first needs "
+      "[stack] only, each step's if: pinned or one of today's, no short timeout, no exit before the engine calls)", push_path(W) == [], str(push_path(W)))
+_rf = W.index("  red-first:") + 1
+_st = W.index("  stack:") + 1
+_ws = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime cache save (run, default branch)"), None)
+_wsif = next((i for i in range(_ws, len(W)) if W[i].strip().startswith("if:")), None) if _ws is not None else None
+_rfneeds = next((i for i in range(_rf, len(W)) if W[i] == "    needs: [stack]"), None)
+_fp = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime fingerprint (run)"), None)
+_red = next((i for i, l in enumerate(W) if l.strip() == "- name: R1 red-first, R4 determinism"), None)
+_fpset = next((i + 1 for i in range(_fp, len(W)) if W[i].strip() == "set -uo pipefail"), None) if _fp is not None else None
+_fpkey = next((i for i in range(_fp, len(W)) if W[i].strip() == 'f.write(f"key={key}\\n")'), None) \
+    if _fp is not None else None
+_rs = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime cache (run)"), None)
+_rsif = next((i for i in range(_rs, len(W)) if W[i].strip().startswith("if:")), None) if _rs is not None else None
+_sc = next((i for i in range(_rf, len(W)) if W[i].strip() == "- name: setup command"), None)
+_rf_sc = next((i for i in range(_sc, len(W)) if W[i].strip().startswith("if:")), None) if _sc is not None else None
+
+
+def _with(i, line, replace=False):
+    if i is None:
+        return W
+    return W[:i] + [line] + W[i + (1 if replace else 0):]
+
+
+for name, mutant in {
+    "a pull_request if: on red-first": _with(_rf, "    if: github.event_name == 'pull_request'"),
+    "a pull_request if: on stack": _with(_st, "    if: github.event_name == 'pull_request'"),
+    "&& false on the warm save": _with(_wsif, (W[_wsif] + " && false") if _wsif else "", True),
+    "&& a PR on the warm save": _with(_wsif, (W[_wsif] + " && github.event_name == 'pull_request'") if _wsif else "",
+                                      True),
+    "red-first needs guard": _with(_rfneeds, "    needs: [stack, guard]", True),
+    "the fingerprint step skipped on push": _with((_fp + 1) if _fp is not None else None,
+                                                  "        if: github.event_name == 'pull_request'"),
+    "if: github.head_ref != '' on the fingerprint step": _with((_fp + 1) if _fp is not None else None,
+                                                              "        if: github.head_ref != ''"),
+    "if: github.base_ref != '' on the red step": _with((_red + 1) if _red is not None else None,
+                                                      "        if: github.base_ref != ''"),
+    "if: 1 == 2 on the fingerprint step": _with((_fp + 1) if _fp is not None else None, "        if: 1 == 2"),
+    "if: github.actor == 'x' on the red step": _with((_red + 1) if _red is not None else None,
+                                                    "        if: github.actor == 'x'"),
+    "an exit 0 before the fingerprint's engine call": _with(_fpset, "          exit 0") if _fpset else W,
+    "the fingerprint writes no key": _with(_fpkey, '              f.write("nokey\\n")', True) if _fpkey else W,
+    "an if: on the restore that is not pinned": _with(_rsif, "        if: steps.r0fp.outputs.key != '' && 1 == 2", True)
+    if _rsif else W,
+    "a new condition on another red-first step": _with(_rf_sc, "        if: github.head_ref != ''", True) if _rf_sc else W,
+    "timeout-minutes: 0 on red-first": _with(_rf, "    timeout-minutes: 0"),
+    "timeout-minutes: 1 on the red step": _with((_red + 1) if _red is not None else None, "        timeout-minutes: 1"),
+}.items():
+    check(f"push run check is live (#109): {name} is caught", push_path(W) == [] and mutant != W and push_path(mutant) != [],
+          str(push_path(mutant)))
 
 check("mutation-budget: used by the mutants job, not UNUSED",
       "UNUSED" not in " ".join(block(inputs, "mutation-budget") or []) and value(block(inputs, "mutation-budget") or [], "default") == "10",
@@ -456,7 +751,7 @@ def stack_outputs(result):
         with open(os.path.join(d, "stack.json"), "w") as f:
             json.dump(result, f)
         out = os.path.join(d, "out")
-        r = subprocess.run([sys.executable, "-I", "-c", textwrap.dedent("\n".join(lines[start + 1:end])), out], cwd=d,
+        r = subprocess.run([sys.executable, "-I", "-S", "-c", textwrap.dedent("\n".join(lines[start + 1:end])), out], cwd=d,
                            capture_output=True, text=True)
         if r.returncode:
             return r.stderr
@@ -535,7 +830,7 @@ def heredoc(lines, from_line=None, nth=0):
 
 def run_py(code, cwd, env, *argv):
     import subprocess
-    return subprocess.run([sys.executable, "-I", "-c", code or "raise SystemExit('no heredoc')", *argv], cwd=cwd,
+    return subprocess.run([sys.executable, "-I", "-S", "-c", code or "raise SystemExit('no heredoc')", *argv], cwd=cwd,
                           env=dict(os.environ, **env), capture_output=True, text=True)
 
 
@@ -751,8 +1046,9 @@ WF_ENV = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 WF_ALLOWED = {
     "env": WF_ENV,                                                          # an env var: the only way into a shell
     # action inputs (checkout, toolchain, artifacts); key: actions/cache's key, the R0 fingerprint step's output (#21),
-    # read by the cache action only, never a shell
-    "with": {"ref", "repository", "toolchain", "name", "key"},
+    # read by the cache action only, never a shell; restore-keys: the restore's fallback keys (#109: this PR's own R0
+    # key after the warm one; the tests workflow's Maven cache)
+    "with": {"ref", "repository", "toolchain", "name", "key", "restore-keys"},
     "outputs": {"stack", "project-dir", "error", "target-os", "run", "count", "shards", "timeout",  # job outputs
                 "legs",     # #17: the stack job's one leg per stack, and the plan job's legs whose R3 runs: matrix input
                 "runs",     # #17: the plan job's answer per stack (key -> true, false or null), read by the report
@@ -864,6 +1160,94 @@ fine = ["      - name: ok", "        if: ${{ a && !b }}", "        timeout-minut
 check("workflow values check allows a fromJSON matrix include, timeout-minutes, && and a quoted glob",
       interpolations(W[:at] + fine + W[at:]) == [], str(interpolations(W[:at] + fine + W[at:])))
 
+# ---- #109: every engine call runs `python3 -I -S` (no .pth in the runner's site-packages runs before the engine) ----
+# An engine call: any python3 or sys.executable on a code line of any workflow (a script of the engine checkout, an inline
+# heredoc or -c program, a subprocess an inline program starts); a bare `python` followed by an option, a quote or a
+# .py file; and any line naming ekit/scripts/ or a script of the repo's scripts/ dir (mech-review.py, mech-comment.py,
+# ...), however it is started ($PY, uv run, a venv's bin/python), which must start it with python3 -I -S on that line.
+# Spelled one way (python3 -I -S, or sys.executable, "-I", "-S" in an argv list), on the call's own line: any other
+# spelling (-S -I, -IS, a call split over lines, python3.12, a venv's python) fails closed. Not engine calls, by name:
+# `python3 -m venv` (it makes the PR's test venv, before any PR code or setup command runs, and the tests need that
+# venv's site-packages), the tests workflow's ci-local (ekit's own dev harness on ekit's own PR checkout, its token
+# contents: read) and release.yml's plugin.json read (a tag push, no PR). An interpreter held in a variable as the
+# command word running -c or `- <<` is flagged too. Known limits: such an interpreter given a script under another
+# name, or a call built across lines, is not seen.
+PY_CALL = re.compile(r"(?<![\w.])(python(?:3(?:\.\d+)*)?|sys\.executable)(?![\w])")
+PY_ISOLATED = re.compile(r'python3 -I -S |sys\.executable, "-I", "-S", ')
+ENGINE_SCRIPT = re.compile(r"(?<![\w-])(?:" + "|".join(
+    re.escape(f) for f in sorted(os.listdir(os.path.join(ROOT, "scripts"))) if f.endswith(".py")) + r")\b")
+# an interpreter held in a variable as the command word, running an inline program (-c, or - and a heredoc)
+VAR_PROGRAM = re.compile(r"""(?:^|[;&|(`]\s*|\$\(\s*|\bexec\s+)"?\$\{?[A-Za-z_]\w*\}?"?(?:\s+-[A-Za-z]+)*\s+(?:-c\b|-\s+(?:"[^"]*"\s+)*<<|-\s*<<)""")
+NOT_ENGINE = {("tests.yml", "run: python3 -I scripts/ci-local.py --step scenarios --unrunnable-ok"),
+              ("release.yml", "version=$(python3 -c \"import json; print(json.load(open('.claude-plugin/plugin.json'))"
+                              "['version'])\")")}
+
+
+def unisolated(lines, wf):
+    """[(line no, line)] for each engine call in lines (of workflow file wf) not started as python3 -I -S."""
+    out = []
+    for n, line in enumerate(lines, 1):
+        s = line.strip()
+        if not s or s.startswith("#") or (wf, s) in NOT_ENGINE:
+            continue
+        code = s.split(" # ", 1)[0]  # a trailing comment names, never calls
+        calls = [code[m.start():] for m in PY_CALL.finditer(code)]
+        # a bare `python` is a call only before an option, a quote or a .py file (not prose: "python (pytest, ...)")
+        calls = [c for c in calls if not c.startswith("python") or c.startswith("python3")
+                 or re.match(r"python\s+(-|\"|'|\S+\.py\b)", c)]
+        bad = [c for c in calls if not c.startswith("python3 -m venv ") and not PY_ISOLATED.match(c)]
+        names_engine = "ekit/scripts/" in code or ENGINE_SCRIPT.search(code)
+        if bad or (names_engine and not any(PY_ISOLATED.match(c) for c in calls)) or VAR_PROGRAM.search(code):
+            out.append((n, s))
+    return out
+
+
+for wf in sorted(os.listdir(os.path.join(ROOT, ".github", "workflows"))):
+    if wf.endswith((".yml", ".yaml")):
+        got = unisolated(read(f".github/workflows/{wf}"), wf)
+        check(f"{wf}: every engine call runs python3 -I -S (#109)", got == [], str(got))
+_eng = sum(1 for l in W if PY_CALL.search(l.strip().split(" # ", 1)[0]) and not l.strip().startswith("#"))
+check("engine calls (#109): the scan sees the reusable workflow's calls (script, heredoc, -c and argv-list ones)",
+      _eng >= 20 and any("sys.executable" in l for l in W) and any("python3 -I -S -c" in l for l in W)
+      and any("python3 -I -S - " in l for l in W), str(_eng))
+_ok = '          python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r2 "${args[@]}" > mech-review.json'
+for name, bad in {
+    "-S -I": _ok.replace("python3 -I -S ", "python3 -S -I "),
+    "-IS": _ok.replace("python3 -I -S ", "python3 -IS "),
+    "-I alone": _ok.replace("python3 -I -S ", "python3 -I "),
+    "no flags": _ok.replace("python3 -I -S ", "python3 "),
+    "python3.12": _ok.replace("python3 -I -S ", "python3.12 -I -S "),
+    "a venv's python on an engine script": _ok.replace("python3 -I -S ", '"$RUNNER_TEMP/py-venv/bin/python" -I -S '),
+    "an argv list with -I alone": '              p = subprocess.run([sys.executable, "-I", f"{ws}/ekit/scripts/mech-review.py"])',
+    "an argv list split over lines": '              p = subprocess.run([sys.executable,',
+    "a call split over two lines": '          python3 \\',
+    "a heredoc with -I alone": '          python3 -I - "$GITHUB_OUTPUT" <<\'PY\'',
+    "a -c program with no flags": "          linked=$(python3 -c 'print(1)')",
+    "a second call on an isolated call's line": _ok + " && python3 -I x.py",
+    "a bare python on an engine script after a cd": '          cd "$GITHUB_WORKSPACE/ekit" && python scripts/mech-review.py r2',
+    "an interpreter in a variable": '          "$PY" -I -S "$W/mech-comment.py" --pr "$PR_NUMBER"',
+    "uv run": "          uv run scripts/mech-rerun.py --pr 1",
+    "a venv python on a script path without ekit/scripts/": '          x/bin/python -I "$W/mech-review.py" red',
+    "an interpreter in a variable running -c": "          \"$PY\" -c 'import json'",
+    "an interpreter in a variable running a heredoc": '          ${PY} -I - "$GITHUB_OUTPUT" <<\'PY\'',
+    "an interpreter in a variable after a $(": "          x=$($PY -c 'print(1)')",
+}.items():
+    check(f"engine call check is live (#109): {name} is caught",
+          unisolated([_ok], "mech-review.yml") == [] and unisolated([_ok, bad], "mech-review.yml") == [(2, bad.strip())],
+          str(unisolated([_ok, bad], "mech-review.yml")))
+check("engine call check (#109): python3 -m venv, the venv's pip, prose and a comment naming python3 are not engine calls",
+      unisolated(["          python3 -m venv \"$RUNNER_TEMP/py-venv\"", "  # python3 -I x.py", "  x  # python3 x",
+                  '          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet "pytest==9.2.0"',
+                  '        description: "python (pytest, mutmut 3.8.1 in a venv)"', '        run: bash -c "$SETUP_COMMAND"',
+                  '          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet -r "$f"'],
+                 "mech-review.yml") == [])
+import subprocess
+for script in ("mech-review.py", "mech-comment.py", "mech-rerun.py"):
+    _h = subprocess.run([sys.executable, "-I", "-S", os.path.join(ROOT, "scripts", script), "--help"],
+                        capture_output=True, text=True)
+    check(f"engine calls (#109): {script} starts under -I -S (stdlib only, no site)", _h.returncode == 0
+          and "usage:" in _h.stdout, _h.stdout + _h.stderr)
+
 # ---- an adapter's parser command (#27) never reaches a run: script; it runs as argv inside the engine ----
 # The parser's install step (#27 follow-up): `parser-install` prints the base adapter file's install argvs, and a step
 # in each job whose engine call reads source with the adapter (guard: R2, R0; red-first: R1 and R4 name the changed
@@ -877,9 +1261,14 @@ for job_name, before in (("guard", "R2 guard"), ("red-first", "R0 runtime finger
     check(f"{job_name}: the parser install step right before {before} (#27)",
           INSTALL in names and names.index(INSTALL) + 1 == names.index(before), str(names))
     ist = step(jl, INSTALL)
-    check(f"{job_name}: the parser install step takes base, stack and project-dir through env only, no head",
-          "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in ist and "STACK: ${{ matrix.stack }}" in ist
+    # #109: a push run has no PR; the pushed commit is the base whose adapter file declares the parser
+    check(f"{job_name}: the parser install step takes base (#109: else the pushed commit), stack and project-dir through env only, "
+          "no head",
+          "BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}" in ist and "STACK: ${{ matrix.stack }}" in ist
           and "PROJECT_DIR: ${{ matrix.project-dir }}" in ist and "HEAD" not in text(ist), str(ist))
+    check(f"{job_name}: the parser install's BASE_SHA falls back to the pushed commit (#109: a push run installs the "
+          "parser main declares, so its R0 run part can pass and warm the cache)",
+          sha_env(ist).get("BASE_SHA") == PUSH_SHAS["BASE_SHA"], str(sha_env(ist)))
     check(f"{job_name}: a failed parser install is not a stop (the engine reports it)", "continue-on-error: true" in ist,
           str(ist))
 check("parser install: one step text in guard and red-first",
@@ -1123,6 +1512,56 @@ check("tests scenarios: its last step runs ci-local's scenarios step, a missing 
       runs[-1:] == [want_run], str(runs))
 check(f"{os.path.basename(TWP)}: every ${{{{ }}}} line is an allowed non-shell key", interpolations(T) == [],
       str(interpolations(T)))
+
+# ---- #109: the suite job caches Maven's downloads (~/.m2), keyed on the Java fixture poms (#22's reference tests) ----
+suite = block(tjobs, "suite", 2) or []
+s_steps = all_steps(suite)
+m2 = [st for st in s_steps if any(l.startswith("uses: actions/cache") for l in st)]
+m2s = m2[0] if len(m2) == 1 else []
+check("tests suite (#109): one cache step, actions/cache pinned as the reusable workflow pins it",
+      len(m2) == 1 and "uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in m2s, str(m2))
+check("tests suite (#109): the cache holds ~/.m2/repository, Maven's download dir",
+      [l for l in m2s if l.startswith("path:")] == ["path: ~/.m2/repository"], str(m2s))
+_m2key = next((l[len("key:"):].strip() for l in m2s if l.startswith("key:")), "")
+_hf = re.fullmatch(r"\$\{\{ runner\.os \}\}-m2-\$\{\{ hashFiles\(((?:'[^']+'(?:, )?)+)\) \}\}", _m2key)
+_globs = re.findall(r"'([^']+)'", _hf.group(1)) if _hf else []
+
+
+def glob_re(g):
+    """an actions/glob pattern as a regex: ** any number of folders, * and ? within one."""
+    out, i = "", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out, i = out + "(?:[^/]+/)*", i + 3
+        elif g[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif g[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(g[i]), i + 1
+    return re.compile(out)
+
+
+_tracked = subprocess.run(["git", "-C", ROOT, "ls-files"], capture_output=True, text=True).stdout.splitlines()
+_poms = [p for p in _tracked if p.startswith("tests/fixtures/") and re.fullmatch(r"pom\.xml(\.r0)?", p.rsplit("/", 1)[-1])]
+check("tests suite (#109): the Maven cache key is the runner OS and a hash of the Java fixture poms, every one of them "
+      "(the .r0 ones too) and nothing but poms",
+      _hf is not None and len(_poms) >= 4 and all(any(glob_re(g).fullmatch(p) for g in _globs) for p in _poms)
+      and all(re.fullmatch(r"pom\.xml(\.r0)?", g.rsplit("/", 1)[-1]) for g in _globs)
+      and all(g.startswith("tests/fixtures/") for g in _globs), str((_m2key, _globs, _poms)))
+check("tests suite (#109): an older Maven cache is restored when the poms changed (restore-keys by OS)",
+      "restore-keys: ${{ runner.os }}-m2-" in m2s, str(m2s))
+_snames = [st[0] for st in s_steps]
+check("tests suite (#109): the Maven cache step has no if: (nothing skips it)",
+      m2s != [] and not [l for l in m2s if re.match(r"if\s*:", l)], str(m2s))
+check("tests suite (#109): the Maven cache before the suite runs",
+      m2s != [] and "name: tests/run.sh" in _snames and _snames.index(m2s[0]) < _snames.index("name: tests/run.sh"),
+      str(_snames))
+check("tests suite (#109): the pom glob matcher is live (a pom outside the globs is not matched)",
+      glob_re("tests/fixtures/**/pom.xml").fullmatch("tests/fixtures/java/base/pom.xml") is not None
+      and glob_re("tests/fixtures/**/pom.xml").fullmatch("tests/fixtures/pom.xml") is not None
+      and glob_re("tests/fixtures/**/pom.xml").fullmatch("tests/fixtures/a/pom.xml.r0") is None
+      and glob_re("tests/fixtures/*/pom.xml").fullmatch("tests/fixtures/a/b/pom.xml") is None)
 import subprocess
 helped = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "ci-local.py"), "--help"],
                         capture_output=True, text=True)

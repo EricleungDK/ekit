@@ -162,8 +162,8 @@ check("checkout: the only checkout is the engine's (never the PR code)",
 check("checkout: no PR head ref anywhere", re.search(r"pull_request\.head|head\.sha|head_ref|refs/pull", jt) is None, jt)
 
 rs = step(J, "re-run the report job")
-check("re-run: invokes mech-rerun.py with the env-passed PR number",
-      'run: python3 -I ekit/scripts/mech-rerun.py --pr "$PR_NUMBER"' in rs, str(rs))
+check("re-run: invokes mech-rerun.py with the env-passed PR number, isolated (python3 -I -S, #109)",
+      'run: python3 -I -S ekit/scripts/mech-rerun.py --pr "$PR_NUMBER"' in rs, str(rs))
 check("re-run: PR number from the issue, through env", "PR_NUMBER: ${{ github.event.issue.number }}" in rs, str(rs))
 check("re-run: token through env", "GITHUB_TOKEN: ${{ github.token }}" in rs, str(rs))
 check("no ${{ }} inside any run: (injection)", not any(l.strip().startswith("run:") and "${{" in l for l in W),

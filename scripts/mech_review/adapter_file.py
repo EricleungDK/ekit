@@ -8,6 +8,7 @@ import os
 import re
 import shlex
 import string
+import unicodedata
 
 from . import parser_cmd, tomlfile
 from .data_adapter import DataAdapter, ParserAdapter
@@ -579,6 +580,31 @@ def _relpath(v, field):
         _err(field, f"`{v}`: want a path under the project dir (no .., not absolute)")
 
 
+def _fs_key(path):
+    """a project-dir relative path as a file system may read it (#107): `.` and empty parts dropped, Unicode NFC,
+    case folded (a case-insensitive file system reads `Node_Modules` as `node_modules`)."""
+    parts = [p for p in unicodedata.normalize("NFC", path).split("/") if p not in ("", ".")]
+    return "/".join(parts).casefold()
+
+
+def _clear_of_links(run, tool):
+    """the paths R3 clears before the tool runs (mutation.tool.report, a runner's config_file) and the dirs [run].links
+    links into the worktree must not overlap (#107): clearing one at, under or above a link would remove the link the
+    engine made. A named error at load, never a run that deletes it."""
+    if tool is None or not run:
+        return
+    cleared = [("mutation.tool.report", tool["report"], "the report path", "write the report elsewhere")]
+    cleared += [(f"mutation.tool.runners.{name}.config_file", r["config_file"], "the config file", "write it elsewhere")
+                for name, r in tool["runners"].items() if "config_file" in r]
+    for field, path, what, fix in cleared:
+        key = _fs_key(path)
+        for link in run.get("links", []):
+            at = _fs_key(link)
+            if key == at or key.startswith(at + "/") or at.startswith(key + "/"):
+                _err(field, f"`{path}` and run.links `{link}` overlap: clearing {what} would remove the link the "
+                            f"engine makes there; {fix}")
+
+
 def _run(d):
     """[run]: how R1 and R4 run one test and read the result. Returns the compiled patterns (outcome, name)."""
     f = "run"
@@ -813,6 +839,7 @@ def parse(data):
     if "commands" in data:  # the run side (#18) is the same beside [parser] (#27): it reads runner output, not source
         _commands(data["commands"], "run" in data)
     patterns = _run(data["run"]) if "run" in data else None
+    _clear_of_links(data.get("run"), tool)
     adapter = ParserAdapter(data, parser, patterns) if "parser" in data else DataAdapter(data, lexer, shapes, patterns)
     adapter.limits = limits(data.get("limits", {}))
     adapter.mutation_tool = tool

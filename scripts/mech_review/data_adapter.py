@@ -13,8 +13,9 @@ import re
 import shlex
 
 from . import declared, parser_cmd
+from .gitio import Die
 from .globs import any_glob
-from .scan import Call, escaped_line_break, line_of, norm, unicode_unescape
+from .scan import Call, escaped_line_break, line_of, norm, source_lines, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -330,12 +331,16 @@ class DataAdapter(Adapter):
     def worktree_setup(self, repo, wt, project_dir):
         """[run].links: each directory (project-dir relative, an install the checkout does not track: node_modules) is
         linked from the caller's checkout into the worktree, when the caller has it as a directory (as the built-in ts
-        does) and the worktree does not."""
+        does) and the worktree does not. Returns the links it made (#107: R3's path clearing keeps them)."""
+        made = []
         for rel in (self.run or {}).get("links", []):
             src = os.path.join(repo, project_dir, rel)
             dst = os.path.join(wt, project_dir, rel)
             if os.path.isdir(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
+                _no_link_on_the_way(os.path.join(wt, project_dir), rel)
                 os.symlink(os.path.abspath(src), dst)
+                made.append(dst)
+        return made
 
     def runner_name(self, crate):
         """the name of the [[run.runner]] the crate's test command picks (mutation.tool.runners), or None."""
@@ -480,6 +485,19 @@ class DataAdapter(Adapter):
         return "none" if rc == 0 else "error"
 
 
+def _no_link_on_the_way(crate, rel):
+    """Die when a dir on the way from the project dir to the link rel is a link (#107 review F5): a link made through it
+    lands where the load check of [run].links did not look (a PR's `vendor -> build` puts `vendor/node_modules` under
+    `build`, which R3 may clear whole). The project dir itself may be reached through a link (review N2): the links and
+    the paths R3 clears are all relative to it."""
+    cur = crate
+    for part in os.path.normpath(rel).split(os.sep):  # rel itself is not there yet: only the dirs above it count
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise Die(f"run.links `{rel}`: `{os.path.relpath(cur, crate)}` in the checkout is a link: the engine "
+                      "makes no link through it")
+
+
 def _matches(rx, text):
     """rx's matches in text that hold text: a zero-width match (a lookaround, `x?`) never counts, so a pattern the load
     probes let through still cannot read a run with no such output as build, env, none or a count."""
@@ -564,7 +582,7 @@ class ParserAdapter(DataAdapter):
         return [TestFn(name, line, list(markers), body) for name, line, _, markers, body, _ in self.facts(text)["tests"]]
 
     def test_bodies(self, text):
-        lines = text.splitlines()
+        lines = source_lines(text)
         return {name: (line, norm("".join(lines[line - 1:end])))
                 for name, line, end, _, _, _ in self.facts(text)["tests"]}
 

@@ -4,6 +4,7 @@ module does the reading (the same masking the built-in ts adapter does, with its
 
 Masked text keeps length and newlines; comments and literal contents are blanked, so brackets, words and calls are read
 from code only."""
+import functools
 import re
 from collections import namedtuple
 
@@ -45,6 +46,45 @@ def escaped_line_break(text):
 
 def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
+
+
+LF = "lf"  # line numbers count LF: line_of, a parser's facts, the diff's hunks (every stack but python)
+PYTHON = "python"  # line numbers are ast's (and mutmut's): LF, CRLF and a lone CR each end a line
+PYTHON_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def source_lines(text, breaks=LF):
+    """text's lines as the stack's line numbers count them (#107), so a body cut by its numbers is its own text: LF,
+    or PYTHON (LF, CRLF or a lone CR, as ast numbers lines). No other character ends a line in either: not U+2028,
+    U+2029, U+0085, VT, FF or the other breaks str.splitlines() knows. With LF a CR before the LF (CRLF) stays on its
+    line, and a last break leaves an empty last line: every reader strips the lines."""
+    text = text or ""
+    return PYTHON_BREAK.split(text) if breaks == PYTHON else text.split("\n")
+
+
+def lf_line(text, line, breaks=LF):
+    """git's line (LF counted, the diff's numbering) of a line `breaks` numbers in text (#107 review N1): the LF line
+    that holds its start, so several python lines on one LF line (lone CRs) all map to it. LF numbers are git's
+    already. Every place a python-stack line meets the diff's line sets converts it here first."""
+    if breaks != PYTHON or line is None:
+        return line
+    starts = _lf_of_python_lines(text or "")
+    return starts[line - 1] if 1 <= line <= len(starts) else line
+
+
+@functools.lru_cache(maxsize=16)
+def _lf_of_python_lines(text):
+    """[git's line of python line 1, of line 2, ...]: one pass over text, kept for the few texts a check reads again."""
+    out, lf = [1], 1
+    for m in PYTHON_BREAK.finditer(text):
+        lf += m.group().endswith("\n")
+        out.append(lf)
+    return out
+
+
+def line_breaks(adapter):
+    """how the adapter's line numbers count lines: its `line_breaks` (stack.PythonAdapter: PYTHON), else LF."""
+    return getattr(adapter, "line_breaks", LF)
 
 
 class Lexer:

@@ -15,6 +15,9 @@ Adapter interface:
   default_test_cmd: the toolchain command a runner starts from (rust: cargo test)
   test_cmd_in(crate) -> the test command for a checkout (ts: vitest or jest from package.json); default: default_test_cmd
   worktree_setup(repo, wt, project_dir): per-worktree toolchain setup (ts links the caller's node_modules); default no-op
+  toolchain_pins(root, project_dir, part) -> [line]: the toolchain the checkout at root pins for R0's runtime part
+      (`run` or `r3`), read as data and never run (#106): ts the versions in node_modules (the runner, and for r3
+      Stryker and its runner plugin), rust the rust-toolchain files; default none
   ignored_text(name) -> R2 problem for a test marked ignored (ts: skipped)
   test_argv(cmd, path, name) -> argv that runs one named test (path: the file the test is in)
   outcome(rc, output) -> verdict of one run:
@@ -47,11 +50,13 @@ import configparser
 import ast
 import copy
 import functools
+import hashlib
 import io
 import json
 import os
 import re
 import shlex
+import stat
 import tokenize
 from collections import namedtuple
 
@@ -252,6 +257,10 @@ class Adapter:
     def worktree_setup(self, repo, wt, project_dir):
         """called once a worktree of the repo exists: whatever the toolchain needs beside the checkout (no-op by default)."""
 
+    def toolchain_pins(self, root, project_dir, part):
+        """lines naming the toolchain the checkout at root pins (R0's fingerprint, #106): none by default."""
+        return []
+
     def parse_error(self, text):
         return None
 
@@ -269,6 +278,29 @@ def _innermost(spans, pos):
     return max(hits, key=lambda s: s[1])[0] if hits else None
 
 
+PIN_MAX = 1 << 16  # bytes of a rust-toolchain file read: rustup's are a few lines
+
+
+def _pin_digest(path):
+    """`sha256 <hex>` of a pin file's bytes, or a stable reason it is not read: (unreadable) for one that does not
+    open (a dangling link, no permission), (not a regular file) for a dir or FIFO (never opened: it could block),
+    (over PIN_MAX bytes) for one larger (never read whole)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "(unreadable)"
+    if not stat.S_ISREG(st.st_mode):
+        return "(not a regular file)"
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(PIN_MAX + 1)
+    except OSError:
+        return "(unreadable)"
+    if len(raw) > PIN_MAX:
+        return f"(over {PIN_MAX} bytes)"
+    return f"sha256 {hashlib.sha256(raw).hexdigest()}"
+
+
 class RustAdapter(Adapter):
     name = "rust"
     default_test_cmd = "cargo test"
@@ -281,6 +313,20 @@ class RustAdapter(Adapter):
         if not path.endswith(".rs"):
             return None
         return "test" if any_glob(path, test_globs) else "prod"
+
+    def toolchain_pins(self, root, project_dir, part):
+        """each rust-toolchain.toml and plain rust-toolchain file in every dir from the root down to the project dir
+        (rustup takes the nearest one up from where cargo runs): its path and a digest of its bytes, or why it does not
+        read. The probes run outside the checkout and never see the pin."""
+        parts = [p for p in project_dir.replace("\\", "/").split("/") if p not in ("", ".")]
+        out = []
+        for depth in range(len(parts) + 1):
+            for name in ("rust-toolchain.toml", "rust-toolchain"):
+                rel = "/".join(parts[:depth] + [name])
+                path = os.path.join(root, *rel.split("/"))
+                if os.path.lexists(path):
+                    out.append(f"{rel}: {_pin_digest(path)}")
+        return out
 
     def parse_error(self, text):
         """(line, message) for the first bracket that does not balance in the masked text (comments and literals
@@ -626,6 +672,7 @@ class PythonAdapter(Adapter):
     and a class with test* methods on a base the file does not define (an imported TestCase subclass).
     Names: `test_fn`, `Class::test_method` (Class nested in another class: `Outer::Class::test_method`)."""
     name = "python"
+    line_breaks = "python"  # scan.PYTHON: its line numbers are ast's, which also break at CRLF and a lone CR (#107)
     default_test_cmd = "python3 -m pytest"
     manifests = ("pyproject.toml", "setup.py", "setup.cfg")
     r3_tool = R3Tool("venv", ("pytest==9.2.0", "mutmut==3.8.1"), {}, None)
@@ -682,8 +729,8 @@ class PythonAdapter(Adapter):
     def suppressions(self, text):
         """`# noqa` (codes optional) and `# type: ignore` (brackets optional) comments; reason: text after the codes."""
         out = []
-        try:
-            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        try:  # universal newlines: a lone CR ends a line, as for ast (#107: python's lines, scan.PYTHON)
+            toks = list(tokenize.generate_tokens(io.StringIO(text, newline=None).readline))
         except (tokenize.TokenError, SyntaxError):
             return out
         for tok in toks:
@@ -710,8 +757,8 @@ class PythonAdapter(Adapter):
 
     def mutation_skips(self, text):
         """`# pragma: no mutate` comments (mutmut skips the line)."""
-        try:
-            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        try:  # universal newlines, as suppressions
+            toks = list(tokenize.generate_tokens(io.StringIO(text, newline=None).readline))
         except (tokenize.TokenError, SyntaxError):
             return []
         return [(t.start[0], t.start[0], t.string.strip()) for t in toks
@@ -1131,6 +1178,21 @@ def _ts_pattern(seg):
     return ".*".join(TS_RE_SPECIAL.sub(r"\\\1", piece) for piece in JS_PLACEHOLDER.split(seg))
 
 
+def installed_version(crate, package):
+    """the `version` of node_modules/<package>/package.json in crate, or `(not installed)`, `(unreadable)`."""
+    path = os.path.join(crate, "node_modules", *package.split("/"), "package.json")
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(1 << 20)
+    except OSError:
+        return "(not installed)"
+    try:
+        version = json.loads(raw.decode("utf-8")).get("version")
+    except (ValueError, AttributeError, RecursionError):
+        version = None
+    return version[:100] if isinstance(version, str) else "(unreadable)"
+
+
 def ts_runner(crate):
     """'vitest' or 'jest' from the crate's package.json (vitest wins when both are listed; vitest when neither)."""
     try:
@@ -1299,6 +1361,14 @@ class TsAdapter(Adapter):
     def runner_name(self, crate):
         """the runner the checkout at crate picks: vitest or jest (R0's runtime fixture follows it, #21)."""
         return ts_runner(crate)
+
+    def toolchain_pins(self, root, project_dir, part):
+        """the versions node_modules holds of the runner the checkout picks and, for r3, of Stryker and its plugin for
+        that runner: each package's package.json `version`, read, never run (a PR's install controls it)."""
+        crate = os.path.join(root, project_dir)
+        runner = ts_runner(crate)
+        pkgs = (runner,) + (("@stryker-mutator/core", f"@stryker-mutator/{runner}-runner") if part == "r3" else ())
+        return [f"node_modules/{p}: {installed_version(crate, p)}" for p in pkgs]
 
     def worktree_setup(self, repo, wt, project_dir):
         """a worktree has no node_modules (ignored by git): link the caller checkout's node_modules into the crate dir,

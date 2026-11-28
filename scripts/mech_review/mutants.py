@@ -38,6 +38,7 @@ import time
 from . import red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
+from .scan import PYTHON, lf_line, source_lines
 from .stack import ts_runner
 
 DEFAULT_CMD = "cargo mutants"
@@ -632,8 +633,8 @@ def default_runner():
         with tempfile.TemporaryFile() as out:
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-            except OSError:
-                return None, f"{argv[0]}: not found"
+            except (OSError, ValueError) as e:  # red's split: the program's own errors env, the run's CannotStart
+                return red.start_failed(argv, cwd, e)
             try:
                 proc.wait(timeout=budget)
                 rc = proc.returncode
@@ -974,12 +975,20 @@ def _find(lines, lo, hi, pattern):
 def scope_span(src, name):
     """(first, last) 1-based lines of the function a mutmut name points at, or None when the name cannot be mapped
     (no such class or function in the file, or a name form this does not read). A method is searched for inside its
-    class, so the same method name in two classes resolves to the right one."""
+    class, so the same method name in two classes resolves to the right one. git's lines (LF counted, #107 review
+    N1): what the diff's changed lines are compared with."""
+    span = _py_span(src, name)
+    return None if span is None else (lf_line(src, span[0], PYTHON), lf_line(src, span[1], PYTHON))
+
+
+def _py_span(src, name):
+    """scope_span in python's lines (LF, CRLF or a lone CR ends one, as ast and mutmut number them): the lines its
+    callers cut and count offsets in."""
     scope = mutant_scope(name)
     if scope is None:
         return None
     chain, fn = scope
-    lines = (src or "").splitlines()
+    lines = source_lines(src, PYTHON)  # mutmut's names and offsets are python's lines (ast, libcst)
     lo, hi = 0, len(lines)
     for cls in chain:
         start = _find(lines, lo, hi, rf"\s*class\s+{re.escape(cls)}\b")
@@ -1000,14 +1009,14 @@ def scope_span(src, name):
 
 def locate(src, name, removed):
     """1-based line of the removed text in the function a mutmut name points at (scope_span), or None when the name
-    cannot be mapped or the text is not in that function. Lines are the file's."""
-    span = scope_span(src, name)
+    cannot be mapped or the text is not in that function. git's line (#107 review N1)."""
+    span = _py_span(src, name)
     if span is None:
         return None
-    lines = src.splitlines()
+    lines = source_lines(src, PYTHON)
     for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
-            return j + 1
+            return lf_line(src, j + 1, PYTHON)
     return None
 
 
@@ -1094,7 +1103,7 @@ MUTANT_DEF = re.compile(r"\s*(?:async\s+)?def\s+(x[^\s(]*__mutmut_(?:orig|\d+))\
 def mutant_blocks(text):
     """{copy name: its lines} for the function copies mutmut writes into a mutated file: `x_add__mutmut_orig` (the
     function as it is) and one `x_add__mutmut_N` per mutant, each a whole function. Trailing blank lines are dropped."""
-    lines = text.splitlines() if text else []
+    lines = source_lines(text, PYTHON)
     out = {}
     for i, line in enumerate(lines):
         m = MUTANT_DEF.match(line)
@@ -1197,15 +1206,16 @@ def _run_stopped(rc, text, normal_ends):
 def line_at(src, name, offset, removed):
     """1-based line of a mutant's change: `offset` lines below the def line of the function its name points at. None
     when the name maps to no function, the offset leaves the function, or the line there is not the removed text (the
-    file and mutmut's copy disagree: the caller falls back to the text search)."""
-    span = scope_span(src, name)
+    file and mutmut's copy disagree: the caller falls back to the text search). The offset is in python's lines
+    (mutmut's copy), the line returned git's (#107 review N1)."""
+    span = _py_span(src, name)
     if span is None or span[0] + offset > span[1]:
         return None
     line = span[0] + offset
-    at = src.splitlines()[line - 1].strip()
+    at = source_lines(src, PYTHON)[line - 1].strip()
     if removed and not (at and removed.startswith(at)):
         return None
-    return line
+    return lf_line(src, line, PYTHON)
 
 
 def outside_diff(name, sources, changed):
@@ -1679,8 +1689,9 @@ class Mutmut:
 
 
 def _read(path):
+    """the file's text as it is: no newline translation, so a lone CR stays one and git's lines are countable (#107)."""
     try:
-        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
             return f.read()
     except OSError:
         return ""
@@ -2127,13 +2138,36 @@ class Stryker:
 TOOLS = {"rust": CargoMutants(), "python": Mutmut(), "ts": Stryker()}
 
 
+def _built_in(rv):
+    """the built-in tool of rv's stack. An adapter file's R3 is its own (mutation_tool.run), never a built-in of its
+    name (#107): a ValueError, never a run."""
+    if getattr(rv.adapter, "from_file", False):
+        raise ValueError(f"adapter file for stack `{rv.adapter.name}`: R3 runs its mutation tool (mutation_tool), "
+                         f"never the built-in {rv.adapter.name} tool")
+    return TOOLS[rv.adapter.name]
+
+
+def cannot_start(err):
+    """R3 when the tool could not start for a reason that is not the tool's (red.CannotStart: an argument past the OS's
+    limit, a NUL byte in one): a fail naming it, never n/a (#107 review N7)."""
+    problem = f"R3 could not start its tool: {err}: mutants not run"
+    return _check("fail", problem), finalize([entry(
+        "R3", "", 0, "cannot-start", "agent-fixable", "fail", problem,
+        "the run's command could not start: split the change (fewer or shorter changed paths) or fix what the error "
+        "names; the tool itself is installed", "a mutation check that did not run")])
+
+
 def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
     """The baseline step for mb..head (#46): run the shards or not, how many, the per-mutant timeout derived from the
     measured baseline, and R3 when it ends the check (fail, n/a, or no mutant). Skipped without a production change.
     Returns {run, count, mutants, timeout, check, entries}."""
+    tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _payload(False, 0, 0, None, _check("skipped", "no production file changed"), [])
-    return TOOLS[rv.adapter.name].baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    try:
+        return tool.baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    except red.CannotStart as e:
+        return _payload(False, 0, 0, None, *cannot_start(e))
 
 
 def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
@@ -2141,9 +2175,13 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     mutant_timeout None is auto (see CargoMutants). max_mutants: the cap per PR (#26). The stack's tool runs in the
     crate dir of a worktree at head (the caller's checkout does not move)."""
     runner = runner or default_runner()
+    tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    try:
+        check, ents = tool.check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    except red.CannotStart as e:
+        return cannot_start(e)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check, ents)]
     return check, ents

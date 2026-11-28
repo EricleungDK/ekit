@@ -5,6 +5,7 @@ Tests run in a `git worktree` at the red commit (R1) or at head (R4), like can-f
 Vocabulary of verdicts: see stack.Adapter.outcome.
 """
 import contextlib
+import errno
 import os
 import re
 import shlex
@@ -13,13 +14,24 @@ import subprocess
 import sys
 import tempfile
 
-from .gitio import blob, changes, git
+from .gitio import Die, blob, changes, git
 from .globs import any_glob
 from .report import entry
 
 TEST_RUNS = 5  # R4: each new or changed test, this many times at head
 TEST_TIMEOUT = 900  # seconds per run; a timeout is a verdict, not a crash
 NOT_FOUND = ": not found"  # the runner's output when the executable is missing (rc None)
+CANNOT_RUN = ": cannot run: "  # `<program>: cannot run: <error>`: it exists, the OS will not start it (rc None, #107)
+# what an exec error says of the program itself (no execute bit, a directory or a file in its path, a bad `#!` line, a
+# link loop): env. Any other (the arguments past the OS's limit, memory, file descriptors, a busy file, a dir to run in
+# that is gone) is the run's, never the toolchain's: CannotStart (#107 review F1)
+PROGRAM_ERRORS = frozenset({errno.EACCES, errno.EPERM, errno.ENOEXEC, errno.EISDIR, errno.ENOTDIR, errno.ENOENT,
+                            errno.ELOOP})
+
+
+class CannotStart(Die):
+    """the run could not start for a reason that is not the program's (#107 review F1): R1 and R4 read it as a test
+    that cannot run (a fail naming it, red.run_named); any other caller stops with it named (a Die: exit 2)."""
 
 
 def stubbed(argv, stub):
@@ -38,13 +50,56 @@ def default_runner():
         argv = stubbed(argv, stub)
         try:
             r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=TEST_TIMEOUT)
-        except FileNotFoundError:
-            return None, argv[0] + NOT_FOUND
         except subprocess.TimeoutExpired:
             return "timeout", ""
+        except (OSError, ValueError) as e:
+            return start_failed(argv, cwd, e)
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
 
     return run
+
+
+def start_failed(argv, cwd, err):
+    """the split of a start's errors, for every runner (red's, mutants'): (None, note) for the program's own
+    (PROGRAM_ERRORS: `<prog>: not found` or `<prog>: cannot run: <why>`, env), else CannotStart naming it: the
+    child's dir that cannot be entered, an argument past the OS's limit (E2BIG, with the arguments' size), a NUL byte
+    in one (Python's ValueError), the machine's limits (#107 review F1, N6, N7)."""
+    if isinstance(err, ValueError):
+        raise CannotStart(f"`{argv[0]}` could not start: {err}") from None
+    if getattr(err, "filename", None) == cwd:  # the child's chdir failed: the dir, not the program
+        raise CannotStart(f"`{argv[0]}` could not start in `{cwd}`: {err.strerror or err}") from None
+    if err.errno not in PROGRAM_ERRORS:
+        size = f" (its arguments: {sum(len(os.fsencode(a)) + 1 for a in argv)} bytes)" if err.errno == errno.E2BIG \
+            else ""
+        raise CannotStart(f"`{argv[0]}` could not start: {err.strerror or err}{size}") from None
+    why = cannot_start(argv[0], cwd, err)
+    return None, argv[0] + (CANNOT_RUN + why if why else NOT_FOUND)
+
+
+def cannot_start(prog, cwd, err):
+    """why prog, which the OS refused to start with err, exists but cannot run; '' when it is not there (not found).
+    A program with no execute bit, a directory, a file the OS cannot execute; ENOENT on a file that is there is its
+    `#!` interpreter that is missing (#107)."""
+    if os.sep in prog or (os.altsep and os.altsep in prog):
+        path = os.path.join(cwd, prog)
+    else:  # the first PATH entry that holds the name, as exec searches (shutil.which skips a dir or a non-executable);
+        # a relative entry is the child's (its cwd), and an empty one is that dir itself, as exec reads them (review N5)
+        path = next((p for p in (os.path.join(cwd, d or ".", prog)
+                                 for d in os.environ.get("PATH", os.defpath).split(os.pathsep)) if os.path.exists(p)),
+                    None)
+    if not path or not os.path.exists(path):  # a dangling link is a program that is not there
+        return "" if isinstance(err, FileNotFoundError) else (err.strerror or str(err))
+    if os.path.isdir(path):
+        return "Is a directory"
+    if isinstance(err, FileNotFoundError):
+        try:
+            with open(path, "rb") as f:
+                first = f.readline(512)
+        except OSError:
+            first = b""
+        words = first[2:].decode("utf-8", "replace").split() if first.startswith(b"#!") else []
+        return f"bad interpreter `{words[0]}`" if words else "its interpreter or loader is missing"
+    return err.strerror or str(err)
 
 
 @contextlib.contextmanager
@@ -116,7 +171,10 @@ def unparseable(rv):
 def run_named(runner, adapter, cmd, cwd, path, name):
     """(verdict, a line of output): the line says why a run had no test result. The first line, or the line the
     adapter's verdict came from when it names one (adapter.why: an adapter file's env or no_test pattern)."""
-    rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    try:
+        rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    except CannotStart as e:  # the run's own error (a test name past the OS's limit): a test that cannot run, no env
+        return "error", str(e)[:200]
     verdict = adapter.outcome(rc, out)
     why = getattr(adapter, "why", None)
     line = why(verdict, out) if why and rc is not None else None
@@ -158,6 +216,10 @@ def absent(cmd, what, first="", adapter=None):
         return f"{name} not installed (env): `{first}`: install the test deps, or set setup-command ({what})"
     install = getattr(adapter, "commands", {}).get("install", "").strip()
     fix = f"run the adapter's install command (`{install}`)" if install else "install it"
+    if CANNOT_RUN in first:  # the runner's rc None: the program is there and will not start (#107)
+        prog, _, why = first.rpartition(CANNOT_RUN)
+        return (f"test program cannot run (env): `{prog}`: {why}: give it the execute bit and a `#!` line whose "
+                f"interpreter exists, {fix}, or set setup-command ({what})")
     if getattr(adapter, "from_file", False) and first and not first.endswith(NOT_FOUND):
         return f"toolchain absent (env): `{first}`: {fix}, or set setup-command ({what})"
     return f"toolchain absent: `{shlex.split(cmd)[0]}` not found (env): {fix}, or set setup-command ({what})"
