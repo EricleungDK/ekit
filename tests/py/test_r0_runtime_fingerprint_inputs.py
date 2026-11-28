@@ -230,6 +230,17 @@ class FixtureVariant(_Runners):
         self.assertTrue(controls, self.calls())
         self.assertEqual([x for x in controls if not x.startswith("test --fast ")], [], controls)
 
+    def test_the_r3_control_runs_the_variant_of_the_heads_runner_not_the_callers(self):
+        # runtime-fast/ has no strong fixture, runtime/ has one: the case tells the two variants apart
+        shutil.rmtree(os.path.join(self.fx, "runtime-fast", "r3", "strong"))
+        head = self.commit({"fast.flag": "", "src/calc.mini": "fn add(a, b) { a + b + 0 }\n"})
+        os.remove(os.path.join(self.repo, "fast.flag"))  # the caller's tree picks `plain`; the head picks `fast`
+        c = self.run_part("mutants", head)
+        got = {x["case"]: (x["status"], x["got"]) for x in c["cases"]}
+        self.assertEqual(got["r3-strong"], ("unproven", "no fixture runtime/r3/strong/"), c)
+        self.assertEqual(got["r3-weak"][0], "pass", c)
+        self.assertEqual(c["fingerprint"], self.fingerprint("r3", head))
+
 
 class CachedPassNotReused(_Runners):
     """A2: a pass cached before the change is not reused; the part reads `(ran)`."""
