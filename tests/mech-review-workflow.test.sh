@@ -527,11 +527,37 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
 
 
 
+# The steps the warm save depends on, by name, with their exact if: (None: none), and the if: values the other steps of
+# red-first and the jobs it needs hold today: a new condition on the push path is added here on purpose, never by a
+# workflow edit alone (review 2, N1: an if: on a PR-only context, `1 == 2`, an actor test, each skips the save on push)
+PUSH_PATH_IFS = {
+    "R0 runtime fingerprint (run)": None,
+    "R0 runtime cache dir cleared (run)": None,
+    "R0 runtime cache (run)": "steps.r0fp.outputs.key != ''",
+    "R1 red-first, R4 determinism": None,
+    "R0 runtime cache save (run, default branch)": "github.event_name == 'push' && github.ref == format('refs/heads/{0}', "
+                                                   "github.event.repository.default_branch) && steps.r0fp.outputs.key "
+                                                   "!= '' && steps.r0cache.outputs.cache-matched-key == ''",
+    "R0 runtime cache save (run, this PR)": "github.event_name == 'pull_request' && steps.r0fp.outputs.key != '' && "
+                                            "steps.r0cache.outputs.cache-matched-key == ''",
+}
+PUSH_PATH_OTHER_IFS = {None, "matrix.stack == 'rust'", "matrix.stack == 'python'", "matrix.stack == 'ts'",
+                       "runner.os == 'Linux' && inputs.extra-apt-packages != ''", "inputs.setup-command != ''",
+                       "steps.resolve.outputs.error != ''", "always()"}
+TIMEOUT_FLOOR = 10  # minutes: a timeout-minutes on the push path below it can stop the run before the save
+# The engine call each script step makes, which nothing may exit before (an early `exit 0` skips the key or the proof)
+PUSH_PATH_CALLS = {"R0 runtime fingerprint (run)": 'python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" r0 ',
+                   "R1 red-first, R4 determinism": 'python3 -I -S "$GITHUB_WORKSPACE/ekit/scripts/mech-review.py" red '}
+
+
 def push_path(lines):
     """[why] the push run cannot reach red-first's warm save (#109): a job red-first needs, or red-first itself, with a
     job-level if: (guard, plan and report have one, so needing them skips red-first on push); red-first's needs other
-    than [stack]; a step of those jobs whose if: reads the event or a PR (it would skip the fingerprint or the run on
-    push), but the two saves; the warm save's if: not exactly the push, the default branch and the miss."""
+    than [stack]; a step the save depends on missing or with an if: other than its pinned one; any other step there
+    with an if: not in today's set; a timeout-minutes under the floor; an exit before the fingerprint's or the red
+    step's engine call, or a fingerprint step that no longer writes key= to GITHUB_OUTPUT. Known limits (a text check):
+    a script that stops another way before its engine call (kill, a failing command under set -e), and an added step
+    that fails the job before the save, which turns the push run red where anyone sees it."""
     out, js = [], block(lines, "jobs", 0) or []
     rf_needs = value(block(js, "red-first") or [], "needs") or ""
     if rf_needs != "[stack]":
@@ -546,27 +572,51 @@ def push_path(lines):
         if any(l.strip().startswith("if:") for l in child_lines(jl)):
             out.append(f"{j}: a job-level if: (the push run needs it)")
         todo += [n for n in re.split(r"[\s,\[\]]+", value(jl, "needs") or "") if n]
+        for l in jl:
+            m = re.match(r"\s*(?:- +)?timeout-minutes:\s*(.*)$", l)
+            if m and not (m.group(1).strip().isdigit() and int(m.group(1)) >= TIMEOUT_FLOOR):
+                out.append(f"{j}: {l.strip()!r} (under {TIMEOUT_FLOOR} minutes, or not a number)")
         for st in all_steps(jl):
-            if st[0].startswith("name: R0 runtime cache save (run, "):
-                continue
-            for l in st:
-                if l.startswith("if:") and re.search(r"event_name|pull_request|\bfalse\b", l):
-                    out.append(f"{j}: step {st[0]!r} has {l!r}")
-    warm = step(block(js, "red-first") or [], "R0 runtime cache save (run, default branch)")
-    if set(if_terms(warm) or []) != set(R0_ON_DEFAULT_PUSH) | {"steps.r0fp.outputs.key != ''",
-                                                             "steps.r0cache.outputs.cache-matched-key == ''"}:
-        out.append(f"the warm save's if: {if_terms(warm)}")
+            name = st[0][len("name: "):] if st[0].startswith("name: ") else None
+            ifs = [l[len("if:"):].strip() for l in st if l.startswith("if:")]
+            cond = ifs[0] if len(ifs) == 1 else (None if not ifs else "\n".join(ifs))
+            if j == "red-first" and name in PUSH_PATH_IFS:
+                if cond != PUSH_PATH_IFS[name]:
+                    out.append(f"red-first: step {name!r} has if: {cond!r}, pinned {PUSH_PATH_IFS[name]!r}")
+            elif cond not in PUSH_PATH_OTHER_IFS:
+                out.append(f"{j}: step {st[0]!r} has if: {cond!r}, not one of today's")
+    rf = block(js, "red-first") or []
+    names = {l.strip()[len("- name: "):] for l in rf if l.strip().startswith("- name: ")}
+    out += [f"red-first: no step {n!r}" for n in PUSH_PATH_IFS if n not in names]
+    for name, call in PUSH_PATH_CALLS.items():
+        st = step(rf, name)
+        at = next((i for i, l in enumerate(st) if l.startswith(call)), None)
+        if at is None:
+            out.append(f"red-first: {name!r} makes no {call.strip()!r} call")
+        elif any(re.search(r"\bexit\b", l) for l in st[:at]):
+            out.append(f"red-first: {name!r} can exit before its engine call")
+    fp = step(rf, "R0 runtime fingerprint (run)")
+    if not (any(l.endswith('"$GITHUB_OUTPUT" <<\'PY\' || exit 0') for l in fp) and 'f.write(f"key={key}\\n")' in fp):
+        out.append("red-first: the fingerprint step no longer writes key= to GITHUB_OUTPUT")
     return out
 
 
 check("push run (#109): stack -> red-first -> the warm save runs on a push (no job if: on the way, red-first needs "
-      "[stack] only, no step skipped on push, the save's if: exact)", push_path(W) == [], str(push_path(W)))
+      "[stack] only, each step's if: pinned or one of today's, no short timeout, no exit before the engine calls)", push_path(W) == [], str(push_path(W)))
 _rf = W.index("  red-first:") + 1
 _st = W.index("  stack:") + 1
 _ws = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime cache save (run, default branch)"), None)
 _wsif = next((i for i in range(_ws, len(W)) if W[i].strip().startswith("if:")), None) if _ws is not None else None
 _rfneeds = next((i for i in range(_rf, len(W)) if W[i] == "    needs: [stack]"), None)
 _fp = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime fingerprint (run)"), None)
+_red = next((i for i, l in enumerate(W) if l.strip() == "- name: R1 red-first, R4 determinism"), None)
+_fpset = next((i + 1 for i in range(_fp, len(W)) if W[i].strip() == "set -uo pipefail"), None) if _fp is not None else None
+_fpkey = next((i for i in range(_fp, len(W)) if W[i].strip() == 'f.write(f"key={key}\\n")'), None) \
+    if _fp is not None else None
+_rs = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime cache (run)"), None)
+_rsif = next((i for i in range(_rs, len(W)) if W[i].strip().startswith("if:")), None) if _rs is not None else None
+_sc = next((i for i in range(_rf, len(W)) if W[i].strip() == "- name: setup command"), None)
+_rf_sc = next((i for i in range(_sc, len(W)) if W[i].strip().startswith("if:")), None) if _sc is not None else None
 
 
 def _with(i, line, replace=False):
@@ -584,6 +634,20 @@ for name, mutant in {
     "red-first needs guard": _with(_rfneeds, "    needs: [stack, guard]", True),
     "the fingerprint step skipped on push": _with((_fp + 1) if _fp is not None else None,
                                                   "        if: github.event_name == 'pull_request'"),
+    "if: github.head_ref != '' on the fingerprint step": _with((_fp + 1) if _fp is not None else None,
+                                                              "        if: github.head_ref != ''"),
+    "if: github.base_ref != '' on the red step": _with((_red + 1) if _red is not None else None,
+                                                      "        if: github.base_ref != ''"),
+    "if: 1 == 2 on the fingerprint step": _with((_fp + 1) if _fp is not None else None, "        if: 1 == 2"),
+    "if: github.actor == 'x' on the red step": _with((_red + 1) if _red is not None else None,
+                                                    "        if: github.actor == 'x'"),
+    "an exit 0 before the fingerprint's engine call": _with(_fpset, "          exit 0") if _fpset else W,
+    "the fingerprint writes no key": _with(_fpkey, '              f.write("nokey\\n")', True) if _fpkey else W,
+    "an if: on the restore that is not pinned": _with(_rsif, "        if: steps.r0fp.outputs.key != '' && 1 == 2", True)
+    if _rsif else W,
+    "a new condition on another red-first step": _with(_rf_sc, "        if: github.head_ref != ''", True) if _rf_sc else W,
+    "timeout-minutes: 0 on red-first": _with(_rf, "    timeout-minutes: 0"),
+    "timeout-minutes: 1 on the red step": _with((_red + 1) if _red is not None else None, "        timeout-minutes: 1"),
 }.items():
     check(f"push run check is live (#109): {name} is caught", push_path(W) == [] and mutant != W and push_path(mutant) != [],
           str(push_path(mutant)))
@@ -1105,13 +1169,15 @@ check("workflow values check allows a fromJSON matrix include, timeout-minutes, 
 # spelling (-S -I, -IS, a call split over lines, python3.12, a venv's python) fails closed. Not engine calls, by name:
 # `python3 -m venv` (it makes the PR's test venv, before any PR code or setup command runs, and the tests need that
 # venv's site-packages), the tests workflow's ci-local (ekit's own dev harness on ekit's own PR checkout, its token
-# contents: read) and release.yml's plugin.json read (a tag push, no PR). Known limits: an interpreter held in a
-# variable and given a script under another name or an inline program not named here (`$PY -c ...`, `exec "$P" -`)
-# is not seen; nor is a call built across lines.
+# contents: read) and release.yml's plugin.json read (a tag push, no PR). An interpreter held in a variable as the
+# command word running -c or `- <<` is flagged too. Known limits: such an interpreter given a script under another
+# name, or a call built across lines, is not seen.
 PY_CALL = re.compile(r"(?<![\w.])(python(?:3(?:\.\d+)*)?|sys\.executable)(?![\w])")
 PY_ISOLATED = re.compile(r'python3 -I -S |sys\.executable, "-I", "-S", ')
 ENGINE_SCRIPT = re.compile(r"(?<![\w-])(?:" + "|".join(
     re.escape(f) for f in sorted(os.listdir(os.path.join(ROOT, "scripts"))) if f.endswith(".py")) + r")\b")
+# an interpreter held in a variable as the command word, running an inline program (-c, or - and a heredoc)
+VAR_PROGRAM = re.compile(r"""(?:^|[;&|(`]\s*|\$\(\s*|\bexec\s+)"?\$\{?[A-Za-z_]\w*\}?"?(?:\s+-[A-Za-z]+)*\s+(?:-c\b|-\s+(?:"[^"]*"\s+)*<<|-\s*<<)""")
 NOT_ENGINE = {("tests.yml", "run: python3 -I scripts/ci-local.py --step scenarios --unrunnable-ok"),
               ("release.yml", "version=$(python3 -c \"import json; print(json.load(open('.claude-plugin/plugin.json'))"
                               "['version'])\")")}
@@ -1131,7 +1197,7 @@ def unisolated(lines, wf):
                  or re.match(r"python\s+(-|\"|'|\S+\.py\b)", c)]
         bad = [c for c in calls if not c.startswith("python3 -m venv ") and not PY_ISOLATED.match(c)]
         names_engine = "ekit/scripts/" in code or ENGINE_SCRIPT.search(code)
-        if bad or (names_engine and not any(PY_ISOLATED.match(c) for c in calls)):
+        if bad or (names_engine and not any(PY_ISOLATED.match(c) for c in calls)) or VAR_PROGRAM.search(code):
             out.append((n, s))
     return out
 
@@ -1162,6 +1228,9 @@ for name, bad in {
     "an interpreter in a variable": '          "$PY" -I -S "$W/mech-comment.py" --pr "$PR_NUMBER"',
     "uv run": "          uv run scripts/mech-rerun.py --pr 1",
     "a venv python on a script path without ekit/scripts/": '          x/bin/python -I "$W/mech-review.py" red',
+    "an interpreter in a variable running -c": "          \"$PY\" -c 'import json'",
+    "an interpreter in a variable running a heredoc": '          ${PY} -I - "$GITHUB_OUTPUT" <<\'PY\'',
+    "an interpreter in a variable after a $(": "          x=$($PY -c 'print(1)')",
 }.items():
     check(f"engine call check is live (#109): {name} is caught",
           unisolated([_ok], "mech-review.yml") == [] and unisolated([_ok, bad], "mech-review.yml") == [(2, bad.strip())],
@@ -1169,7 +1238,8 @@ for name, bad in {
 check("engine call check (#109): python3 -m venv, the venv's pip, prose and a comment naming python3 are not engine calls",
       unisolated(["          python3 -m venv \"$RUNNER_TEMP/py-venv\"", "  # python3 -I x.py", "  x  # python3 x",
                   '          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet "pytest==9.2.0"',
-                  '        description: "python (pytest, mutmut 3.8.1 in a venv)"'],
+                  '        description: "python (pytest, mutmut 3.8.1 in a venv)"', '        run: bash -c "$SETUP_COMMAND"',
+                  '          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet -r "$f"'],
                  "mech-review.yml") == [])
 import subprocess
 for script in ("mech-review.py", "mech-comment.py", "mech-rerun.py"):
