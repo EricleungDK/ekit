@@ -480,6 +480,45 @@ class TreeInputLines(unittest.TestCase):
             self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"), [
                 "rust-toolchain.toml: (unreadable)", "rust-toolchain: (unreadable)"])
 
+    def test_a_pin_at_the_cap_reads_over_it_does_not(self):
+        """review round 2, M2: 65536 bytes is a digest, 65537 is over the cap"""
+        from scripts.mech_review import stack
+        self.write("rust-toolchain", "a" * 65536)
+        self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"), [
+            "rust-toolchain: sha256 bf718b6f653bebc184e1479f1935b8da974d701b893afcf49e701f3e2f9f9c5a"])
+        self.write("rust-toolchain", "a" * 65537)
+        self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"),
+                         ["rust-toolchain: (over 65536 bytes)"])
+
+    def test_an_oversized_pin_is_never_read_whole(self):
+        """review round 2, M1: one read, of at most the cap and a byte"""
+        from scripts.mech_review import stack
+        self.write("rust-toolchain", "a" * (1 << 20))
+        real, sizes = open, []
+
+        class Capped:
+            def __init__(self, f):
+                self.f = f
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.f.close()
+
+            def read(self, n=-1):
+                sizes.append(n)
+                return self.f.read(n)
+
+        def opened(path, *a, **k):
+            f = real(path, *a, **k)
+            return Capped(f) if str(path).endswith("rust-toolchain") else f
+
+        with mock.patch("builtins.open", opened):
+            self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"),
+                             ["rust-toolchain: (over 65536 bytes)"])
+        self.assertEqual(sizes, [65537])
+
     def test_a_pin_that_is_a_fifo_or_a_dir_is_never_opened(self):
         """a FIFO could block the open: stat says it is one (mocked, so it runs where os.mkfifo does not), and a dir"""
         import stat as st
@@ -517,6 +556,46 @@ Daemon JVM:    /opt/java/openjdk (no JDK specified, using current Java home)
 OS:            Linux 6.8.0 amd64
 """)
 '''
+
+
+class Interpreter(unittest.TestCase):
+    """guards (review round 2, F7): which `#!` interpreter a probed script's check resolves."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.checkout = os.path.join(tmp.name, "checkout")
+        self.out = os.path.join(tmp.name, "out")
+        for d in (os.path.join(self.checkout, "bin"), self.out):
+            os.makedirs(d)
+        self.node = os.path.join(self.checkout, "bin", "node")
+        with open(self.node, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(self.node, 0o755)
+        env = mock.patch.dict(os.environ, {"PATH": os.path.dirname(self.node) + os.pathsep + os.environ["PATH"]})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def inside(self, first_line):
+        from scripts.mech_review import r0_runtime
+        prog = os.path.join(self.out, "tool")
+        with open(prog, "w") as f:
+            f.write(first_line + "\nrest\n")
+        return r0_runtime._interpreter_inside(prog, (self.checkout,))
+
+    def test_the_interpreter_each_line_names(self):
+        real = os.path.realpath(self.node)
+        for line, want in (("#!/usr/bin/env node", ("node", real)), ("#!/usr/bin/env -S node --x", ("node", real)),
+                           ("#!/usr/bin/env A=1 node", ("node", real)), (f"#!{self.node} -x", ("node", real)),
+                           ("#! /usr/bin/env node", ("node", real)), ("#!/bin/sh", None), ("#!/usr/bin/env", None),
+                           ("#!", None), ("echo no shebang", None), ("#!/usr/bin/env sh", None)):
+            with self.subTest(line=line):
+                self.assertEqual(self.inside(line), want)
+
+    def test_a_program_that_is_no_regular_file_is_not_read(self):
+        from scripts.mech_review import r0_runtime
+        self.assertIsNone(r0_runtime._interpreter_inside(self.out, (self.checkout,)))
+        self.assertIsNone(r0_runtime._interpreter_inside(os.path.join(self.out, "gone"), (self.checkout,)))
 
 
 class JdkLine(unittest.TestCase):
