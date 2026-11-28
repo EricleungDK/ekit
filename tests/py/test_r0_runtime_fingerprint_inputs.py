@@ -411,10 +411,23 @@ class TreeInputLines(unittest.TestCase):
                              ["rust-toolchain: (not a regular file)"])
 
 
+# `gradle --version` as Gradle 8.10 prints it
 GRADLE = r'''#!/usr/bin/env python3
-print("Gradle 8.10")
-print("Kotlin:        1.9.24")
-print("Launcher JVM:  21.0.5 (Eclipse Adoptium 21.0.5+11-LTS)")
+print("""
+------------------------------------------------------------
+Gradle 8.10
+------------------------------------------------------------
+
+Build time:    2024-08-14 11:07:45 UTC
+Revision:      fef2edbed8af1022cefaf44d4c0514c5f89d7b78
+
+Kotlin:        1.9.24
+Groovy:        3.0.22
+Ant:           Apache Ant(TM) version 1.10.14 compiled on August 16 2023
+Launcher JVM:  21.0.5 (Eclipse Adoptium 21.0.5+11-LTS)
+Daemon JVM:    /opt/java/openjdk (no JDK specified, using current Java home)
+OS:            Linux 6.8.0 amd64
+""")
 '''
 
 
@@ -434,8 +447,10 @@ class JdkLine(unittest.TestCase):
             return r0_runtime.probe([prog, "--version"], False, ())
 
     def test_gradles_launcher_jvm_line_is_kept(self):
+        """the JDK (Launcher JVM, the first JDK line; Daemon JVM is not kept); the version line kept is Gradle's dash
+        separator, its first line (a limit the CI doc names: the Gradle version is not in the key)"""
         self.assertTrue(self.probe(GRADLE).endswith(
-            " --version: Gradle 8.10; Launcher JVM:  21.0.5 (Eclipse Adoptium 21.0.5+11-LTS)"))
+            " --version: " + "-" * 60 + "; Launcher JVM:  21.0.5 (Eclipse Adoptium 21.0.5+11-LTS)"))
 
     def test_a_tool_with_no_jdk_line_keeps_one_line(self):
         self.assertTrue(self.probe('#!/usr/bin/env python3\nprint("tool 1.0")\nprint("Kotlin: 1.9")\n').endswith(
