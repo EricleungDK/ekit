@@ -672,6 +672,7 @@ class PythonAdapter(Adapter):
     and a class with test* methods on a base the file does not define (an imported TestCase subclass).
     Names: `test_fn`, `Class::test_method` (Class nested in another class: `Outer::Class::test_method`)."""
     name = "python"
+    line_breaks = "python"  # scan.PYTHON: its line numbers are ast's, which also break at CRLF and a lone CR (#107)
     default_test_cmd = "python3 -m pytest"
     manifests = ("pyproject.toml", "setup.py", "setup.cfg")
     r3_tool = R3Tool("venv", ("pytest==9.2.0", "mutmut==3.8.1"), {}, None)

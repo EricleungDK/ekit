@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
-from scripts.mech_review import mutants
+from scripts.mech_review import mutants, scan
 from test_adapter_cli import MINI, Repo, r2
 from test_adapter_run import MINI_FRESH, MINI_RUN, MINI_STUB, Fixture
 from test_parser_cli import parser_home, parser_toml
@@ -27,7 +27,7 @@ def preamble(comment, ch):
     return f"{comment} notes{ch * MANY}end\n"
 
 
-class RenameBodies(unittest.TestCase):
+class Renames(unittest.TestCase):
     """a rename whose assertions changed is one confirm entry when its body lines are read at their numbers; read 8
     lines off, the body is another test's text, and the rename reads as a removed test (a fail)."""
 
@@ -55,6 +55,9 @@ class RenameBodies(unittest.TestCase):
                 head = preamble(comment, ch)
                 self.assertEqual(self.entries(path, head + before, head + after, stack, adapter), want)
 
+
+
+class RenameBodies(Renames):
     def test_python(self):
         self.each("tests/test_c{n}.py", PY_BASE, RENAMED, "#", "python", [
             ("confirm", "test `T::test_the_budget_gone_keeps_every_mutant_missed` renamed to "
@@ -86,6 +89,49 @@ class RenameBodies(unittest.TestCase):
                          [("confirm", "test `refund is never negative, whatever the input amount is` renamed to "
                                       "`refund is capped at the order, whatever the input amount is`, assertions "
                                       "changed")])
+
+
+class PythonBreaks(Renames):
+    """#107 review F3: the python built-in's line numbers are ast's, which break at LF, CRLF and a lone CR (and at
+    none of the odd characters, FF included): its bodies are cut at those same breaks."""
+
+    WANT = [("confirm", "test `T::test_the_budget_gone_keeps_every_mutant_missed` renamed to "
+                        "`T::test_the_budget_gone_leaves_every_mutant_untested`, assertions changed")]
+
+    def python(self, conv):
+        return self.entries("tests/test_c{n}.py", conv(PY_BASE), conv(RENAMED), "python")
+
+    def test_lone_cr_crlf_and_mixed_line_ends(self):
+        def mixed(t):  # LF, CRLF and CR in turn, line by line
+            out = t.split("\n")
+            return "".join(ln + ("\n", "\r\n", "\r")[i % 3] for i, ln in enumerate(out[:-1])) + out[-1]
+        for label, conv in (("CR", lambda t: t.replace("\n", "\r")), ("CRLF", lambda t: t.replace("\n", "\r\n")),
+                            ("mixed", mixed)):
+            with self.subTest(ends=label):
+                self.assertEqual(self.python(conv), self.WANT)
+
+    def test_lone_cr_after_odd_characters(self):
+        for label, ch in ODD.items():
+            with self.subTest(char=label):
+                head = preamble("#", ch).replace("\n", "\r")
+                self.assertEqual(self.python(lambda t: head + t.replace("\n", "\r")), self.WANT)
+
+    def test_a_form_feed_at_the_start_of_a_line_breaks_nothing(self):
+        self.assertEqual(self.python(lambda t: t.replace("\n    def test_adds", "\n\x0c    def test_adds")
+                                     .replace("\nclass T", "\n\x0c\x0c\nclass T")), self.WANT)
+
+
+class LineBreakSets(unittest.TestCase):
+    def test_the_python_set_is_asts(self):
+        import ast
+        src = "a = 1\rb = 2\r\nc = 3\n\x0cd = 4  # e\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029\nf = 5\n"
+        lines = scan.source_lines(src, scan.PYTHON)
+        for node in ast.parse(src).body:  # each statement is on the line ast numbers it
+            self.assertEqual(lines[node.lineno - 1].strip().lstrip("\x0c")[:1], ast.unparse(node)[:1])
+        self.assertEqual(len(lines), 6)
+
+    def test_lf_breaks_at_lf_only(self):
+        self.assertEqual(scan.source_lines("a\rb\r\nc\x85d\ne"), ["a\rb\r", "c\x85d", "e"])
 
 
 FRESH_CHANGED = MINI_FRESH.replace('test("fresh", {\n    assertEquals(3, add(1, 2))',
@@ -153,7 +199,18 @@ class MutmutLines(unittest.TestCase):
                 self.assertEqual(mutants.locate(src, "calc.x_add__mutmut_1", "total = a + b"), 6)
                 self.assertEqual(mutants.line_at(src, "calc.x_add__mutmut_1", 1, "total = a + b"), 6)
 
-    def test_mutated_copies_split_at_lf_only(self):
+    def test_a_python_file_with_lone_cr_or_crlf_ends_is_read_at_asts_lines(self):
+        for label, end in (("CR", "\r"), ("CRLF", "\r\n")):
+            with self.subTest(ends=label):
+                src = PY_SRC.format(odd="\x85" * MANY).replace("\n", end)
+                self.assertEqual(mutants.scope_span(src, "calc.x_add__mutmut_1"), (5, 7))
+                self.assertEqual(mutants.scope_span(src, "calc.x\u01c1Calc\u01c1scale__mutmut_1"), (11, 13))
+                self.assertEqual(mutants.locate(src, "calc.x_add__mutmut_1", "total = a + b"), 6)
+                self.assertEqual(mutants.line_at(src, "calc.x_add__mutmut_1", 1, "total = a + b"), 6)
+                self.assertEqual(mutants.mutant_blocks("def x_a__mutmut_orig(a):\r    return a\r")["x_a__mutmut_orig"],
+                                 ["def x_a__mutmut_orig(a):", "    return a"])
+
+    def test_mutated_copies_split_at_no_odd_character(self):
         text = "def x_add__mutmut_orig(a):\n    s = 'a b'\n    return s\n"
         self.assertEqual(mutants.mutant_blocks(text)["x_add__mutmut_orig"],
                          ["def x_add__mutmut_orig(a):", "    s = 'a b'", "    return s"])

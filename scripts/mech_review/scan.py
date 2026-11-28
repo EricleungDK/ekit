@@ -47,11 +47,23 @@ def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
-def source_lines(text):
-    """text's lines as line numbers count them (line_of, the diff's hunks): split at LF only (#107). No other character
-    ends a line: not a lone CR, nor U+2028, U+2029, U+0085, VT, FF or the other breaks str.splitlines() knows. A CR
-    before the LF (CRLF) stays on its line, and a last LF leaves an empty last line: every reader strips the lines."""
-    return (text or "").split("\n")
+LF = "lf"  # line numbers count LF: line_of, a parser's facts, the diff's hunks (every stack but python)
+PYTHON = "python"  # line numbers are ast's (and mutmut's): LF, CRLF and a lone CR each end a line
+PYTHON_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def source_lines(text, breaks=LF):
+    """text's lines as the stack's line numbers count them (#107), so a body cut by its numbers is its own text: LF,
+    or PYTHON (LF, CRLF or a lone CR, as ast numbers lines). No other character ends a line in either: not U+2028,
+    U+2029, U+0085, VT, FF or the other breaks str.splitlines() knows. With LF a CR before the LF (CRLF) stays on its
+    line, and a last break leaves an empty last line: every reader strips the lines."""
+    text = text or ""
+    return PYTHON_BREAK.split(text) if breaks == PYTHON else text.split("\n")
+
+
+def line_breaks(adapter):
+    """how the adapter's line numbers count lines: its `line_breaks` (stack.PythonAdapter: PYTHON), else LF."""
+    return getattr(adapter, "line_breaks", LF)
 
 
 class Lexer:
