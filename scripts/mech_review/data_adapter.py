@@ -14,7 +14,7 @@ import shlex
 
 from . import declared, parser_cmd
 from .globs import any_glob
-from .scan import Call, escaped_line_break, line_of, norm, unicode_unescape
+from .scan import Call, escaped_line_break, line_of, norm, source_lines, unicode_unescape
 from .stack import Adapter, Assertion, Suppression, TestFn, _callback_inner
 
 DEFAULT_SKIPPED = "test `{name}` marked skipped"
@@ -564,7 +564,7 @@ class ParserAdapter(DataAdapter):
         return [TestFn(name, line, list(markers), body) for name, line, _, markers, body, _ in self.facts(text)["tests"]]
 
     def test_bodies(self, text):
-        lines = text.splitlines()
+        lines = source_lines(text)
         return {name: (line, norm("".join(lines[line - 1:end])))
                 for name, line, end, _, _, _ in self.facts(text)["tests"]}
 

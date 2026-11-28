@@ -8,6 +8,7 @@ from .gitio import added_lines, blob, changes, messages
 from .globs import any_glob
 from .parser_cmd import ParserError
 from .report import entry
+from .scan import source_lines
 
 def unmatched(xs, ys):
     """xs minus exact (fn, kind, left, right) matches in ys, multiset-aware."""
@@ -163,7 +164,7 @@ def _body(text, span, skip=frozenset()):
     its end), leaving out the line numbers in skip (its assert lines). No span: no body."""
     if not span:
         return []
-    lines = text.splitlines()
+    lines = source_lines(text)
     first, last = span
     return [ln.strip() for no, ln in enumerate(lines[first - 1:last], start=first) if ln.strip() and no not in skip]
 

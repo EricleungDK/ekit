@@ -47,6 +47,13 @@ def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
+def source_lines(text):
+    """text's lines as line numbers count them (line_of, the diff's hunks): split at LF only (#107). No other character
+    ends a line: not a lone CR, nor U+2028, U+2029, U+0085, VT, FF or the other breaks str.splitlines() knows. A CR
+    before the LF (CRLF) stays on its line, and a last LF leaves an empty last line: every reader strips the lines."""
+    return (text or "").split("\n")
+
+
 class Lexer:
     """The lexer table of one adapter file, validated (see adapter_file)."""
 

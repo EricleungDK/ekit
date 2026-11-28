@@ -38,6 +38,7 @@ import time
 from . import red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
+from .scan import source_lines
 from .stack import ts_runner
 
 DEFAULT_CMD = "cargo mutants"
@@ -979,7 +980,7 @@ def scope_span(src, name):
     if scope is None:
         return None
     chain, fn = scope
-    lines = (src or "").splitlines()
+    lines = source_lines(src)
     lo, hi = 0, len(lines)
     for cls in chain:
         start = _find(lines, lo, hi, rf"\s*class\s+{re.escape(cls)}\b")
@@ -1004,7 +1005,7 @@ def locate(src, name, removed):
     span = scope_span(src, name)
     if span is None:
         return None
-    lines = src.splitlines()
+    lines = source_lines(src)
     for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
             return j + 1
@@ -1094,7 +1095,7 @@ MUTANT_DEF = re.compile(r"\s*(?:async\s+)?def\s+(x[^\s(]*__mutmut_(?:orig|\d+))\
 def mutant_blocks(text):
     """{copy name: its lines} for the function copies mutmut writes into a mutated file: `x_add__mutmut_orig` (the
     function as it is) and one `x_add__mutmut_N` per mutant, each a whole function. Trailing blank lines are dropped."""
-    lines = text.splitlines() if text else []
+    lines = source_lines(text)
     out = {}
     for i, line in enumerate(lines):
         m = MUTANT_DEF.match(line)
@@ -1202,7 +1203,7 @@ def line_at(src, name, offset, removed):
     if span is None or span[0] + offset > span[1]:
         return None
     line = span[0] + offset
-    at = src.splitlines()[line - 1].strip()
+    at = source_lines(src)[line - 1].strip()
     if removed and not (at and removed.startswith(at)):
         return None
     return line
