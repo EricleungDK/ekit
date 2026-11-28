@@ -7,11 +7,12 @@ file's test bodies say which tests changed: the runner's calls), through cli.mai
 helpers beside them."""
 import json
 import os
+import tempfile
 import unittest
 
 import _kit  # noqa: F401 - the import puts the repo root on sys.path
 from scripts.mech_review import mutants
-from test_adapter_cli import Repo, r2
+from test_adapter_cli import MINI, Repo, r2
 from test_adapter_run import MINI_FRESH, MINI_RUN, MINI_STUB, Fixture
 from test_parser_cli import parser_home, parser_toml
 from test_r2_rename import (MINI_LEGIT_BASE, MINI_LEGIT_HEAD, RENAMED, RUST, TS, TS_ADAPTER, TS_SPLIT_LEGIT_BASE,
@@ -31,16 +32,12 @@ class RenameBodies(unittest.TestCase):
     lines off, the body is another test's text, and the rename reads as a removed test (a fail)."""
 
     def setUp(self):
-        self.tmp = self.enterContext_tmp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
         self.repo = Repo(os.path.join(self.tmp, "r"))
         self.base = self.repo.commit({"pyproject.toml": "[project]\nname = 'x'\n", "mini.json": "{}\n"}, "base")
         self.n = 0
-
-    def enterContext_tmp(self):
-        import tempfile
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        return tmp.name
 
     def entries(self, path, before, after, stack, adapter=None):
         self.n += 1
@@ -70,16 +67,15 @@ class RenameBodies(unittest.TestCase):
         self.each("tests/r{n}.test.ts", TS_SPLIT_LEGIT_BASE, TS_SPLIT_LEGIT_HEAD, "//", "ts", want, TS_ADAPTER)
 
     def test_ts_nested(self):
-        self.each("tests/b{n}.test.ts", TS, TS.replace("keeps missed", "leaves untested").replace("'fail'", "'partial'"),
-                  "//", "ts", [("confirm", "test `budget > keeps missed` renamed to `budget > leaves untested`, "
-                                           "assertions changed")])
+        head = TS.replace("keeps missed", "leaves untested").replace("'fail'", "'partial'")
+        self.each("tests/b{n}.test.ts", TS, head, "//", "ts", [
+            ("confirm", "test `budget > keeps missed` renamed to `budget > leaves untested`, assertions changed")])
 
     def test_rust(self):
         self.each("tests/b{n}.rs", RUST, RUST.replace("keeps_missed", "leaves_untested").replace('"fail"', '"partial"'),
                   "//", "rust", [("confirm", "test `keeps_missed` renamed to `leaves_untested`, assertions changed")])
 
     def test_an_adapter_file(self):
-        from test_adapter_cli import MINI
         self.each("tests/c{n}.mini", MINI_LEGIT_BASE, MINI_LEGIT_HEAD, "#", "mini", [
             ("confirm", "test `Calc / refund never negative` renamed to `Calc / refund capped`, assertions changed")],
             MINI)
