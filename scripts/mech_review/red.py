@@ -5,6 +5,7 @@ Tests run in a `git worktree` at the red commit (R1) or at head (R4), like can-f
 Vocabulary of verdicts: see stack.Adapter.outcome.
 """
 import contextlib
+import errno
 import os
 import re
 import shlex
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from .gitio import blob, changes, git
+from .gitio import Die, blob, changes, git
 from .globs import any_glob
 from .report import entry
 
@@ -21,6 +22,16 @@ TEST_RUNS = 5  # R4: each new or changed test, this many times at head
 TEST_TIMEOUT = 900  # seconds per run; a timeout is a verdict, not a crash
 NOT_FOUND = ": not found"  # the runner's output when the executable is missing (rc None)
 CANNOT_RUN = ": cannot run: "  # `<program>: cannot run: <error>`: it exists, the OS will not start it (rc None, #107)
+# what an exec error says of the program itself (no execute bit, a directory or a file in its path, a bad `#!` line, a
+# link loop): env. Any other (the arguments past the OS's limit, memory, file descriptors, a busy file, a dir to run in
+# that is gone) is the run's, never the toolchain's: CannotStart (#107 review F1)
+PROGRAM_ERRORS = frozenset({errno.EACCES, errno.EPERM, errno.ENOEXEC, errno.EISDIR, errno.ENOTDIR, errno.ENOENT,
+                            errno.ELOOP})
+
+
+class CannotStart(Die):
+    """the run could not start for a reason that is not the program's (#107 review F1): R1 and R4 read it as a test
+    that cannot run (a fail naming it, red.run_named); any other caller stops with it named (a Die: exit 2)."""
 
 
 def stubbed(argv, stub):
@@ -42,6 +53,12 @@ def default_runner():
         except subprocess.TimeoutExpired:
             return "timeout", ""
         except OSError as e:
+            if getattr(e, "filename", None) == cwd:  # the child's chdir failed: the dir, not the program
+                raise CannotStart(f"`{argv[0]}` could not start in `{cwd}`: {e.strerror or e}") from None
+            if e.errno not in PROGRAM_ERRORS:
+                size = f" (its arguments: {sum(len(os.fsencode(a)) + 1 for a in argv)} bytes)" \
+                    if e.errno == errno.E2BIG else ""
+                raise CannotStart(f"`{argv[0]}` could not start: {e.strerror or e}{size}") from None
             why = cannot_start(argv[0], cwd, e)
             return None, argv[0] + (CANNOT_RUN + why if why else NOT_FOUND)
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
@@ -53,7 +70,11 @@ def cannot_start(prog, cwd, err):
     """why prog, which the OS refused to start with err, exists but cannot run; '' when it is not there (not found).
     A program with no execute bit, a directory, a file the OS cannot execute; ENOENT on a file that is there is its
     `#!` interpreter that is missing (#107)."""
-    path = os.path.join(cwd, prog) if os.sep in prog or (os.altsep and os.altsep in prog) else shutil.which(prog)
+    if os.sep in prog or (os.altsep and os.altsep in prog):
+        path = os.path.join(cwd, prog)
+    else:  # the first PATH entry that holds the name, as exec searches (shutil.which skips a dir or a non-executable)
+        path = next((p for p in (os.path.join(d, prog) for d in os.environ.get("PATH", os.defpath).split(os.pathsep)
+                                 if d) if os.path.exists(p)), None)
     if not path or not os.path.exists(path):  # a dangling link is a program that is not there
         return "" if isinstance(err, FileNotFoundError) else (err.strerror or str(err))
     if os.path.isdir(path):
@@ -138,7 +159,10 @@ def unparseable(rv):
 def run_named(runner, adapter, cmd, cwd, path, name):
     """(verdict, a line of output): the line says why a run had no test result. The first line, or the line the
     adapter's verdict came from when it names one (adapter.why: an adapter file's env or no_test pattern)."""
-    rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    try:
+        rc, out = runner(adapter.test_argv(cmd, path, name), cwd)
+    except CannotStart as e:  # the run's own error (a test name past the OS's limit): a test that cannot run, no env
+        return "error", str(e)[:200]
     verdict = adapter.outcome(rc, out)
     why = getattr(adapter, "why", None)
     line = why(verdict, out) if why and rc is not None else None
