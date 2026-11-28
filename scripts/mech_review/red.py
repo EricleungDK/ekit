@@ -52,18 +52,28 @@ def default_runner():
             r = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=TEST_TIMEOUT)
         except subprocess.TimeoutExpired:
             return "timeout", ""
-        except OSError as e:
-            if getattr(e, "filename", None) == cwd:  # the child's chdir failed: the dir, not the program
-                raise CannotStart(f"`{argv[0]}` could not start in `{cwd}`: {e.strerror or e}") from None
-            if e.errno not in PROGRAM_ERRORS:
-                size = f" (its arguments: {sum(len(os.fsencode(a)) + 1 for a in argv)} bytes)" \
-                    if e.errno == errno.E2BIG else ""
-                raise CannotStart(f"`{argv[0]}` could not start: {e.strerror or e}{size}") from None
-            why = cannot_start(argv[0], cwd, e)
-            return None, argv[0] + (CANNOT_RUN + why if why else NOT_FOUND)
+        except (OSError, ValueError) as e:
+            return start_failed(argv, cwd, e)
         return r.returncode, (r.stdout + r.stderr).decode("utf-8", "replace")
 
     return run
+
+
+def start_failed(argv, cwd, err):
+    """the split of a start's errors, for every runner (red's, mutants'): (None, note) for the program's own
+    (PROGRAM_ERRORS: `<prog>: not found` or `<prog>: cannot run: <why>`, env), else CannotStart naming it: the
+    child's dir that cannot be entered, an argument past the OS's limit (E2BIG, with the arguments' size), a NUL byte
+    in one (Python's ValueError), the machine's limits (#107 review F1, N6, N7)."""
+    if isinstance(err, ValueError):
+        raise CannotStart(f"`{argv[0]}` could not start: {err}") from None
+    if getattr(err, "filename", None) == cwd:  # the child's chdir failed: the dir, not the program
+        raise CannotStart(f"`{argv[0]}` could not start in `{cwd}`: {err.strerror or err}") from None
+    if err.errno not in PROGRAM_ERRORS:
+        size = f" (its arguments: {sum(len(os.fsencode(a)) + 1 for a in argv)} bytes)" if err.errno == errno.E2BIG \
+            else ""
+        raise CannotStart(f"`{argv[0]}` could not start: {err.strerror or err}{size}") from None
+    why = cannot_start(argv[0], cwd, err)
+    return None, argv[0] + (CANNOT_RUN + why if why else NOT_FOUND)
 
 
 def cannot_start(prog, cwd, err):
@@ -72,9 +82,11 @@ def cannot_start(prog, cwd, err):
     `#!` interpreter that is missing (#107)."""
     if os.sep in prog or (os.altsep and os.altsep in prog):
         path = os.path.join(cwd, prog)
-    else:  # the first PATH entry that holds the name, as exec searches (shutil.which skips a dir or a non-executable)
-        path = next((p for p in (os.path.join(d, prog) for d in os.environ.get("PATH", os.defpath).split(os.pathsep)
-                                 if d) if os.path.exists(p)), None)
+    else:  # the first PATH entry that holds the name, as exec searches (shutil.which skips a dir or a non-executable);
+        # a relative entry is the child's (its cwd), and an empty one is that dir itself, as exec reads them (review N5)
+        path = next((p for p in (os.path.join(cwd, d or ".", prog)
+                                 for d in os.environ.get("PATH", os.defpath).split(os.pathsep)) if os.path.exists(p)),
+                    None)
     if not path or not os.path.exists(path):  # a dangling link is a program that is not there
         return "" if isinstance(err, FileNotFoundError) else (err.strerror or str(err))
     if os.path.isdir(path):

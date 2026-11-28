@@ -20,8 +20,8 @@ from collections import namedtuple
 from . import adapter_file, red
 from .gitio import added_lines, git
 from .mutants import (DEFAULT_MAX_MUTANTS, HOW, PROBE_TIMEOUT, _check, _crate_path, _files_baseline, _first_line,
-                      _payload, _repo_path, _under, crate_check, default_runner, line_ranges, partial_entry, shard_files,
-                      shard_index, stryker_desc)
+                      _payload, _repo_path, _under, cannot_start, crate_check, default_runner, line_ranges,
+                      partial_entry, shard_files, shard_index, stryker_desc)
 from .report import entry, finalize, no_report
 
 MAX_REPORT_BYTES = 64 * 1024 * 1024  # a report larger than this is not read (n/a): no tool's real report comes near it
@@ -667,7 +667,11 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     runner = runner or default_runner()
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    try:
+        check, ents = tool_for(rv.adapter).check(rv, cmd, budget_min, shard, mutant_timeout, runner,
+                                                 max_mutants=max_mutants)
+    except red.CannotStart as e:  # the run's error, not the tool's: a fail naming it (#107 review N7)
+        return cannot_start(e)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check, ents)]
     return check, ents

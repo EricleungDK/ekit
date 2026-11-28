@@ -633,8 +633,8 @@ def default_runner():
         with tempfile.TemporaryFile() as out:
             try:
                 proc = subprocess.Popen(argv, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-            except OSError:
-                return None, f"{argv[0]}: not found"
+            except (OSError, ValueError) as e:  # red's split: the program's own errors env, the run's CannotStart
+                return red.start_failed(argv, cwd, e)
             try:
                 proc.wait(timeout=budget)
                 rc = proc.returncode
@@ -2147,6 +2147,16 @@ def _built_in(rv):
     return TOOLS[rv.adapter.name]
 
 
+def cannot_start(err):
+    """R3 when the tool could not start for a reason that is not the tool's (red.CannotStart: an argument past the OS's
+    limit, a NUL byte in one): a fail naming it, never n/a (#107 review N7)."""
+    problem = f"R3 could not start its tool: {err}: mutants not run"
+    return _check("fail", problem), finalize([entry(
+        "R3", "", 0, "cannot-start", "agent-fixable", "fail", problem,
+        "the run's command could not start: split the change (fewer or shorter changed paths) or fix what the error "
+        "names; the tool itself is installed", "a mutation check that did not run")])
+
+
 def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
     """The baseline step for mb..head (#46): run the shards or not, how many, the per-mutant timeout derived from the
     measured baseline, and R3 when it ends the check (fail, n/a, or no mutant). Skipped without a production change.
@@ -2154,7 +2164,10 @@ def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=D
     tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _payload(False, 0, 0, None, _check("skipped", "no production file changed"), [])
-    return tool.baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    try:
+        return tool.baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    except red.CannotStart as e:
+        return _payload(False, 0, 0, None, *cannot_start(e))
 
 
 def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
@@ -2165,7 +2178,10 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = tool.check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    try:
+        check, ents = tool.check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    except red.CannotStart as e:
+        return cannot_start(e)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check, ents)]
     return check, ents
