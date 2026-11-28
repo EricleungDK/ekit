@@ -3,6 +3,9 @@ execute goal … Could not resolve / transfer`); a test that prints those words 
 (agent-fixable). R3 is `fail` either way. `mutants` through cli.main in this process, the declared tool a stub that
 prints STUB_OUT and writes no report (test_adapter_mutation_cli's fixture)."""
 import unittest
+from unittest import mock
+
+from scripts.mech_review import report
 
 from test_adapter_mutation_cli import ELEMENTS, Case, adapter_text
 
@@ -77,6 +80,26 @@ class MavenResolution(Case):
             for text in (out, out.replace("\n", "\r\n")):  # and CRLF
                 with self.subTest(out=text):
                     self.assertEqual(self.entries(text), [("R3", "agent-fixable", "fail")])
+
+
+class OnePass(Case):
+    """#107 review F2: the goal-failure lines are read in one pass: each output line is looked at for the phrases once,
+    however many goal-failure lines follow each other (a tool that is not Maven, or -q, can print thousands)."""
+
+    def test_each_line_is_read_once(self):
+        n = 2000  # under one environment string's limit: the stub prints STUB_OUT
+        out = "[INFO] BUILD FAILURE\n" + "[ERROR] Failed to execute goal x: boom\n" * n
+        self.pr()
+        with mock.patch.object(report, "_phrase", wraps=report._phrase) as phrase:
+            r, env = self.cli("mutants", self.adapter(adapter_text(ELEMENTS)), env={"STUB_OUT": out, "STUB_RC": "1"})
+        self.assertEqual([e["check"] for e in env["entries"]], ["R3"], r.stderr)
+        self.assertLessEqual(phrase.call_count, n + 2)
+
+    def test_a_long_output_is_read_in_linear_time(self):
+        lines = ["[INFO] BUILD FAILURE"] + ["[ERROR] Failed to execute goal x: boom"] * 40000
+        with mock.patch.object(report, "_phrase", wraps=report._phrase) as phrase:
+            self.assertTrue(report.resolution_failed("\n".join(lines + ["[ERROR] Could not resolve x"])))
+        self.assertLessEqual(phrase.call_count, len(lines) + 1)
 
 
 if __name__ == "__main__":

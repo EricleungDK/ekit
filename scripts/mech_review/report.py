@@ -42,24 +42,29 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 def resolution_failed(output):
     """Maven's goal-failure block says a dependency could not be fetched (#107): an `[ERROR] Failed to execute goal`
-    line, with the `[ERROR] <text>` lines that continue it, holds a RESOLUTION_FAILED phrase. Only Maven's own lines
-    count: those after its last BUILD banner, which it prints after every test's output (none after BUILD SUCCESS: no
-    goal failed), or, with no banner (-q), the last goal-failure line alone. The same words a test prints anywhere else
-    never count. Lines split at LF (a CR before it is ignored), colour codes dropped."""
+    line, with the `[ERROR] <text>` lines that continue it (up to the next goal line), holds a RESOLUTION_FAILED
+    phrase. Only Maven's own lines count: those after its last BUILD banner, which it prints after every test's output
+    (none after BUILD SUCCESS: no goal failed), or, with no banner (-q), the last goal-failure block alone. The same
+    words a test prints anywhere else never count. Lines split at LF (a CR before it is ignored), colour codes dropped.
+    One pass over the output (#107 review F2)."""
     lines = [ANSI.sub("", l).rstrip() for l in (output or "").split("\n")]
     banners = [i for i, l in enumerate(lines) if l in BANNERS]
     if banners:
         lines = lines[banners[-1] + 1:]
-    goals = [i for i, l in enumerate(lines) if l.startswith(GOAL_FAILED)]
-    for g in goals if banners else goals[-1:]:
-        block = [lines[g]]
-        for l in lines[g + 1:]:
-            if not l.startswith("[ERROR] ") or l[8:].startswith("-> "):  # "[ERROR]" alone, rstripped, ends it too
-                break
-            block.append(l)
-        if any(s in l for l in block for s in RESOLUTION_FAILED):
-            return True
-    return False
+    blocks, open_ = [], False  # one pass (#107 review F2): each line joins at most one block, a goal line starts one
+    for l in lines:
+        if l.startswith(GOAL_FAILED):
+            blocks.append(_phrase(l))
+            open_ = True
+        elif open_ and l.startswith("[ERROR] ") and not l[8:].startswith("-> "):  # "[ERROR]" alone ends it too
+            blocks[-1] = blocks[-1] or _phrase(l)
+        else:
+            open_ = False
+    return any(blocks) if banners else bool(blocks) and blocks[-1]
+
+
+def _phrase(line):
+    return any(s in line for s in RESOLUTION_FAILED)
 
 
 def no_report(tool, where, why, output=""):
