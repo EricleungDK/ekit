@@ -273,9 +273,9 @@ def _java_home_refused(roots):
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
     refuse it (not found, in the reviewed checkout, a launcher an adapter file names, a script whose `#!` interpreter
-    is in the checkout, a JAVA_HOME that is relative or in the checkout). Runs in an empty temp dir. The line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else
-    the first; a JDK line beside it (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the
-    JDK the build runs on (#106)."""
+    is in the checkout, a JAVA_HOME that is relative or in the checkout). Runs in an empty temp dir. The line kept is
+    the first that starts with `version` (pip show's `Version: 3.8.1`), else the first; a JDK line beside it
+    (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the JDK the build runs on (#106)."""
     label = " ".join(argv)
     if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
         return f"{label}: not probed (a path in the project dir, which the PR under review can change)"

@@ -299,8 +299,8 @@ class Jdk(_Repo):
     def test_a_java_home_beside_the_checkout_is_probed(self):
         """review round 2, M3: <checkout>2 shares the checkout's prefix and is not in it"""
         os.environ["JAVA_HOME"] = self.repo + "2"
-        self.assertEqual(self.probes()[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d825b"
-                                           f"); Java version: 17.0.9, vendor: Test, runtime: {self.repo}2")
+        self.assertEqual(self.probes()[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d"
+                                           f"825b); Java version: 17.0.9, vendor: Test, runtime: {self.repo}2")
 
     def test_the_probe_line_names_maven_and_the_jdk(self):
         r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.head, "--head", self.head, "--stack", "maven",
