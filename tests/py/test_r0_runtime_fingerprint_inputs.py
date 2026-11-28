@@ -104,6 +104,37 @@ class TsToolchain(_Repo):
         self.write({"node_modules/vitest/package.json": installed("3.2.7")})
         self.assertEqual({part: self.fp(part, head) != old[part] for part in ("run", "r3")}, {"run": True, "r3": True})
 
+    def stryker(self, where, version):
+        """a `stryker` at where that answers --version with version, as Stryker 10 does (its version alone)"""
+        os.makedirs(where, exist_ok=True)
+        prog = os.path.join(where, "stryker")
+        with open(prog, "w") as f:
+            f.write(f"#!/usr/bin/env python3\nprint({version!r})\n")
+        os.chmod(prog, 0o755)
+        return prog
+
+    def r3_probes(self, head, prog):
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", head, "--head", head, "--stack", "ts",
+                          "--fingerprint", "r3", "--mutants-cmd", prog])
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        got = json.loads(r.stdout)
+        return got["fingerprint"], got["probes"]
+
+    def test_the_mutants_cmd_strykers_version_changes_the_r3_fingerprint(self):
+        """review F6: CI runs the pinned Stryker passed as --mutants-cmd (outside the checkout), not node_modules'"""
+        head = self.commit({"package.json": pkg("vitest")})
+        prog = self.stryker(os.path.join(self.tmp, "stryker-install"), "10.0.0")
+        old, probes = self.r3_probes(head, prog)
+        self.assertEqual(probes[1:], [f"{prog} --version: 10.0.0"], probes)
+        self.stryker(os.path.join(self.tmp, "stryker-install"), "10.1.0")
+        self.assertNotEqual(self.r3_probes(head, prog)[0], old)
+
+    def test_a_mutants_cmd_in_the_checkout_is_not_probed(self):
+        head = self.commit({"package.json": pkg("vitest")})
+        prog = self.stryker(os.path.join(self.repo, "node_modules", ".bin"), "10.0.0")
+        self.assertEqual(self.r3_probes(head, prog)[1][1:],
+                         [f"{prog} --version: not probed (in the reviewed checkout: {os.path.realpath(prog)})"])
+
     def test_an_unchanged_tree_keeps_its_fingerprint(self):
         head = self.commit({"package.json": pkg("vitest")})
         self.write({"node_modules/vitest/package.json": installed("2.1.9")})

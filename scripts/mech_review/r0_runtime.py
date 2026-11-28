@@ -71,6 +71,10 @@ BUILTIN_PROBES = {
     "ts": {"run": (("node", "--version"),), "r3": (("node", "--version"),)},
 }
 
+# the built-ins whose R3 tool, given as an absolute --mutants-cmd, is probed `<it> --version` in r3 (ts: Stryker prints
+# its version; mutmut's fails outside a project, so python's is not)
+PROBED_MUTANTS_CMD = ("ts",)
+
 # dirs as {relpath: bytes}; globs: the fixture project's test paths (controls.json's test-paths, else TEST_GLOBS)
 Runtime = namedtuple("Runtime", "controls project build r3_base weak strong where globs", defaults=(TEST_GLOBS,))
 
@@ -193,11 +197,16 @@ def _words(cmd):
 
 
 def probes(adapter, part, cmds):
-    """[(argv, from a file)] the version probes of a part: a built-in's fixed argv, or for an adapter file `--version`
-    after the program of each command it names (cmds: the part's commands, as the run will use them; the R3 tool's
-    declared `version` args when it has them)."""
+    """[(argv, from a file)] the version probes of a part: a built-in's fixed argv (and for ts's r3, `--version` after
+    an absolute --mutants-cmd's program), or for an adapter file `--version` after the program of each command it
+    names (cmds: the part's commands, as the run will use them; the R3 tool's declared `version` args when it has
+    them)."""
     if not getattr(adapter, "from_file", False):
-        return [(list(a), False) for a in BUILTIN_PROBES.get(adapter.name, {}).get(part, ())]
+        out = [(list(a), False) for a in BUILTIN_PROBES.get(adapter.name, {}).get(part, ())]
+        words = _words(cmds[0]) if cmds else []
+        if part == "r3" and adapter.name in PROBED_MUTANTS_CMD and words and os.path.isabs(words[0]):
+            out.append(([words[0], "--version"], False))  # #106 review F6: CI's pinned Stryker, as --mutants-cmd
+        return out
     out, seen = [], set()
     tool = getattr(adapter, "mutation_tool", None) or {}
     for cmd in cmds:
