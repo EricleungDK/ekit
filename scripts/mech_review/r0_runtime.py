@@ -10,9 +10,10 @@ against itself. Two parts, each with its own fingerprint, run where their tools 
 A part's runner-dependent cases run only when its fingerprint is not in the cache dir (`--r0 DIR`) as passed: a
 hash of the part, the stack's name and project dir, the adapter (an adapter file's bytes, a built-in's name), the
 fixture dir, the ekit version (the plugin version and the engine's own source), the target OS, the commands the part
-runs and the version lines of the toolchain programs the adapter names. A hit skips the repo and fixture census and the
-controls (run) or the R3 control (r3); assert density, and in `red` the census of the PR's changed test files, run on
-every run. The hit is read (prepare) before any PR code runs, and Cache rewrites the dir at the end with only the
+runs, the version lines of the toolchain programs the adapter names, and what the head's tree picks (tree_inputs,
+#106: the runner and its fixture variant, the toolchain it pins; that runner's variant is the one the cases run). A hit
+skips the repo and fixture census and the controls (run) or the R3 control (r3); assert density, and in `red` the
+census of the PR's changed test files, run on every run. The hit is read (prepare) before any PR code runs, and Cache rewrites the dir at the end with only the
 verdicts that run decided: no sandbox (the job runs PR code), but a file planted during the run does not outlive it.
 A part runs only on the stack's target OS (n/a elsewhere).
 
@@ -54,6 +55,7 @@ CONTROLS = {"pass": "pass", "fail": "fail", "skipped": "none", "build": "build",
 ACCEPTED = r0.ACCEPTED  # {"assert-density": {"<stack>": ["<path>::<test name>", ...]}}, read at the base
 TEST_GLOBS = ("tests/**",)
 PROBE_TIMEOUT = 60
+JDK_LINE = re.compile(r"(?:java version|(?:launcher |daemon )?jvm)\s*:", re.I)  # mvn --version, gradle --version
 DENSITY = r0.LIMITS["assert-density"][1]
 CENSUS = r0.LIMITS["census"][1]
 SHOWN = 10  # misses named in a note or an entry, the rest counted
@@ -101,16 +103,22 @@ def _tree(path):
     return out
 
 
-def load_runtime(fixtures_dir, runner=None):
-    """Runtime of a fixture dir, or None when it has no runtime/ dir: `runtime-<runner>/` for the checkout's runner
-    when there is one (ts: runtime-jest/ for a jest checkout), else `runtime/`. r0.FixtureError: a controls.json that
-    does not read."""
+def variant(fixtures_dir, runner=None):
+    """the runtime fixture dir the part's cases run, or None: `runtime-<runner>/` for the checkout's runner when there
+    is one (ts: runtime-jest/ for a jest checkout), else `runtime/`."""
     if not fixtures_dir:
         return None
     rt = os.path.join(fixtures_dir, "runtime")
     if runner and os.path.isdir(f"{rt}-{runner}"):
         rt = f"{rt}-{runner}"
-    if not os.path.isdir(rt):
+    return rt if os.path.isdir(rt) else None
+
+
+def load_runtime(fixtures_dir, runner=None):
+    """Runtime of a fixture dir's variant (variant()), or None when it has no runtime/ dir. r0.FixtureError: a
+    controls.json that does not read."""
+    rt = variant(fixtures_dir, runner)
+    if rt is None:
         return None
     path = os.path.join(rt, "controls.json")
     try:
@@ -203,14 +211,16 @@ def probes(adapter, part, cmds):
 
 
 def _probe_env():
-    keep = ("PATH", "HOME", "SYSTEMROOT", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN")
+    # JAVA_HOME: the JDK a build tool runs on (mvn, gradle), as the tests' run sees it (#106)
+    keep = ("PATH", "HOME", "SYSTEMROOT", "RUSTUP_HOME", "CARGO_HOME", "RUSTUP_TOOLCHAIN", "JAVA_HOME")
     return {**{k: os.environ[k] for k in keep if k in os.environ}, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 
 
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
     refuse it (not found, in the reviewed checkout, a launcher an adapter file names). Runs in an empty temp dir. The
-    line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else the first."""
+    line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else the first; a JDK line beside
+    it (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the JDK the build runs on (#106)."""
     label = " ".join(argv)
     if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
         return f"{label}: not probed (a path in the project dir, which the PR under review can change)"
@@ -239,22 +249,37 @@ def probe(argv, from_file, roots):
             return f"{label}: did not answer ({type(e).__name__})"
     lines = [ln.strip() for ln in (r.stdout + r.stderr).decode("utf-8", "replace").splitlines() if ln.strip()]
     line = next((ln for ln in lines if re.match(r"version\b", ln, re.I)), lines[0] if lines else "no output")
-    return f"{label}: {line[:200]}" + (f" (exit {r.returncode})" if r.returncode else "")
+    jdk = next((ln for ln in lines if ln != line and JDK_LINE.match(ln)), None)
+    return f"{label}: {line[:200]}" + (f"; {jdk[:200]}" if jdk else "") + (f" (exit {r.returncode})" if r.returncode
+                                                                           else "")
 
 
-def fingerprint(part, adapter, adapter_raw, fixtures_dir, target_os, cmds, lines, extra=b"", project_dir="."):
+def fingerprint(part, adapter, adapter_raw, fixtures_dir, target_os, cmds, lines, extra=b"", project_dir=".",
+                inputs=()):
     """the part's fingerprint (hex) over everything that can change what it proves; the stack's name and project dir
-    too, so two stacks of one repo (#74's legs) never share a key."""
+    too, so two stacks of one repo (#74's legs) never share a key. inputs: what the head's tree picks (tree_inputs)."""
     h = hashlib.sha256()
-    for piece in (b"ekit-r0-runtime-2", part, adapter.name, project_dir, report.ekit_version(), engine_digest(),
+    for piece in (b"ekit-r0-runtime-3", part, adapter.name, project_dir, report.ekit_version(), engine_digest(),
                   target_os):
         h.update((piece if isinstance(piece, bytes) else str(piece).encode()) + b"\0")
     h.update(hashlib.sha256(adapter_raw or b"built-in").digest())
     _digest_dir(h, fixtures_dir)
-    for x in list(cmds) + ["--"] + list(lines):
+    for x in list(cmds) + ["--"] + list(lines) + ["--"] + list(inputs):
         h.update(x.encode("utf-8", "surrogateescape") + b"\0")
     h.update(hashlib.sha256(extra).digest())
     return h.hexdigest()
+
+
+def tree_inputs(adapter, part, fixtures_dir, root, project_dir="."):
+    """(lines, runner) of what the checkout at root (the head's worktree, its installs linked) picks for a part, read
+    as data, never run (#106): the runner (adapter.runner_name), the fixture variant it runs (variant()), and the
+    toolchain the tree pins (adapter.toolchain_pins: ts's node_modules versions, rust's rust-toolchain files). The same
+    runner picks the fixture variant the part's cases run, so the pass a fingerprint names proved that variant."""
+    runner = _runner_of(adapter, os.path.join(root, project_dir))
+    rt = variant(fixtures_dir, runner)
+    lines = [f"runner: {runner or '(none)'}", f"fixture variant: {os.path.basename(rt) if rt else '(none)'}"]
+    pins = getattr(adapter, "toolchain_pins", None)
+    return lines + (list(pins(root, project_dir, part)) if pins else []), runner
 
 
 def _pass_file(cache_dir, part, fp):
@@ -714,12 +739,12 @@ def run_cmds(adapter, cmd, crate):
     return out
 
 
-def run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate):
+def run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate, inputs=()):
     adapter = rv.adapter
     cmds = run_cmds(adapter, cmd, crate)
     lines = [probe(a, f, (rv.repo,)) for a, f in probes(adapter, "run", cmds)]
     return fingerprint("run", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines, accepted_raw,
-                       rv.project_dir), lines
+                       rv.project_dir, inputs), lines
 
 
 def r3_cmds(adapter, mutants_cmd):
@@ -731,28 +756,38 @@ def r3_cmds(adapter, mutants_cmd):
     return [{"rust": "cargo mutants", "python": "mutmut", "ts": "node_modules/.bin/stryker"}.get(adapter.name, "")]
 
 
-def r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw):
+def r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw, inputs=()):
     adapter = rv.adapter
     cmds = r3_cmds(adapter, mutants_cmd)
     lines = [probe(a, f, (rv.repo,)) for a, f in probes(adapter, "r3", cmds)]
     return fingerprint("r3", adapter, adapter_raw, fixtures_dir, adapter.target_os, cmds, lines,
-                       project_dir=rv.project_dir), lines
+                       project_dir=rv.project_dir, inputs=inputs), lines
+
+
+def _part_fingerprint(rv, part, cmd, mutants_cmd, fixtures_dir, adapter_raw):
+    """(fingerprint, probe lines, runner) of a part, read from the head's checkout (its installs linked, as the part's
+    runs see them): the runner it picks is the one whose fixture variant the part's cases run (#106)."""
+    accepted_raw = accepted_list(rv.repo, rv.mb, rv.adapter.name)[1] if part == "run" else b""
+    with red.worktree(rv.repo, rv.head) as wt:
+        crate = os.path.join(wt, rv.project_dir)
+        rv.adapter.worktree_setup(rv.repo, wt, rv.project_dir)
+        inputs, runner = tree_inputs(rv.adapter, part, fixtures_dir, wt, rv.project_dir)
+        if part == "r3":
+            fp, lines = r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw, inputs)
+        else:
+            fp, lines = run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate, inputs)
+    return fp, lines, runner
 
 
 def part_fingerprint(rv, part, cmd=None, mutants_cmd=None, fixtures_dir=None, adapter_raw=None):
     """(fingerprint, probe lines) of a part as `red --r0` (run) or `mutants --r0` (r3) computes it: the key the
-    workflow's cache step restores before the run. The head's checkout is read (the test command a checkout picks),
-    never run."""
-    if part == "r3":
-        return r3_fingerprint(rv, mutants_cmd, fixtures_dir, adapter_raw)
-    accepted_raw = accepted_list(rv.repo, rv.mb, rv.adapter.name)[1]
-    with red.worktree(rv.repo, rv.head) as wt:
-        crate = os.path.join(wt, rv.project_dir)
-        rv.adapter.worktree_setup(rv.repo, wt, rv.project_dir)
-        return run_fingerprint(rv, cmd, fixtures_dir, adapter_raw, accepted_raw, crate)
+    workflow's cache step restores before the run. The head's checkout is read (the test command and the runner it
+    picks, the toolchain it pins), never run."""
+    return _part_fingerprint(rv, part, cmd, mutants_cmd, fixtures_dir, adapter_raw)[:2]
 
 
-Prepared = namedtuple("Prepared", "part fp lines hit cache")
+# runner: the runner the head's checkout picks (tree_inputs), whose fixture variant the part's cases run
+Prepared = namedtuple("Prepared", "part fp lines hit cache runner", defaults=(None,))
 
 
 def prepare(rv, part, cache, cmd=None, mutants_cmd=None, fixtures_dir=None, adapter_raw=None):
@@ -760,8 +795,8 @@ def prepare(rv, part, cache, cmd=None, mutants_cmd=None, fixtures_dir=None, adap
     before R1, R4 and R3, and before the part's own census and controls. None on another OS (the part is n/a)."""
     if rv.adapter.target_os != host_os():
         return None
-    fp, lines = part_fingerprint(rv, part, cmd, mutants_cmd, fixtures_dir, adapter_raw)
-    return Prepared(part, fp, lines, cache.open(part, fp, lines), cache)
+    fp, lines, runner = _part_fingerprint(rv, part, cmd, mutants_cmd, fixtures_dir, adapter_raw)
+    return Prepared(part, fp, lines, cache.open(part, fp, lines), cache, runner)
 
 
 def _density(adapter, files, accepted):
@@ -820,13 +855,15 @@ def _controls_note(results, fx):
 
 def _runner_of(adapter, crate):
     """the name of the runner the checkout at crate picks (ts: vitest or jest; an adapter file's [[run.runner]]), or
-    None: it picks the fixture variant the controls run (load_runtime)."""
+    None: it picks the fixture variant the controls run (load_runtime). Read at the head (tree_inputs), never in the
+    caller's checkout."""
     return adapter.runner_name(crate) if hasattr(adapter, "runner_name") else None
 
 
-def _fixture_cases(adapter, runner, cmd, fixtures_dir, src, results, census_out):
-    """the fixture census and the runner controls into results; the fixture Census or None."""
-    rt = load_runtime(fixtures_dir, _runner_of(adapter, src))
+def _fixture_cases(adapter, runner, cmd, fixtures_dir, src, results, census_out, picked=None):
+    """the fixture census and the runner controls into results; the fixture Census or None. picked: the runner the
+    head's checkout picks (Prepared.runner), whose fixture variant runs."""
+    rt = load_runtime(fixtures_dir, picked)
     if rt is None:
         results.append(_case("controls", "control", "unproven", "the runner controls", "no runtime/ fixtures"))
         return None
@@ -871,7 +908,8 @@ def run_part(rv, runner, cmd, fixtures_dir, adapter_raw=None, prepared=None, ada
                            f"{note}; {dens_note}", extra, census=census_out, density=dens, ran=False)
         case, census_out, repo_note = _repo_census(adapter, listed, why, st, scan, limit, project_dir)
         results.append(case)
-        fx = _fixture_cases(adapter, runner, cmd, fixtures_dir, os.path.join(repo, project_dir), results, census_out)
+        fx = _fixture_cases(adapter, runner, cmd, fixtures_dir, os.path.join(repo, project_dir), results, census_out,
+                            prepared.runner)
     note = f"fingerprint {fp[:12]} (ran); {repo_note}" + _controls_note(results, fx).replace(
         "; controls:", f"; {dens_note}; controls:", 1)
     check, entries = _result("run", adapter, results, fp, lines, _where(adapter_path, fixtures_dir), note, extra,
@@ -892,7 +930,7 @@ def r3_part(rv, mutants_cmd, budget_min, fixtures_dir, adapter_raw=None, prepare
     if prepared.hit:
         return _result("r3", adapter, [], fp, lines, where, f"fingerprint {fp[:12]} passed before (cache): not re-run",
                        ran=False)
-    rt = load_runtime(fixtures_dir, _runner_of(adapter, os.path.join(repo, project_dir)))
+    rt = load_runtime(fixtures_dir, prepared.runner)
     results = []
     if rt is None:
         results.append(_case("r3-weak", "r3", "unproven", "a MISSED mutant", "no runtime/ fixtures"))
