@@ -38,7 +38,7 @@ import time
 from . import red
 from .gitio import Die, added_lines, git
 from .report import entry, finalize
-from .scan import PYTHON, source_lines
+from .scan import PYTHON, lf_line, source_lines
 from .stack import ts_runner
 
 DEFAULT_CMD = "cargo mutants"
@@ -975,7 +975,15 @@ def _find(lines, lo, hi, pattern):
 def scope_span(src, name):
     """(first, last) 1-based lines of the function a mutmut name points at, or None when the name cannot be mapped
     (no such class or function in the file, or a name form this does not read). A method is searched for inside its
-    class, so the same method name in two classes resolves to the right one."""
+    class, so the same method name in two classes resolves to the right one. git's lines (LF counted, #107 review
+    N1): what the diff's changed lines are compared with."""
+    span = _py_span(src, name)
+    return None if span is None else (lf_line(src, span[0], PYTHON), lf_line(src, span[1], PYTHON))
+
+
+def _py_span(src, name):
+    """scope_span in python's lines (LF, CRLF or a lone CR ends one, as ast and mutmut number them): the lines its
+    callers cut and count offsets in."""
     scope = mutant_scope(name)
     if scope is None:
         return None
@@ -1001,14 +1009,14 @@ def scope_span(src, name):
 
 def locate(src, name, removed):
     """1-based line of the removed text in the function a mutmut name points at (scope_span), or None when the name
-    cannot be mapped or the text is not in that function. Lines are the file's."""
-    span = scope_span(src, name)
+    cannot be mapped or the text is not in that function. git's line (#107 review N1)."""
+    span = _py_span(src, name)
     if span is None:
         return None
     lines = source_lines(src, PYTHON)
     for j in range(span[0] - 1, span[1]):
         if lines[j].strip() == removed:
-            return j + 1
+            return lf_line(src, j + 1, PYTHON)
     return None
 
 
@@ -1198,15 +1206,16 @@ def _run_stopped(rc, text, normal_ends):
 def line_at(src, name, offset, removed):
     """1-based line of a mutant's change: `offset` lines below the def line of the function its name points at. None
     when the name maps to no function, the offset leaves the function, or the line there is not the removed text (the
-    file and mutmut's copy disagree: the caller falls back to the text search)."""
-    span = scope_span(src, name)
+    file and mutmut's copy disagree: the caller falls back to the text search). The offset is in python's lines
+    (mutmut's copy), the line returned git's (#107 review N1)."""
+    span = _py_span(src, name)
     if span is None or span[0] + offset > span[1]:
         return None
     line = span[0] + offset
     at = source_lines(src, PYTHON)[line - 1].strip()
     if removed and not (at and removed.startswith(at)):
         return None
-    return line
+    return lf_line(src, line, PYTHON)
 
 
 def outside_diff(name, sources, changed):
@@ -1680,8 +1689,9 @@ class Mutmut:
 
 
 def _read(path):
+    """the file's text as it is: no newline translation, so a lone CR stays one and git's lines are countable (#107)."""
     try:
-        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
             return f.read()
     except OSError:
         return ""

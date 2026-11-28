@@ -729,8 +729,8 @@ class PythonAdapter(Adapter):
     def suppressions(self, text):
         """`# noqa` (codes optional) and `# type: ignore` (brackets optional) comments; reason: text after the codes."""
         out = []
-        try:
-            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        try:  # universal newlines: a lone CR ends a line, as for ast (#107: python's lines, scan.PYTHON)
+            toks = list(tokenize.generate_tokens(io.StringIO(text, newline=None).readline))
         except (tokenize.TokenError, SyntaxError):
             return out
         for tok in toks:
@@ -757,8 +757,8 @@ class PythonAdapter(Adapter):
 
     def mutation_skips(self, text):
         """`# pragma: no mutate` comments (mutmut skips the line)."""
-        try:
-            toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+        try:  # universal newlines, as suppressions
+            toks = list(tokenize.generate_tokens(io.StringIO(text, newline=None).readline))
         except (tokenize.TokenError, SyntaxError):
             return []
         return [(t.start[0], t.start[0], t.string.strip()) for t in toks

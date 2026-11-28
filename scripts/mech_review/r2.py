@@ -8,7 +8,7 @@ from .gitio import added_lines, blob, changes, messages
 from .globs import any_glob
 from .parser_cmd import ParserError
 from .report import entry
-from .scan import line_breaks, source_lines
+from .scan import lf_line, line_breaks, source_lines
 
 def unmatched(xs, ys):
     """xs minus exact (fn, kind, left, right) matches in ys, multiset-aware."""
@@ -359,22 +359,31 @@ def _touches(line, end_line, added):
     return any(ln in added for ln in range(line, end_line + 1))
 
 
+def _git_lines(adapter, after, line, end_line):
+    """(line, end_line) of the adapter's numbering as git's diff numbers them (#107 review N8: python's lone CRs)."""
+    breaks = line_breaks(adapter)
+    return lf_line(after, line, breaks), lf_line(after, end_line, breaks)
+
+
 def _suppressions(adapter, path, after, added):
-    """a lint suppression without a reason, on a line the change adds."""
+    """a lint suppression without a reason, on a line the change adds (git's lines: the adapter's converted)."""
     out = []
     for sup in adapter.suppressions(after):
-        if sup.reason or not _touches(sup.line, sup.end_line, added):
+        line, end_line = _git_lines(adapter, after, sup.line, sup.end_line)
+        if sup.reason or not _touches(line, end_line, added):
             continue
         problem, hint = adapter.suppression_text(sup)
-        out.append(entry("R2", path, sup.line, sup.lints, "agent-fixable", "fail", problem, hint,
+        out.append(entry("R2", path, line, sup.lints, "agent-fixable", "fail", problem, hint,
                          "silencing a lint without a reason"))
     return out
 
 
 def _mutation_skips(adapter, path, after, added):
-    """a marker that hides production code from R3, on a line the change adds."""
+    """a marker that hides production code from R3, on a line the change adds (git's lines: the adapter's converted)."""
+    skips = [(*_git_lines(adapter, after, line, end_line), marker)
+             for line, end_line, marker in adapter.mutation_skips(after)]
     return [entry("R2", path, line, "mutation-skip", "needs-human", "fail",
                   f"mutation skip added: `{marker}` hides this code from R3",
                   "remove it and add the test R3 asks for; if the code truly cannot be tested, a person decides",
                   "hiding code from mutation testing (R3)")
-            for line, end_line, marker in adapter.mutation_skips(after) if _touches(line, end_line, added)]
+            for line, end_line, marker in skips if _touches(line, end_line, added)]

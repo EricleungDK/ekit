@@ -199,8 +199,8 @@ class MutmutLines(unittest.TestCase):
                 self.assertEqual(mutants.locate(src, "calc.x_add__mutmut_1", "total = a + b"), 6)
                 self.assertEqual(mutants.line_at(src, "calc.x_add__mutmut_1", 1, "total = a + b"), 6)
 
-    def test_a_python_file_with_lone_cr_or_crlf_ends_is_read_at_asts_lines(self):
-        for label, end in (("CR", "\r"), ("CRLF", "\r\n")):
+    def test_a_python_file_with_crlf_ends_keeps_its_lines(self):  # lone CRs: test_issue107_python_lines (git's lines)
+        for label, end in (("CRLF", "\r\n"),):
             with self.subTest(ends=label):
                 src = PY_SRC.format(odd="\x85" * MANY).replace("\n", end)
                 self.assertEqual(mutants.scope_span(src, "calc.x_add__mutmut_1"), (5, 7))
