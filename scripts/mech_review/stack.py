@@ -56,6 +56,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import tokenize
 from collections import namedtuple
 
@@ -277,6 +278,29 @@ def _innermost(spans, pos):
     return max(hits, key=lambda s: s[1])[0] if hits else None
 
 
+PIN_MAX = 1 << 16  # bytes of a rust-toolchain file read: rustup's are a few lines
+
+
+def _pin_digest(path):
+    """`sha256 <hex>` of a pin file's bytes, or a stable reason it is not read: (unreadable) for one that does not
+    open (a dangling link, no permission), (not a regular file) for a dir or FIFO (never opened: it could block),
+    (over PIN_MAX bytes) for one larger (never read whole)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "(unreadable)"
+    if not stat.S_ISREG(st.st_mode):
+        return "(not a regular file)"
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(PIN_MAX + 1)
+    except OSError:
+        return "(unreadable)"
+    if len(raw) > PIN_MAX:
+        return f"(over {PIN_MAX} bytes)"
+    return f"sha256 {hashlib.sha256(raw).hexdigest()}"
+
+
 class RustAdapter(Adapter):
     name = "rust"
     default_test_cmd = "cargo test"
@@ -291,16 +315,17 @@ class RustAdapter(Adapter):
         return "test" if any_glob(path, test_globs) else "prod"
 
     def toolchain_pins(self, root, project_dir, part):
-        """each rust-toolchain.toml and plain rust-toolchain file at the root and in the project dir (rustup takes the
-        nearest one): its path and a digest of its bytes. The probes run outside the checkout and never see the pin."""
+        """each rust-toolchain.toml and plain rust-toolchain file in every dir from the root down to the project dir
+        (rustup takes the nearest one up from where cargo runs): its path and a digest of its bytes, or why it does not
+        read. The probes run outside the checkout and never see the pin."""
+        parts = [p for p in project_dir.replace("\\", "/").split("/") if p not in ("", ".")]
         out = []
-        for d in dict.fromkeys((".", project_dir)):
+        for depth in range(len(parts) + 1):
             for name in ("rust-toolchain.toml", "rust-toolchain"):
-                rel = name if d in (".", "") else f"{d}/{name}"
+                rel = "/".join(parts[:depth] + [name])
                 path = os.path.join(root, *rel.split("/"))
-                if os.path.isfile(path):
-                    with open(path, "rb") as f:
-                        out.append(f"{rel}: sha256 {hashlib.sha256(f.read()).hexdigest()}")
+                if os.path.lexists(path):
+                    out.append(f"{rel}: {_pin_digest(path)}")
         return out
 
     def parse_error(self, text):

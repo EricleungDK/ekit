@@ -13,8 +13,9 @@ fixture dir, the ekit version (the plugin version and the engine's own source), 
 runs, the version lines of the toolchain programs the adapter names, and what the head's tree picks (tree_inputs,
 #106: the runner and its fixture variant, the toolchain it pins; that runner's variant is the one the cases run). A hit
 skips the repo and fixture census and the controls (run) or the R3 control (r3); assert density, and in `red` the
-census of the PR's changed test files, run on every run. The hit is read (prepare) before any PR code runs, and Cache rewrites the dir at the end with only the
-verdicts that run decided: no sandbox (the job runs PR code), but a file planted during the run does not outlive it.
+census of the PR's changed test files, run on every run. The hit is read (prepare) before any PR code runs, and Cache
+rewrites the dir at the end with only the verdicts that run decided: no sandbox (the job runs PR code), but a file
+planted during the run does not outlive it.
 A part runs only on the stack's target OS (n/a elsewhere).
 
 Version probes run programs, so they keep #19's program rules (mutation_tool._program_path, mutation_tool._in_checkout,

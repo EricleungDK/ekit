@@ -134,6 +134,26 @@ class RustPin(_Repo):
         new = self.fp("run", self.commit({"crate/rust-toolchain": "1.81.0\n"}), "--project-dir", "crate")
         self.assertNotEqual(old, new)
 
+    def test_a_pin_that_cannot_be_read_still_gives_a_key(self):
+        """review F3: through the seam, a pin open refuses is a named line, never a traceback with no key"""
+        head = self.commit({**self.files, "rust-toolchain": "1.80.0\n"})
+        real = open
+
+        def refuse(path, *a, **k):
+            if str(path).endswith("rust-toolchain"):
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, *a, **k)
+
+        with mock.patch("builtins.open", refuse):
+            self.assertRegex(self.fp("run", head), "^[0-9a-f]{64}$")
+
+    def test_a_pin_in_a_dir_between_the_root_and_the_project_dir_counts(self):
+        """rustup takes the nearest pin up from the project dir: a/rust-toolchain for the project a/b"""
+        crate = {f"a/b/{p}": t for p, t in self.files.items()}
+        old = self.fp("run", self.commit({**crate, "a/rust-toolchain": "1.80.0\n"}), "--project-dir", "a/b")
+        new = self.fp("run", self.commit({"a/rust-toolchain": "1.81.0\n"}), "--project-dir", "a/b")
+        self.assertNotEqual(old, new)
+
 
 # `mvn --version` as Maven prints it: the JDK it runs on (JAVA_HOME's) in the `Java version:` line
 MVN = r'''#!/usr/bin/env python3
@@ -315,7 +335,8 @@ class TreeInputLines(unittest.TestCase):
         fx = r0.builtin_fixtures("ts")
         self.assertEqual(r0_runtime.tree_inputs(stack.TsAdapter(), "r3", fx, self.root), (
             ["runner: jest", "fixture variant: runtime-jest", "node_modules/jest: 29.7.0",
-             "node_modules/@stryker-mutator/core: 10.0.0", "node_modules/@stryker-mutator/jest-runner: (not installed)"],
+             "node_modules/@stryker-mutator/core: 10.0.0",
+             "node_modules/@stryker-mutator/jest-runner: (not installed)"],
             "jest"))
         self.assertEqual(r0_runtime.tree_inputs(stack.TsAdapter(), "run", fx, self.root)[0],
                          ["runner: jest", "fixture variant: runtime-jest", "node_modules/jest: 29.7.0"])
@@ -350,7 +371,44 @@ class TreeInputLines(unittest.TestCase):
             "rust-toolchain.toml: sha256 c5f938b9c9c5ac70f52219ffd280dd2cc62b306b6f715bab3e71e416fbdf9752",
             "crate/rust-toolchain: sha256 1cb49918acdf75802ef99971dbd732b0b34847ef03a8d830e53c237c0fe9c94b"])
         self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "r3"), [got[0]])
+        self.write("crate/inner/rust-toolchain.toml", "x")
+        pins = stack.RustAdapter().toolchain_pins(self.root, "crate/inner", "r3")
+        self.assertEqual([ln.split(":")[0] for ln in pins],
+                         ["rust-toolchain.toml", "crate/rust-toolchain", "crate/inner/rust-toolchain.toml"])
         self.assertEqual(stack.Adapter().toolchain_pins(self.root, ".", "run"), [])
+
+    def test_a_pin_that_does_not_read_is_named_not_read_whole(self):
+        """review F3: a committed rust-toolchain link to a huge file, a FIFO, or a file it may not open"""
+        from scripts.mech_review import stack
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        huge = os.path.join(outside.name, "huge")
+        with open(huge, "wb") as f:
+            f.truncate(8 << 20)
+        os.symlink(huge, os.path.join(self.root, "rust-toolchain"))
+        os.symlink(os.path.join(outside.name, "gone"), os.path.join(self.root, "rust-toolchain.toml"))
+        self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"), [
+            "rust-toolchain.toml: (unreadable)", "rust-toolchain: (over 65536 bytes)"])
+        real = open
+
+        def refuse(path, *a, **k):
+            if "rust-toolchain" in str(path):
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, *a, **k)
+
+        os.remove(os.path.join(self.root, "rust-toolchain"))
+        self.write("rust-toolchain", "1.80.0\n")
+        with mock.patch("builtins.open", refuse):
+            self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"), [
+                "rust-toolchain.toml: (unreadable)", "rust-toolchain: (unreadable)"])
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs here")
+    def test_a_pin_that_is_a_fifo_is_never_opened(self):
+        from scripts.mech_review import stack
+        os.mkfifo(os.path.join(self.root, "rust-toolchain"))
+        with mock.patch("builtins.open", side_effect=AssertionError("opened a FIFO")):
+            self.assertEqual(stack.RustAdapter().toolchain_pins(self.root, ".", "run"),
+                             ["rust-toolchain: (not a regular file)"])
 
 
 GRADLE = r'''#!/usr/bin/env python3
