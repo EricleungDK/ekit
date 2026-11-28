@@ -139,6 +139,7 @@ class RustPin(_Repo):
 MVN = r'''#!/usr/bin/env python3
 import os
 here = os.path.dirname(os.path.abspath(__file__))
+open(os.path.join(here, "ran"), "a").close()
 print("Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d825b)")
 print("Maven home: /opt/maven")
 print("Java version: " + open(os.path.join(here, "java-version")).read().strip() + ", vendor: Test, runtime: "
@@ -178,6 +179,30 @@ class Jdk(_Repo):
         old = self.fp()
         os.environ["JAVA_HOME"] = "/opt/jdk-21"
         self.assertNotEqual(self.fp(), old)
+
+    def probes(self):
+        r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.head, "--head", self.head, "--stack", "maven",
+                          "--adapter", MAVEN, "--fingerprint", "run"])
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return json.loads(r.stdout)["probes"]
+
+    def test_a_java_home_in_the_reviewed_checkout_is_not_probed(self):
+        """mvn would run $JAVA_HOME/bin/java, a file the PR controls: the probe is refused and named, mvn never runs"""
+        jdk = os.path.join(self.repo, "jdk")
+        os.makedirs(jdk)
+        link = os.path.join(self.tmp, "jdk-link")
+        os.symlink(jdk, link)
+        for java_home in (jdk, link, self.repo):
+            with self.subTest(java_home=java_home):
+                os.environ["JAVA_HOME"] = java_home
+                want = os.path.realpath(java_home)
+                self.assertEqual(self.probes()[0], f"mvn --version: not probed (JAVA_HOME in the reviewed checkout: "
+                                                   f"{want})")
+                self.assertFalse(os.path.exists(os.path.join(self.bin, "ran")))
+        os.environ["JAVA_HOME"] = jdk
+        old = self.fp()
+        self.java("21.0.5")
+        self.assertEqual(self.fp(), old)  # nothing of the checkout's JDK reaches the key
 
     def test_the_probe_line_names_maven_and_the_jdk(self):
         r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.head, "--head", self.head, "--stack", "maven",

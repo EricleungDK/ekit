@@ -216,11 +216,26 @@ def _probe_env():
     return {**{k: os.environ[k] for k in keep if k in os.environ}, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 
 
+def _java_home_inside(roots):
+    """JAVA_HOME's real path when it is, or lies in, one of roots (the reviewed checkout), else None: the probe passes
+    JAVA_HOME on, and a build tool runs the JDK it names."""
+    java_home = os.environ.get("JAVA_HOME")
+    if not java_home:
+        return None
+    real = os.path.realpath(java_home)
+    for root in roots:
+        top = os.path.realpath(root)
+        if real == top or real.startswith(top.rstrip(os.sep) + os.sep):
+            return real
+    return None
+
+
 def probe(argv, from_file, roots):
     """one version line: `<argv>: <first line it prints>`, or `<argv>: not probed (<why>)` when the program rules
-    refuse it (not found, in the reviewed checkout, a launcher an adapter file names). Runs in an empty temp dir. The
-    line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else the first; a JDK line beside
-    it (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the JDK the build runs on (#106)."""
+    refuse it (not found, in the reviewed checkout, a launcher an adapter file names, a JAVA_HOME in the checkout).
+    Runs in an empty temp dir. The line kept is the first that starts with `version` (pip show's `Version: 3.8.1`), else
+    the first; a JDK line beside it (JDK_LINE: Maven's `Java version: 21.0.5, ...`) is kept too, `; ` between, as the
+    JDK the build runs on (#106)."""
     label = " ".join(argv)
     if ("/" in argv[0] or "\\" in argv[0]) and not os.path.isabs(argv[0]):
         return f"{label}: not probed (a path in the project dir, which the PR under review can change)"
@@ -232,6 +247,9 @@ def probe(argv, from_file, roots):
     inside = mutation_tool._in_checkout(prog, roots)
     if inside:
         return f"{label}: not probed (in the reviewed checkout: {inside})"
+    java_home = _java_home_inside(roots)
+    if java_home:  # mvn and gradle run $JAVA_HOME/bin/java: a file the PR controls (#106 review F2)
+        return f"{label}: not probed (JAVA_HOME in the reviewed checkout: {java_home})"
     if os.path.basename(argv[0]) == "cargo" and len(argv) > 1 and not argv[1].startswith("-"):
         # `cargo mutants` runs `cargo-mutants` from PATH: that binary keeps the same rules (#21 review N2)
         sub = f"cargo-{argv[1]}"
