@@ -330,12 +330,15 @@ class DataAdapter(Adapter):
     def worktree_setup(self, repo, wt, project_dir):
         """[run].links: each directory (project-dir relative, an install the checkout does not track: node_modules) is
         linked from the caller's checkout into the worktree, when the caller has it as a directory (as the built-in ts
-        does) and the worktree does not."""
+        does) and the worktree does not. Returns the links it made (#107: R3's path clearing keeps them)."""
+        made = []
         for rel in (self.run or {}).get("links", []):
             src = os.path.join(repo, project_dir, rel)
             dst = os.path.join(wt, project_dir, rel)
             if os.path.isdir(src) and os.path.isdir(os.path.dirname(dst)) and not os.path.lexists(dst):
                 os.symlink(os.path.abspath(src), dst)
+                made.append(dst)
+        return made
 
     def runner_name(self, crate):
         """the name of the [[run.runner]] the crate's test command picks (mutation.tool.runners), or None."""

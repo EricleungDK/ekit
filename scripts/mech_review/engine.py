@@ -154,8 +154,9 @@ def _run(repo, base_ref, head_ref, stack, test_globs, protected_globs, which, ag
         checks["R3"] = {"status": "skipped", "note": "not run by all: R3 runs only in the mutants subcommand (CI job mutants)"}
     r3 = []
     if "R3" in want:
-        checks["R3"], r3 = mutants.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
-                                       max_mutants=max_mutants)
+        r3_of = mutation_tool if getattr(rv.adapter, "from_file", False) else mutants  # a file's own tool (#107)
+        checks["R3"], r3 = r3_of.run(rv, mutants_cmd, mutation_budget, shard, mutant_timeout, mutant_runner,
+                                     max_mutants=max_mutants)
     if rt_part is not None:
         if rt_part == "r3":
             part, more = r0_runtime.r3_part(rt_rv, mutants_cmd, mutation_budget, r0["fixtures"], r0["raw"], prepared,

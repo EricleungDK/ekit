@@ -2128,13 +2128,23 @@ class Stryker:
 TOOLS = {"rust": CargoMutants(), "python": Mutmut(), "ts": Stryker()}
 
 
+def _built_in(rv):
+    """the built-in tool of rv's stack. An adapter file's R3 is its own (mutation_tool.run), never a built-in of its
+    name (#107): a ValueError, never a run."""
+    if getattr(rv.adapter, "from_file", False):
+        raise ValueError(f"adapter file for stack `{rv.adapter.name}`: R3 runs its mutation tool (mutation_tool), "
+                         f"never the built-in {rv.adapter.name} tool")
+    return TOOLS[rv.adapter.name]
+
+
 def baseline(rv, cmd=None, budget_min=None, shards=4, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
     """The baseline step for mb..head (#46): run the shards or not, how many, the per-mutant timeout derived from the
     measured baseline, and R3 when it ends the check (fail, n/a, or no mutant). Skipped without a production change.
     Returns {run, count, mutants, timeout, check, entries}."""
+    tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _payload(False, 0, 0, None, _check("skipped", "no production file changed"), [])
-    return TOOLS[rv.adapter.name].baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
+    return tool.baseline(rv, cmd, budget_min, shards, runner, max_mutants=max_mutants)
 
 
 def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=None, max_mutants=DEFAULT_MAX_MUTANTS):
@@ -2142,9 +2152,10 @@ def run(rv, cmd=None, budget_min=None, shard=None, mutant_timeout=None, runner=N
     mutant_timeout None is auto (see CargoMutants). max_mutants: the cap per PR (#26). The stack's tool runs in the
     crate dir of a worktree at head (the caller's checkout does not move)."""
     runner = runner or default_runner()
+    tool = _built_in(rv)
     if not red.prod_changes(rv):
         return _check("skipped", "no production file changed"), []
-    check, ents = TOOLS[rv.adapter.name].check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
+    check, ents = tool.check(rv, cmd, budget_min, shard, mutant_timeout, runner, max_mutants=max_mutants)
     if check["status"] == "partial":
         ents = ents + [partial_entry(check, ents)]
     return check, ents
