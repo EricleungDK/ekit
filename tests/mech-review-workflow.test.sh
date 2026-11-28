@@ -318,7 +318,9 @@ check("mutants: uploads its JSON artifact per stack and shard", "mech-review-mut
 R0_DIR = '"$HOME/.cache/ekit-r0"'
 # #109, the warm cache: GitHub lets a pull_request run read the default branch's caches but write only its own (the
 # PR's) scope. So a push to the default branch writes the warm key, which every PR reads; a PR run saves only under
-# its own key (the warm key plus -pr), restored after the warm one, so it never writes the warm entry
+# its own key (the warm key plus -pr), so it never writes the warm entry. The restore names both keys; GitHub searches
+# the run's own scope first, so a PR reads its own -pr entry when it has one, else main's warm one: either is a pass
+# of the same fingerprint
 R0_WARM_KEY = "${{ steps.r0fp.outputs.key }}"
 R0_PR_KEY = "${{ steps.r0fp.outputs.key }}-pr"
 R0_ON_DEFAULT_PUSH = ("github.event_name == 'push'",
@@ -409,10 +411,10 @@ for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", m
     check(f"{job}: the R0 {part} fingerprint step prints the cache key (r0 --fingerprint {part}), never stops the job",
           "id: r0fp" in fp and f"--fingerprint {part}" in text(fp) and "|| exit 0" in text(fp)
           and 'key={key}' in text(fp), text(fp))
-    # #109: restore only (a combined actions/cache saves from every run); the warm key, the main's push run writes,
-    # first, then this PR's own key
+    # #109: restore only (a combined actions/cache saves from every run), naming the warm key (main's push run writes
+    # it) and this PR's own; whichever GitHub finds is a pass of the same fingerprint
     check(f"{job}: the R0 {part} cache is actions/cache/restore (#109), keyed by the fingerprint step, at the dir the "
-          "engine gets, then this PR's own key",
+          "engine gets, and this PR's own key",
           "uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in cache
           and "key: ${{ steps.r0fp.outputs.key }}" in cache and f"restore-keys: {R0_PR_KEY}" in cache
           and "id: r0cache" in cache
@@ -425,10 +427,10 @@ for job, lines, part, shard0 in (("red-first", red, "run", False), ("mutants", m
         if shard0:
             want.add("matrix.shard == 0")
         check(f"{job}: the R0 {part} save for {who} (#109): actions/cache/save of key {key}, after the run, only on a miss"
-              + (" and shard 0" if shard0 else "") + ", its if: a plain && of " + " and ".join(gate),
+              + (" and shard 0" if shard0 else "") + ", its if: exactly && of " + " and ".join(gate) + " and the miss",
               "uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0" in sv
               and [l for l in sv if l.startswith("key:")] == [f"key: {key}"] and "path: ~/.cache/ekit-r0" in sv
-              and terms is not None and want <= set(terms)
+              and terms is not None and set(terms) == want  # exact: an extra term (`&& false`) turns it off
               and f"R0 runtime cache save ({part}, {who})" in names
               and names.index(f"R0 runtime cache save ({part}, {who})") > names.index(run_name), str((sv, terms)))
     clear = step(lines, f"R0 runtime cache dir cleared ({part})")
@@ -522,6 +524,69 @@ for job_name, run_name in (("red-first", "R1 red-first, R4 determinism"), ("muta
           "what the run proves)",
           sha_env(step(jl, f"R0 runtime fingerprint ({part})")) == sha_env(step(jl, run_name)) != {},
           f"{sha_env(step(jl, f'R0 runtime fingerprint ({part})'))} vs {sha_env(step(jl, run_name))}")
+
+
+
+def push_path(lines):
+    """[why] the push run cannot reach red-first's warm save (#109): a job red-first needs, or red-first itself, with a
+    job-level if: (guard, plan and report have one, so needing them skips red-first on push); red-first's needs other
+    than [stack]; a step of those jobs whose if: reads the event or a PR (it would skip the fingerprint or the run on
+    push), but the two saves; the warm save's if: not exactly the push, the default branch and the miss."""
+    out, js = [], block(lines, "jobs", 0) or []
+    rf_needs = value(block(js, "red-first") or [], "needs") or ""
+    if rf_needs != "[stack]":
+        out.append(f"red-first needs {rf_needs!r}, not [stack]")
+    seen, todo = set(), ["red-first"]
+    while todo:
+        j = todo.pop()
+        if j in seen:
+            continue
+        seen.add(j)
+        jl = block(js, j) or []
+        if any(l.strip().startswith("if:") for l in child_lines(jl)):
+            out.append(f"{j}: a job-level if: (the push run needs it)")
+        todo += [n for n in re.split(r"[\s,\[\]]+", value(jl, "needs") or "") if n]
+        for st in all_steps(jl):
+            if st[0].startswith("name: R0 runtime cache save (run, "):
+                continue
+            for l in st:
+                if l.startswith("if:") and re.search(r"event_name|pull_request|\bfalse\b", l):
+                    out.append(f"{j}: step {st[0]!r} has {l!r}")
+    warm = step(block(js, "red-first") or [], "R0 runtime cache save (run, default branch)")
+    if set(if_terms(warm) or []) != set(R0_ON_DEFAULT_PUSH) | {"steps.r0fp.outputs.key != ''",
+                                                             "steps.r0cache.outputs.cache-matched-key == ''"}:
+        out.append(f"the warm save's if: {if_terms(warm)}")
+    return out
+
+
+check("push run (#109): stack -> red-first -> the warm save runs on a push (no job if: on the way, red-first needs "
+      "[stack] only, no step skipped on push, the save's if: exact)", push_path(W) == [], str(push_path(W)))
+_rf = W.index("  red-first:") + 1
+_st = W.index("  stack:") + 1
+_ws = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime cache save (run, default branch)"), None)
+_wsif = next((i for i in range(_ws, len(W)) if W[i].strip().startswith("if:")), None) if _ws is not None else None
+_rfneeds = next((i for i in range(_rf, len(W)) if W[i] == "    needs: [stack]"), None)
+_fp = next((i for i, l in enumerate(W) if l.strip() == "- name: R0 runtime fingerprint (run)"), None)
+
+
+def _with(i, line, replace=False):
+    if i is None:
+        return W
+    return W[:i] + [line] + W[i + (1 if replace else 0):]
+
+
+for name, mutant in {
+    "a pull_request if: on red-first": _with(_rf, "    if: github.event_name == 'pull_request'"),
+    "a pull_request if: on stack": _with(_st, "    if: github.event_name == 'pull_request'"),
+    "&& false on the warm save": _with(_wsif, (W[_wsif] + " && false") if _wsif else "", True),
+    "&& a PR on the warm save": _with(_wsif, (W[_wsif] + " && github.event_name == 'pull_request'") if _wsif else "",
+                                      True),
+    "red-first needs guard": _with(_rfneeds, "    needs: [stack, guard]", True),
+    "the fingerprint step skipped on push": _with((_fp + 1) if _fp is not None else None,
+                                                  "        if: github.event_name == 'pull_request'"),
+}.items():
+    check(f"push run check is live (#109): {name} is caught", push_path(W) == [] and mutant != W and push_path(mutant) != [],
+          str(push_path(mutant)))
 
 check("mutation-budget: used by the mutants job, not UNUSED",
       "UNUSED" not in " ".join(block(inputs, "mutation-budget") or []) and value(block(inputs, "mutation-budget") or [], "default") == "10",
@@ -1033,14 +1098,20 @@ check("workflow values check allows a fromJSON matrix include, timeout-minutes, 
 
 # ---- #109: every engine call runs `python3 -I -S` (no .pth in the runner's site-packages runs before the engine) ----
 # An engine call: any python3 or sys.executable on a code line of any workflow (a script of the engine checkout, an inline
-# heredoc or -c program, a subprocess an inline program starts), and any line naming a script under ekit/scripts/,
-# which must start it with the same python3 -I -S. Spelled one way (python3 -I -S, or sys.executable, "-I", "-S" in an
-# argv list), on the call's own line: any other spelling (-S -I, -IS, a call split over lines, python3.12, a venv's
-# python) fails closed. Not engine calls, by name: `python3 -m venv` (it makes the PR's test venv, before any PR code or
-# setup command runs, and the tests need that venv's site-packages), the tests workflow's ci-local (ekit's own dev
-# harness on ekit's own PR checkout, its token contents: read) and release.yml's plugin.json read (a tag push, no PR).
-PY_CALL = re.compile(r"(?<![\w.])(python3(?:\.\d+)*|sys\.executable)(?![\w])")
+# heredoc or -c program, a subprocess an inline program starts); a bare `python` followed by an option, a quote or a
+# .py file; and any line naming ekit/scripts/ or a script of the repo's scripts/ dir (mech-review.py, mech-comment.py,
+# ...), however it is started ($PY, uv run, a venv's bin/python), which must start it with python3 -I -S on that line.
+# Spelled one way (python3 -I -S, or sys.executable, "-I", "-S" in an argv list), on the call's own line: any other
+# spelling (-S -I, -IS, a call split over lines, python3.12, a venv's python) fails closed. Not engine calls, by name:
+# `python3 -m venv` (it makes the PR's test venv, before any PR code or setup command runs, and the tests need that
+# venv's site-packages), the tests workflow's ci-local (ekit's own dev harness on ekit's own PR checkout, its token
+# contents: read) and release.yml's plugin.json read (a tag push, no PR). Known limits: an interpreter held in a
+# variable and given a script under another name or an inline program not named here (`$PY -c ...`, `exec "$P" -`)
+# is not seen; nor is a call built across lines.
+PY_CALL = re.compile(r"(?<![\w.])(python(?:3(?:\.\d+)*)?|sys\.executable)(?![\w])")
 PY_ISOLATED = re.compile(r'python3 -I -S |sys\.executable, "-I", "-S", ')
+ENGINE_SCRIPT = re.compile(r"(?<![\w-])(?:" + "|".join(
+    re.escape(f) for f in sorted(os.listdir(os.path.join(ROOT, "scripts"))) if f.endswith(".py")) + r")\b")
 NOT_ENGINE = {("tests.yml", "run: python3 -I scripts/ci-local.py --step scenarios --unrunnable-ok"),
               ("release.yml", "version=$(python3 -c \"import json; print(json.load(open('.claude-plugin/plugin.json'))"
                               "['version'])\")")}
@@ -1055,8 +1126,12 @@ def unisolated(lines, wf):
             continue
         code = s.split(" # ", 1)[0]  # a trailing comment names, never calls
         calls = [code[m.start():] for m in PY_CALL.finditer(code)]
+        # a bare `python` is a call only before an option, a quote or a .py file (not prose: "python (pytest, ...)")
+        calls = [c for c in calls if not c.startswith("python") or c.startswith("python3")
+                 or re.match(r"python\s+(-|\"|'|\S+\.py\b)", c)]
         bad = [c for c in calls if not c.startswith("python3 -m venv ") and not PY_ISOLATED.match(c)]
-        if bad or ("ekit/scripts/" in code and not any(PY_ISOLATED.match(c) for c in calls)):
+        names_engine = "ekit/scripts/" in code or ENGINE_SCRIPT.search(code)
+        if bad or (names_engine and not any(PY_ISOLATED.match(c) for c in calls)):
             out.append((n, s))
     return out
 
@@ -1083,12 +1158,18 @@ for name, bad in {
     "a heredoc with -I alone": '          python3 -I - "$GITHUB_OUTPUT" <<\'PY\'',
     "a -c program with no flags": "          linked=$(python3 -c 'print(1)')",
     "a second call on an isolated call's line": _ok + " && python3 -I x.py",
+    "a bare python on an engine script after a cd": '          cd "$GITHUB_WORKSPACE/ekit" && python scripts/mech-review.py r2',
+    "an interpreter in a variable": '          "$PY" -I -S "$W/mech-comment.py" --pr "$PR_NUMBER"',
+    "uv run": "          uv run scripts/mech-rerun.py --pr 1",
+    "a venv python on a script path without ekit/scripts/": '          x/bin/python -I "$W/mech-review.py" red',
 }.items():
     check(f"engine call check is live (#109): {name} is caught",
           unisolated([_ok], "mech-review.yml") == [] and unisolated([_ok, bad], "mech-review.yml") == [(2, bad.strip())],
           str(unisolated([_ok, bad], "mech-review.yml")))
-check("engine call check (#109): python3 -m venv and a comment naming python3 are not engine calls",
-      unisolated(["          python3 -m venv \"$RUNNER_TEMP/py-venv\"", "  # python3 -I x.py", "  x  # python3 x"],
+check("engine call check (#109): python3 -m venv, the venv's pip, prose and a comment naming python3 are not engine calls",
+      unisolated(["          python3 -m venv \"$RUNNER_TEMP/py-venv\"", "  # python3 -I x.py", "  x  # python3 x",
+                  '          "$RUNNER_TEMP/py-venv/bin/python" -m pip install --quiet "pytest==9.2.0"',
+                  '        description: "python (pytest, mutmut 3.8.1 in a venv)"'],
                  "mech-review.yml") == [])
 import subprocess
 for script in ("mech-review.py", "mech-comment.py", "mech-rerun.py"):
@@ -1110,9 +1191,14 @@ for job_name, before in (("guard", "R2 guard"), ("red-first", "R0 runtime finger
     check(f"{job_name}: the parser install step right before {before} (#27)",
           INSTALL in names and names.index(INSTALL) + 1 == names.index(before), str(names))
     ist = step(jl, INSTALL)
-    check(f"{job_name}: the parser install step takes base, stack and project-dir through env only, no head",
-          "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in ist and "STACK: ${{ matrix.stack }}" in ist
+    # #109: a push run has no PR; the pushed commit is the base whose adapter file declares the parser
+    check(f"{job_name}: the parser install step takes base (#109: else the pushed commit), stack and project-dir through env only, "
+          "no head",
+          "BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}" in ist and "STACK: ${{ matrix.stack }}" in ist
           and "PROJECT_DIR: ${{ matrix.project-dir }}" in ist and "HEAD" not in text(ist), str(ist))
+    check(f"{job_name}: the parser install's BASE_SHA falls back to the pushed commit (#109: a push run installs the "
+          "parser main declares, so its R0 run part can pass and warm the cache)",
+          sha_env(ist).get("BASE_SHA") == PUSH_SHAS["BASE_SHA"], str(sha_env(ist)))
     check(f"{job_name}: a failed parser install is not a stop (the engine reports it)", "continue-on-error: true" in ist,
           str(ist))
 check("parser install: one step text in guard and red-first",
