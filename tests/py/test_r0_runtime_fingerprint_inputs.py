@@ -255,6 +255,22 @@ class Jdk(_Repo):
         self.java("21.0.5")
         self.assertEqual(self.fp(), old)  # nothing of the checkout's JDK reaches the key
 
+    def test_a_relative_java_home_is_not_probed(self):
+        """review round 2, F2: a relative JAVA_HOME resolves against wherever mvn runs, not where the engine does: it is
+        never passed to a probe, whatever it names"""
+        for java_home in ("jdk", "../../" + os.path.relpath(os.path.join(self.repo, "jdk"), "/"), "./x", "~/jdk"):
+            with self.subTest(java_home=java_home):
+                os.environ["JAVA_HOME"] = java_home
+                self.assertEqual(self.probes()[0],
+                                 f"mvn --version: not probed (JAVA_HOME is not an absolute path: {java_home})")
+                self.assertFalse(os.path.exists(os.path.join(self.bin, "ran")))
+
+    def test_a_java_home_beside_the_checkout_is_probed(self):
+        """review round 2, M3: <checkout>2 shares the checkout's prefix and is not in it"""
+        os.environ["JAVA_HOME"] = self.repo + "2"
+        self.assertEqual(self.probes()[0], "mvn --version: Apache Maven 3.9.11 (3e54c93a704957b63ee3494413a2b544fd3d825b"
+                                           f"); Java version: 17.0.9, vendor: Test, runtime: {self.repo}2")
+
     def test_the_probe_line_names_maven_and_the_jdk(self):
         r = _kit.run_cli(["r0", "--repo", self.repo, "--base", self.head, "--head", self.head, "--stack", "maven",
                           "--adapter", MAVEN, "--fingerprint", "run"])
